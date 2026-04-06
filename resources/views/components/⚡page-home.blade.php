@@ -9,5 +9,5 @@ new class extends Component
 ?>
 
 <div>
-    {{-- The whole future lies in uncertainty: live immediately. - Seneca --}}
+    {{-- You must be the change you wish to see in the world. - Mahatma Gandhi --}}5
 </div>
