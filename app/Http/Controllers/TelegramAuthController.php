@@ -60,7 +60,7 @@ class TelegramAuthController extends Controller
 
         return response()->json([
             'status' => 'approved',
-            'redirect' => route('dashboard'),
+            'redirect' => route('page-home'),
         ]);
     }
 }

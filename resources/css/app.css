@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 @source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
 @source '../../storage/framework/views/*.php';
@@ -6,6 +6,53 @@
 @source '../**/*.js';
 
 @theme {
-    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
-        'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-sans: "Akt", sans-serif;
+
+    --color-primary: #111111;
+    --color-secondary: #7a7a7a;
+    --color-background: #f5f5f5;
+    --color-surface: #ffffff;
+
+    --color-text: #2a1f1a;
+}
+
+@font-face {
+    font-family: "Akt";
+    src: url("/fonts/Akt-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Akt";
+    src: url("/fonts/Akt-Normal.woff2") format("woff2");
+    font-weight: 500;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Akt";
+    src: url("/fonts/Akt-Medium.woff2") format("woff2");
+    font-weight: 600;
+    font-style: normal;
+}
+
+html {
+    background-color: #f2f3f7;
+    color: var(--color-text);
+}
+
+h1 {
+    font-size: 32px;
+    font-weight: 600;
+}
+
+h2 {
+    font-size: 18px;
+    font-weight: 500;
+}
+
+p {
+    font-size: 16px;
+    font-weight: 400;
 }

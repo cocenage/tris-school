@@ -69,16 +69,17 @@ new class extends Component {
                 }
 
                 const response = await fetch('/telegram/auth', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': '{{ csrf_token() }}',
-                        'Accept': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        init_data: tg.initData,
-                    }),
-                });
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': '{{ csrf_token() }}',
+        'Accept': 'application/json',
+    },
+    body: JSON.stringify({
+        init_data: tg.initData,
+    }),
+});
 
                 const text = await response.text();
                 debug.textContent += '\nHTTP: ' + response.status + '\nResponse: ' + text;
@@ -86,7 +87,7 @@ new class extends Component {
                 const data = JSON.parse(text);
 
                 if (data.redirect) {
-                    window.location.href = data.redirect;
+                    window.location.replace(data.redirect);
                 }
             } catch (e) {
                 debug.textContent += '\nError: ' + e.message;
