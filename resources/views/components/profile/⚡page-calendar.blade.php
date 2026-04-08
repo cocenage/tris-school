@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\CalendarEvent;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Livewire\Component;
@@ -54,6 +55,7 @@ new class extends Component {
             'holiday' => 'Праздники',
             'peak' => 'Пики загрузки',
             'vacation' => 'Выходные и отпуска',
+            'strike' => 'Забастовки',
         ];
     }
 
@@ -210,36 +212,20 @@ new class extends Component {
             ->values();
     }
 
+    protected function formatUserDip(?User $user): string
+    {
+        if (!$user) {
+            return '';
+        }
+
+        return $user->dip ? ' • DIP' : ' • NO DIP';
+    }
+
     protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Collection
     {
         $baseEvents = CalendarEvent::query()
+            // ->with('user')
             ->where('is_active', true)
-            ->where(function ($query) use ($rangeStart, $rangeEnd) {
-                $query
-                    ->where(function ($q) use ($rangeStart, $rangeEnd) {
-                        $q->where('repeat_type', 'none')
-                            ->whereDate('start_date', '<=', $rangeEnd->toDateString())
-                            ->where(function ($qq) use ($rangeStart) {
-                                $qq
-                                    ->where(function ($qqq) use ($rangeStart) {
-                                        $qqq->whereNull('end_date')
-                                            ->whereDate('start_date', '>=', $rangeStart->toDateString());
-                                    })
-                                    ->orWhere(function ($qqq) use ($rangeStart) {
-                                        $qqq->whereNotNull('end_date')
-                                            ->whereDate('end_date', '>=', $rangeStart->toDateString());
-                                    });
-                            });
-                    })
-                    ->orWhere(function ($q) use ($rangeStart, $rangeEnd) {
-                        $q->whereIn('repeat_type', ['yearly', 'monthly', 'weekly'])
-                            ->whereDate('start_date', '<=', $rangeEnd->toDateString())
-                            ->where(function ($qq) use ($rangeStart) {
-                                $qq->whereNull('repeat_until')
-                                    ->orWhereDate('repeat_until', '>=', $rangeStart->toDateString());
-                            });
-                    });
-            })
             ->orderByDesc('priority')
             ->orderBy('start_date')
             ->get();
@@ -252,13 +238,74 @@ new class extends Component {
             );
         }
 
+        // Добавляем праздники пользователей
+        $users = User::query()
+            ->where('is_active', true)
+            ->where(function ($q) {
+                $q->whereNotNull('birthday')
+                    ->orWhereNotNull('work_started_at');
+            })
+            ->get();
+
+        foreach ($users as $user) {
+            // День рождения
+            if ($user->birthday) {
+                $birthday = Carbon::parse($user->birthday);
+
+                for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
+                    $date = $this->safeDateForYear($birthday, $year);
+
+                    if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
+                        $expanded->push([
+                            'id' => 'birthday_' . $user->id . '_' . $year,
+                            'title' => "{$user->name}{$this->formatUserDip($user)} — День рождения",
+                            'description' => null,
+                            'short' => mb_strimwidth("🎂 {$user->name}", 0, 12, '...'),
+                            'type' => 'holiday',
+                            'priority' => 100,
+                            'start' => $date->copy()->startOfDay(),
+                            'end' => $date->copy()->startOfDay(),
+                            'style' => $this->eventStyle('holiday'),
+                        ]);
+                    }
+                }
+            }
+
+            // Годовщина работы
+            if ($user->work_started_at) {
+                $workStarted = Carbon::parse($user->work_started_at);
+
+                for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
+                    $date = $this->safeDateForYear($workStarted, $year);
+
+                    if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
+                        $years = Carbon::parse($user->work_started_at)->diffInYears($date);
+
+                        $expanded->push([
+                            'id' => 'work_' . $user->id . '_' . $year,
+                            'title' => "{$user->name}{$this->formatUserDip($user)} — {$years} лет в компании",
+                            'description' => null,
+                            'short' => mb_strimwidth("🏢 {$user->name}", 0, 12, '...'),
+                            'type' => 'holiday',
+                            'priority' => 90,
+                            'start' => $date->copy()->startOfDay(),
+                            'end' => $date->copy()->startOfDay(),
+                            'style' => $this->eventStyle('holiday'),
+                        ]);
+                    }
+                }
+            }
+        }
+
         if ($this->activeFilter !== 'all') {
             $expanded = $expanded
                 ->filter(fn(array $event) => $event['type'] === $this->activeFilter)
                 ->values();
         }
 
-        return $expanded->values();
+        return $expanded
+            ->sortByDesc('priority')
+            ->values();
     }
 
     protected function expandEventOccurrences(CalendarEvent $event, Carbon $rangeStart, Carbon $rangeEnd): Collection
@@ -379,11 +426,19 @@ new class extends Component {
 
     protected function mapEventOccurrence(CalendarEvent $event, Carbon $start, Carbon $end): array
     {
+        $user = $event->user;
+
+        $title = $event->title;
+
+        if ($user) {
+            $title .= ' — ' . $user->name . $this->formatUserDip($user);
+        }
+
         return [
             'id' => $event->id . '_' . $start->format('Ymd'),
-            'title' => $event->title,
+            'title' => $title,
             'description' => $event->description,
-            'short' => mb_strimwidth($event->title, 0, 12, '...'),
+            'short' => mb_strimwidth($title, 0, 12, '...'),
             'type' => $event->type,
             'priority' => (int) ($event->priority ?? 0),
             'start' => $start,
@@ -420,6 +475,7 @@ new class extends Component {
             'holiday' => 'background:#F3B8B8;color:#111111;',
             'peak' => 'background:#F3E69C;color:#111111;',
             'vacation' => 'background:#CDBEFF;color:#111111;',
+           'strike' => 'background:#F4C9A8;color:#111111;',
             default => 'background:#E9E9E9;color:#111111;',
         };
     }
@@ -576,68 +632,75 @@ new class extends Component {
             <div
                 class="px-[20px] flex gap-[5px] overflow-x-auto overflow-y-hidden no-scrollbar bg-white w-full max-w-full">
                 @foreach ($this->filters as $key => $label)
-                        @php
-                            $filterColors = match ($key) {
-                                'all' => [
-                                    'bg' => '#E1E1E1',
-                                    'text' => '#2A1F1A',
-                                    'activeBg' => '#7D7D7D',
-                                    'activeText' => '#FFFFFF',
-                                ],
+                    @php
+                        $filterColors = match ($key) {
+                            'all' => [
+                                'bg' => '#E1E1E1',
+                                'text' => '#2A1F1A',
+                                'activeBg' => '#7D7D7D',
+                                'activeText' => '#FFFFFF',
+                            ],
 
-                                'workflow' => [
-                                    'bg' => '#DDEEFF',
-                                    'text' => '#2A1F1A',
-                                    'activeBg' => '#8FC4FF',
-                                    'activeText' => '#111111',
-                                ],
+                            'workflow' => [
+                                'bg' => '#DDEEFF',
+                                'text' => '#2A1F1A',
+                                'activeBg' => '#8FC4FF',
+                                'activeText' => '#111111',
+                            ],
 
-                                'finance' => [
-                                    'bg' => '#DDF3E4',
-                                    'text' => '#2A1F1A',
-                                    'activeBg' => '#8FDCAB',
-                                    'activeText' => '#111111',
-                                ],
+                            'finance' => [
+                                'bg' => '#DDF3E4',
+                                'text' => '#2A1F1A',
+                                'activeBg' => '#8FDCAB',
+                                'activeText' => '#111111',
+                            ],
 
-                                'holiday' => [
-                                    'bg' => '#FFE1E1',
-                                    'text' => '#2A1F1A',
-                                    'activeBg' => '#F3B8B8',
-                                    'activeText' => '#111111',
-                                ],
+                            'holiday' => [
+                                'bg' => '#FFE1E1',
+                                'text' => '#2A1F1A',
+                                'activeBg' => '#F3B8B8',
+                                'activeText' => '#111111',
+                            ],
 
-                                'peak' => [
-                                    'bg' => '#FFF1C7',
-                                    'text' => '#2A1F1A',
-                                    'activeBg' => '#F3E69C',
-                                    'activeText' => '#111111',
-                                ],
+                            'peak' => [
+                                'bg' => '#FFF1C7',
+                                'text' => '#2A1F1A',
+                                'activeBg' => '#F3E69C',
+                                'activeText' => '#111111',
+                            ],
 
-                                'vacation' => [
-                                    'bg' => '#ECE3FF',
-                                    'text' => '#2A1F1A',
-                                    'activeBg' => '#CDBEFF',
-                                    'activeText' => '#111111',
-                                ],
+                            'vacation' => [
+                                'bg' => '#ECE3FF',
+                                'text' => '#2A1F1A',
+                                'activeBg' => '#CDBEFF',
+                                'activeText' => '#111111',
+                            ],
 
-                                default => [
-                                    'bg' => '#E9E9E9',
-                                    'text' => '#2A1F1A',
-                                    'activeBg' => '#8E8E8E',
-                                    'activeText' => '#FFFFFF',
-                                ],
-                            };
+                          'strike' => [
+    'bg' => '#FCE9DD',
+    'text' => '#2A1F1A',
+    'activeBg' => '#F4C9A8',
+    'activeText' => '#111111',
+],
 
-                            $isActive = $activeFilter === $key;
-                        @endphp
+                            default => [
+                                'bg' => '#E9E9E9',
+                                'text' => '#2A1F1A',
+                                'activeBg' => '#8E8E8E',
+                                'activeText' => '#FFFFFF',
+                            ],
+                        };
 
-                        <button type="button" wire:click="setFilter('{{ $key }}')"
-                            class="shrink-0 rounded-full text-[16px] px-[11px] py-[6px]" style="
-                        background: {{ $isActive ? $filterColors['activeBg'] : $filterColors['bg'] }};
-                        color: {{ $isActive ? $filterColors['activeText'] : $filterColors['text'] }};
-                    ">
-                            {{ $label }}
-                        </button>
+                        $isActive = $activeFilter === $key;
+                    @endphp
+
+                    <button type="button" wire:click="setFilter('{{ $key }}')"
+                        class="shrink-0 rounded-full text-[16px] px-[11px] py-[6px]" style="
+                                background: {{ $isActive ? $filterColors['activeBg'] : $filterColors['bg'] }};
+                                color: {{ $isActive ? $filterColors['activeText'] : $filterColors['text'] }};
+                            ">
+                        {{ $label }}
+                    </button>
                 @endforeach
             </div>
         </div>
@@ -691,39 +754,39 @@ new class extends Component {
                             @forelse ($week['tracks'] as $track)
                                 <div class="relative h-[20px]">
                                     @foreach ($track as $event)
-                                            @php
-                                                $leftPercent = (($event['colStart'] - 1) / 7) * 100;
-                                                $widthPercent = (($event['colEnd'] - $event['colStart']) / 7) * 100;
+                                        @php
+                                            $leftPercent = (($event['colStart'] - 1) / 7) * 100;
+                                            $widthPercent = (($event['colEnd'] - $event['colStart']) / 7) * 100;
 
-                                                $weekStartDate = $week['days'][0]['date']->copy()->startOfDay();
-                                                $weekEndDate = $week['days'][6]['date']->copy()->startOfDay();
+                                            $weekStartDate = $week['days'][0]['date']->copy()->startOfDay();
+                                            $weekEndDate = $week['days'][6]['date']->copy()->startOfDay();
 
-                                                $continuesFromPrevWeek = $event['start']->lt($weekStartDate);
-                                                $continuesToNextWeek = $event['end']->gt($weekEndDate);
+                                            $continuesFromPrevWeek = $event['start']->lt($weekStartDate);
+                                            $continuesToNextWeek = $event['end']->gt($weekEndDate);
 
-                                                $leftInset = $continuesFromPrevWeek ? 0 : 5;
-                                                $rightInset = $continuesToNextWeek ? 0 : 5;
+                                            $leftInset = $continuesFromPrevWeek ? 0 : 5;
+                                            $rightInset = $continuesToNextWeek ? 0 : 5;
 
-                                                $radiusStyle = match (true) {
-                                                    $continuesFromPrevWeek && $continuesToNextWeek => 'border-radius:0;',
-                                                    $continuesFromPrevWeek => 'border-top-left-radius:0;border-bottom-left-radius:0;border-top-right-radius:9999px;border-bottom-right-radius:9999px;',
-                                                    $continuesToNextWeek => 'border-top-right-radius:0;border-bottom-right-radius:0;border-top-left-radius:9999px;border-bottom-left-radius:9999px;',
-                                                    default => 'border-radius:9999px;',
-                                                };
+                                            $radiusStyle = match (true) {
+                                                $continuesFromPrevWeek && $continuesToNextWeek => 'border-radius:0;',
+                                                $continuesFromPrevWeek => 'border-top-left-radius:0;border-bottom-left-radius:0;border-top-right-radius:9999px;border-bottom-right-radius:9999px;',
+                                                $continuesToNextWeek => 'border-top-right-radius:0;border-bottom-right-radius:0;border-top-left-radius:9999px;border-bottom-left-radius:9999px;',
+                                                default => 'border-radius:9999px;',
+                                            };
 
-                                                $finalWidthPx = $leftInset + $rightInset;
-                                            @endphp
+                                            $finalWidthPx = $leftInset + $rightInset;
+                                        @endphp
 
-                                            <div class="absolute top-0 h-[20px] px-[5px] flex items-center overflow-hidden" style="
-                                            left: calc({{ $leftPercent }}% + {{ $leftInset }}px);
-                                            width: calc({{ $widthPercent }}% - {{ $finalWidthPx }}px);
-                                            {{ $radiusStyle }}
-                                            {{ $event['style'] }}
-                                        " title="{{ $event['title'] }}">
-                                                <span class="text-[12px] leading-none truncate">
-                                                    {{ $event['short'] }}
-                                                </span>
-                                            </div>
+                                        <div class="absolute top-0 h-[20px] px-[5px] flex items-center overflow-hidden" style="
+                                                                    left: calc({{ $leftPercent }}% + {{ $leftInset }}px);
+                                                                    width: calc({{ $widthPercent }}% - {{ $finalWidthPx }}px);
+                                                                    {{ $radiusStyle }}
+                                                                    {{ $event['style'] }}
+                                                                " title="{{ $event['title'] }}">
+                                            <span class="text-[12px] leading-none truncate">
+                                                {{ $event['short'] }}
+                                            </span>
+                                        </div>
                                     @endforeach
                                 </div>
                             @empty

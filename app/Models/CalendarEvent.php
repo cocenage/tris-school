@@ -21,40 +21,42 @@ class CalendarEvent extends Model
     ];
 
     protected $casts = [
-        'start_date'   => 'date',
-        'end_date'     => 'date',
+        'start_date' => 'date',
+        'end_date' => 'date',
         'repeat_until' => 'date',
-        'is_active'    => 'boolean',
-        'priority'     => 'integer',
+        'is_active' => 'boolean',
+        'priority' => 'integer',
     ];
 
     public const TYPE_WORKFLOW = 'workflow';
-    public const TYPE_FINANCE  = 'finance';
-    public const TYPE_HOLIDAY  = 'holiday';
-    public const TYPE_PEAK     = 'peak';
+    public const TYPE_FINANCE = 'finance';
+    public const TYPE_HOLIDAY = 'holiday';
+    public const TYPE_PEAK = 'peak';
+    public const TYPE_STRIKE = 'strike';
 
-    public const REPEAT_NONE    = 'none';
-    public const REPEAT_YEARLY  = 'yearly';
+    public const REPEAT_NONE = 'none';
+    public const REPEAT_YEARLY = 'yearly';
     public const REPEAT_MONTHLY = 'monthly';
-    public const REPEAT_WEEKLY  = 'weekly';
+    public const REPEAT_WEEKLY = 'weekly';
 
     public static function typeOptions(): array
     {
         return [
             self::TYPE_WORKFLOW => 'Рабочий процесс',
-            self::TYPE_FINANCE  => 'Финансы',
-            self::TYPE_HOLIDAY  => 'Праздник',
-            self::TYPE_PEAK     => 'Пик загрузки',
+            self::TYPE_FINANCE => 'Финансы',
+            self::TYPE_HOLIDAY => 'Праздник',
+            self::TYPE_PEAK => 'Пик загрузки',
+            self::TYPE_STRIKE => 'Забастовки',
         ];
     }
 
     public static function repeatOptions(): array
     {
         return [
-            self::REPEAT_NONE    => 'Не повторять',
-            self::REPEAT_YEARLY  => 'Ежегодно',
+            self::REPEAT_NONE => 'Не повторять',
+            self::REPEAT_YEARLY => 'Ежегодно',
             self::REPEAT_MONTHLY => 'Ежемесячно',
-            self::REPEAT_WEEKLY  => 'Еженедельно',
+            self::REPEAT_WEEKLY => 'Еженедельно',
         ];
     }
 
@@ -70,7 +72,7 @@ class CalendarEvent extends Model
 
     public function isRange(): bool
     {
-        return ! is_null($this->end_date) && ! $this->end_date->isSameDay($this->start_date);
+        return !is_null($this->end_date) && !$this->end_date->isSameDay($this->start_date);
     }
 
     public function getTypeLabelAttribute(): string

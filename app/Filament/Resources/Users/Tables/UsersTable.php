@@ -141,19 +141,9 @@ class UsersTable
             ])
             ->actions([
                 ActionGroup::make([
-                    ViewAction::make()
-                        ->hidden(fn($record) => $record->role === 'admin'),
-
-                    EditAction::make()
-                        ->hidden(fn($record) => $record->role === 'admin'),
-
-                    DeleteAction::make()
-                        ->hidden(fn($record) => $record->role === 'admin')
-                        ->before(function ($record) {
-                            if ($record->role === 'admin') {
-                                throw new \Exception('Нельзя удалить администратора.');
-                            }
-                        }),
+                    ViewAction::make(),
+                    EditAction::make(),
+                    DeleteAction::make(),
                 ]),
             ])
             ->bulkActions([]);

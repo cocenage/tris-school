@@ -12,6 +12,23 @@ class UserSeeder extends Seeder
     public function run(): void
     {
         $users = [
+             [
+                'name' => 'qwe',
+                'email' => 'qwe@qwe.qwe',
+                'telegram_id' => null,
+                'telegram_username' => null,
+                'telegram_photo_url' => null,
+                'role' => 'admin',
+                'status' => 'approved',
+                'approved_at' => now()->subDays(30),
+                'approved_by' => 1,
+                'last_login_at' => now()->subHours(2),
+                'birthday' => Carbon::parse('1998-03-12'),
+                'work_started_at' => Carbon::parse('2024-01-15'),
+                'dip' => false,
+                'is_active' => true,
+                'password' => 'qwe',
+            ],
             [
                 'name' => 'Алексей Иванов',
                 'email' => 'alexey@example.com',
