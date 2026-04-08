@@ -19,23 +19,27 @@ class User extends Authenticatable
      * @var list<string>
      */
     protected $fillable = [
-        'name',
-        'email',
-        'password',
         'telegram_id',
         'telegram_username',
         'telegram_photo_url',
+
         'role',
         'status',
+
         'approved_at',
         'approved_by',
         'last_login_at',
+
+        'birthday',
+        'work_started_at',
+        'dip',
+        'is_active',
+
+        'name',
+        'email',
+        'password',
     ];
 
-    protected $casts = [
-        'approved_at' => 'datetime',
-        'last_login_at' => 'datetime',
-    ];
     /**
      * The attributes that should be hidden for serialization.
      *
@@ -54,6 +58,12 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
+            'approved_at' => 'datetime',
+            'last_login_at' => 'datetime',
+            'birthday' => 'date',
+            'work_started_at' => 'date',
+            'dip' => 'boolean',
+            'is_active' => 'boolean',
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];

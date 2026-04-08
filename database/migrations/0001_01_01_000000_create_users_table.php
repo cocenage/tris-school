@@ -4,8 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration
-{
+return new class extends Migration {
     /**
      * Run the migrations.
      */
@@ -23,6 +22,11 @@ return new class extends Migration
             $table->timestamp('approved_at')->nullable();
             $table->foreignId('approved_by')->nullable()->constrained('users')->nullOnDelete();
             $table->timestamp('last_login_at')->nullable();
+
+            $table->timestamp('birthday')->nullable();
+            $table->timestamp('work_started_at')->nullable();
+            $table->boolean('dip')->nullable();
+            $table->boolean('is_active')->default(true);
 
             $table->string('name')->nullable();
             $table->string('email')->unique()->nullable();
