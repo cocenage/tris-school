@@ -83,4 +83,14 @@ class User extends Authenticatable
     {
         return $this->status === 'approved';
     }
+
+    public function dayOffRequests()
+    {
+        return $this->hasMany(\App\Models\DayOffRequest::class);
+    }
+
+    public function dayOffRequestDays()
+    {
+        return $this->hasMany(\App\Models\DayOffRequestDay::class);
+    }
 }

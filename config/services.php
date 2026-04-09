@@ -15,6 +15,11 @@ return [
     */
     'telegram' => [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
+
+        'chat_id_formweekend' => env('TELEGRAM_CHAT_ID_FORMWEEKEND'),
+        'thread_id_formweekend' => env('TELEGRAM_THREAD_ID_FORMWEEKEND'),
+
+
     ],
 
     'postmark' => [

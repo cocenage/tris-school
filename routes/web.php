@@ -29,4 +29,6 @@ Route::livewire('/applications/weekend', 'forms.page-weekend')
     ->name('page-profile');
     Route::livewire('/profile/calendar', 'profile.page-calendar')
     ->name('page-profile.calendar');
+        Route::livewire('/profile/weekend', 'profile.page-weekend')
+    ->name('page-profile.weekend');
 });

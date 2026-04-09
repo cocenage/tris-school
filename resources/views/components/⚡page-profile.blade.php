@@ -55,14 +55,14 @@ new class extends Component
     </div>
 
     <div class="bg-[#F8F7F5] rounded-[30px] mt-[30px]">
-        <a href="" class="flex items-center p-[15px]">
+        <div href="" class="flex items-center p-[15px]">
              <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2]" />
              <div class="pl-[15px] w-full flex justify-between items-center">
                 <p>Проверка</p>
 <x-heroicon-o-magnifying-glass class="w-[15px] h-[15px] stroke-[2]" />
              </div>
 
-        </a>
+        </div>
 <hr class="w-full h-[1.5px]">
        <a href="" class="flex items-center p-[15px]">
              <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2]" />
@@ -126,6 +126,19 @@ new class extends Component
         <div class="ml-[18px] flex-1 flex items-center justify-between py-[8px]">
             <p class="text-[20px] font-semibold text-[#FF6432]">
                 Календарь
+            </p>
+
+            <x-heroicon-o-chevron-right class="w-[22px] h-[22px] text-[#3B2F2A] transition-transform duration-150 group-active:translate-x-[2px]" />
+        </div>
+    </a>
+
+        <a href="{{ route('page-profile.weekend') }}"
+       class="group flex items-center px-[20px] py-[20px] active:bg-black/5 transition-colors duration-150">
+        <x-heroicon-o-calendar-days class="w-[28px] h-[28px] text-[#3B2F2A] shrink-0" />
+
+        <div class="ml-[18px] flex-1 flex items-center justify-between py-[8px]">
+            <p class="text-[20px] font-semibold text-[#FF6432]">
+                Выходной деееень
             </p>
 
             <x-heroicon-o-chevron-right class="w-[22px] h-[22px] text-[#3B2F2A] transition-transform duration-150 group-active:translate-x-[2px]" />
