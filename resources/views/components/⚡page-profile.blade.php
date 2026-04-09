@@ -1,39 +1,109 @@
 <?php
 
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Component;
+use Livewire\WithFileUploads;
 
 new class extends Component
 {
-    //
+        use WithFileUploads;
+
+    public $avatar;
+public function saveAvatar(): void
+{
+    $user = Auth::user();
+
+    if (! $user || ! $this->avatar) {
+        return;
+    }
+
+    $this->validate([
+        'avatar' => ['required', 'image', 'max:5120'],
+    ]);
+
+    if (
+        $user->telegram_avatar_path &&
+        Storage::disk('public')->exists($user->telegram_avatar_path)
+    ) {
+        Storage::disk('public')->delete($user->telegram_avatar_path);
+    }
+
+    $path = $this->avatar->store('user-avatars', 'public');
+
+    $user->update([
+        'telegram_avatar_path' => $path,
+    ]);
+
+    $this->reset('avatar');
+}
 };
 ?>
 
 <div class="bg-white w-full h-screen p-[15px]">
     @php
         $user = auth()->user();
+            use Illuminate\Support\Str;
     @endphp
 
-    <div class="flex items-center gap-[14px]">
-        <div class="w-[64px] h-[64px] rounded-full overflow-hidden bg-[#E1E1E1] shrink-0">
-            @if($user?->telegram_photo_url)
-                <img
-                    src="{{ $user->telegram_photo_url }}"
-                    alt="{{ $user->name }}"
-                    class="w-full h-full object-cover"
-                >
-            @else
-                <div class="w-full h-full flex items-center justify-center text-[24px] font-semibold text-[#666666]">
-                    {{ mb_substr($user->name ?? 'U', 0, 1) }}
-                </div>
-            @endif
-        </div>
+    <div class="flex items-center gap-[10px]">
 
-        <div class="flex flex-col">
-            <span class="text-[20px] font-semibold text-[#111111]">
+
+<div x-data class="w-[80px] h-[80px] shrink-0">
+    <input
+        type="file"
+        x-ref="avatarInput"
+        class="hidden"
+        accept="image/*"
+        wire:model="avatar"
+    >
+
+    <button
+        type="button"
+        @click="$refs.avatarInput.click()"
+        class="w-full h-full rounded-full overflow-hidden bg-[#E1E1E1] active:scale-[0.97] transition"
+    >
+        @if($avatar)
+            <img
+                src="{{ $avatar->temporaryUrl() }}"
+                alt="Preview"
+                class="w-full h-full object-cover"
+            >
+        @elseif(auth()->user()?->telegram_avatar_path)
+            <img
+                src="{{ Storage::url(auth()->user()->telegram_avatar_path) }}"
+                alt="{{ auth()->user()->name }}"
+                class="w-full h-full object-cover"
+            >
+        @else
+            <div class="w-full h-full flex flex-col items-center justify-center">
+                <div class="text-[24px] font-semibold text-[#666666]">
+                    {{ mb_substr(auth()->user()?->name ?? 'U', 0, 1) }}
+                </div>
+                <div class="text-[10px] text-[#666666] mt-[2px]">
+                    Загрузить
+                </div>
+            </div>
+        @endif
+    </button>
+
+    @if($avatar)
+        <button
+            type="button"
+            wire:click="saveAvatar"
+            class="mt-2 px-3 h-9 rounded-full bg-black text-white text-sm"
+        >
+            Сохранить
+        </button>
+    @endif
+</div>
+
+        <div class="flex flex-col gap-[5px]">
+            <span class="text-[20px] font-medium">
                 {{ $user->name }}
             </span>
 
-            <span class="text-[14px] text-[#777777]">
+            <span class="text-[18px] opacity-50">
                 @switch($user->role)
                     @case('admin')
                         Администратор

@@ -18,7 +18,7 @@ class UserInfolist
                         Section::make('Основная информация')
                             ->schema([
                                 TextEntry::make('name')
-                                    ->label('ФИО')
+                                    ->label('Имя')
                                     ->weight('bold')
                                     ->size('lg')
                                     ->columnSpanFull(),

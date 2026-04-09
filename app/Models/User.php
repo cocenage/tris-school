@@ -2,26 +2,21 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Filament\Panel;
+use Illuminate\Support\Facades\Storage;
 
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var list<string>
-     */
     protected $fillable = [
         'telegram_id',
         'telegram_username',
         'telegram_photo_url',
+        'telegram_avatar_path',
 
         'role',
         'status',
@@ -40,21 +35,11 @@ class User extends Authenticatable
         'password',
     ];
 
-    /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var list<string>
-     */
     protected $hidden = [
         'password',
         'remember_token',
     ];
 
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
     protected function casts(): array
     {
         return [
@@ -82,6 +67,19 @@ class User extends Authenticatable
     public function isApproved(): bool
     {
         return $this->status === 'approved';
+    }
+
+    public function getAvatarUrlAttribute(): ?string
+    {
+        if ($this->telegram_avatar_path) {
+            return Storage::disk('public')->url($this->telegram_avatar_path);
+        }
+
+        if ($this->telegram_photo_url) {
+            return $this->telegram_photo_url;
+        }
+
+        return null;
     }
 
     public function dayOffRequests()

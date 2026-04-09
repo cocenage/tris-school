@@ -15,7 +15,8 @@ return new class extends Migration {
             $table->string('telegram_id')->nullable()->unique();
             $table->string('telegram_username')->nullable();
             $table->string('telegram_photo_url')->nullable();
-
+            $table->string('telegram_avatar_path')->nullable();
+            
             $table->enum('role', ['admin', 'supervisor', 'cleaner'])->nullable();
             $table->enum('status', ['pending', 'approved', 'rejected'])->default('pending');
 

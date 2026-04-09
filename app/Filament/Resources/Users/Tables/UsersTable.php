@@ -9,6 +9,7 @@ use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Tables\Columns\BadgeColumn;
 use Filament\Tables\Columns\IconColumn;
+use Filament\Tables\Columns\ImageColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
@@ -21,8 +22,23 @@ class UsersTable
             ->defaultSort('name', 'asc')
             ->recordUrl(fn($record) => UserResource::getUrl('edit', ['record' => $record]))
             ->columns([
+                ImageColumn::make('avatar')
+                    ->label('')
+                    ->getStateUsing(function ($record) {
+                        if ($record->telegram_avatar_path) {
+                            return $record->telegram_avatar_path;
+                        }
+
+                        return null;
+                    })
+                    ->disk('public')
+                    ->circular()
+                    ->size(48)
+                    ->defaultImageUrl(asset('images/avatar-placeholder.png'))
+                    ->grow(false),
+
                 TextColumn::make('name')
-                    ->label('ФИО')
+                    ->label('Имя')
                     ->searchable()
                     ->sortable()
                     ->toggleable(),

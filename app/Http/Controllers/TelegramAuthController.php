@@ -3,14 +3,18 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Services\TelegramAvatarService;
 use App\Services\TelegramMiniAppService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
 class TelegramAuthController extends Controller
 {
-    public function __invoke(Request $request, TelegramMiniAppService $telegram)
-    {
+    public function __invoke(
+        Request $request,
+        TelegramMiniAppService $telegram,
+        TelegramAvatarService $avatarService
+    ) {
         $request->validate([
             'init_data' => ['required', 'string'],
         ]);
@@ -19,9 +23,13 @@ class TelegramAuthController extends Controller
 
         $name = trim(
             collect([
-                $telegramUser['first_name'],
-                $telegramUser['last_name'],
+                $telegramUser['first_name'] ?? null,
+                $telegramUser['last_name'] ?? null,
             ])->filter()->implode(' ')
+        );
+
+        $safePhotoUrl = $avatarService->sanitizeMiniAppPhotoUrl(
+            $telegramUser['photo_url'] ?? null
         );
 
         $user = User::query()->firstOrCreate(
@@ -29,7 +37,7 @@ class TelegramAuthController extends Controller
             [
                 'name' => $name ?: ('Telegram User ' . $telegramUser['telegram_id']),
                 'telegram_username' => $telegramUser['username'],
-                'telegram_photo_url' => $telegramUser['photo_url'],
+                'telegram_photo_url' => $safePhotoUrl,
                 'status' => 'pending',
             ]
         );
@@ -37,30 +45,26 @@ class TelegramAuthController extends Controller
         $user->update([
             'name' => $name ?: $user->name,
             'telegram_username' => $telegramUser['username'],
-            'telegram_photo_url' => $telegramUser['photo_url'],
-            'last_login_at' => now(),
+            'telegram_photo_url' => $safePhotoUrl,
         ]);
 
-        if ($user->status === 'rejected') {
-            return response()->json([
-                'status' => 'rejected',
-                'redirect' => route('access.rejected'),
+        $avatarPath = $avatarService->downloadUserAvatar($telegramUser['telegram_id']);
+
+        if ($avatarPath) {
+            $user->update([
+                'telegram_avatar_path' => $avatarPath,
             ]);
         }
 
-        if ($user->status !== 'approved' || ! $user->role) {
-            return response()->json([
-                'status' => 'pending',
-                'redirect' => route('access.pending'),
-            ]);
-        }
-
-        Auth::login($user, true);
-        $request->session()->regenerate();
+        Auth::login($user);
 
         return response()->json([
-            'status' => 'approved',
-            'redirect' => route('page-home'),
+            'redirect' => route(match ($user->status) {
+                'approved' => 'page-home',
+                'pending' => 'access.pending',
+                'rejected' => 'access.rejected',
+                default => 'landing',
+            }),
         ]);
     }
 }

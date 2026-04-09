@@ -26,7 +26,7 @@ new class extends Component
     public string $comment = '';
     public ?string $successMessage = null;
 
-    public string $adminChatUrl = 'https://t.me/admin_username';
+    public string $adminChatUrl = 'https://t.me/Tris_Admin_Tatiana';
 
     public function mount(): void
     {
@@ -99,92 +99,105 @@ new class extends Component
         $this->calendarOpen = false;
     }
 
-    public function selectDate(string $date): void
-    {
-        $picked = Carbon::parse($date)->startOfDay();
+public function selectDate(string $date): void
+{
+    $picked = Carbon::parse($date)->startOfDay();
 
-        if ($picked->lt(now()->startOfDay())) {
-            return;
-        }
+    if ($picked->lt(now()->startOfDay())) {
+        return;
+    }
 
-        if ($this->isAlreadyRequested($date)) {
-            return;
-        }
+    if ($this->isAlreadyRequested($date)) {
+        return;
+    }
 
+    if ($this->activeRangeIndex === null || ! isset($this->ranges[$this->activeRangeIndex])) {
         if ($this->isSundayOrMonday($date)) {
             $this->openPolicyModal($date);
             return;
         }
 
-        if ($this->activeRangeIndex === null || ! isset($this->ranges[$this->activeRangeIndex])) {
-            array_unshift($this->ranges, [
-                'start' => $date,
-                'end' => $date,
-            ]);
+        array_unshift($this->ranges, [
+            'start' => $date,
+            'end' => $date,
+        ]);
 
-            $this->activeRangeIndex = 0;
-            $this->resetErrorBag('ranges');
+        $this->activeRangeIndex = 0;
+        $this->resetErrorBag('ranges');
+        return;
+    }
+
+    $active = $this->ranges[$this->activeRangeIndex];
+    $start = Carbon::parse($active['start'])->startOfDay();
+    $end = Carbon::parse($active['end'])->startOfDay();
+
+    if (! $start->equalTo($end)) {
+        if ($this->isSundayOrMonday($date)) {
+            $this->addError('ranges', 'Эту дату нужно согласовывать отдельно с администратором.');
             return;
         }
 
-        $active = $this->ranges[$this->activeRangeIndex];
-        $start = Carbon::parse($active['start'])->startOfDay();
-        $end = Carbon::parse($active['end'])->startOfDay();
+        array_unshift($this->ranges, [
+            'start' => $date,
+            'end' => $date,
+        ]);
 
-        if (! $start->equalTo($end)) {
-            array_unshift($this->ranges, [
-                'start' => $date,
-                'end' => $date,
-            ]);
+        $this->activeRangeIndex = 0;
+        $this->resetErrorBag('ranges');
+        return;
+    }
 
-            $this->activeRangeIndex = 0;
-            $this->resetErrorBag('ranges');
-            return;
-        }
-
-        if ($picked->equalTo($start)) {
-            $this->activeRangeIndex = null;
-            $this->resetErrorBag('ranges');
-            $this->calendarOpen = false;
-            return;
-        }
-
-        if ($picked->lt($start)) {
-            array_unshift($this->ranges, [
-                'start' => $date,
-                'end' => $date,
-            ]);
-
-            $this->activeRangeIndex = 0;
-            $this->resetErrorBag('ranges');
-            return;
-        }
-
-        foreach (CarbonPeriod::create($start, $picked) as $periodDate) {
-            $periodString = $periodDate->toDateString();
-
-            if ($this->isSundayOrMonday($periodString)) {
-                $this->openPolicyModal($periodString);
-                return;
-            }
-
-            if (
-                $periodString !== $start->toDateString()
-                && (
-                    $this->isAlreadyRequested($periodString)
-                    || $this->isInsideExistingRange($periodString, $this->activeRangeIndex)
-                )
-            ) {
-                $this->addError('ranges', 'В этом диапазоне уже есть выбранная или отправленная дата.');
-                return;
-            }
-        }
-
-        $this->ranges[$this->activeRangeIndex]['end'] = $date;
+    if ($picked->equalTo($start)) {
         $this->activeRangeIndex = null;
         $this->resetErrorBag('ranges');
         $this->calendarOpen = false;
+        return;
     }
+
+    if ($picked->lt($start)) {
+        if ($this->isSundayOrMonday($date)) {
+            $this->addError('ranges', 'Эту дату нужно согласовывать отдельно с администратором.');
+            return;
+        }
+
+        array_unshift($this->ranges, [
+            'start' => $date,
+            'end' => $date,
+        ]);
+
+        $this->activeRangeIndex = 0;
+        $this->resetErrorBag('ranges');
+        return;
+    }
+
+    foreach (CarbonPeriod::create($start, $picked) as $periodDate) {
+        $periodString = $periodDate->toDateString();
+
+        if ($this->isSundayOrMonday($periodString)) {
+            $this->addError(
+                'ranges',
+                'В диапазон попадает ' . Carbon::parse($periodString)->translatedFormat('d.m.Y') . '. Воскресенье и понедельник согласовываются отдельно.'
+            );
+            return;
+        }
+
+        if (
+            $periodString !== $start->toDateString()
+            && (
+                $this->isAlreadyRequested($periodString)
+                || $this->isInsideExistingRange($periodString, $this->activeRangeIndex)
+            )
+        ) {
+            $this->addError('ranges', 'В этом диапазоне уже есть выбранная или отправленная дата.');
+            return;
+        }
+    }
+
+    $this->ranges[$this->activeRangeIndex]['end'] = $date;
+    $this->activeRangeIndex = null;
+    $this->resetErrorBag('ranges');
+    $this->calendarOpen = false;
+}
 
     protected function isInsideExistingRange(string $date, ?int $ignoreIndex = null): bool
     {
@@ -298,14 +311,14 @@ new class extends Component
         $end = $now->copy()->setTime(18, 0);
 
         if ($now->between($start, $end)) {
-            return 'Ваш запрос успешно отправлен. Ответ ожидайте сегодня с 10:00 до 18:00.';
+            return 'Ответ ожидайте сегодня с 10:00 до 18:00.';
         }
 
         if ($now->greaterThan($end)) {
-            return 'Ваш запрос успешно отправлен. Мы получили его после окончания рабочего дня. Ответ ожидайте завтра с 10:00 до 18:00.';
+            return 'Мы получили его после окончания рабочего дня. Ответ ожидайте завтра с 10:00 до 18:00.';
         }
 
-        return 'Ваш запрос успешно отправлен. Ответ ожидайте сегодня с 10:00 до 18:00.';
+        return 'Ответ ожидайте сегодня с 10:00 до 18:00.';
     }
 
     protected function sendTelegramNotification(array $dates, DayOffRequest $request): void
@@ -501,7 +514,7 @@ new class extends Component
             Когда вас не будет?
         </label>
 <div
-    class="min-h-[45px] w-full rounded-[100px] bg-[#E1E1E1] px-[20px] flex items-center flex-wrap gap-[8px] cursor-pointer"
+    class="min-h-[45px] border border-[#E1E1E1] w-full rounded-[100px] bg-[#E1E1E1] px-[20px] flex items-center flex-wrap gap-[8px] cursor-pointer"
     @click="open = true; $wire.openCalendar()"
 >
     @forelse ($ranges as $index => $range)
@@ -570,78 +583,79 @@ new class extends Component
                 @endforeach
             </div>
 
-            <div class="grid grid-cols-7 gap-y-[8px]">
-                @foreach ($this->calendarDays() as $day)
-                    @php
-                        $class = 'relative w-[40px] h-[40px] mx-auto text-[15px] flex items-center justify-center transition ';
+    <div class="grid grid-cols-7 gap-y-[8px]">
+    @foreach ($this->calendarDays() as $day)
+        @php
+            $class = 'relative w-[40px] h-[40px] mx-auto text-[15px] flex items-center justify-center transition duration-150 ';
 
-                        if (! $day['current']) {
-                            $class .= 'opacity-25 ';
-                        }
+            if (! $day['current']) {
+                $class .= 'opacity-25 ';
+            }
 
-                        if ($day['past']) {
-                            $class .= 'text-[#D0D0CC] cursor-not-allowed ';
-                        } elseif ($day['requested']) {
-                            $class .= 'rounded-full bg-[#FFE9C9] text-[#A15D00] ';
-                        } elseif ($day['selected']) {
-                            $class .= 'rounded-full bg-[#5D9CF5] text-white z-10 ';
-                        } elseif ($day['inside']) {
-                            $class .= 'bg-[#DDEAFE] text-[#111111] rounded-none ';
-                        } elseif ($day['policy']) {
-                            $class .= 'rounded-full bg-[#FDECEC] text-[#B42318] ';
-                        } else {
-                            $class .= 'rounded-full text-[#111111] hover:bg-[#F3F3F1] ';
-                        }
-                    @endphp
+            if ($day['past']) {
+                $class .= 'text-[#D0D0CC] cursor-not-allowed ';
+            } elseif ($day['requested']) {
+                $class .= 'rounded-full bg-[#F3EEE7] text-[#7C5E3B] ';
+            } elseif ($day['selected']) {
+                $class .= 'rounded-full bg-[#2F6FED] text-white z-10 font-semibold ';
+            } elseif ($day['inside']) {
+                $class .= 'rounded-full bg-[#E8F0FF] text-[#1D2939] ';
+            } elseif ($day['policy']) {
+                $class .= 'rounded-full bg-[#F2ECFF] text-[#6941C6] ';
+            } else {
+                $class .= 'rounded-full text-[#111111] hover:bg-[#F3F3F1] active:scale-[0.96] ';
+            }
+        @endphp
 
-                    <button
-                        type="button"
-                        wire:click="selectDate('{{ $day['date'] }}')"
-                        class="{{ $class }}"
-                        @disabled(!$day['current'] || $day['past'])
-                    >
-                        {{ $day['day'] }}
-                    </button>
-                @endforeach
-            </div>
+        <button
+            type="button"
+            wire:click="selectDate('{{ $day['date'] }}')"
+            class="{{ $class }}"
+            @disabled(!$day['current'] || $day['past'])
+        >
+            {{ $day['day'] }}
+        </button>
+    @endforeach
+</div>
 
-            <div class="mt-[14px] grid grid-cols-2 gap-[8px]">
-                <div class="rounded-[14px] bg-[#F8F8F6] px-[10px] py-[8px] text-[12px] text-[#5E5E58] flex items-center gap-[8px]">
-                    <span class="w-[12px] h-[12px] rounded-full bg-[#5D9CF5] block shrink-0"></span>
-                    <span>Выбрано</span>
-                </div>
+          <div class="flex items-center flex-wrap gap-[8px] mb-[14px]">
+    <div class="inline-flex items-center gap-[6px] rounded-full bg-[#F8F8F6] px-[10px] py-[6px] text-[12px] text-[#5E5E58]">
+        <span class="w-[10px] h-[10px] rounded-full bg-[#2F6FED] block shrink-0"></span>
+        <span>Выбрано</span>
+    </div>
 
-                <div class="rounded-[14px] bg-[#F8F8F6] px-[10px] py-[8px] text-[12px] text-[#5E5E58] flex items-center gap-[8px]">
-                    <span class="w-[12px] h-[12px] rounded-full bg-[#FFE9C9] block shrink-0"></span>
-                    <span>Уже отправлено</span>
-                </div>
+    <div class="inline-flex items-center gap-[6px] rounded-full bg-[#F8F8F6] px-[10px] py-[6px] text-[12px] text-[#5E5E58]">
+        <span class="w-[10px] h-[10px] rounded-full bg-[#E8F0FF] block shrink-0"></span>
+        <span>Диапазон</span>
+    </div>
 
-                <div class="rounded-[14px] bg-[#F8F8F6] px-[10px] py-[8px] text-[12px] text-[#5E5E58] flex items-center gap-[8px] col-span-2">
-                    <span class="w-[12px] h-[12px] rounded-full bg-[#FDECEC] block shrink-0"></span>
-                    <span>Воскресенье и понедельник согласовываются отдельно</span>
-                </div>
-            </div>
+    <div class="inline-flex items-center gap-[6px] rounded-full bg-[#F8F8F6] px-[10px] py-[6px] text-[12px] text-[#5E5E58]">
+        <span class="w-[10px] h-[10px] rounded-full bg-[#F3EEE7] block shrink-0"></span>
+        <span>Уже отправлено</span>
+    </div>
 
-            @if ($activeRangeIndex !== null)
-                <div class="mt-[14px] rounded-[14px] bg-[#F5F8FF] px-[12px] py-[10px] text-[13px] text-[#4E5F7A]">
-                    Дата уже добавлена. Нажмите ещё одну дату, чтобы продолжить этот чипс в диапазон.
-                    Если ничего не выбирать дальше, останется один день.
-                </div>
+    <div class="inline-flex items-center gap-[6px] rounded-full bg-[#F8F8F6] px-[10px] py-[6px] text-[12px] text-[#5E5E58]">
+        <span class="w-[10px] h-[10px] rounded-full bg-[#F2ECFF] block shrink-0"></span>
+        <span>Нужно согласование</span>
+    </div>
+</div>
 
-                <div class="mt-[14px] flex items-center gap-[10px]">
-                    <div class="flex-1 rounded-[14px] bg-[#F5F8FF] px-[12px] py-[10px] text-[13px] text-[#4E5F7A] leading-[1.4]">
-                        Можно выбрать ещё одну дату, чтобы сделать диапазон, или завершить выбор.
-                    </div>
+        @if ($activeRangeIndex !== null)
+    <div class="mt-[14px] flex items-center gap-[10px]">
+        <div class="flex-1 rounded-[16px] bg-[#F5F8FF] px-[12px] py-[10px] text-[13px] text-[#4E5F7A] leading-[1.4]">
+            Выберите ещё одну дату, чтобы создать диапазон.  
+            Если нужен только один день — нажмите «Готово».
+        </div>
 
-                    <button
-                        type="button"
-                        wire:click="finishCurrentRange"
-                        class="h-[42px] shrink-0 rounded-full bg-[#111111] px-[18px] text-[14px] font-medium text-white active:scale-[0.97] transition"
-                    >
-                        Готово
-                    </button>
-                </div>
-            @endif
+        <button
+            type="button"
+            wire:click="finishCurrentRange"
+            class="h-[42px] shrink-0 rounded-full bg-[#111111] px-[18px] text-[14px] font-medium text-white active:scale-[0.97] transition"
+        >
+            Готово
+        </button>
+    </div>
+@endif
         </div>
     </div>
 
@@ -655,7 +669,7 @@ new class extends Component
             rows="4"
             maxlength="500"
             placeholder="Поделитесь планами на время отсутствия"
-            class="w-full rounded-[23px] bg-[#E1E1E1] px-[20px] py-[13px] text-[16px] placeholder:text-black/50 placeholder:text-[16px] resize-none outline-none border border-[#E1E1E1] focus:border-black/50"
+            class="w-full rounded-[23px] bg-[#E1E1E1] px-[20px] py-[13px] text-[16px] placeholder:text-black/50 placeholder:text-[16px] outline-none border border-[#E1E1E1]"
         ></textarea>
 
         <div class="mt-[8px] flex items-center justify-between">
@@ -671,7 +685,14 @@ new class extends Component
         type="submit"
         wire:loading.attr="disabled"
         wire:target="submit"
-        class="w-full h-[45px] rounded-full bg-[#CFE0F8] text-[#111111] text-[16px] font-semibold active:scale-[0.98] transition disabled:opacity-50 disabled:pointer-events-none"
+     class="w-full flex items-center justify-center pl-[20px] mt-[15px]
+                       h-[45px] rounded-full text-base text-white
+                       bg-[linear-gradient(90deg,#213259_0%,#2D6494_25%,#368DC4_100%)]
+                       bg-[length:200%_100%] bg-left
+                       hover:bg-right
+                       transition-[background-position,transform]
+                       duration-1000 ease-in-out
+                       disabled:opacity-70 disabled:cursor-not-allowed"
         @disabled(empty($ranges) || blank($comment))
     >
         <span wire:loading.remove wire:target="submit">
@@ -689,85 +710,195 @@ new class extends Component
         </div>
     @enderror
 
-    @if ($policyModalOpen)
-        <div class="fixed inset-0 z-[110]">
-            <div
-                class="absolute inset-0 bg-black/40"
-                wire:click="closePolicyModal"
-            ></div>
+   <div
+    x-data="{ open: @entangle('policyModalOpen').live }"
+    x-show="open"
+    x-cloak
+    class="fixed inset-0 z-[110]"
+>
+    <div
+        x-show="open"
+        x-transition:enter="transition ease-out duration-220"
+        x-transition:enter-start="opacity-0"
+        x-transition:enter-end="opacity-100"
+        x-transition:leave="transition ease-in duration-180"
+        x-transition:leave-start="opacity-100"
+        x-transition:leave-end="opacity-0"
+        class="absolute inset-0 bg-black/40"
+        @click="open = false; $wire.closePolicyModal()"
+    ></div>
 
-            <div class="absolute inset-0 flex items-center justify-center p-[20px]">
-                <div class="w-full max-w-[360px] rounded-[30px] bg-white px-[20px] py-[20px] shadow-[0_30px_80px_rgba(0,0,0,0.18)]">
-                    <div class="w-[54px] h-[54px] rounded-full bg-[#FFF3D9] flex items-center justify-center mb-[16px]">
-                        <x-heroicon-o-information-circle class="w-[28px] h-[28px] text-[#D28A00]" />
-                    </div>
+    <div class="absolute inset-0 flex items-center justify-center p-[20px]">
+        <div
+            x-show="open"
+            x-transition:enter="transition ease-out duration-260"
+            x-transition:enter-start="opacity-0 scale-[0.96] translate-y-[10px]"
+            x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+            x-transition:leave="transition ease-in duration-180"
+            x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+            x-transition:leave-end="opacity-0 scale-[0.96] translate-y-[10px]"
+            class="w-full max-w-[768px] rounded-[30px] bg-white px-[20px] py-[20px] shadow-[0_30px_80px_rgba(0,0,0,0.18)] text-center items-center justify-center"
+        >
+       
+            <span class="text-[96px] text-center">🫸</span>
 
-                    <h3 class="text-[22px] font-semibold text-[#111111] leading-[1.15]">
-                        Нужна отдельная договорённость
-                    </h3>
+            <h1 class="pt-[20px] text-center">
+                Нужна отдельная договорённость
+            </h1>
 
-                    <p class="mt-[12px] text-[15px] leading-[1.5] text-[#666660]">
-                        Воскресенье и понедельник — обязательные рабочие дни. Согласовать выходной на эти даты можно только в пятницу через администратора.
-                    </p>
+            
+            <p class="mt-[30px] text-[16px] text-center flex flex-col">
+              <span>    Воскресенье и понедельник — обязательные рабочие дни</span>
+            
+                  <span>Согласовать выходной на эти даты можно только в пятницу через администратора</span>
+            </p>
 
-                    @if ($policyDate)
-                        <div class="mt-[14px] rounded-[18px] bg-[#F7F7F5] px-[14px] py-[12px] text-[15px] font-medium text-[#111111]">
-                            {{ Carbon::parse($policyDate)->translatedFormat('d.m.Y') }}
-                        </div>
-                    @endif
+   
 
-                    <a
-                        href="{{ $adminChatUrl }}"
-                        target="_blank"
-                        class="mt-[20px] w-full h-[56px] rounded-[22px] bg-[#111111] text-white text-[16px] font-semibold flex items-center justify-center"
-                    >
-                        Написать администратору
-                    </a>
+            <a
+                href="{{ $adminChatUrl }}"
+                target="_blank"
+                    class="w-full flex items-center justify-center pl-[20px] mt-[60px]
+                       h-[45px] rounded-full text-base text-white
+                       bg-[linear-gradient(90deg,#213259_0%,#2D6494_25%,#368DC4_100%)]
+                       bg-[length:200%_100%] bg-left
+                       hover:bg-right
+                       transition-[background-position,transform]
+                       duration-1000 ease-in-out
+                       disabled:opacity-70 disabled:cursor-not-allowed"
+            >
+                Написать администратору
+            </a>
 
-                    <button
-                        type="button"
-                        wire:click="closePolicyModal"
-                        class="mt-[10px] w-full h-[56px] rounded-[22px] bg-[#F3F3F1] text-[#111111] text-[16px] font-semibold"
-                    >
-                        Закрыть
-                    </button>
-                </div>
-            </div>
+            <button
+                type="button"
+                @click="open = false; $wire.closePolicyModal()"
+                class="mt-[10px] w-full h-[45px] rounded-[23px] bg-[#E1E1E1] text-[16px] hover:bg-[#7D7D7D] hover:text-white duration-500"
+            >
+                Понятно
+            </button>
         </div>
-    @endif
+    </div>
+</div>
 
-    @if ($successSheetOpen)
-        <div class="fixed inset-0 z-[120]">
-            <div
-                class="absolute inset-0 bg-black/40"
-                wire:click="closeSuccessSheet"
-            ></div>
+   <div
+    x-data="{
+        open: @entangle('successSheetOpen').live,
+        translateY: 0,
+        startY: 0,
+        dragging: false,
 
-            <div class="absolute bottom-0 left-0 right-0 bg-white rounded-t-[36px] px-[20px] pt-[14px] pb-[24px]">
-                <div class="w-[42px] h-[5px] rounded-full bg-[#D9D9D5] mx-auto mb-[20px]"></div>
+        begin(e) {
+            if (!this.open) return
+            this.dragging = true
+            this.startY = e.touches[0].clientY
+        },
 
-                <div class="w-[56px] h-[56px] rounded-full bg-[#E7F5EA] flex items-center justify-center mb-[16px]">
-                    <x-heroicon-o-check class="w-[28px] h-[28px] text-[#21663A]" />
-                </div>
+        move(e) {
+            if (!this.dragging) return
+            const currentY = e.touches[0].clientY
+            const delta = currentY - this.startY
+            this.translateY = Math.max(0, delta)
+        },
 
-                <h3 class="text-[22px] font-semibold text-[#111111] leading-[1.15]">
-                    Всё отлично
-                </h3>
+        finish() {
+            if (!this.dragging) return
+            this.dragging = false
 
-                <p class="mt-[12px] text-[15px] leading-[1.5] text-[#666660]">
+            if (this.translateY > 120) {
+                this.translateY = 0
+                this.open = false
+                $wire.closeSuccessSheet()
+                return
+            }
+
+            this.translateY = 0
+        }
+    }"
+    x-show="open"
+    x-cloak
+    class="fixed inset-0 z-[120]"
+>
+    <div
+        x-show="open"
+        x-transition:enter="transition ease-out duration-220"
+        x-transition:enter-start="opacity-0"
+        x-transition:enter-end="opacity-100"
+        x-transition:leave="transition ease-in duration-180"
+        x-transition:leave-start="opacity-100"
+        x-transition:leave-end="opacity-0"
+        class="absolute inset-0 bg-black/40"
+        @click="open = false; $wire.closeSuccessSheet()"
+    ></div>
+
+    <div
+        x-show="open"
+        x-transition:enter="transition ease-out duration-260"
+        x-transition:enter-start="translate-y-full"
+        x-transition:enter-end="translate-y-0"
+        x-transition:leave="transition ease-in duration-200"
+        x-transition:leave-start="translate-y-0"
+        x-transition:leave-end="translate-y-full"
+        class="absolute inset-x-0 bottom-0 bg-white rounded-t-[36px] px-[20px] pt-[14px] pb-[24px] will-change-transform text-center"
+        :style="`transform: translateY(${translateY}px)`"
+    >
+        <div
+            class="pb-[6px]"
+            @touchstart.passive="begin($event)"
+            @touchmove.passive="move($event)"
+            @touchend.passive="finish()"
+        >
+            <div class="w-[50px] h-[5px] rounded-full bg-[#D9D9D5] mx-auto"></div>
+        </div>
+
+  <span class="text-[96px] text-center">👍</span>
+
+            <h1 class="pt-[20px] text-center">
+                Заявка успешно отправлена
+            </h1>
+
+            
+            <p class="mt-[30px] text-[16px] text-center flex flex-col">
                     {{ $successMessage }}
-                </p>
+            
+                 
+            </p>
 
-                <button
-                    type="button"
-                    wire:click="closeSuccessSheet"
-                    class="mt-[20px] w-full h-[56px] rounded-[22px] bg-[#111111] text-white text-[16px] font-semibold"
-                >
-                    Понятно
-                </button>
-            </div>
+
+
+ 
+
+  
+
+<div class="flex gap-[10px] pt-[60px]">
+      
+    <button
+               type="button"
+            @click="open = false; $wire.closeSuccessSheet()"
+                class=" w-full h-[45px] rounded-[23px] bg-[#E1E1E1] text-[16px] hover:bg-[#7D7D7D] hover:text-white duration-500"
+            >
+                Понятно
+            </button>
+
+         <a
+                   href="{{ route('page-profile.weekend') }}"
+             
+                    class="w-full flex items-center justify-center pl-[20px] 
+                       h-[45px] rounded-full text-base text-white
+                       bg-[linear-gradient(90deg,#213259_0%,#2D6494_25%,#368DC4_100%)]
+                       bg-[length:200%_100%] bg-left
+                       hover:bg-right
+                       transition-[background-position,transform]
+                       duration-1000 ease-in-out
+                       disabled:opacity-70 disabled:cursor-not-allowed"
+            >
+                В мои заявки
+            </a>
+
+        
         </div>
-    @endif
+    </div>
+</div>
 </form>
 </div></div>
 </div>
