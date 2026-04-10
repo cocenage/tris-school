@@ -1,6 +1,6 @@
-<div class="bg-white rounded-t-[50px]">
-    <nav class="border-t border-[#ECECEC] rounded-t-[50px]">
-        <div class="flex items-center justify-between px-[12px] py-[14px]">
+
+<nav class="bg-white border-t border-[#ECECEC] rounded-t-[32px]">
+    <div class="flex items-center justify-between px-[12px] py-[14px]">
 
             <a
                 href="{{ route('page-home') }}"
@@ -40,4 +40,3 @@
 
         </div>
     </nav>
-</div>

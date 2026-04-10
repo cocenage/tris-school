@@ -124,25 +124,129 @@ public function saveAvatar(): void
         </div>
     </div>
 
-    <div class="bg-[#F8F7F5] rounded-[30px] mt-[30px]">
-        <div href="" class="flex items-center p-[15px]">
-             <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2]" />
-             <div class="pl-[15px] w-full flex justify-between items-center">
-                <p>Проверка</p>
-<x-heroicon-o-magnifying-glass class="w-[15px] h-[15px] stroke-[2]" />
-             </div>
-
-        </div>
-<hr class="w-full h-[1.5px]">
-       <a href="" class="flex items-center p-[15px]">
-             <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2]" />
-             <div class="pl-[15px] w-full flex justify-between items-center">
-                <p>Проверка</p>
-<x-heroicon-o-magnifying-glass class="w-[15px] h-[15px] stroke-[2]" />
-             </div>
-
-        </a>
+ <div class="bg-[#F6F6F6] rounded-[30px] overflow-hidden">
+    <div class="px-[24px]">
+        <hr class="border-0 h-px bg-[#E3E3E3]">
     </div>
+
+    <a
+        href="#"
+        class="group flex items-center justify-between px-[24px] py-[18px] transition-colors duration-200 hover:bg-[#ECECEC] active:bg-[#E5E5E5]"
+    >
+        <div class="flex items-center gap-[16px] min-w-0">
+            <svg
+                class="w-[26px] h-[26px] text-[#1F1F1F] shrink-0 transition-transform duration-200 group-hover:scale-105"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+            >
+                <path d="M12 21s-6.716-4.35-9.193-8.062C.934 9.995 2.223 6.5 5.5 5.5c2.128-.65 4.07.19 5.15 1.72C11.73 5.69 13.672 4.85 15.8 5.5c3.277 1 4.566 4.495 2.693 7.438C18.716 16.65 12 21 12 21Z"/>
+            </svg>
+
+            <span class="text-[18px] font-medium text-[#1F1F1F]">
+                Любимое
+            </span>
+        </div>
+
+        <svg
+            class="w-[18px] h-[18px] text-[#2A2A2A] shrink-0 transition-all duration-200 group-hover:translate-x-[2px]"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+        >
+            <path
+                d="M7 4l6 6-6 6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+            />
+        </svg>
+    </a>
+
+    <div class="px-[24px]">
+        <hr class="border-0 h-px bg-[#E3E3E3]">
+    </div>
+
+    <a
+        href="#"
+        class="group flex items-center justify-between px-[24px] py-[18px] transition-colors duration-200 hover:bg-[#ECECEC] active:bg-[#E5E5E5]"
+    >
+        <div class="flex items-center gap-[16px] min-w-0">
+            <svg
+                class="w-[26px] h-[26px] text-[#1F1F1F] shrink-0 transition-transform duration-200 group-hover:scale-105"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+            >
+                <rect x="6" y="4" width="12" height="16" rx="2"/>
+                <path d="M9 8h6M9 12h6M9 16h4"/>
+            </svg>
+
+            <span class="text-[18px] font-medium text-[#1F1F1F]">
+                История заказов
+            </span>
+        </div>
+
+        <svg
+            class="w-[18px] h-[18px] text-[#2A2A2A] shrink-0 transition-all duration-200 group-hover:translate-x-[2px]"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+        >
+            <path
+                d="M7 4l6 6-6 6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+            />
+        </svg>
+    </a>
+
+    <div class="px-[24px]">
+        <hr class="border-0 h-px bg-[#E3E3E3]">
+    </div>
+
+    <a
+        href="#"
+        class="group flex items-center justify-between px-[24px] py-[18px] transition-colors duration-200 hover:bg-[#ECECEC] active:bg-[#E5E5E5]"
+    >
+        <div class="flex items-center gap-[16px] min-w-0">
+            <svg
+                class="w-[26px] h-[26px] text-[#1F1F1F] shrink-0 transition-transform duration-200 group-hover:scale-105"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+            >
+                <path d="M4 7h16M7 12h10M9 17h6" stroke-linecap="round"/>
+            </svg>
+
+            <span class="text-[18px] font-medium text-[#1F1F1F]">
+                Мои предпочтения
+            </span>
+        </div>
+
+        <svg
+            class="w-[18px] h-[18px] text-[#2A2A2A] shrink-0 transition-all duration-200 group-hover:translate-x-[2px]"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+        >
+            <path
+                d="M7 4l6 6-6 6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+            />
+        </svg>
+    </a>
+
+    <div class="px-[24px]">
+        <hr class="border-0 h-px bg-[#E3E3E3]">
+    </div>
+</div>
     <div class="bg-[#F8F7F5] rounded-[30px] mt-[30px] overflow-hidden">
     <a href=""
        class="group flex items-center px-[20px] py-[20px] active:bg-black/5 transition-colors duration-150">
