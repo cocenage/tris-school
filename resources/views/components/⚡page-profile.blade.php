@@ -176,13 +176,13 @@ public function saveAvatar(): void
         </div>
     </a>
 
-    <a href=""
+    <a  href="/admin"
        class="group flex items-center px-[20px] py-[20px] active:bg-black/5 transition-colors duration-150">
         <x-heroicon-o-calendar-days class="w-[28px] h-[28px] text-[#3B2F2A] shrink-0" />
 
         <div class="ml-[18px] flex-1 flex items-center justify-between border-b border-[#B9B2AD] py-[8px]">
             <p class="text-[20px] font-semibold text-[#1DFF55]">
-                Магазин
+                админка
             </p>
 
             <x-heroicon-o-chevron-right class="w-[22px] h-[22px] text-[#3B2F2A] transition-transform duration-150 group-active:translate-x-[2px]" />

@@ -188,7 +188,7 @@ public function selectDate(string $date): void
                 || $this->isInsideExistingRange($periodString, $this->activeRangeIndex)
             )
         ) {
-            $this->addError('ranges', 'В этом диапазоне уже есть выбранная или отправленная дата.');
+            $this->addError('ranges', 'В этом диапазоне уже есть выбранная или отправленная дата. Нажмите "Готово", чтобы выбрабать новые даты.');
             return;
         }
     }
@@ -224,84 +224,97 @@ public function selectDate(string $date): void
         return in_array(Carbon::parse($date)->dayOfWeekIso, [1, 7], true);
     }
 
-    protected function requestedDates(): array
-    {
-        return DayOffRequestDay::query()
-            ->where('user_id', Auth::id())
-            ->pluck('date')
-            ->map(fn ($date) => Carbon::parse($date)->toDateString())
-            ->all();
-    }
+protected function requestStatusesByDate(): array
+{
+    return DayOffRequestDay::query()
+        ->where('user_id', Auth::id())
+        ->get(['date', 'status'])
+        ->mapWithKeys(function ($item) {
+            return [
+                Carbon::parse($item->date)->toDateString() => $item->status,
+            ];
+        })
+        ->all();
+}
 
-    protected function isAlreadyRequested(string $date): bool
-    {
-        return in_array($date, $this->requestedDates(), true);
-    }
+protected function isAlreadyRequested(string $date): bool
+{
+    $statuses = $this->requestStatusesByDate();
 
-    public function calendarDays(): array
-    {
-        $start = $this->month->copy()->startOfMonth()->startOfWeek(Carbon::MONDAY);
-        $end = $this->month->copy()->endOfMonth()->endOfWeek(Carbon::SUNDAY);
+    return array_key_exists($date, $statuses);
+}
 
-        $days = [];
+public function calendarDays(): array
+{
+    $start = $this->month->copy()->startOfMonth()->startOfWeek(Carbon::MONDAY);
+    $end = $this->month->copy()->endOfMonth()->endOfWeek(Carbon::SUNDAY);
 
-        while ($start->lte($end)) {
-            $cursor = $start->copy();
-            $date = $cursor->toDateString();
+    $requestStatuses = $this->requestStatusesByDate();
 
-            $selected = false;
-            $inside = false;
-            $rangeStart = false;
-            $rangeEnd = false;
-            $requested = $this->isAlreadyRequested($date);
-            $isPolicyDay = $this->isSundayOrMonday($date);
+    $days = [];
 
-            foreach ($this->ranges as $range) {
-                $rangeStartDate = Carbon::parse($range['start'])->startOfDay();
-                $rangeEndDate = Carbon::parse($range['end'])->startOfDay();
+    while ($start->lte($end)) {
+        $cursor = $start->copy();
+        $date = $cursor->toDateString();
 
-                if ($cursor->equalTo($rangeStartDate) && $cursor->equalTo($rangeEndDate)) {
-                    $selected = true;
-                    $rangeStart = true;
-                    $rangeEnd = true;
-                    continue;
-                }
+        $selected = false;
+        $inside = false;
+        $rangeStart = false;
+        $rangeEnd = false;
 
-                if ($cursor->equalTo($rangeStartDate)) {
-                    $selected = true;
-                    $rangeStart = true;
-                    continue;
-                }
+        $status = $requestStatuses[$date] ?? null;
 
-                if ($cursor->equalTo($rangeEndDate)) {
-                    $selected = true;
-                    $rangeEnd = true;
-                    continue;
-                }
+        foreach ($this->ranges as $range) {
+            $rangeStartDate = Carbon::parse($range['start'])->startOfDay();
+            $rangeEndDate = Carbon::parse($range['end'])->startOfDay();
 
-                if ($cursor->gt($rangeStartDate) && $cursor->lt($rangeEndDate)) {
-                    $inside = true;
-                }
+            if ($cursor->equalTo($rangeStartDate) && $cursor->equalTo($rangeEndDate)) {
+                $selected = true;
+                $rangeStart = true;
+                $rangeEnd = true;
+                continue;
             }
 
-            $days[] = [
-                'date' => $date,
-                'day' => $cursor->day,
-                'current' => $cursor->month === $this->month->month,
-                'past' => $cursor->lt(now()->startOfDay()),
-                'selected' => $selected,
-                'inside' => $inside,
-                'start' => $rangeStart,
-                'end' => $rangeEnd,
-                'requested' => $requested,
-                'policy' => $isPolicyDay,
-            ];
+            if ($cursor->equalTo($rangeStartDate)) {
+                $selected = true;
+                $rangeStart = true;
+                continue;
+            }
 
-            $start->addDay();
+            if ($cursor->equalTo($rangeEndDate)) {
+                $selected = true;
+                $rangeEnd = true;
+                continue;
+            }
+
+            if ($cursor->gt($rangeStartDate) && $cursor->lt($rangeEndDate)) {
+                $inside = true;
+            }
         }
 
-        return $days;
+        $days[] = [
+            'date' => $date,
+            'day' => $cursor->day,
+            'current' => $cursor->month === $this->month->month,
+            'past' => $cursor->lt(now()->startOfDay()),
+
+            'selected' => $selected,
+            'inside' => $inside,
+            'start' => $rangeStart,
+            'end' => $rangeEnd,
+
+            'requested' => $status === 'pending',
+            'approved' => $status === 'approved',
+            'rejected' => $status === 'rejected',
+
+            'policy' => $status === null && $this->isSundayOrMonday($date),
+        ];
+
+        $start->addDay();
     }
+
+    return $days;
+}
 
     protected function buildSuccessMessage(): string
     {
@@ -311,14 +324,14 @@ public function selectDate(string $date): void
         $end = $now->copy()->setTime(18, 0);
 
         if ($now->between($start, $end)) {
-            return 'Ответ ожидайте сегодня с 10:00 до 18:00.';
+            return 'Ответ ожидайте сегодня с 10:00 до 18:00';
         }
 
         if ($now->greaterThan($end)) {
-            return 'Мы получили его после окончания рабочего дня. Ответ ожидайте завтра с 10:00 до 18:00.';
+            return 'Мы получили его после окончания рабочего дня. Ответ ожидайте завтра с 10:00 до 18:00';
         }
 
-        return 'Ответ ожидайте сегодня с 10:00 до 18:00.';
+        return 'Ответ ожидайте сегодня с 10:00 до 18:00';
     }
 
     protected function sendTelegramNotification(array $dates, DayOffRequest $request): void
@@ -538,72 +551,115 @@ public function selectDate(string $date): void
     </div>
 </div>
 
-        @error('ranges')
-            <div class="mt-[10px] text-[14px] text-[#991B1B]">{{ $message }}</div>
-        @enderror
+ 
 
-        <div
-            x-show="open"
-            x-transition
-            x-on:click.outside="
-                if (!$wire.policyModalOpen) {
-                    open = false;
-                    $wire.closeCalendar();
-                }
-            "
-            class="absolute left-0 top-full mt-[10px] w-full rounded-[23px] border border-[#E1E1E1] bg-white p-[15px]"
+@php
+    $colors = [
+        'selected' => [
+            'bg' => '#2563EB',
+            'text' => '#FFFFFF',
+            'shadow' => 'shadow-[0_8px_18px_rgba(37,99,235,0.24)]',
+        ],
+        'inside' => [
+            'bg' => '#EEF4FF',
+            'text' => '#35527A',
+            'ring' => '#D9E7FF',
+        ],
+        'requested' => [
+            'bg' => '#F6EFE4',
+            'text' => '#8A5A2B',
+        ],
+        'approved' => [
+            'bg' => '#ECFDF3',
+            'text' => '#027A48',
+        ],
+       'policy' => [
+    'bg' => '#F1EEE8',
+    'text' => '#6D665C',
+],
+        'rejected' => [
+            'bg' => '#FDECEC',
+            'text' => '#C74A4A',
+        ],
+    ];
+
+
+    $rangesCount = count($ranges ?? []);
+    $buttonText = $activeRangeIndex !== null ? 'Готово' : 'Применить';
+@endphp
+
+<div
+    x-show="open"
+    x-transition
+    x-on:click.outside="
+        if (!$wire.policyModalOpen) {
+            open = false;
+            $wire.closeCalendar();
+        }
+    "
+    class="absolute left-0 top-full z-30 mt-[10px] w-full rounded-[28px] border border-[#E8E8E3] bg-white p-[18px] shadow-[0_16px_40px_rgba(17,17,17,0.08)]"
+>
+    <div class="mb-[18px] flex items-center justify-between">
+        <button
+            type="button"
+            wire:click="prevMonth"
+            class="flex h-[44px] w-[44px] items-center justify-center rounded-full bg-[#F7F7F4] transition hover:bg-[#EFEFEA] active:scale-[0.97]"
         >
-            <div class="flex items-center justify-between mb-[15px]">
-                <button
-                    type="button"
-                    wire:click="prevMonth"
-                    class="w-[36px] h-[36px] rounded-full hover:bg-[#F3F3F1] flex items-center justify-center"
-                >
-                    <x-heroicon-o-chevron-left class="w-[18px] h-[18px]" />
-                </button>
+            <x-heroicon-o-chevron-left class="h-[18px] w-[18px] text-[#111111]" />
+        </button>
 
-                <div class="text-[17px] font-semibold text-[#111111] capitalize">
-                    {{ $month->translatedFormat('F Y') }}
-                </div>
+        <div class="text-[18px] font-semibold tracking-[-0.02em] text-[#111111] capitalize">
+            {{ $month->translatedFormat('F Y') }}
+        </div>
 
-                <button
-                    type="button"
-                    wire:click="nextMonth"
-                    class="w-[36px] h-[36px] rounded-full hover:bg-[#F3F3F1] flex items-center justify-center"
-                >
-                    <x-heroicon-o-chevron-right class="w-[18px] h-[18px]" />
-                </button>
+        <button
+            type="button"
+            wire:click="nextMonth"
+            class="flex h-[44px] w-[44px] items-center justify-center rounded-full bg-[#F7F7F4] transition hover:bg-[#EFEFEA] active:scale-[0.97]"
+        >
+            <x-heroicon-o-chevron-right class="h-[18px] w-[18px] text-[#111111]" />
+        </button>
+    </div>
+
+    <div class="mb-[12px] grid grid-cols-7">
+        @foreach (['Пн','Вт','Ср','Чт','Пт','Сб','Вс'] as $weekday)
+            <div class="text-center text-[12px] font-medium text-[#9A9A93]">
+                {{ $weekday }}
             </div>
+        @endforeach
+    </div>
 
-            <div class="grid grid-cols-7 mb-[10px]">
-                @foreach (['Пн','Вт','Ср','Чт','Пт','Сб','Вс'] as $weekday)
-                    <div class="text-center text-[13px] font-medium text-[#969690]">
-                        {{ $weekday }}
-                    </div>
-                @endforeach
-            </div>
-
-    <div class="grid grid-cols-7 gap-y-[8px]">
+<div class="grid grid-cols-7 gap-y-[10px]">
     @foreach ($this->calendarDays() as $day)
         @php
-            $class = 'relative w-[40px] h-[40px] mx-auto text-[15px] flex items-center justify-center transition duration-150 ';
-
-            if (! $day['current']) {
-                $class .= 'opacity-25 ';
-            }
+            $style = 'opacity:' . ($day['current'] ? '1' : '.25') . ';';
 
             if ($day['past']) {
-                $class .= 'text-[#D0D0CC] cursor-not-allowed ';
-            } elseif ($day['requested']) {
-                $class .= 'rounded-full bg-[#F3EEE7] text-[#7C5E3B] ';
-            } elseif ($day['selected']) {
-                $class .= 'rounded-full bg-[#2F6FED] text-white z-10 font-semibold ';
-            } elseif ($day['inside']) {
-                $class .= 'rounded-full bg-[#E8F0FF] text-[#1D2939] ';
-            } elseif ($day['policy']) {
-                $class .= 'rounded-full bg-[#F2ECFF] text-[#6941C6] ';
+                $style .= 'color:#D0D0CC;';
+            } elseif (!empty($day['selected'])) {
+                $style .= 'background:' . $colors['selected']['bg'] . ';color:' . $colors['selected']['text'] . ';';
+            } elseif (!empty($day['inside'])) {
+                $style .= 'background:' . $colors['inside']['bg'] . ';color:' . $colors['inside']['text'] . ';border:1px solid ' . $colors['inside']['ring'] . ';';
+            } elseif (!empty($day['rejected'])) {
+                $style .= 'background:' . $colors['rejected']['bg'] . ';color:' . $colors['rejected']['text'] . ';';
+            } elseif (!empty($day['approved'])) {
+                $style .= 'background:' . $colors['approved']['bg'] . ';color:' . $colors['approved']['text'] . ';';
+            } elseif (!empty($day['requested'])) {
+                $style .= 'background:' . $colors['requested']['bg'] . ';color:' . $colors['requested']['text'] . ';';
+            } elseif (!empty($day['policy'])) {
+                $style .= 'background:' . $colors['policy']['bg'] . ';color:' . $colors['policy']['text'] . ';';
             } else {
-                $class .= 'rounded-full text-[#111111] hover:bg-[#F3F3F1] active:scale-[0.96] ';
+                $style .= 'color:#111111;';
+            }
+
+            $class = 'relative mx-auto flex h-[44px] w-[44px] items-center justify-center rounded-full text-[15px] transition duration-150';
+
+            if ($day['past']) {
+                $class .= ' cursor-not-allowed';
+            } elseif (!empty($day['selected'])) {
+                $class .= ' z-10 font-semibold ' . $colors['selected']['shadow'];
+            } else {
+                $class .= ' hover:bg-[#F3F3F1] active:scale-[0.96]';
             }
         @endphp
 
@@ -611,6 +667,7 @@ public function selectDate(string $date): void
             type="button"
             wire:click="selectDate('{{ $day['date'] }}')"
             class="{{ $class }}"
+            style="{{ $style }}"
             @disabled(!$day['current'] || $day['past'])
         >
             {{ $day['day'] }}
@@ -618,45 +675,64 @@ public function selectDate(string $date): void
     @endforeach
 </div>
 
-          <div class="flex items-center flex-wrap gap-[8px] mb-[14px]">
-    <div class="inline-flex items-center gap-[6px] rounded-full bg-[#F8F8F6] px-[10px] py-[6px] text-[12px] text-[#5E5E58]">
-        <span class="w-[10px] h-[10px] rounded-full bg-[#2F6FED] block shrink-0"></span>
+<div class="mt-[16px] flex flex-wrap items-center gap-x-[14px] gap-y-[8px] border-t border-[#F0F0EB] pt-[14px]">
+    <div class="inline-flex items-center gap-[6px] text-[12px] text-[#6C6C65]">
+        <span class="block w-[10px] h-[10px] rounded-full" style="background: {{ $colors['selected']['bg'] }};"></span>
         <span>Выбрано</span>
     </div>
 
-    <div class="inline-flex items-center gap-[6px] rounded-full bg-[#F8F8F6] px-[10px] py-[6px] text-[12px] text-[#5E5E58]">
-        <span class="w-[10px] h-[10px] rounded-full bg-[#E8F0FF] block shrink-0"></span>
-        <span>Диапазон</span>
+    <div class="inline-flex items-center gap-[6px] text-[12px] text-[#6C6C65]">
+        <span class="block w-[10px] h-[10px] rounded-full border" style="background: {{ $colors['inside']['bg'] }}; border-color: {{ $colors['inside']['ring'] }};"></span>
+        <span>Период</span>
     </div>
 
-    <div class="inline-flex items-center gap-[6px] rounded-full bg-[#F8F8F6] px-[10px] py-[6px] text-[12px] text-[#5E5E58]">
-        <span class="w-[10px] h-[10px] rounded-full bg-[#F3EEE7] block shrink-0"></span>
-        <span>Уже отправлено</span>
+    <div class="inline-flex items-center gap-[6px] text-[12px] text-[#6C6C65]">
+        <span class="block w-[10px] h-[10px] rounded-full" style="background: {{ $colors['requested']['bg'] }};"></span>
+        <span>На рассмотрении</span>
     </div>
 
-    <div class="inline-flex items-center gap-[6px] rounded-full bg-[#F8F8F6] px-[10px] py-[6px] text-[12px] text-[#5E5E58]">
-        <span class="w-[10px] h-[10px] rounded-full bg-[#F2ECFF] block shrink-0"></span>
+    <div class="inline-flex items-center gap-[6px] text-[12px] text-[#6C6C65]">
+        <span class="block w-[10px] h-[10px] rounded-full" style="background: {{ $colors['approved']['bg'] }};"></span>
+        <span>Согласовано</span>
+    </div>
+
+    <div class="inline-flex items-center gap-[6px] text-[12px] text-[#6C6C65]">
+        <span class="block w-[10px] h-[10px] rounded-full" style="background: {{ $colors['policy']['bg'] }};"></span>
         <span>Нужно согласование</span>
+    </div>
+
+    <div class="inline-flex items-center gap-[6px] text-[12px] text-[#6C6C65]">
+        <span class="block w-[10px] h-[10px] rounded-full" style="background: {{ $colors['rejected']['bg'] }};"></span>
+        <span>Отказано</span>
     </div>
 </div>
 
-        @if ($activeRangeIndex !== null)
-    <div class="mt-[14px] flex items-center gap-[10px]">
-        <div class="flex-1 rounded-[16px] bg-[#F5F8FF] px-[12px] py-[10px] text-[13px] text-[#4E5F7A] leading-[1.4]">
-            Выберите ещё одну дату, чтобы создать диапазон.  
-            Если нужен только один день — нажмите «Готово».
+    @error('ranges')
+        <div class="mt-[14px] rounded-[18px] border border-[#F3D4D4] bg-[#FFF6F6] px-[14px] py-[11px] text-[13px] leading-[1.4] text-[#B54747]">
+            {{ $message }}
         </div>
+    @enderror
 
-        <button
-            type="button"
-            wire:click="finishCurrentRange"
-            class="h-[42px] shrink-0 rounded-full bg-[#111111] px-[18px] text-[14px] font-medium text-white active:scale-[0.97] transition"
-        >
-            Готово
-        </button>
-    </div>
-@endif
-        </div>
+<div class="mt-[15px]">
+    <button
+        type="button"
+        wire:click="finishCurrentRange"
+        @disabled($activeRangeIndex === null && $rangesCount === 0)
+        class="w-full flex items-center justify-center pl-[20px]
+               h-[45px] rounded-full text-base text-white
+               bg-[linear-gradient(90deg,#213259_0%,#2D6494_25%,#368DC4_100%)]
+               bg-[length:200%_100%] bg-left
+               hover:bg-right
+               transition-[background-position,transform]
+               duration-1000 ease-in-out
+               disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+        {{ $buttonText }}
+    </button>
+</div>
+</div>
+
+        
     </div>
 
     <div>
@@ -758,7 +834,7 @@ public function selectDate(string $date): void
             <a
                 href="{{ $adminChatUrl }}"
                 target="_blank"
-                    class="w-full flex items-center justify-center pl-[20px] mt-[60px]
+                    class="w-full flex items-center justify-center pl-[20px] mt-[40px]
                        h-[45px] rounded-full text-base text-white
                        bg-[linear-gradient(90deg,#213259_0%,#2D6494_25%,#368DC4_100%)]
                        bg-[length:200%_100%] bg-left
@@ -870,7 +946,7 @@ public function selectDate(string $date): void
 
   
 
-<div class="flex gap-[10px] pt-[60px]">
+<div class="flex gap-[10px] pt-[40px]">
       
     <button
                type="button"
