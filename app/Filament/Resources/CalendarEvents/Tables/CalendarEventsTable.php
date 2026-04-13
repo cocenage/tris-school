@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\CalendarEvents\Tables;
 
+use App\Filament\Resources\CalendarEvents\CalendarEventResource;
 use App\Models\CalendarEvent;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkActionGroup;
@@ -21,8 +22,7 @@ class CalendarEventsTable
     public static function configure(Table $table): Table
     {
         return $table
-        
-        
+            ->recordUrl(fn($record) => CalendarEventResource::getUrl('edit', ['record' => $record]))
             ->defaultSort('start_date', 'desc')
             ->columns([
                 TextColumn::make('title')
@@ -89,10 +89,10 @@ class CalendarEventsTable
                     ->options(CalendarEvent::repeatOptions()),
 
                 TernaryFilter::make('is_active')
-                         ->default('1')
+                    ->default('1')
                     ->label('Активно'),
             ])
-             ->actions([
+            ->actions([
                 ActionGroup::make([
                     ViewAction::make(),
                     EditAction::make(),

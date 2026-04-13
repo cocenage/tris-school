@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Forms\DayOffRequestTelegramService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -16,13 +17,18 @@ class DayOffRequest extends Model
         'submitted_at',
         'reviewed_at',
         'reviewed_by',
+        'notified_at',
     ];
 
     protected $casts = [
         'submitted_at' => 'datetime',
         'reviewed_at' => 'datetime',
+        'notified_at' => 'datetime',
     ];
-    protected $appends = ['user_name'];
+
+    protected $appends = [
+        'user_name',
+    ];
 
     public function getUserNameAttribute(): string
     {
@@ -49,27 +55,101 @@ class DayOffRequest extends Model
         $statuses = $this->days()->pluck('status');
 
         if ($statuses->isEmpty()) {
-            $this->update(['status' => 'pending']);
+            $this->update([
+                'status' => 'pending',
+            ]);
+
             return;
         }
 
-        $unique = $statuses->unique()->values();
+        $approved = $statuses->contains('approved');
+        $rejected = $statuses->contains('rejected');
+        $pending = $statuses->contains('pending');
 
-        if ($unique->count() === 1) {
-            $this->update(['status' => $unique->first()]);
-            return;
-        }
+        $status = match (true) {
+            $pending && ! $approved && ! $rejected => 'pending',
 
-        if ($unique->contains('approved') && $unique->contains('rejected')) {
-            $this->update(['status' => 'partially_approved']);
-            return;
-        }
+            ! $pending && $approved && ! $rejected => 'approved',
 
-        if ($unique->contains('pending') && ($unique->contains('approved') || $unique->contains('rejected'))) {
-            $this->update(['status' => 'pending']);
-            return;
-        }
+            ! $pending && ! $approved && $rejected => 'rejected',
 
-        $this->update(['status' => 'pending']);
+            ! $pending && $approved && $rejected => 'partially_approved',
+
+            $pending && ($approved || $rejected) => 'pending',
+
+            default => 'pending',
+        };
+
+        $this->update([
+            'status' => $status,
+        ]);
+    }
+
+    public function allDaysReviewed(): bool
+    {
+        return $this->days()
+            ->whereNotIn('status', ['approved', 'rejected'])
+            ->doesntExist();
+    }
+
+    public function resetNotification(): void
+    {
+        $this->update([
+            'notified_at' => null,
+        ]);
+    }
+
+  public function notifyUserIfFinal(): void
+{
+    $this->loadMissing(['user', 'days']);
+
+    \Log::info('DayOff notify check', [
+        'request_id' => $this->id,
+        'status' => $this->status,
+        'notified_at' => $this->notified_at,
+        'all_reviewed' => $this->allDaysReviewed(),
+        'days_statuses' => $this->days->pluck('status')->toArray(),
+        'telegram_id' => $this->user?->telegram_id,
+    ]);
+
+    if ($this->notified_at) {
+        \Log::info('DayOff notify skipped: already notified', ['request_id' => $this->id]);
+        return;
+    }
+
+    if (! $this->allDaysReviewed()) {
+        \Log::info('DayOff notify skipped: not all reviewed', ['request_id' => $this->id]);
+        return;
+    }
+
+    if (! in_array($this->status, ['approved', 'rejected', 'partially_approved'])) {
+        \Log::info('DayOff notify skipped: wrong final status', [
+            'request_id' => $this->id,
+            'status' => $this->status,
+        ]);
+        return;
+    }
+
+    \Log::info('DayOff notify sending', ['request_id' => $this->id]);
+
+    app(\App\Services\Forms\DayOffRequestTelegramService::class)->sendResult($this);
+
+    $this->update([
+        'notified_at' => now(),
+    ]);
+}
+
+    public function syncStatusAndNotify(): void
+    {
+        $this->recalculateStatus();
+
+        $this->refresh();
+
+        $this->load([
+            'user',
+            'days',
+        ]);
+
+        $this->notifyUserIfFinal();
     }
 }

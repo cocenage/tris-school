@@ -7,13 +7,16 @@ new class extends Component {
 };
 ?>
 
-<div class="h-full flex flex-col overflow-hidden">
-    <div class="">
-        <livewire:search.search-bar />
+<div class="flex flex-col h-full min-h-0">
+    <div class="flex-1 min-h-0 overflow-y-auto">
+        это главная
+        
+
     </div>
 
-    <div class="flex-1 overflow-hidden bg-white rounded-t-[50px]">
-        <div class="w-full h-full bg-white rounded-t-[50px] overflow-y-auto">
-           привет. там текст не видно. привет!
+    <div class="shrink-0 border-t border-[#E5E7EB] bg-white p-4">
+        <button class="w-full rounded-[20px] bg-[#213259] py-3 text-white">
+            Кнопка
+        </button>
     </div>
 </div>

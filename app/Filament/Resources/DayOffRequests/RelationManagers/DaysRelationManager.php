@@ -4,16 +4,7 @@ namespace App\Filament\Resources\DayOffRequests\RelationManagers;
 
 use App\Models\DayOffRequestDay;
 use Filament\Actions\Action;
-use Filament\Actions\AssociateAction;
-use Filament\Actions\BulkActionGroup;
-use Filament\Actions\CreateAction;
-use Filament\Actions\DeleteAction;
-use Filament\Actions\DeleteBulkAction;
-use Filament\Actions\DissociateAction;
-use Filament\Actions\DissociateBulkAction;
-use Filament\Actions\EditAction;
 use Filament\Forms\Components\Textarea;
-use Filament\Forms\Components\TextInput;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
@@ -70,13 +61,21 @@ class DaysRelationManager extends RelationManager
                     ->color('success')
                     ->requiresConfirmation()
                     ->action(function (DayOffRequestDay $record): void {
+                        $request = $record->request;
+
+                        $changed = $record->status !== 'approved';
+
+                        if ($changed) {
+                            $request->resetNotification();
+                        }
+
                         $record->update([
                             'status' => 'approved',
                             'reviewed_at' => now(),
                             'reviewed_by' => auth()->id(),
                         ]);
 
-                        $record->request->recalculateStatus();
+                        $request->syncStatusAndNotify();
                     }),
 
                 Action::make('reject')
@@ -90,6 +89,16 @@ class DaysRelationManager extends RelationManager
                             ->rows(3),
                     ])
                     ->action(function (DayOffRequestDay $record, array $data): void {
+                        $request = $record->request;
+
+                        $changed =
+                            $record->status !== 'rejected'
+                            || $record->admin_comment !== ($data['admin_comment'] ?? null);
+
+                        if ($changed) {
+                            $request->resetNotification();
+                        }
+
                         $record->update([
                             'status' => 'rejected',
                             'admin_comment' => $data['admin_comment'] ?? null,
@@ -97,7 +106,7 @@ class DaysRelationManager extends RelationManager
                             'reviewed_by' => auth()->id(),
                         ]);
 
-                        $record->request->recalculateStatus();
+                        $request->syncStatusAndNotify();
                     }),
 
                 Action::make('reset')
@@ -106,6 +115,8 @@ class DaysRelationManager extends RelationManager
                     ->color('gray')
                     ->requiresConfirmation()
                     ->action(function (DayOffRequestDay $record): void {
+                        $request = $record->request;
+
                         $record->update([
                             'status' => 'pending',
                             'admin_comment' => null,
@@ -113,7 +124,8 @@ class DaysRelationManager extends RelationManager
                             'reviewed_by' => null,
                         ]);
 
-                        $record->request->recalculateStatus();
+                        $request->resetNotification();
+                        $request->recalculateStatus();
                     }),
             ]);
     }

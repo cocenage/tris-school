@@ -1,9 +1,8 @@
 <!DOCTYPE html>
 <html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
-
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
     <title>{{ $title ?? config('app.name') }}</title>
 
@@ -11,22 +10,22 @@
     @livewireStyles
 </head>
 
-<body class="min-h-screen bg-[#F2F3F7]">
-    <div class="min-h-screen flex items-center justify-center">
-        <div class="w-full max-w-[768px] h-[100dvh] bg-white overflow-hidden">
-            <div class="h-full flex flex-col">
-                <main class="flex-1 overflow-y-auto bg-[#F2F3F7]">
-                    {{ $slot }}
-                </main>
+<body class="bg-[#F2F3F7] text-[#111]">
+    <div class="mx-auto flex h-[100dvh] w-full max-w-[768px] flex-col overflow-hidden bg-[#F2F3F7]">
 
-                <div class="shrink-0">
-                    <x-navbar />
-                </div>
-            </div>
-        </div>
+        <header class="shrink-0">
+            @includeIf('components.partials.⚡header')
+        </header>
+
+        <main class="min-h-0 flex-1 overflow-y-auto rounded-[50px] bg-white">
+            {{ $slot }}
+        </main>
+
+        <footer class="shrink-0">
+            @includeIf('components.partials.⚡navbar')
+        </footer>
     </div>
 
     @livewireScripts
 </body>
-
 </html>

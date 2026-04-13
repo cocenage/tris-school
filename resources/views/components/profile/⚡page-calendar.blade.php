@@ -59,6 +59,109 @@ new class extends Component {
         ];
     }
 
+public function getWeeksForMonth(Carbon $month): array
+{
+    $calendarStart = $month
+        ->copy()
+        ->startOfMonth()
+        ->startOfWeek(Carbon::MONDAY);
+
+    $calendarEnd = $month
+        ->copy()
+        ->endOfMonth()
+        ->endOfWeek(Carbon::SUNDAY);
+
+    $events = $this->getExpandedEvents(
+        $calendarStart->copy(),
+        $calendarEnd->copy(),
+    );
+
+    $weeks = [];
+    $cursor = $calendarStart->copy();
+
+    while ($cursor->lte($calendarEnd)) {
+        $weekStart = $cursor->copy();
+        $weekEnd = $cursor->copy()->endOfWeek(Carbon::SUNDAY);
+
+        $days = [];
+
+        for ($i = 0; $i < 7; $i++) {
+            $day = $weekStart->copy()->addDays($i);
+
+            $days[] = [
+                'date' => $day,
+                'inMonth' => $day->month === $month->month,
+                'isToday' => $day->isToday(),
+                'count' => $events->filter(
+                    fn(array $event) => $day->betweenIncluded($event['start'], $event['end'])
+                )->count(),
+            ];
+        }
+
+        $weekEvents = $events
+            ->filter(fn(array $event) => $event['start']->lte($weekEnd) && $event['end']->gte($weekStart))
+            ->sortBy([
+                ['priority', 'desc'],
+                ['start', 'asc'],
+            ])
+            ->values();
+
+        $tracks = [];
+
+        foreach ($weekEvents as $event) {
+            $visibleStart = $event['start']->lt($weekStart) ? $weekStart : $event['start'];
+            $visibleEnd = $event['end']->gt($weekEnd) ? $weekEnd : $event['end'];
+
+            $colStart = $weekStart->diffInDays($visibleStart) + 1;
+            $colEnd = $weekStart->diffInDays($visibleEnd) + 2;
+
+            $placed = false;
+
+            foreach ($tracks as $trackIndex => $trackItems) {
+                $hasCollision = collect($trackItems)->contains(function ($item) use ($colStart, $colEnd) {
+                    return !($colEnd <= $item['colStart'] || $colStart >= $item['colEnd']);
+                });
+
+                if (! $hasCollision) {
+                    $tracks[$trackIndex][] = [
+                        ...$event,
+                        'colStart' => $colStart,
+                        'colEnd' => $colEnd,
+                    ];
+                    $placed = true;
+                    break;
+                }
+            }
+
+            if (! $placed) {
+                $tracks[] = [[
+                    ...$event,
+                    'colStart' => $colStart,
+                    'colEnd' => $colEnd,
+                ]];
+            }
+        }
+
+        $weeks[] = [
+            'days' => $days,
+            'tracks' => $tracks,
+        ];
+
+        $cursor->addWeek();
+    }
+
+    return $weeks;
+}
+
+public function getCarouselMonthsProperty(): array
+{
+    return [
+        $this->month->copy()->subMonth()->startOfMonth(),
+        $this->month->copy()->startOfMonth(),
+        $this->month->copy()->addMonth()->startOfMonth(),
+    ];
+}
+
     public function getDayLettersProperty(): array
     {
         return ['п', 'в', 'с', 'ч', 'п', 'с', 'в'];
@@ -481,42 +584,126 @@ new class extends Component {
     }
 };
 ?>
-
 <div x-data="{
-        touchStartX: 0,
-        touchEndX: 0,
-        monthBusy: false,
-
         open: @entangle('sheetOpen').live,
         selectedDateValue: @entangle('selectedDate').live,
 
         translateY: 0,
         canDrag: true,
 
+        monthTranslateX: -33.3333,
+        monthDragStartX: 0,
+        monthDragCurrentX: 0,
+        monthDragging: false,
+        monthAnimating: false,
+
         sheetStartX: 0,
         sheetStartY: 0,
         gestureLock: null,
 
-        start(e) {
-            this.touchStartX = e.changedTouches[0].screenX
-        },
+monthTranslateX: -33.3333,
+monthDragStartX: 0,
+monthDragStartY: 0,
+monthDragCurrentX: 0,
+monthDragging: false,
+monthAnimating: false,
+monthGestureLock: null,
+monthMoved: false,
 
-        end(e) {
-            this.touchEndX = e.changedTouches[0].screenX
-            const diff = this.touchEndX - this.touchStartX
+      monthStart(e) {
+    if (this.open || this.monthAnimating) return
 
-            if (Math.abs(diff) < 55 || this.monthBusy || this.open) return
+    const touch = e.touches[0]
 
-            this.monthBusy = true
+    this.monthDragging = true
+    this.monthDragStartX = touch.clientX
+    this.monthDragStartY = touch.clientY
+    this.monthDragCurrentX = touch.clientX
+    this.monthGestureLock = null
+    this.monthMoved = false
+},
 
-            if (diff < 0) {
-                $wire.nextMonth()
-            } else {
-                $wire.prevMonth()
-            }
+ monthMove(e) {
+    if (!this.monthDragging || this.monthAnimating) return
 
-            setTimeout(() => this.monthBusy = false, 260)
-        },
+    const touch = e.touches[0]
+    const dx = touch.clientX - this.monthDragStartX
+    const dy = touch.clientY - this.monthDragStartY
+
+    if (this.monthGestureLock === null) {
+        if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+            this.monthGestureLock = Math.abs(dx) > Math.abs(dy) ? 'horizontal' : 'vertical'
+        }
+    }
+
+    if (this.monthGestureLock !== 'horizontal') {
+        return
+    }
+
+    this.monthMoved = true
+    this.monthDragCurrentX = touch.clientX
+
+    const width = this.$refs.monthViewport.offsetWidth || 1
+    const percent = (dx / width) * 100
+
+    this.monthTranslateX = -33.3333 + (percent / 3)
+},
+
+   async monthEnd() {
+    if (!this.monthDragging || this.monthAnimating) return
+
+    this.monthDragging = false
+
+    if (this.monthGestureLock !== 'horizontal') {
+        this.monthGestureLock = null
+        this.monthMoved = false
+        this.monthTranslateX = -33.3333
+        return
+    }
+
+    const dx = this.monthDragCurrentX - this.monthDragStartX
+    const width = this.$refs.monthViewport.offsetWidth || 1
+    const threshold = width * 0.18
+
+    if (Math.abs(dx) < threshold) {
+        this.monthAnimating = true
+        this.monthTranslateX = -33.3333
+
+        setTimeout(() => {
+            this.monthAnimating = false
+            this.monthGestureLock = null
+            this.monthMoved = false
+        }, 300)
+
+        return
+    }
+
+    if (dx < 0) {
+        this.monthAnimating = true
+        this.monthTranslateX = -66.6667
+
+        setTimeout(async () => {
+            await $wire.nextMonth()
+
+            this.monthAnimating = false
+            this.monthTranslateX = -33.3333
+            this.monthGestureLock = null
+            this.monthMoved = false
+        }, 300)
+    } else {
+        this.monthAnimating = true
+        this.monthTranslateX = 0
+
+        setTimeout(async () => {
+            await $wire.prevMonth()
+
+            this.monthAnimating = false
+            this.monthTranslateX = -33.3333
+            this.monthGestureLock = null
+            this.monthMoved = false
+        }, 300)
+    }
+},
 
         startSheetGesture(e) {
             if (!this.open) return
@@ -617,93 +804,17 @@ new class extends Component {
             <x-heroicon-o-arrow-left class="w-[30px] h-[30px] stroke-[2.5]" />
         </button>
 
-        <h2 wire:key="month-title-{{ $month->format('Y-m') }}" class="capitalize">
-            {{ $month->translatedFormat('F') }}
-        </h2>
+   <h2 class="capitalize text-[28px] font-[600] leading-none transition-all duration-300">
+    {{ $month->translatedFormat('F') }}
+</h2>
         <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2.5] shrink-0" />
 
     </div>
 
-    <div class="flex-1 overflow-y-auto overflow-x-hidden bg-white rounded-t-[40px] overscroll-y-contain"
-        x-on:touchstart.passive="start($event)" x-on:touchend.passive="end($event)">
+<div class="flex-1 overflow-y-auto overflow-x-hidden bg-white rounded-t-[40px] overscroll-y-contain">
 
 
-        <div class="sticky top-0 z-20 bg-white pt-[20px] pb-[15px] overflow-x-hidden">
-            <div
-                class="px-[20px] flex gap-[5px] overflow-x-auto overflow-y-hidden no-scrollbar bg-white w-full max-w-full">
-                @foreach ($this->filters as $key => $label)
-                    @php
-                        $filterColors = match ($key) {
-                            'all' => [
-                                'bg' => '#E1E1E1',
-                                'text' => '#2A1F1A',
-                                'activeBg' => '#7D7D7D',
-                                'activeText' => '#FFFFFF',
-                            ],
 
-                            'workflow' => [
-                                'bg' => '#DDEEFF',
-                                'text' => '#2A1F1A',
-                                'activeBg' => '#8FC4FF',
-                                'activeText' => '#111111',
-                            ],
-
-                            'finance' => [
-                                'bg' => '#DDF3E4',
-                                'text' => '#2A1F1A',
-                                'activeBg' => '#8FDCAB',
-                                'activeText' => '#111111',
-                            ],
-
-                            'holiday' => [
-                                'bg' => '#FFE1E1',
-                                'text' => '#2A1F1A',
-                                'activeBg' => '#F3B8B8',
-                                'activeText' => '#111111',
-                            ],
-
-                            'peak' => [
-                                'bg' => '#FFF1C7',
-                                'text' => '#2A1F1A',
-                                'activeBg' => '#F3E69C',
-                                'activeText' => '#111111',
-                            ],
-
-                            'vacation' => [
-                                'bg' => '#ECE3FF',
-                                'text' => '#2A1F1A',
-                                'activeBg' => '#CDBEFF',
-                                'activeText' => '#111111',
-                            ],
-
-                          'strike' => [
-    'bg' => '#FCE9DD',
-    'text' => '#2A1F1A',
-    'activeBg' => '#F4C9A8',
-    'activeText' => '#111111',
-],
-
-                            default => [
-                                'bg' => '#E9E9E9',
-                                'text' => '#2A1F1A',
-                                'activeBg' => '#8E8E8E',
-                                'activeText' => '#FFFFFF',
-                            ],
-                        };
-
-                        $isActive = $activeFilter === $key;
-                    @endphp
-
-                    <button type="button" wire:click="setFilter('{{ $key }}')"
-                        class="shrink-0 rounded-full text-[16px] px-[11px] py-[6px]" style="
-                                background: {{ $isActive ? $filterColors['activeBg'] : $filterColors['bg'] }};
-                                color: {{ $isActive ? $filterColors['activeText'] : $filterColors['text'] }};
-                            ">
-                        {{ $label }}
-                    </button>
-                @endforeach
-            </div>
-        </div>
 
 
         <div class="grid grid-cols-7 gap-0 mb-[8px] px-[2px]">
@@ -716,94 +827,130 @@ new class extends Component {
             @endforeach
         </div>
 
-        <div wire:key="month-{{ $month->format('Y-m') }}-{{ $activeFilter }}">
-            @foreach ($this->weeks as $weekIndex => $week)
-                @php
-                    $trackHeight = 20;
-                    $trackGap = 5;
-                    $trackAreaHeight = max(count($week['tracks']), 1) * $trackHeight + max(count($week['tracks']) - 1, 0) * $trackGap;
-                @endphp
+  <div
+    x-ref="monthViewport"
+    class="overflow-hidden select-none"
+    @touchstart.passive="monthStart($event)"
+    @touchmove.passive="monthMove($event)"
+    @touchend.passive="monthEnd()"
+>
+    <div
+        class="flex w-[300%]"
+        :class="monthAnimating ? 'transition-transform duration-300 ease-out' : ''"
+        :style="`transform: translateX(${monthTranslateX}%);`"
+    >
+        @foreach ($this->carouselMonths as $carouselMonth)
+            @php
+                $carouselWeeks = $this->getWeeksForMonth($carouselMonth);
+            @endphp
 
-                <div class="{{ $weekIndex > 0 ? 'border-t-[1px] border-black' : '' }} pt-[15px] pb-[15px] bg-[#D9D9D9]/10">
-                    <div class="grid grid-cols-7 gap-0 mb-[15px]">
-                        @foreach ($week['days'] as $day)
-                            @php
-                                $isToday = $day['isToday'];
-                                $background = $isToday ? '#111111' : 'transparent';
-                                $color = $isToday ? '#FFFFFF' : ($day['inMonth'] ? '#000000' : '#8E8E8E');
-                            @endphp
+            <div
+                class="w-1/3 shrink-0"
+                wire:key="carousel-month-{{ $carouselMonth->format('Y-m') }}-{{ $activeFilter }}"
+            >
+                @foreach ($carouselWeeks as $weekIndex => $week)
+                    @php
+                        $trackHeight = 20;
+                        $trackGap = 5;
+                        $trackAreaHeight = max(count($week['tracks']), 1) * $trackHeight + max(count($week['tracks']) - 1, 0) * $trackGap;
+                    @endphp
 
-                            <button type="button" wire:click="openDay('{{ $day['date']->toDateString() }}')"
-                                class="flex justify-center ">
-                                <div class="flex flex-col items-center gap-[5px]">
-                                    <div class="px-[5px] py-[2px] items-center  rounded-full flex items-center justify-center text-[16px] leading-none transition duration-200"
-                                        style="background: {{ $background }}; color: {{ $color }}; font-weight: {{ ($isToday || $day['inMonth']) ? '600' : '400' }};">
-                                        {{ $day['date']->day }}
-                                    </div>
+                    <div class="{{ $weekIndex > 0 ? 'border-t-[1px] border-black' : '' }} pt-[15px] pb-[15px] bg-[#D9D9D9]/10">
+                        <div class="grid grid-cols-7 gap-0 mb-[15px]">
+                            @foreach ($week['days'] as $day)
+                                @php
+                                    $isToday = $day['isToday'];
+                                    $background = $isToday ? '#111111' : 'transparent';
+                                    $color = $isToday ? '#FFFFFF' : ($day['inMonth'] ? '#000000' : '#8E8E8E');
+                                @endphp
 
-                                    <div class="h-[2px] rounded-full transition duration-200"
-                                        style="width: 12px; background: {{ $day['count'] > 0 ? ($isToday ? 'rgba(255,255,255,.85)' : 'rgba(0,0,0,.28)') : 'transparent' }};">
-                                    </div>
-                                </div>
-                            </button>
-                        @endforeach
-                    </div>
-
-                    <div class="relative overflow-hidden" style="height: {{ $trackAreaHeight }}px;">
-                        <div class="space-y-[5px] pointer-events-none">
-                            @forelse ($week['tracks'] as $track)
-                                <div class="relative h-[20px]">
-                                    @foreach ($track as $event)
-                                        @php
-                                            $leftPercent = (($event['colStart'] - 1) / 7) * 100;
-                                            $widthPercent = (($event['colEnd'] - $event['colStart']) / 7) * 100;
-
-                                            $weekStartDate = $week['days'][0]['date']->copy()->startOfDay();
-                                            $weekEndDate = $week['days'][6]['date']->copy()->startOfDay();
-
-                                            $continuesFromPrevWeek = $event['start']->lt($weekStartDate);
-                                            $continuesToNextWeek = $event['end']->gt($weekEndDate);
-
-                                            $leftInset = $continuesFromPrevWeek ? 0 : 5;
-                                            $rightInset = $continuesToNextWeek ? 0 : 5;
-
-                                            $radiusStyle = match (true) {
-                                                $continuesFromPrevWeek && $continuesToNextWeek => 'border-radius:0;',
-                                                $continuesFromPrevWeek => 'border-top-left-radius:0;border-bottom-left-radius:0;border-top-right-radius:9999px;border-bottom-right-radius:9999px;',
-                                                $continuesToNextWeek => 'border-top-right-radius:0;border-bottom-right-radius:0;border-top-left-radius:9999px;border-bottom-left-radius:9999px;',
-                                                default => 'border-radius:9999px;',
-                                            };
-
-                                            $finalWidthPx = $leftInset + $rightInset;
-                                        @endphp
-
-                                        <div class="absolute top-0 h-[20px] px-[5px] flex items-center overflow-hidden" style="
-                                                                    left: calc({{ $leftPercent }}% + {{ $leftInset }}px);
-                                                                    width: calc({{ $widthPercent }}% - {{ $finalWidthPx }}px);
-                                                                    {{ $radiusStyle }}
-                                                                    {{ $event['style'] }}
-                                                                " title="{{ $event['title'] }}">
-                                            <span class="text-[12px] leading-none truncate">
-                                                {{ $event['short'] }}
-                                            </span>
+                                <button
+                                    type="button"
+                                    wire:click="openDay('{{ $day['date']->toDateString() }}')"
+                                    class="flex justify-center"
+                                >
+                                    <div class="flex flex-col items-center gap-[5px]">
+                                        <div
+                                            class="px-[5px] py-[2px] items-center rounded-full flex items-center justify-center text-[16px] leading-none transition duration-200"
+                                            style="background: {{ $background }}; color: {{ $color }}; font-weight: {{ ($isToday || $day['inMonth']) ? '600' : '400' }};"
+                                        >
+                                            {{ $day['date']->day }}
                                         </div>
-                                    @endforeach
-                                </div>
-                            @empty
-                                <div class="h-[20px]"></div>
-                            @endforelse
-                        </div>
 
-                        <div class="absolute inset-0 grid grid-cols-7 z-[2]">
-                            @foreach ($week['days'] as $trackDay)
-                                <button type="button" wire:click="openDay('{{ $trackDay['date']->toDateString() }}')"
-                                    class="w-full h-full"></button>
+                                        <!-- <div
+                                            class="h-[2px] rounded-full transition duration-200"
+                                            style="width: 12px; background: {{ $day['count'] > 0 ? ($isToday ? 'rgba(255,255,255,.85)' : 'rgba(0,0,0,.28)') : 'transparent' }};"
+                                        ></div> -->
+                                    </div>
+                                </button>
                             @endforeach
                         </div>
+
+                        <div class="relative overflow-hidden" style="height: {{ $trackAreaHeight }}px;">
+                            <div class="space-y-[5px] pointer-events-none">
+                                @forelse ($week['tracks'] as $track)
+                                    <div class="relative h-[20px]">
+                                        @foreach ($track as $event)
+                                            @php
+                                                $leftPercent = (($event['colStart'] - 1) / 7) * 100;
+                                                $widthPercent = (($event['colEnd'] - $event['colStart']) / 7) * 100;
+
+                                                $weekStartDate = $week['days'][0]['date']->copy()->startOfDay();
+                                                $weekEndDate = $week['days'][6]['date']->copy()->startOfDay();
+
+                                                $continuesFromPrevWeek = $event['start']->lt($weekStartDate);
+                                                $continuesToNextWeek = $event['end']->gt($weekEndDate);
+
+                                                $leftInset = $continuesFromPrevWeek ? 0 : 5;
+                                                $rightInset = $continuesToNextWeek ? 0 : 5;
+
+                                                $radiusStyle = match (true) {
+                                                    $continuesFromPrevWeek && $continuesToNextWeek => 'border-radius:0;',
+                                                    $continuesFromPrevWeek => 'border-top-left-radius:0;border-bottom-left-radius:0;border-top-right-radius:9999px;border-bottom-right-radius:9999px;',
+                                                    $continuesToNextWeek => 'border-top-right-radius:0;border-bottom-right-radius:0;border-top-left-radius:9999px;border-bottom-left-radius:9999px;',
+                                                    default => 'border-radius:9999px;',
+                                                };
+
+                                                $finalWidthPx = $leftInset + $rightInset;
+                                            @endphp
+
+                                            <div
+                                                class="absolute top-0 h-[20px] px-[5px] flex items-center overflow-hidden"
+                                                style="
+                                                    left: calc({{ $leftPercent }}% + {{ $leftInset }}px);
+                                                    width: calc({{ $widthPercent }}% - {{ $finalWidthPx }}px);
+                                                    {{ $radiusStyle }}
+                                                    {{ $event['style'] }}
+                                                "
+                                                title="{{ $event['title'] }}"
+                                            >
+                                                <span class="text-[12px] leading-none truncate">
+                                                    {{ $event['short'] }}
+                                                </span>
+                                            </div>
+                                        @endforeach
+                                    </div>
+                                @empty
+                                    <div class="h-[20px]"></div>
+                                @endforelse
+                            </div>
+
+                            <div class="absolute inset-0 grid grid-cols-7 z-[2]">
+                                @foreach ($week['days'] as $trackDay)
+                                    <button
+                                        type="button"
+                                        wire:click="openDay('{{ $trackDay['date']->toDateString() }}')"
+                                        class="w-full h-full"
+                                    ></button>
+                                @endforeach
+                            </div>
+                        </div>
                     </div>
-                </div>
-            @endforeach
-        </div>
+                @endforeach
+            </div>
+        @endforeach
+    </div>
+</div>
     </div>
 
     <div x-data="{
@@ -936,4 +1083,21 @@ new class extends Component {
             </div>
         </div>
     </div>
+ <x-slot:navbarTop>
+        <div class="flex items-center gap-[8px] overflow-x-auto no-scrollbar">
+            <button
+                type="button"
+                class="h-[40px] shrink-0 rounded-full bg-[#111111] px-[16px] text-[14px] font-medium text-white"
+            >
+                Создать
+            </button>
+
+            <button
+                type="button"
+                class="h-[40px] shrink-0 rounded-full bg-[#F3F3F3] px-[16px] text-[14px] font-medium text-[#111111]"
+            >
+                Фильтр
+            </button>
+        </div>
+    </x-slot:navbarTop>
 </div>

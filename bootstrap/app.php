@@ -13,6 +13,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->redirectGuestsTo(fn() => route('landing'));
+
         $middleware->alias([
             'approved' => EnsureUserIsApproved::class,
             'role' => EnsureUserHasRole::class,

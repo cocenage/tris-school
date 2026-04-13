@@ -3,27 +3,7 @@
 use Livewire\Component;
 
 new class extends Component {
-    public function mount()
-    {
-        if (auth()->check()) {
-            $user = auth()->user();
 
-           if ($user->status === 'approved') {
-    $this->redirectRoute('page-home', navigate: true);
-    return;
-}
-
-            if ($user->status === 'pending') {
-                $this->redirectRoute('access.pending', navigate: true);
-                return;
-            }
-
-            if ($user->status === 'rejected') {
-                $this->redirectRoute('access.rejected', navigate: true);
-                return;
-            }
-        }
-    }
 };
 ?>
 
@@ -69,17 +49,17 @@ new class extends Component {
                 }
 
                 const response = await fetch('/telegram/auth', {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-TOKEN': '{{ csrf_token() }}',
-        'Accept': 'application/json',
-    },
-    body: JSON.stringify({
-        init_data: tg.initData,
-    }),
-});
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                        'Accept': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        init_data: tg.initData,
+                    }),
+                });
 
                 const text = await response.text();
                 debug.textContent += '\nHTTP: ' + response.status + '\nResponse: ' + text;
