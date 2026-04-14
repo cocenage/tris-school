@@ -6,6 +6,7 @@ use App\Services\Forms\DayOffRequestTelegramService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\Log;
 
 class DayOffRequest extends Model
 {
@@ -68,15 +69,10 @@ class DayOffRequest extends Model
 
         $status = match (true) {
             $pending && ! $approved && ! $rejected => 'pending',
-
             ! $pending && $approved && ! $rejected => 'approved',
-
             ! $pending && ! $approved && $rejected => 'rejected',
-
             ! $pending && $approved && $rejected => 'partially_approved',
-
             $pending && ($approved || $rejected) => 'pending',
-
             default => 'pending',
         };
 
@@ -99,45 +95,51 @@ class DayOffRequest extends Model
         ]);
     }
 
-  public function notifyUserIfFinal(): void
-{
-    $this->loadMissing(['user', 'days']);
+    public function notifyUserIfFinal(): void
+    {
+        $this->loadMissing(['user', 'days']);
 
-    \Log::info('DayOff notify check', [
-        'request_id' => $this->id,
-        'status' => $this->status,
-        'notified_at' => $this->notified_at,
-        'all_reviewed' => $this->allDaysReviewed(),
-        'days_statuses' => $this->days->pluck('status')->toArray(),
-        'telegram_id' => $this->user?->telegram_id,
-    ]);
-
-    if ($this->notified_at) {
-        \Log::info('DayOff notify skipped: already notified', ['request_id' => $this->id]);
-        return;
-    }
-
-    if (! $this->allDaysReviewed()) {
-        \Log::info('DayOff notify skipped: not all reviewed', ['request_id' => $this->id]);
-        return;
-    }
-
-    if (! in_array($this->status, ['approved', 'rejected', 'partially_approved'])) {
-        \Log::info('DayOff notify skipped: wrong final status', [
+        Log::info('DayOff notify check', [
             'request_id' => $this->id,
             'status' => $this->status,
+            'notified_at' => $this->notified_at,
+            'all_reviewed' => $this->allDaysReviewed(),
+            'days_statuses' => $this->days->pluck('status')->toArray(),
+            'telegram_id' => $this->user?->telegram_id,
         ]);
-        return;
+
+        if ($this->notified_at) {
+            Log::info('DayOff notify skipped: already notified', [
+                'request_id' => $this->id,
+            ]);
+            return;
+        }
+
+        if (! $this->allDaysReviewed()) {
+            Log::info('DayOff notify skipped: not all reviewed', [
+                'request_id' => $this->id,
+            ]);
+            return;
+        }
+
+        if (! in_array($this->status, ['approved', 'rejected', 'partially_approved'], true)) {
+            Log::info('DayOff notify skipped: wrong final status', [
+                'request_id' => $this->id,
+                'status' => $this->status,
+            ]);
+            return;
+        }
+
+        Log::info('DayOff notify sending', [
+            'request_id' => $this->id,
+        ]);
+
+        app(DayOffRequestTelegramService::class)->sendResult($this);
+
+        $this->update([
+            'notified_at' => now(),
+        ]);
     }
-
-    \Log::info('DayOff notify sending', ['request_id' => $this->id]);
-
-    app(\App\Services\Forms\DayOffRequestTelegramService::class)->sendResult($this);
-
-    $this->update([
-        'notified_at' => now(),
-    ]);
-}
 
     public function syncStatusAndNotify(): void
     {

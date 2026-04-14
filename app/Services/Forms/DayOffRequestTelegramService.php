@@ -17,46 +17,75 @@ class DayOffRequestTelegramService
         $token = config('services.telegram.bot_token');
 
         if (! $chatId || ! $token) {
+            Log::warning('Telegram notification skipped: missing credentials', [
+                'request_id' => $request->id,
+                'chat_id' => $chatId,
+                'token_exists' => filled($token),
+            ]);
+
             return;
         }
 
         Carbon::setLocale('ru');
 
         $title = match ($request->status) {
-            'approved' => '✅ <b>Ваша заявка одобрена</b>',
-            'rejected' => '❌ <b>Ваша заявка отклонена</b>',
-            'partially_approved' => '🟡 <b>Ваша заявка частично одобрена</b>',
-            default => '📌 <b>Статус вашей заявки обновлён</b>',
+            'approved' => '✅ <b>Заявка одобрена</b>',
+            'rejected' => '❌ <b>Заявка отклонена</b>',
+            'partially_approved' => '🟡 <b>Заявка частично одобрена</b>',
+            default => '📌 <b>Статус заявки обновлён</b>',
+        };
+
+        $description = match ($request->status) {
+            'approved' => 'Все выбранные даты согласованы.',
+            'rejected' => 'К сожалению, выбранные даты не удалось согласовать.',
+            'partially_approved' => 'Часть дат удалось согласовать, а часть — нет.',
+            default => 'Статус заявки был обновлён.',
         };
 
         $message = [];
         $message[] = $title;
         $message[] = '';
+        $message[] = $description;
+        $message[] = '';
+        $message[] = '📅 <b>Даты:</b>';
 
         foreach ($request->days->sortBy('date') as $day) {
+            $date = Carbon::parse($day->date)->translatedFormat('d F');
+
             $dayStatus = match ($day->status) {
-                'approved' => '✅ Одобрено',
-                'rejected' => '❌ Отказ',
-                default => '⏳ На рассмотрении',
+                'approved' => '✅',
+                'rejected' => '❌',
+                default => '⏳',
             };
 
-            $date = Carbon::parse($day->date)->translatedFormat('d F Y');
-
-            $message[] = '• <b>' . e($date) . '</b> — ' . $dayStatus;
+            $message[] = "{$dayStatus} <b>{$date}</b>";
 
             if ($day->admin_comment) {
-                $message[] = '<i>Причина: ' . e($day->admin_comment) . '</i>';
+                $message[] = '— <i>' . e($day->admin_comment) . '</i>';
             }
-
-            $message[] = '';
         }
 
         if ($request->admin_comment) {
-            $message[] = '💬 <b>Комментарий администратора:</b>';
+            $message[] = '';
+            $message[] = '💬 <b>Комментарий администратора</b>';
             $message[] = e($request->admin_comment);
         }
 
-        $miniAppUrl = 'https://academy.trisservice.eu/profile/weekend';
+        $profileUrl = config('services.day_off.profile_url');
+        $adminChatUrl = config('services.day_off.admin_chat_url');
+
+        $keyboard = [
+            [
+                [
+                    'text' => '📋 Мои заявки',
+                    'url' => $profileUrl,
+                ],
+                [
+                    'text' => '💬 Чат с админом',
+                    'url' => $adminChatUrl,
+                ],
+            ],
+        ];
 
         $response = Http::timeout(10)->post(
             "https://api.telegram.org/bot{$token}/sendMessage",
@@ -64,19 +93,19 @@ class DayOffRequestTelegramService
                 'chat_id' => $chatId,
                 'text' => implode("\n", $message),
                 'parse_mode' => 'HTML',
+                'disable_web_page_preview' => true,
                 'reply_markup' => [
-                    'inline_keyboard' => [
-                        [
-                            [
-                                'text' => '📋 Мои заявки',
-                                'web_app' => [
-                                    'url' => $miniAppUrl,
-                                ],
-                            ],
-                        ],
-                    ],
+                    'inline_keyboard' => $keyboard,
                 ],
             ]
         );
+
+        if ($response->failed()) {
+            Log::error('Telegram send failed', [
+                'request_id' => $request->id,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+        }
     }
 }

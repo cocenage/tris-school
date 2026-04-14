@@ -13,13 +13,16 @@ return [
     | a conventional file to locate the various service credentials.
     |
     */
+    'day_off' => [
+        'profile_url' => env('DAY_OFF_PROFILE_URL'),
+        'admin_chat_url' => env('DAY_OFF_ADMIN_CHAT_URL'),
+    ],
+
     'telegram' => [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
 
         'chat_id_formweekend' => env('TELEGRAM_CHAT_ID_FORMWEEKEND'),
         'thread_id_formweekend' => env('TELEGRAM_THREAD_ID_FORMWEEKEND'),
-
-
     ],
 
     'postmark' => [

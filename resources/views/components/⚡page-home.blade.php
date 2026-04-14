@@ -13,7 +13,22 @@ new class extends Component {
         
 
     </div>
+     <x-ui.button
+            variant="primary"
+            wire:click="finishCurrentRange"
+        >
+            ggggg
+        </x-ui.button>
+ <x-ui.button
+            variant="secondary"
+            wire:click="finishCurrentRange"
+        >
+            ggggg
+        </x-ui.button>
 
+        <x-ui.button variant="secondary">
+    Сбросить заявку
+</x-ui.button>
     <div class="shrink-0 border-t border-[#E5E7EB] bg-white p-4">
         <button class="w-full rounded-[20px] bg-[#213259] py-3 text-white">
             Кнопка

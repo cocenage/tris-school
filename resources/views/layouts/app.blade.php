@@ -17,9 +17,11 @@
             @includeIf('components.partials.⚡header')
         </header>
 
-        <main class="min-h-0 flex-1 overflow-y-auto rounded-[50px] bg-white">
+        <main class="min-h-0 flex-1 overflow-y-auto rounded-[25px] bg-white">
             {{ $slot }}
         </main>
+
+        <x-ui.toast />
 
         <footer class="shrink-0">
             @includeIf('components.partials.⚡navbar')

@@ -25,4 +25,9 @@ class EditDayOffRequest extends EditRecord
             DeleteAction::make(),
         ];
     }
+
+    protected function getFormActions(): array
+    {
+        return [];
+    }
 }

@@ -36,13 +36,13 @@ new class extends Component {
             <x-heroicon-s-home class="w-[20px] h-[20px] transition-all duration-300
                 {{ request()->routeIs('page-home*')
     ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-[#7A7A7A] group-hover:text-[#213259]'
+    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
             <span class="text-[10px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-home*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-[#7A7A7A] group-hover:text-[#213259]'
+    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}">
                 Главная
             </span>
@@ -53,13 +53,13 @@ new class extends Component {
             <x-heroicon-s-clipboard-document-check class="w-[20px] h-[20px] transition-all duration-300
                 {{ request()->routeIs('page-checks*')
     ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-[#7A7A7A] group-hover:text-[#213259]'
+    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
             <span class="text-[10px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-checks*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-[#7A7A7A] group-hover:text-[#213259]'
+    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}">
                 Проверки
             </span>
@@ -70,13 +70,13 @@ new class extends Component {
             <x-heroicon-s-clipboard-document-list class="w-[20px] h-[20px] transition-all duration-300
                 {{ request()->routeIs('page-applications*')
     ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-[#7A7A7A] group-hover:text-[#213259]'
+    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
             <span class="text-[10px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-applications*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-[#7A7A7A] group-hover:text-[#213259]'
+    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}">
                 Заявки
             </span>
@@ -87,13 +87,13 @@ new class extends Component {
             <x-heroicon-s-user class="w-[20px] h-[20px] transition-all duration-300
                 {{ request()->routeIs('page-profile*')
     ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-[#7A7A7A] group-hover:text-[#213259]'
+    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
             <span class="text-[10px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-profile*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-[#7A7A7A] group-hover:text-[#213259]'
+    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}">
                 Профиль
             </span>

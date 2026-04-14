@@ -20,6 +20,7 @@ class ListDayOffRequests extends ListRecords
                 ->url(url('/'))
                 ->color('gray')
                 ->outlined(),
+            CreateAction::make(),
         ];
     }
 }
