@@ -5,7 +5,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    if (! auth()->check()) {
+    if (!auth()->check()) {
         return redirect()->route('landing.page');
     }
 
@@ -33,13 +33,15 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/checks', 'page-checks')->name('page-checks');
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
+    Route::livewire('/applications/vacation', 'forms.page-vacation')->name('page-applications.vacation');
+    Route::livewire('/applications/inventory', 'forms.page-inventory')->name('page-applications.inventory');
     Route::livewire('/profile', 'page-profile')->name('page-profile');
     Route::livewire('/profile/calendar', 'profile.page-calendar')->name('page-profile.calendar');
-    Route::livewire('/profile/weekend', 'profile.page-weekend')->name('page-profile.weekend');
+    Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
 });
 
 Route::fallback(function () {
-    if (! Auth::check()) {
+    if (!Auth::check()) {
         return redirect()->route('landing');
     }
 

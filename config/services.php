@@ -18,11 +18,26 @@ return [
         'admin_chat_url' => env('DAY_OFF_ADMIN_CHAT_URL'),
     ],
 
+    'vacation' => [
+        'admin_chat_url' => env('VACATION_ADMIN_CHAT_URL'),
+    ],
+
+    'inventory' => [
+    'applications_url' => env('INVENTORY_APPLICATIONS_URL'),
+    'admin_chat_url' => env('INVENTORY_ADMIN_CHAT_URL'),
+],
+
     'telegram' => [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
 
         'chat_id_formweekend' => env('TELEGRAM_CHAT_ID_FORMWEEKEND'),
         'thread_id_formweekend' => env('TELEGRAM_THREAD_ID_FORMWEEKEND'),
+
+        'chat_id_vacation' => env('TELEGRAM_CHAT_ID_VACATION'),
+        'thread_id_vacation' => env('TELEGRAM_THREAD_ID_VACATION'),
+
+          'chat_id_inventory' => env('TELEGRAM_CHAT_ID_INVENTORY'),
+    'thread_id_inventory' => env('TELEGRAM_THREAD_ID_INVENTORY'),
     ],
 
     'postmark' => [

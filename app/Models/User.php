@@ -91,4 +91,14 @@ class User extends Authenticatable
     {
         return $this->hasMany(\App\Models\DayOffRequestDay::class);
     }
+
+    public function vacationRequests()
+    {
+        return $this->hasMany(\App\Models\VacationRequest::class);
+    }
+
+    public function inventoryRequests()
+    {
+        return $this->hasMany(\App\Models\InventoryRequest::class);
+    }
 }

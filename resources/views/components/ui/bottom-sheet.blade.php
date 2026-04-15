@@ -88,21 +88,6 @@
                     <div class="h-1.5 w-12 rounded-full bg-[#D6DEE8]"></div>
                 </div>
 
-                <button
-                    type="button"
-                    @click="close()"
-                    class="absolute top-4 right-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-[#F3F6FA] text-[#213259] transition hover:bg-[#E8EEF5]"
-                >
-                    <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none">
-                        <path
-                            d="M7 7L17 17M17 7L7 17"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                        />
-                    </svg>
-                </button>
-
                 {{ $slot }}
             </div>
         </div>

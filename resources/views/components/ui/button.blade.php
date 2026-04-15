@@ -1,9 +1,12 @@
 @props([
     'type' => 'button',
     'variant' => 'primary', // primary, secondary
+    'href' => null,
 ])
 
 @php
+    $tag = $href ? 'a' : 'button';
+
     $base = '
         group relative overflow-hidden
         w-full h-[45px]
@@ -25,15 +28,21 @@
         'secondary' => '
             text-[#7A7A7A]
             border border-[#D9E3EE]
-
         ',
     ];
+
+    $classes = trim($base . ' ' . ($variants[$variant] ?? $variants['primary']));
 @endphp
 
-<button
-    type="{{ $type }}"
+<{{ $tag }}
+    @if($href)
+        href="{{ $href }}"
+    @else
+        type="{{ $type }}"
+        @disabled($disabled ?? false)
+    @endif
     {{ $attributes->merge([
-        'class' => $base . ' ' . $variants[$variant]
+        'class' => $classes
     ]) }}
 >
     @if($variant === 'primary')
@@ -77,4 +86,4 @@
     <span class="relative z-10">
         {{ $slot }}
     </span>
-</button>
+</{{ $tag }}>

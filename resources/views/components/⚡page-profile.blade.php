@@ -306,7 +306,7 @@ public function saveAvatar(): void
         </div>
     </a>
 
-        <a href="{{ route('page-profile.weekend') }}"
+        <a href="{{ route('page-profile.applications') }}"
        class="group flex items-center px-[20px] py-[20px] active:bg-black/5 transition-colors duration-150">
         <x-heroicon-o-calendar-days class="w-[28px] h-[28px] text-[#3B2F2A] shrink-0" />
 

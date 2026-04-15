@@ -17,7 +17,7 @@
             @includeIf('components.partials.⚡header')
         </header>
 
-        <main class="min-h-0 flex-1 overflow-y-auto rounded-[25px] bg-white">
+        <main class="min-h-0 flex-1 overflow-y-auto rounded-[50px] bg-white">
             {{ $slot }}
         </main>
 

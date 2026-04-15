@@ -1,26 +1,24 @@
 <?php
 
-use App\Models\DayOffRequest;
-use App\Models\DayOffRequestDay;
+use App\Models\VacationRequest;
+use App\Models\VacationRequestDay;
+use App\Services\Forms\VacationRequestTelegramService;
 use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Livewire\Component;
 
 new class extends Component {
     public Carbon $month;
 
-    public bool $policyModalOpen = false;
     public bool $successSheetOpen = false;
 
-    public ?string $policyDate = null;
     public ?string $draftStartDate = null;
+    public ?string $draftEndDate = null;
 
-    public array $ranges = [];
     public string $comment = '';
     public ?string $successMessage = null;
 
@@ -33,7 +31,7 @@ new class extends Component {
         Carbon::setLocale('ru');
 
         $this->month = now()->startOfMonth();
-        $this->adminChatUrl = (string) config('services.day_off.admin_chat_url', '');
+        $this->adminChatUrl = (string) config('services.vacation.admin_chat_url', '');
 
         $this->restoreDraft();
         $this->requestStatuses = $this->requestStatusesByDate();
@@ -56,15 +54,15 @@ new class extends Component {
 
     protected function draftKey(): string
     {
-        return 'day_off_request_draft_' . (Auth::id() ?: 'guest');
+        return 'vacation_request_draft_' . (Auth::id() ?: 'guest');
     }
 
     protected function persistDraft(): void
     {
         session()->put($this->draftKey(), [
-            'ranges' => $this->ranges,
             'comment' => $this->comment,
             'draftStartDate' => $this->draftStartDate,
+            'draftEndDate' => $this->draftEndDate,
             'month' => $this->month->toDateString(),
         ]);
     }
@@ -77,13 +75,11 @@ new class extends Component {
             return;
         }
 
-        $this->ranges = is_array($draft['ranges'] ?? null) ? $draft['ranges'] : [];
         $this->comment = (string) ($draft['comment'] ?? '');
-        $this->draftStartDate = ! empty($draft['draftStartDate'])
-            ? (string) $draft['draftStartDate']
-            : null;
+        $this->draftStartDate = !empty($draft['draftStartDate']) ? (string) $draft['draftStartDate'] : null;
+        $this->draftEndDate = !empty($draft['draftEndDate']) ? (string) $draft['draftEndDate'] : null;
 
-        if (! empty($draft['month'])) {
+        if (!empty($draft['month'])) {
             try {
                 $this->month = Carbon::parse($draft['month'])->startOfMonth();
             } catch (\Throwable $e) {
@@ -114,18 +110,6 @@ new class extends Component {
         $this->persistDraft();
     }
 
-    public function openPolicyModal(string $date): void
-    {
-        $this->policyDate = $date;
-        $this->policyModalOpen = true;
-    }
-
-    public function closePolicyModal(): void
-    {
-        $this->policyModalOpen = false;
-        $this->policyDate = null;
-    }
-
     public function closeSuccessSheet(): void
     {
         $this->successSheetOpen = false;
@@ -134,11 +118,9 @@ new class extends Component {
 
     public function resetForm(): void
     {
-        $this->ranges = [];
-        $this->comment = '';
         $this->draftStartDate = null;
-        $this->policyModalOpen = false;
-        $this->policyDate = null;
+        $this->draftEndDate = null;
+        $this->comment = '';
 
         $this->resetErrorBag();
         $this->resetValidation();
@@ -147,10 +129,10 @@ new class extends Component {
 
     protected function requestStatusesByDate(): array
     {
-        return DayOffRequestDay::query()
+        return VacationRequestDay::query()
             ->where('user_id', Auth::id())
             ->get(['date', 'status'])
-            ->mapWithKeys(fn ($item) => [
+            ->mapWithKeys(fn($item) => [
                 Carbon::parse($item->date)->toDateString() => $item->status,
             ])
             ->all();
@@ -161,83 +143,26 @@ new class extends Component {
         return array_key_exists($date, $this->requestStatuses);
     }
 
-    protected function isInsideExistingRange(string $date, ?int $ignoreIndex = null): bool
-    {
-        $current = Carbon::parse($date)->startOfDay();
-
-        foreach ($this->ranges as $index => $range) {
-            if ($ignoreIndex !== null && $index === $ignoreIndex) {
-                continue;
-            }
-
-            $start = Carbon::parse($range['start'])->startOfDay();
-            $end = Carbon::parse($range['end'])->startOfDay();
-
-            if ($current->betweenIncluded($start, $end)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    protected function isSundayOrMonday(string $date): bool
-    {
-        return in_array(Carbon::parse($date)->dayOfWeekIso, [1, 7], true);
-    }
-
-    protected function findRangeIndexByDate(string $date): ?int
-    {
-        $current = Carbon::parse($date)->startOfDay();
-
-        foreach ($this->ranges as $index => $range) {
-            $start = Carbon::parse($range['start'])->startOfDay();
-            $end = Carbon::parse($range['end'])->startOfDay();
-
-            if ($current->betweenIncluded($start, $end)) {
-                return $index;
-            }
-        }
-
-        return null;
-    }
-
-    protected function rangeConflictReason(string $startDate, string $endDate, ?int $ignoreIndex = null): ?array
+    protected function conflictReason(string $startDate, string $endDate): ?array
     {
         $start = Carbon::parse($startDate)->startOfDay();
         $end = Carbon::parse($endDate)->startOfDay();
 
         if ($end->lt($start)) {
-            return null;
+            return [
+                'title' => 'Неверный период',
+                'message' => 'Дата окончания не может быть раньше даты начала',
+            ];
         }
 
-        $policyDates = [];
         $requestedDates = [];
-        $selectedDates = [];
 
         foreach (CarbonPeriod::create($start, $end) as $periodDate) {
             $date = $periodDate->toDateString();
 
-            if ($this->isSundayOrMonday($date)) {
-                $policyDates[] = mb_strtolower(Carbon::parse($date)->translatedFormat('D d.m'));
-                continue;
-            }
-
             if ($this->isAlreadyRequested($date)) {
                 $requestedDates[] = Carbon::parse($date)->format('d.m');
-                continue;
             }
-
-            if ($this->isInsideExistingRange($date, $ignoreIndex)) {
-                $selectedDates[] = Carbon::parse($date)->format('d.m');
-            }
-        }
-
-        if (! empty($policyDates)) {
-            return [
-                'title' => 'Нужно согласование',
-                'message' => 'В диапазон попадают: ' . implode(', ', $policyDates),
-            ];
         }
 
         if (! empty($requestedDates)) {
@@ -249,78 +174,7 @@ new class extends Component {
             ];
         }
 
-        if (! empty($selectedDates)) {
-            return [
-                'title' => 'Уже выбрано',
-                'message' => count($selectedDates) === 1
-                    ? 'Дата ' . $selectedDates[0] . ' уже входит в другой диапазон'
-                    : 'Эти даты уже входят в другой диапазон',
-            ];
-        }
-
         return null;
-    }
-
-    protected function previewRangeForDate(string $date): array
-    {
-        if ($this->draftStartDate === null) {
-            return [
-                'preview_start' => false,
-                'preview_inside' => false,
-                'preview_end' => false,
-                'preview_invalid' => false,
-            ];
-        }
-
-        $start = Carbon::parse($this->draftStartDate)->startOfDay();
-        $current = Carbon::parse($date)->startOfDay();
-
-        if ($current->lt($start)) {
-            return [
-                'preview_start' => false,
-                'preview_inside' => false,
-                'preview_end' => false,
-                'preview_invalid' => false,
-            ];
-        }
-
-        if ($current->equalTo($start)) {
-            return [
-                'preview_start' => true,
-                'preview_inside' => false,
-                'preview_end' => false,
-                'preview_invalid' => false,
-            ];
-        }
-
-        $conflict = $this->rangeConflictReason($this->draftStartDate, $date);
-
-        if ($conflict !== null) {
-            return [
-                'preview_start' => false,
-                'preview_inside' => false,
-                'preview_end' => false,
-                'preview_invalid' => true,
-            ];
-        }
-
-        return [
-            'preview_start' => false,
-            'preview_inside' => true,
-            'preview_end' => true,
-            'preview_invalid' => false,
-        ];
-    }
-
-    public function removeRange(int $index): void
-    {
-        if (! isset($this->ranges[$index])) {
-            return;
-        }
-
-        unset($this->ranges[$index]);
-        $this->ranges = array_values($this->ranges);
-        $this->persistDraft();
     }
 
     public function selectDate(string $date): void
@@ -331,15 +185,6 @@ new class extends Component {
             return;
         }
 
-        $this->resetErrorBag('ranges');
-
-        $existingRangeIndex = $this->findRangeIndexByDate($date);
-
-        if ($existingRangeIndex !== null) {
-            $this->removeRange($existingRangeIndex);
-            return;
-        }
-
         if ($this->draftStartDate === null) {
             if ($this->isAlreadyRequested($date)) {
                 $this->toast(
@@ -350,68 +195,91 @@ new class extends Component {
                 return;
             }
 
-            if ($this->isSundayOrMonday($date)) {
-                $this->openPolicyModal($date);
+            $this->draftStartDate = $date;
+            $this->draftEndDate = null;
+            $this->persistDraft();
+            return;
+        }
+
+        if ($this->draftEndDate === null) {
+            if ($picked->lt(Carbon::parse($this->draftStartDate)->startOfDay())) {
+                if ($this->isAlreadyRequested($date)) {
+                    $this->toast(
+                        'warning',
+                        'Дата занята',
+                        'На ' . Carbon::parse($date)->format('d.m') . ' уже есть заявка'
+                    );
+                    return;
+                }
+
+                $this->draftStartDate = $date;
+                $this->persistDraft();
                 return;
             }
 
-            $this->draftStartDate = $date;
-            $this->persistDraft();
-            return;
-        }
+            $reason = $this->conflictReason($this->draftStartDate, $date);
 
-        $start = Carbon::parse($this->draftStartDate)->startOfDay();
-
-        if ($picked->equalTo($start)) {
-            $this->ranges[] = [
-                'start' => $date,
-                'end' => $date,
-            ];
-
-            $this->draftStartDate = null;
-            $this->persistDraft();
-            return;
-        }
-
-        if ($picked->lt($start)) {
-            if ($this->isAlreadyRequested($date)) {
+            if ($reason !== null) {
                 $this->toast(
                     'warning',
-                    'Дата занята',
-                    'На ' . Carbon::parse($date)->format('d.m') . ' уже есть заявка'
+                    $reason['title'],
+                    $reason['message'],
+                    4200
                 );
                 return;
             }
 
-            if ($this->isSundayOrMonday($date)) {
-                $this->openPolicyModal($date);
-                return;
-            }
-
-            $this->draftStartDate = $date;
+            $this->draftEndDate = $date;
             $this->persistDraft();
             return;
         }
 
-        $reason = $this->rangeConflictReason($this->draftStartDate, $date);
-
-        if ($reason !== null) {
+        if ($this->isAlreadyRequested($date)) {
             $this->toast(
                 'warning',
-                $reason['title'],
-                $reason['message'],
-                4200
+                'Дата занята',
+                'На ' . Carbon::parse($date)->format('d.m') . ' уже есть заявка'
             );
             return;
         }
 
-        $this->ranges[] = [
-            'start' => $this->draftStartDate,
-            'end' => $date,
-        ];
-
-        $this->draftStartDate = null;
+        $this->draftStartDate = $date;
+        $this->draftEndDate = null;
         $this->persistDraft();
+    }
+
+    protected function previewRangeForDate(string $date): array
+    {
+        if ($this->draftStartDate === null) {
+            return [
+                'selected' => false,
+                'inside' => false,
+                'start' => false,
+                'end' => false,
+            ];
+        }
+
+        $start = Carbon::parse($this->draftStartDate)->startOfDay();
+        $end = $this->draftEndDate
+            ? Carbon::parse($this->draftEndDate)->startOfDay()
+            : null;
+        $current = Carbon::parse($date)->startOfDay();
+
+        if ($end === null) {
+            return [
+                'selected' => $current->equalTo($start),
+                'inside' => false,
+                'start' => $current->equalTo($start),
+                'end' => $current->equalTo($start),
+            ];
+        }
+
+        return [
+            'selected' => $current->betweenIncluded($start, $end),
+            'inside' => $current->gt($start) && $current->lt($end),
+            'start' => $current->equalTo($start),
+            'end' => $current->equalTo($end),
+        ];
     }
 
     public function calendarDays(): array
@@ -426,39 +294,6 @@ new class extends Component {
             $cursor = $start->copy();
             $date = $cursor->toDateString();
 
-            $selected = false;
-            $inside = false;
-            $rangeStart = false;
-            $rangeEnd = false;
-
-            foreach ($this->ranges as $range) {
-                $startDate = Carbon::parse($range['start'])->startOfDay();
-                $endDate = Carbon::parse($range['end'])->startOfDay();
-
-                if ($cursor->equalTo($startDate) && $cursor->equalTo($endDate)) {
-                    $selected = true;
-                    $rangeStart = true;
-                    $rangeEnd = true;
-                    continue;
-                }
-
-                if ($cursor->equalTo($startDate)) {
-                    $selected = true;
-                    $rangeStart = true;
-                    continue;
-                }
-
-                if ($cursor->equalTo($endDate)) {
-                    $selected = true;
-                    $rangeEnd = true;
-                    continue;
-                }
-
-                if ($cursor->gt($startDate) && $cursor->lt($endDate)) {
-                    $inside = true;
-                }
-            }
-
             $status = $requestStatuses[$date] ?? null;
             $preview = $this->previewRangeForDate($date);
 
@@ -467,15 +302,9 @@ new class extends Component {
                 'day' => $cursor->day,
                 'current' => $cursor->month === $this->month->month,
                 'past' => $cursor->lt(now()->startOfDay()),
-                'selected' => $selected,
-                'inside' => $inside,
-                'start' => $rangeStart,
-                'end' => $rangeEnd,
-                'draft_start' => $this->draftStartDate === $date,
                 'requested' => $status === 'pending',
                 'approved' => $status === 'approved',
                 'rejected' => $status === 'rejected',
-                'policy' => $status === null && $this->isSundayOrMonday($date),
                 ...$preview,
             ];
 
@@ -503,103 +332,37 @@ new class extends Component {
         return 'Ответ ожидайте сегодня с 10:00 до 18:00';
     }
 
-    protected function adminRecordUrl(DayOffRequest $request): string
+    protected function selectedDaysCount(): int
     {
-        return url('/admin/day-off-requests/' . $request->id . '/edit');
+        if (! $this->draftStartDate) {
+            return 0;
+        }
+
+        if (! $this->draftEndDate) {
+            return 1;
+        }
+
+        return Carbon::parse($this->draftStartDate)
+            ->startOfDay()
+            ->diffInDays(Carbon::parse($this->draftEndDate)->startOfDay()) + 1;
     }
 
-    protected function sendTelegramNotification(DayOffRequest $request): void
+    public function submit(VacationRequestTelegramService $telegram): void
     {
-        $request->loadMissing(['user', 'days']);
-
-        $token = config('services.telegram.bot_token');
-        $chatId = config('services.telegram.chat_id_formweekend');
-        $threadId = config('services.telegram.thread_id_formweekend');
-
-        if (blank($token) || blank($chatId)) {
-            Log::warning('Telegram notification skipped: missing credentials');
-            return;
-        }
-
-        $user = $request->user;
-
-        Carbon::setLocale('ru');
-
-        $formattedDates = $request->days
-            ->pluck('date')
-            ->map(fn ($date) => Carbon::parse($date)->translatedFormat('d.m.Y (l)'))
-            ->implode("\n• ");
-
-        $name = $user?->name ?: 'Неизвестный пользователь';
-
-        $tgRaw = $user?->tg
-            ? ltrim(trim($user->tg), '@')
-            : null;
-
-        $tgUsername = ($tgRaw && preg_match('/^[A-Za-z0-9_]{5,32}$/', $tgRaw))
-            ? $tgRaw
-            : null;
-
-        $userTelegramUrl = $tgUsername
-            ? "https://t.me/{$tgUsername}"
-            : null;
-
-        $dipText = isset($user?->dip)
-            ? ($user->dip ? 'dip' : 'no dip')
-            : '—';
-
-        $adminUrl = $this->adminRecordUrl($request);
-
-        $text = "📌 <b>Новый запрос на выходной!</b>\n\n";
-
-        if ($userTelegramUrl) {
-            $text .= "👤 <b>Сотрудник:</b> <a href='{$userTelegramUrl}'>" . e($name) . "</a>\n";
-        } else {
-            $text .= "👤 <b>Сотрудник:</b> " . e($name) . "\n";
-        }
-
-        $text .= "🏷️ <b>Dip:</b> {$dipText}\n";
-        $text .= "📅 <b>Даты:</b>\n• {$formattedDates}\n\n";
-        $text .= "💬 <b>Причина:</b>\n<blockquote>" . e(trim((string) $request->reason)) . "</blockquote>\n\n";
-
-        if ($userTelegramUrl) {
-            $text .= "🔗 <b>Telegram:</b> <a href='{$userTelegramUrl}'>открыть профиль</a>\n";
-        }
-
-        $text .= "⛓️ <a href='{$adminUrl}'><b>Ссылка на запрос в админке</b></a>\n";
-
-        $payload = [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-        ];
-
-        if (filled($threadId)) {
-            $payload['message_thread_id'] = (int) $threadId;
-        }
-
-        $response = Http::timeout(10)->post(
-            "https://api.telegram.org/bot{$token}/sendMessage",
-            $payload
-        );
-
-        if ($response->failed()) {
-            Log::error('Telegram send failed', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-                'request_id' => $request->id,
-            ]);
-        }
-    }
-
-    public function submit(): void
-    {
-        if (empty($this->ranges)) {
+        if (! $this->draftStartDate) {
             $this->toast(
                 'warning',
                 'Нет дат',
-                'Сначала выбери хотя бы один день'
+                'Сначала выбери период отпуска'
+            );
+            return;
+        }
+
+        if (! $this->draftEndDate) {
+            $this->toast(
+                'warning',
+                'Период не завершён',
+                'Выбери дату окончания отпуска'
             );
             return;
         }
@@ -610,7 +373,7 @@ new class extends Component {
             $this->toast(
                 'warning',
                 'Нужна причина',
-                'Напиши, почему тебе нужен выходной'
+                'Напиши, почему тебе нужен отпуск'
             );
             return;
         }
@@ -637,42 +400,52 @@ new class extends Component {
             return;
         }
 
+        $reason = $this->conflictReason($this->draftStartDate, $this->draftEndDate);
+
+        if ($reason !== null) {
+            $this->toast(
+                'warning',
+                $reason['title'],
+                $reason['message'],
+                4200
+            );
+            return;
+        }
+
         try {
+            $start = Carbon::parse($this->draftStartDate)->startOfDay();
+            $end = Carbon::parse($this->draftEndDate)->startOfDay();
+
             $dates = [];
 
-            foreach ($this->ranges as $range) {
-                $rangeStart = Carbon::parse($range['start'])->startOfDay();
-                $rangeEnd = Carbon::parse($range['end'])->startOfDay();
+            foreach (CarbonPeriod::create($start, $end) as $day) {
+                $date = $day->toDateString();
 
-                foreach (CarbonPeriod::create($rangeStart, $rangeEnd) as $day) {
-                    $date = $day->toDateString();
-
-                    if ($this->isAlreadyRequested($date)) {
-                        $this->toast(
-                            'warning',
-                            'Дата занята',
-                            'Некоторые даты уже были отправлены раньше'
-                        );
-                        return;
-                    }
-
-                    $dates[] = $date;
+                if ($this->isAlreadyRequested($date)) {
+                    $this->toast(
+                        'warning',
+                        'Дата занята',
+                        'Некоторые даты уже были отправлены раньше'
+                    );
+                    return;
                 }
+
+                $dates[] = $date;
             }
 
-            $dates = array_values(array_unique($dates));
-            sort($dates);
-
             $request = DB::transaction(function () use ($dates) {
-                $request = DayOffRequest::create([
-                    'user_id' => Auth::id(),
-                    'reason' => trim($this->comment),
-                    'status' => 'pending',
-                ]);
+                $request = VacationRequest::create([
+    'user_id' => Auth::id(),
+    'start_date' => $this->draftStartDate,
+    'end_date' => $this->draftEndDate,
+    'days_count' => count($dates),
+    'reason' => trim($this->comment),
+    'status' => 'pending',
+]);
 
                 foreach ($dates as $date) {
-                    DayOffRequestDay::create([
-                        'day_off_request_id' => $request->id,
+                    VacationRequestDay::create([
+                        'vacation_request_id' => $request->id,
                         'user_id' => Auth::id(),
                         'date' => $date,
                         'status' => 'pending',
@@ -683,16 +456,16 @@ new class extends Component {
             });
 
             try {
-                $this->sendTelegramNotification($request);
+                $telegram->sendCreated($request);
             } catch (\Throwable $e) {
-                Log::error('Telegram failed but request saved', [
+                Log::error('Vacation telegram failed but request saved', [
                     'request_id' => $request->id,
                     'error' => $e->getMessage(),
                 ]);
             }
 
-            $this->ranges = [];
             $this->draftStartDate = null;
+            $this->draftEndDate = null;
             $this->comment = '';
 
             $this->resetErrorBag();
@@ -704,9 +477,8 @@ new class extends Component {
             $this->successMessage = $this->buildSuccessMessage();
             $this->successSheetOpen = true;
         } catch (QueryException $e) {
-            Log::error('Day off request duplicate date error', [
+            Log::error('Vacation request duplicate date error', [
                 'error' => $e->getMessage(),
-                'ranges' => $this->ranges,
                 'user_id' => Auth::id(),
             ]);
 
@@ -718,10 +490,9 @@ new class extends Component {
                 'Похоже, часть дат уже успела попасть в другую заявку'
             );
         } catch (\Throwable $e) {
-            Log::error('Day off request submit error', [
+            Log::error('Vacation request submit error', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
-                'ranges' => $this->ranges,
                 'user_id' => Auth::id(),
             ]);
 
@@ -777,10 +548,10 @@ new class extends Component {
             class="flex-1 min-h-0 overflow-y-auto"
         >
             <div class="min-h-full rounded-t-[38px] bg-white">
-                <div class="p-[20px]">
+                <div class="px-[16px] pt-[18px] pb-[28px]">
                     <div class="mb-[24px]">
                         <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
-                            Когда вас не будет?
+                            Когда у вас отпуск?
                         </h2>
 
                         <div class="rounded-[30px] border border-[#D9E4EC] bg-[#EAF1F6] px-[16px] py-[18px]">
@@ -823,19 +594,11 @@ new class extends Component {
                                         if ($day['past']) {
                                             $style .= 'color:#C3CDD8;';
                                             $class .= ' cursor-not-allowed';
-                                        } elseif (!empty($day['draft_start'])) {
-                                            $style .= 'background:#213259;color:#FFFFFF;';
-                                            $class .= ' font-semibold shadow-[0_8px_18px_rgba(33,50,89,0.22)]';
-                                        } elseif (!empty($day['selected'])) {
+                                        } elseif (!empty($day['start']) || !empty($day['end'])) {
                                             $style .= 'background:#213259;color:#FFFFFF;';
                                             $class .= ' font-semibold shadow-[0_8px_18px_rgba(33,50,89,0.22)]';
                                         } elseif (!empty($day['inside'])) {
                                             $style .= 'background:#DDE8F5;color:#213259;';
-                                        } elseif (!empty($day['preview_inside'])) {
-                                            $style .= 'background:#EAF2FB;color:#35527A;';
-                                        } elseif (!empty($day['preview_end'])) {
-                                            $style .= 'background:#D8E6F7;color:#213259;';
-                                            $class .= ' font-medium';
                                         } elseif (!empty($day['approved'])) {
                                             $style .= 'background:#ECFDF3;color:#027A48;';
                                         } elseif (!empty($day['requested'])) {
@@ -856,26 +619,31 @@ new class extends Component {
                                         @disabled(!$day['current'] || $day['past'])
                                     >
                                         {{ $day['day'] }}
-
-                                        @if (!empty($day['policy']))
-                                            <span class="absolute bottom-[4px] left-1/2 block h-[5px] w-[5px] -translate-x-1/2 rounded-full bg-[#6D84A3]"></span>
-                                        @endif
                                     </button>
                                 @endforeach
                             </div>
                         </div>
+
+                        @if ($draftStartDate && $draftEndDate)
+                            <div class="mt-[12px] rounded-[22px] border border-[#D9E4EC] bg-[#F8FBFD] px-[16px] py-[12px] text-[14px] text-[#4D6078]">
+                                Выбрано: {{ \Carbon\Carbon::parse($draftStartDate)->format('d.m.Y') }}
+                                —
+                                {{ \Carbon\Carbon::parse($draftEndDate)->format('d.m.Y') }}
+                                · {{ $this->selectedDaysCount() }} дн.
+                            </div>
+                        @endif
                     </div>
 
                     <div class="mb-[8px]">
                         <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
-                            Почему вас не будет?
+                            Почему вам нужен отпуск?
                         </h2>
 
                         <textarea
                             wire:model.live.debounce.500ms="comment"
                             rows="4"
                             maxlength="500"
-                            placeholder="Поделитесь планами на время отсутствия"
+                            placeholder="Напишите причину или комментарий"
                             class="w-full rounded-[23px] border border-[#D9E4EC] bg-[#EAF1F6] px-[20px] py-[15px] text-[16px] text-[#213259] placeholder:text-[16px] placeholder:text-[#6F8096] outline-none transition duration-200 focus:border-[#9FB4C9] focus:bg-[#F4F8FB] focus:ring-0"
                         ></textarea>
 
@@ -899,7 +667,7 @@ new class extends Component {
             :class="buttonsHidden
                 ? 'translate-y-full opacity-0 pointer-events-none'
                 : 'translate-y-0 opacity-100'"
-            class="shrink-0 border-t border-[#E3EAF0] bg-white p-5 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            class="shrink-0 border-t border-[#E3EAF0] bg-white px-[16px] pt-[14px] pb-[18px] shadow-[0_-8px_24px_rgba(33,50,89,0.04)] transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
         >
             <div class="grid grid-cols-3 gap-[10px]">
                 <div class="col-span-1">
@@ -913,13 +681,13 @@ new class extends Component {
                 </div>
 
                 <div class="col-span-2">
-                  <x-ui.button
-    type="submit"
-    variant="primary"
-    wire:loading.attr="disabled"
-    wire:target="submit"
-    :disabled="empty($ranges) || blank($comment)"
->
+                    <x-ui.button
+                        type="submit"
+                        variant="primary"
+                        wire:loading.attr="disabled"
+                        wire:target="submit"
+                        :disabled="blank($draftStartDate) || blank($draftEndDate) || blank(trim($comment))"
+                    >
                         <span wire:loading.remove wire:target="submit">
                             Отправить заявку
                         </span>
@@ -933,46 +701,6 @@ new class extends Component {
         </div>
     </form>
 
-    <div x-data="{ modalOpen: @entangle('policyModalOpen').live }">
-        <x-ui.modal x-model="modalOpen">
-            <div class="p-5 text-center">
-                <img
-                    class="mt-[28px] h-[135px] w-full object-contain"
-                    src="{{ asset('images/warning.webp') }}"
-                    alt="warning cat"
-                >
-
-                <h1 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Обязательные рабочие дни
-                </h1>
-
-                <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">
-                    Воскресенье и понедельник — обязательные рабочие дни.
-                    Выходной на эти дни можно согласовать только в пятницу.
-                </p>
-
-                <div class="flex gap-[10px] pt-[32px]">
-                    <x-ui.button
-                        variant="secondary"
-                        @click="modalOpen = false"
-                    >
-                        Закрыть
-                    </x-ui.button>
-
-                    @if (filled($adminChatUrl))
-                        <x-ui.button
-                            variant="primary"
-                            href="{{ $adminChatUrl }}"
-                            target="_blank"
-                        >
-                            Написать администратору
-                        </x-ui.button>
-                    @endif
-                </div>
-            </div>
-        </x-ui.modal>
-    </div>
-
     <div x-data="{ sheetOpen: @entangle('successSheetOpen').live }">
         <x-ui.bottom-sheet x-model="sheetOpen">
             <div class="p-5 text-center">
@@ -983,7 +711,7 @@ new class extends Component {
                 >
 
                 <h1 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Заявка успешно отправлена!
+                    Заявка на отпуск отправлена!
                 </h1>
 
                 <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">
