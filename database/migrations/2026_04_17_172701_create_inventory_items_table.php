@@ -10,12 +10,19 @@ return new class extends Migration
     {
         Schema::create('inventory_items', function (Blueprint $table) {
             $table->id();
-            $table->string('name');
-            $table->boolean('is_active')->default(true);
-            $table->unsignedInteger('sort_order')->default(0);
+
+            $table->foreignId('user_id')
+                ->nullable()
+                ->constrained()
+                ->nullOnDelete();
+
+            $table->json('main');
+
+            $table->boolean('active')->default(true);
+
             $table->timestamps();
 
-            $table->index(['is_active', 'sort_order']);
+            $table->index('active');
         });
     }
 

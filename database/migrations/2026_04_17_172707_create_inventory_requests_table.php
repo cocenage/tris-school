@@ -1,6 +1,5 @@
 <?php
 
-use App\Models\User;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -11,18 +10,30 @@ return new class extends Migration
     {
         Schema::create('inventory_requests', function (Blueprint $table) {
             $table->id();
-            $table->foreignIdFor(User::class)->constrained()->cascadeOnDelete();
+
+            $table->foreignId('user_id')
+                ->constrained()
+                ->cascadeOnDelete();
+
+            $table->text('comment')->nullable();
 
             $table->string('status')->default('pending');
-            $table->text('comment')->nullable();
+            // pending | issued | partially_issued | cancelled
+
             $table->text('admin_comment')->nullable();
 
-            $table->timestamp('requested_at')->nullable();
-            $table->timestamp('reviewed_at')->nullable();
+            $table->timestamp('submitted_at')->nullable();
+            $table->timestamp('processed_at')->nullable();
+
+            $table->foreignId('processed_by')
+                ->nullable()
+                ->constrained('users')
+                ->nullOnDelete();
+
+            $table->timestamp('notified_at')->nullable();
 
             $table->timestamps();
 
-            $table->index(['user_id', 'status']);
             $table->index(['status', 'created_at']);
         });
     }

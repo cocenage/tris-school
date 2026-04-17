@@ -2,10 +2,10 @@
 
 namespace App\Filament\Resources\InventoryRequests;
 
-use App\Filament\Resources\InventoryRequests\Pages\CreateInventoryRequest;
 use App\Filament\Resources\InventoryRequests\Pages\EditInventoryRequest;
 use App\Filament\Resources\InventoryRequests\Pages\ListInventoryRequests;
 use App\Filament\Resources\InventoryRequests\Pages\ViewInventoryRequest;
+use App\Filament\Resources\InventoryRequests\RelationManagers\LinesRelationManager;
 use App\Filament\Resources\InventoryRequests\Schemas\InventoryRequestForm;
 use App\Filament\Resources\InventoryRequests\Schemas\InventoryRequestInfolist;
 use App\Filament\Resources\InventoryRequests\Tables\InventoryRequestsTable;
@@ -21,7 +21,13 @@ class InventoryRequestResource extends Resource
     protected static ?string $model = InventoryRequest::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
-    protected static ?string $recordTitleAttribute = 'id';
+
+    protected static ?string $recordTitleAttribute = 'user_name';
+
+    protected static ?string $navigationLabel = 'Инвентарь';
+    protected static ?string $modelLabel = 'Заявка на инвентарь';
+    protected static ?string $pluralModelLabel = 'Заявки на инвентарь';
+    protected static string|\UnitEnum|null $navigationGroup = 'Заявки';
 
     public static function form(Schema $schema): Schema
     {
@@ -40,16 +46,24 @@ class InventoryRequestResource extends Resource
 
     public static function getRelations(): array
     {
-        return [];
+        return [
+            LinesRelationManager::class,
+        ];
     }
 
     public static function getPages(): array
     {
         return [
             'index' => ListInventoryRequests::route('/'),
-            'create' => CreateInventoryRequest::route('/create'),
             'view' => ViewInventoryRequest::route('/{record}'),
             'edit' => EditInventoryRequest::route('/{record}/edit'),
         ];
+    }
+
+    public static function getNavigationBadge(): ?string
+    {
+        return (string) static::getModel()::query()
+            ->where('status', 'pending')
+            ->count();
     }
 }
