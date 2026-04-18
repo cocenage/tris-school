@@ -15,8 +15,13 @@ class User extends Authenticatable
     protected $fillable = [
         'telegram_id',
         'telegram_username',
+        'telegram_first_name',
+        'telegram_last_name',
         'telegram_photo_url',
         'telegram_avatar_path',
+        'telegram_write_access_granted_at',
+        'telegram_last_auth_at',
+        'telegram_login_source',
 
         'role',
         'status',
@@ -45,6 +50,8 @@ class User extends Authenticatable
         return [
             'approved_at' => 'datetime',
             'last_login_at' => 'datetime',
+            'telegram_write_access_granted_at' => 'datetime',
+            'telegram_last_auth_at' => 'datetime',
             'birthday' => 'date',
             'work_started_at' => 'date',
             'dip' => 'boolean',
@@ -67,6 +74,11 @@ class User extends Authenticatable
     public function isApproved(): bool
     {
         return $this->status === 'approved';
+    }
+
+    public function hasTelegramWriteAccess(): bool
+    {
+        return ! is_null($this->telegram_write_access_granted_at);
     }
 
     public function getAvatarUrlAttribute(): ?string

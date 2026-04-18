@@ -1,7 +1,10 @@
 <?php
 
 use App\Models\DayOffRequest;
+use App\Models\FeedbackSuggestion;
 use App\Models\InventoryRequest;
+use App\Models\SalaryQuestion;
+use App\Models\ScheduleQuestion;
 use App\Models\VacationRequest;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -38,7 +41,7 @@ new class extends Component
             });
 
         $inventories = InventoryRequest::query()
-            ->with(['items'])
+            ->with(['lines'])
             ->where('user_id', auth()->id())
             ->latest()
             ->get()
@@ -50,9 +53,48 @@ new class extends Component
                 return $request;
             });
 
+        $salaryQuestions = SalaryQuestion::query()
+            ->where('user_id', auth()->id())
+            ->latest()
+            ->get()
+            ->map(function ($request) {
+                $request->request_type = 'salary';
+                $request->request_type_label = 'Зарплата';
+                $request->request_type_icon = '💰';
+
+                return $request;
+            });
+
+        $scheduleQuestions = ScheduleQuestion::query()
+            ->where('user_id', auth()->id())
+            ->latest()
+            ->get()
+            ->map(function ($request) {
+                $request->request_type = 'schedule';
+                $request->request_type_label = 'График';
+                $request->request_type_icon = '📅';
+
+                return $request;
+            });
+
+        $feedbackSuggestions = FeedbackSuggestion::query()
+            ->where('user_id', auth()->id())
+            ->latest()
+            ->get()
+            ->map(function ($request) {
+                $request->request_type = 'feedback';
+                $request->request_type_label = 'Отзыв / предложение';
+                $request->request_type_icon = '💡';
+
+                return $request;
+            });
+
         return $dayOffs
             ->concat($vacations)
             ->concat($inventories)
+            ->concat($salaryQuestions)
+            ->concat($scheduleQuestions)
+            ->concat($feedbackSuggestions)
             ->sortByDesc(fn ($request) => $request->created_at)
             ->values();
     }
@@ -63,6 +105,14 @@ new class extends Component
             'approved' => 'одобрено',
             'rejected' => 'отклонено',
             'partially_approved' => 'частично одобрено',
+
+            'issued' => 'выдано',
+            'partially_issued' => 'выдано частично',
+            'cancelled' => 'не выдано',
+
+            'reviewed' => 'рассмотрено',
+            'closed' => 'закрыто',
+
             default => 'на рассмотрении',
         };
     }
@@ -70,9 +120,9 @@ new class extends Component
     public function statusTextClasses(string $status): string
     {
         return match ($status) {
-            'approved' => 'text-[#1F7A45]',
-            'rejected' => 'text-[#C53B32]',
-            'partially_approved' => 'text-[#B76A16]',
+            'approved', 'issued', 'reviewed' => 'text-[#1F7A45]',
+            'rejected', 'cancelled', 'closed' => 'text-[#C53B32]',
+            'partially_approved', 'partially_issued' => 'text-[#B76A16]',
             default => 'text-[#2457A5]',
         };
     }
@@ -98,8 +148,9 @@ new class extends Component
     public function itemStatusLabel(string $status): string
     {
         return match ($status) {
-            'approved' => 'одобрено',
-            'rejected' => 'отказ',
+            'issued' => 'выдано',
+            'partially_issued' => 'частично',
+            'cancelled' => 'не выдано',
             default => 'на рассмотрении',
         };
     }
@@ -107,8 +158,9 @@ new class extends Component
     public function itemStatusClasses(string $status): string
     {
         return match ($status) {
-            'approved' => 'text-[#1F7A45]',
-            'rejected' => 'text-[#C53B32]',
+            'issued' => 'text-[#1F7A45]',
+            'cancelled' => 'text-[#C53B32]',
+            'partially_issued' => 'text-[#B76A16]',
             default => 'text-[#2457A5]',
         };
     }
@@ -118,6 +170,9 @@ new class extends Component
         return match ($type) {
             'vacation' => 'отпуск',
             'inventory' => 'инвентарь',
+            'salary' => 'вопрос по зарплате',
+            'schedule' => 'вопрос по графику',
+            'feedback' => 'отзыв / предложение',
             default => 'выходной',
         };
     }
@@ -134,7 +189,7 @@ new class extends Component
         return [
             'all' => $requests->count(),
             'pending' => $requests->where('status', 'pending')->count(),
-            'approved' => $requests->where('status', 'approved')->count(),
+            'approved' => $requests->filter(fn ($request) => in_array($request->status, ['approved', 'issued', 'reviewed'], true))->count(),
         ];
     }
 
@@ -153,6 +208,15 @@ new class extends Component
             $count % 10 === 1 && $count % 100 !== 11 => 'позиция',
             in_array($count % 10, [2, 3, 4]) && ! in_array($count % 100, [12, 13, 14]) => 'позиции',
             default => 'позиций',
+        };
+    }
+
+    public function filesWord(int $count): string
+    {
+        return match (true) {
+            $count % 10 === 1 && $count % 100 !== 11 => 'файл',
+            in_array($count % 10, [2, 3, 4]) && ! in_array($count % 100, [12, 13, 14]) => 'файла',
+            default => 'файлов',
         };
     }
 
@@ -197,7 +261,7 @@ new class extends Component
                 </h1>
 
                 <p class="mt-[8px] text-[14px] leading-[1.45] text-[#7E7E77]">
-                    Выходные, отпуск и инвентарь
+                    Выходные, отпуск, инвентарь, зарплата, график и отзывы
                 </p>
             </div>
 
@@ -210,49 +274,26 @@ new class extends Component
         </div>
 
         <div class="mt-[16px] flex gap-[8px] overflow-x-auto no-scrollbar">
-            <button
-                type="button"
-                @click="tab = 'all'"
-                :class="tab === 'all'
-                    ? 'bg-[#111111] text-white'
-                    : 'bg-white text-[#5F5F59] border border-[#E8EAEE]'"
-                class="h-[38px] shrink-0 rounded-full px-[15px] text-[14px] font-medium transition"
-            >
-                Все
-            </button>
-
-            <button
-                type="button"
-                @click="tab = 'day_off'"
-                :class="tab === 'day_off'
-                    ? 'bg-[#111111] text-white'
-                    : 'bg-white text-[#5F5F59] border border-[#E8EAEE]'"
-                class="h-[38px] shrink-0 rounded-full px-[15px] text-[14px] font-medium transition"
-            >
-                Выходные
-            </button>
-
-            <button
-                type="button"
-                @click="tab = 'vacation'"
-                :class="tab === 'vacation'
-                    ? 'bg-[#111111] text-white'
-                    : 'bg-white text-[#5F5F59] border border-[#E8EAEE]'"
-                class="h-[38px] shrink-0 rounded-full px-[15px] text-[14px] font-medium transition"
-            >
-                Отпуск
-            </button>
-
-            <button
-                type="button"
-                @click="tab = 'inventory'"
-                :class="tab === 'inventory'
-                    ? 'bg-[#111111] text-white'
-                    : 'bg-white text-[#5F5F59] border border-[#E8EAEE]'"
-                class="h-[38px] shrink-0 rounded-full px-[15px] text-[14px] font-medium transition"
-            >
-                Инвентарь
-            </button>
+            @foreach ([
+                'all' => 'Все',
+                'day_off' => 'Выходные',
+                'vacation' => 'Отпуск',
+                'inventory' => 'Инвентарь',
+                'salary' => 'Зарплата',
+                'schedule' => 'График',
+                'feedback' => 'Отзывы',
+            ] as $value => $label)
+                <button
+                    type="button"
+                    @click="tab = '{{ $value }}'"
+                    :class="tab === '{{ $value }}'
+                        ? 'bg-[#111111] text-white'
+                        : 'bg-white text-[#5F5F59] border border-[#E8EAEE]'"
+                    class="h-[38px] shrink-0 rounded-full px-[15px] text-[14px] font-medium transition"
+                >
+                    {{ $label }}
+                </button>
+            @endforeach
         </div>
     </div>
 
@@ -262,6 +303,9 @@ new class extends Component
             $dayOffCount = $this->requests->where('request_type', 'day_off')->count();
             $vacationCount = $this->requests->where('request_type', 'vacation')->count();
             $inventoryCount = $this->requests->where('request_type', 'inventory')->count();
+            $salaryCount = $this->requests->where('request_type', 'salary')->count();
+            $scheduleCount = $this->requests->where('request_type', 'schedule')->count();
+            $feedbackCount = $this->requests->where('request_type', 'feedback')->count();
         @endphp
 
         @if ($hasRequests)
@@ -280,7 +324,7 @@ new class extends Component
                                     </div>
 
                                     <div class="mt-[6px] text-[14px] text-[#7B7B76]">
-                                        {{ $request->items->count() }} {{ $this->positionsWord($request->items->count()) }}
+                                        {{ $request->lines->count() }} {{ $this->positionsWord($request->lines->count()) }}
                                         ·
                                         {{ $this->typeLabel($request->request_type) }}
                                     </div>
@@ -293,27 +337,23 @@ new class extends Component
                                 </div>
                             </div>
 
-                            @if ($request->comment)
-                                <div class="mt-[14px] text-[14px] leading-[1.55] text-[#4F4F49]">
-                                    <span class="text-[#8B8B84]">Комментарий:</span>
-                                    {{ $request->comment }}
-                                </div>
-                            @endif
-
                             <div class="mt-[14px] border-t border-[#F0F1F3] pt-[10px]">
                                 <div class="space-y-[8px]">
-                                    @foreach ($request->items as $item)
+                                    @foreach ($request->lines as $item)
                                         <div class="rounded-[18px] bg-[#F8F9FB] px-[14px] py-[12px]">
                                             <div class="flex items-start justify-between gap-[12px]">
                                                 <div class="min-w-0">
                                                     <div class="text-[15px] text-[#151515]">
                                                         {{ $item->item_name }}
+                                                        @if ($item->variant_label)
+                                                            <span class="text-[#7B7B76]">· {{ $item->variant_label }}</span>
+                                                        @endif
                                                     </div>
 
                                                     <div class="mt-[6px] text-[13px] text-[#7B7B76]">
                                                         Запрошено: {{ $item->requested_qty }}
                                                         ·
-                                                        Одобрено: {{ $item->approved_qty }}
+                                                        Выдано: {{ $item->issued_qty }}
                                                     </div>
 
                                                     @if ($item->admin_comment)
@@ -341,6 +381,51 @@ new class extends Component
                             @if ($request->admin_comment)
                                 <div class="mt-[8px] text-[13px] leading-[1.5] text-[#6C6C66]">
                                     <span class="text-[#90908A]">Комментарий администратора:</span>
+                                    {{ $request->admin_comment }}
+                                </div>
+                            @endif
+                        </article>
+                    @elseif (in_array($request->request_type, ['salary', 'schedule', 'feedback'], true))
+                        <article
+                            x-show="matches('{{ $request->request_type }}')"
+                            x-transition.opacity.duration.150ms
+                            class="rounded-[24px] border border-[#E8EAEE] bg-white px-[18px] py-[16px]"
+                        >
+                            <div class="flex items-start justify-between gap-[16px]">
+                                <div class="min-w-0">
+                                    <div class="text-[24px] font-semibold leading-[1.1] tracking-[-0.03em] text-[#111111]">
+                                        {{ $request->request_type_label }}
+                                    </div>
+
+                                    <div class="mt-[6px] text-[14px] text-[#7B7B76]">
+                                        {{ $request->type }}
+                                    </div>
+                                </div>
+
+                                <div class="shrink-0 text-right">
+                                    <div class="text-[14px] font-medium {{ $this->statusTextClasses($request->status) }}">
+                                        {{ $this->statusLabel($request->status) }}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="mt-[14px] text-[14px] leading-[1.55] text-[#4F4F49]">
+                                {{ $request->comment }}
+                            </div>
+
+                            @if (! empty($request->attachments))
+                                <div class="mt-[10px] text-[13px] text-[#7B7B76]">
+                                    📎 {{ count($request->attachments) }} {{ $this->filesWord(count($request->attachments)) }}
+                                </div>
+                            @endif
+
+                            <div class="mt-[12px] text-[12px] text-[#9A9A93]">
+                                Создано {{ $request->created_at->translatedFormat('d F Y, H:i') }}
+                            </div>
+
+                            @if ($request->admin_comment)
+                                <div class="mt-[8px] text-[13px] leading-[1.5] text-[#6C6C66]">
+                                    <span class="text-[#90908A]">Ответ администратора:</span>
                                     {{ $request->admin_comment }}
                                 </div>
                             @endif
@@ -421,7 +506,10 @@ new class extends Component
                 x-show="
                     (tab === 'day_off' && !{{ $dayOffCount }}) ||
                     (tab === 'vacation' && !{{ $vacationCount }}) ||
-                    (tab === 'inventory' && !{{ $inventoryCount }})
+                    (tab === 'inventory' && !{{ $inventoryCount }}) ||
+                    (tab === 'salary' && !{{ $salaryCount }}) ||
+                    (tab === 'schedule' && !{{ $scheduleCount }}) ||
+                    (tab === 'feedback' && !{{ $feedbackCount }})
                 "
                 x-transition.opacity.duration.150ms
                 class="flex h-full flex-col items-center justify-center px-[20px] text-center"

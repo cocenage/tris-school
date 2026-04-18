@@ -3,52 +3,125 @@
 use Livewire\Component;
 
 new class extends Component {
-
+    //
 };
 ?>
 
 <div class="min-h-screen bg-[#f7f7f7] flex items-center justify-center p-4">
     <div class="w-full max-w-md rounded-[32px] bg-white p-6 shadow-sm border border-[#f0f0f0]">
-        <h1 class="text-[28px] leading-[34px] font-semibold text-[#111827] mb-3">
-            Вход в приложение
-        </h1>
+        <div id="app-loading" class="hidden">
+            <h1 class="text-[28px] leading-[34px] font-semibold text-[#111827] mb-3">
+                Авторизация
+            </h1>
 
-        <p class="text-[15px] leading-6 text-[#6b7280] mb-6">
-            Для продолжения откройте приложение через Telegram.
-        </p>
+            <p class="text-[15px] leading-6 text-[#6b7280] mb-6">
+                Выполняем вход через Telegram...
+            </p>
 
-        <button id="tg-login-btn" class="w-full h-14 rounded-full bg-[#111827] text-white text-[16px] font-medium">
-            Продолжить через Telegram
-        </button>
+            <div class="w-full h-14 rounded-full bg-[#111827] text-white text-[16px] font-medium flex items-center justify-center">
+                Загрузка...
+            </div>
+        </div>
 
-        <pre id="debug" class="mt-4 text-[12px] text-red-500 whitespace-pre-wrap"></pre>
+        <div id="browser-login" class="hidden">
+            <h1 class="text-[28px] leading-[34px] font-semibold text-[#111827] mb-3">
+                Вход в приложение
+            </h1>
+
+            <p class="text-[15px] leading-6 text-[#6b7280] mb-6">
+                Войдите через Telegram, чтобы продолжить.
+            </p>
+
+            <div class="mb-4 flex justify-center">
+                <script async
+                    src="https://telegram.org/js/telegram-widget.js?22"
+                    data-telegram-login="{{ config('services.telegram.bot_username') }}"
+                    data-size="large"
+                    data-radius="999"
+                    data-auth-url="{{ route('telegram.login.widget') }}"
+                    data-request-access="write">
+                </script>
+            </div>
+
+            <a
+                href="https://t.me/{{ config('services.telegram.bot_username') }}"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="w-full h-14 rounded-full bg-[#111827] text-white text-[16px] font-medium flex items-center justify-center"
+            >
+                Открыть бота
+            </a>
+        </div>
+
+        <pre id="debug" class="mt-4 text-[12px] text-red-500 whitespace-pre-wrap hidden"></pre>
     </div>
 
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
 
     <script>
+        const appLoading = document.getElementById('app-loading');
+        const browserLogin = document.getElementById('browser-login');
         const debug = document.getElementById('debug');
 
-        document.getElementById('tg-login-btn').addEventListener('click', async () => {
+        function showBrowser(message = null) {
+            appLoading.classList.add('hidden');
+            browserLogin.classList.remove('hidden');
+
+            if (message) {
+                debug.classList.remove('hidden');
+                debug.textContent = message;
+            }
+        }
+
+        async function sendWriteAccessGranted() {
             try {
-                const tg = window.Telegram?.WebApp;
+                await fetch('{{ route('telegram.write-access') }}', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': '{{ csrf_token() }}',
+                        'Accept': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        granted: true,
+                    }),
+                });
+            } catch (e) {
+                console.error('write access save error', e);
+            }
+        }
 
-                debug.textContent =
-                    'window.Telegram: ' + !!window.Telegram + '\n' +
-                    'tg exists: ' + !!tg + '\n' +
-                    'initData length: ' + (tg?.initData?.length || 0);
+        async function tryRequestWriteAccess(tg) {
+            if (!tg || typeof tg.requestWriteAccess !== 'function') {
+                return;
+            }
 
-                if (!tg) {
-                    alert('Telegram WebApp не найден');
-                    return;
-                }
+            try {
+                tg.requestWriteAccess(function (granted) {
+                    if (granted) {
+                        sendWriteAccessGranted();
+                    }
+                });
+            } catch (e) {
+                console.error('requestWriteAccess error', e);
+            }
+        }
 
-                if (!tg.initData) {
-                    alert('initData пустой. Открой страницу именно внутри Telegram Mini App.');
-                    return;
-                }
+        async function loginViaMiniApp() {
+            const tg = window.Telegram?.WebApp;
 
-                const response = await fetch('/telegram/auth', {
+            if (!tg || !tg.initData || tg.initData.length === 0) {
+                showBrowser();
+                return;
+            }
+
+            appLoading.classList.remove('hidden');
+
+            try {
+                tg.ready();
+
+                const response = await fetch('{{ route('telegram.auth') }}', {
                     method: 'POST',
                     credentials: 'include',
                     headers: {
@@ -61,18 +134,26 @@ new class extends Component {
                     }),
                 });
 
-                const text = await response.text();
-                debug.textContent += '\nHTTP: ' + response.status + '\nResponse: ' + text;
+                const data = await response.json();
 
-                const data = JSON.parse(text);
+                if (!response.ok) {
+                    throw new Error(data.message || 'Ошибка авторизации');
+                }
+
+                await tryRequestWriteAccess(tg);
 
                 if (data.redirect) {
                     window.location.replace(data.redirect);
+                    return;
                 }
+
+                throw new Error('Сервер не вернул redirect.');
             } catch (e) {
-                debug.textContent += '\nError: ' + e.message;
                 console.error(e);
+                showBrowser('Mini App auth error: ' + e.message);
             }
-        });
+        }
+
+        loginViaMiniApp();
     </script>
 </div>

@@ -13,15 +13,15 @@ class EnsureUserIsApproved
         $user = $request->user();
 
         if (! $user) {
-            return redirect()->route('landing');
+            return redirect()->route('landing.page');
         }
 
-        if ($user->status === 'rejected') {
-            return redirect()->route('access.rejected');
-        }
-
-        if ($user->status !== 'approved' || ! $user->role) {
-            return redirect()->route('access.pending');
+        if ($user->status !== 'approved') {
+            return redirect()->route(match ($user->status) {
+                'pending' => 'access.pending',
+                'rejected' => 'access.rejected',
+                default => 'landing.page',
+            });
         }
 
         return $next($request);

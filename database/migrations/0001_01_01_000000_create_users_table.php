@@ -14,19 +14,30 @@ return new class extends Migration {
             $table->id();
             $table->string('telegram_id')->nullable()->unique();
             $table->string('telegram_username')->nullable();
-            $table->string('telegram_photo_url')->nullable();
+            $table->string('telegram_first_name')->nullable();
+            $table->string('telegram_last_name')->nullable();
+
+            $table->text('telegram_photo_url')->nullable();
             $table->string('telegram_avatar_path')->nullable();
-            
-            $table->enum('role', ['admin', 'supervisor', 'cleaner'])->nullable();
-            $table->enum('status', ['pending', 'approved', 'rejected'])->default('pending');
+
+            $table->timestamp('telegram_write_access_granted_at')->nullable();
+            $table->timestamp('telegram_last_auth_at')->nullable();
+            $table->string('telegram_login_source')->nullable();
+
+            $table->string('role')->default('cleaner');
+            $table->string('status')->default('pending');
 
             $table->timestamp('approved_at')->nullable();
-            $table->foreignId('approved_by')->nullable()->constrained('users')->nullOnDelete();
+            $table->foreignId('approved_by')
+                ->nullable()
+                ->constrained('users')
+                ->nullOnDelete();
+
             $table->timestamp('last_login_at')->nullable();
 
             $table->timestamp('birthday')->nullable();
             $table->timestamp('work_started_at')->nullable();
-            $table->boolean('dip')->nullable();
+            $table->boolean('dip')->default(false);
             $table->boolean('is_active')->default(true);
 
             $table->string('name')->nullable();

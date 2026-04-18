@@ -23,12 +23,18 @@ return [
     ],
 
     'inventory' => [
-    'applications_url' => env('INVENTORY_APPLICATIONS_URL'),
-    'admin_chat_url' => env('INVENTORY_ADMIN_CHAT_URL'),
-],
+        'applications_url' => env('INVENTORY_APPLICATIONS_URL'),
+        'admin_chat_url' => env('INVENTORY_ADMIN_CHAT_URL'),
+    ],
+
+    'staff_forms' => [
+        'chat_id' => env('TELEGRAM_CHAT_ID_STAFF_FORMS'),
+        'thread_id' => env('TELEGRAM_THREAD_ID_STAFF_FORMS'),
+    ],
 
     'telegram' => [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
+        'bot_username' => env('TELEGRAM_BOT_USERNAME'),
 
         'chat_id_formweekend' => env('TELEGRAM_CHAT_ID_FORMWEEKEND'),
         'thread_id_formweekend' => env('TELEGRAM_THREAD_ID_FORMWEEKEND'),
@@ -36,8 +42,8 @@ return [
         'chat_id_vacation' => env('TELEGRAM_CHAT_ID_VACATION'),
         'thread_id_vacation' => env('TELEGRAM_THREAD_ID_VACATION'),
 
-          'chat_id_inventory' => env('TELEGRAM_CHAT_ID_INVENTORY'),
-    'thread_id_inventory' => env('TELEGRAM_THREAD_ID_INVENTORY'),
+        'chat_id_inventory' => env('TELEGRAM_CHAT_ID_INVENTORY'),
+        'thread_id_inventory' => env('TELEGRAM_THREAD_ID_INVENTORY'),
     ],
 
     'postmark' => [

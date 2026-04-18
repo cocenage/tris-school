@@ -19,7 +19,8 @@ new class extends Component {
             </a>
 
             {{-- квадрат --}}
-            <a href="" class="aspect-square rounded-[30px] bg-[#E1E1E1] p-[15px] flex items-start">
+            <a href="{{ route('page-applications.salary') }}"
+                class="aspect-square rounded-[30px] bg-[#E1E1E1] p-[15px] flex items-start">
                 <p class="text-[14px] leading-[1.2]">Вопрос по зарплате</p>
             </a>
 
@@ -36,12 +37,14 @@ new class extends Component {
             </a>
 
             {{-- большая --}}
-            <a href="" class="col-span-2 rounded-[30px] bg-[#E1E1E1] p-[15px] h-full flex items-start">
+            <a href="{{ route('page-applications.schedule') }}"
+                class="col-span-2 rounded-[30px] bg-[#E1E1E1] p-[15px] h-full flex items-start">
                 <p class="text-[14px] leading-[1.2]">Вопрос по графику работы</p>
             </a>
 
             {{-- квадрат --}}
-            <a href="" class="aspect-square rounded-[30px] bg-[#E1E1E1] p-[15px] flex items-start">
+            <a href="{{ route('page-applications.feedback') }}"
+                class="aspect-square rounded-[30px] bg-[#E1E1E1] p-[15px] flex items-start">
                 <p class="text-[14px] leading-[1.2]">Отзывы или предложение</p>
             </a>
 
