@@ -6,6 +6,9 @@ new class extends Component {
     //
 };
 ?>
+<x-slot:header>
+    <livewire:search.search-bar />
+</x-slot:header>
 
 <div class="flex flex-col justify-between h-full w-full">
     <h1 class="m-[35px]">Заявки</h1>

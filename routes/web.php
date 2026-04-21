@@ -45,7 +45,8 @@ Route::livewire('/access/rejected', 'access.rejected')
 Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/home', 'page-home')->name('page-home');
     Route::livewire('/checks', 'page-checks')->name('page-checks');
-    
+    Route::livewire('/checks/control', 'forms.page-control')->name('page-checks.control');
+
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
     Route::livewire('/applications/vacation', 'forms.page-vacation')->name('page-applications.vacation');

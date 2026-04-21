@@ -7,11 +7,15 @@ new class extends Component {
 };
 ?>
 
+<x-slot:header>
+    <livewire:search.search-bar />
+</x-slot:header>
+
 <div class="flex flex-col justify-between h-full w-full">
     <h1 class="m-[35px]">Проверки</h1>
     <div class="px-[20px] pb-[20px] flex flex-col gap-[10px]">
 
-        <a href="">
+       <a href="{{ route('page-checks.control') }}">
             <div class="grid grid-cols-3 gap-[10px] bg-[#E1E1E1] rounded-[30px]">
 
                 {{-- большая --}}

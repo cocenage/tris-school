@@ -696,6 +696,24 @@ foreach ($vacationRequests as $vacationRequest) {
 };
 ?>
 
+<x-slot:header>
+ <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
+        <button
+            type="button"
+            onclick="history.back()"
+            class=" duration-200 flex items-center justify-center shrink-0"
+        >
+            <x-heroicon-o-arrow-left class="w-[20px] h-[20px] stroke-[2]" />
+        </button>
+  <span class="capitalize text-[18px] leading-none transition-all duration-300 flex items-center justify-center">
+            {{ $month->translatedFormat('F') }}
+        </span>
+      
+
+        <x-heroicon-o-magnifying-glass class="w-[20px] h-[20px] stroke-[2] shrink-0" />
+    </div>
+</x-slot:header>
+
 <div
     x-data="{
         open: @entangle('sheetOpen').live,
@@ -948,22 +966,6 @@ foreach ($vacationRequests as $vacationRequest) {
     }"
     class="h-full w-full flex flex-col overflow-hidden overflow-x-hidden"
 >
-    <div class="w-full h-[90px] flex items-center justify-between px-[30px]">
-        <button
-            type="button"
-            onclick="history.back()"
-            class="w-[44px] h-[44px] rounded-full bg-[#F3F3F3] hover:bg-[#E7E7E7] active:bg-[#DCDCDC] duration-200 flex items-center justify-center shrink-0"
-        >
-            <x-heroicon-o-arrow-left class="w-[30px] h-[30px] stroke-[2.5]" />
-        </button>
-
-        <h2 class="capitalize text-[28px] font-[600] leading-none transition-all duration-300">
-            {{ $month->translatedFormat('F') }}
-        </h2>
-
-        <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2.5] shrink-0" />
-    </div>
-
     <div class="flex-1 overflow-y-auto overflow-x-hidden bg-white rounded-t-[40px] overscroll-y-contain">
         <div class="sticky top-0 z-20 bg-white pt-[20px] pb-[15px] overflow-x-hidden">
             <div class="px-[20px] flex gap-[5px] overflow-x-auto overflow-y-hidden no-scrollbar bg-white w-full max-w-full">
@@ -1037,6 +1039,8 @@ foreach ($vacationRequests as $vacationRequest) {
                 @endforeach
             </div>
         </div>
+
+
 
         <div class="grid grid-cols-7 gap-0 mb-[8px] px-[2px]">
             @foreach ($this->dayLetters as $letter)

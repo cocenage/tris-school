@@ -32,7 +32,7 @@ new class extends Component
             <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2.5] opacity-50 shrink-0" />
 
             <span class="text-[#7A7A7A] text-[16px]">
-                Найти в Tris Academy
+                [Найти в Tris Academy] поиск в разработке
             </span>
         </div>
     </button>
