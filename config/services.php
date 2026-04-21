@@ -44,6 +44,9 @@ return [
 
         'chat_id_inventory' => env('TELEGRAM_CHAT_ID_INVENTORY'),
         'thread_id_inventory' => env('TELEGRAM_THREAD_ID_INVENTORY'),
+
+        'chat_id_calendar' => env('TELEGRAM_CHAT_ID_CALENDAR'),
+        'thread_id_calendar' => env('TELEGRAM_THREAD_ID_CALENDAR'),
     ],
 
     'postmark' => [

@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
 
 class CalendarEvent extends Model
@@ -83,5 +84,10 @@ class CalendarEvent extends Model
     public function getRepeatLabelAttribute(): string
     {
         return static::repeatOptions()[$this->repeat_type] ?? $this->repeat_type;
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
     }
 }
