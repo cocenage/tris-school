@@ -739,34 +739,68 @@ new class extends Component {
 
 ?>
 
+<x-slot:header>
+ <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
+<button
+    type="button"
+    onclick="history.back()"
+    class="group flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 active:bg-[#213259]/10"
+>
+    <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2] transition-all duration-200 group-hover:-translate-x-[1px] group-hover:text-[#2D6494]" />
+</button>
+  <span class="text-[18px] leading-none flex items-center justify-center">
+            Запрос выходного
+        </span>
+      
+
+        <button
+    type="button"
+    class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 hover:text-[#2D6494] active:bg-[#213259]/10"
+>
+    <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2]" />
+</button>
+    </div>
+</x-slot:header>
+
 <div
     x-data="{
-        lastScroll: 0,
+        lastScrollTop: 0,
         buttonsHidden: false,
+        nearBottom: false,
+
         init() {
-            const container = this.$refs.scrollArea;
+            const el = this.$refs.scrollArea;
+            if (!el) return;
 
-            if (!container) return;
+            const onScroll = () => {
+                const current = el.scrollTop;
+                const maxScroll = el.scrollHeight - el.clientHeight;
 
-            this.lastScroll = container.scrollTop;
+                this.nearBottom = current >= (maxScroll - 140);
 
-            container.addEventListener('scroll', () => {
-                const current = container.scrollTop;
-
-                if (current <= 8) {
+                if (this.nearBottom) {
                     this.buttonsHidden = false;
-                    this.lastScroll = current;
+                    this.lastScrollTop = current;
                     return;
                 }
 
-                if (current > this.lastScroll + 6) {
+                if (current <= 8) {
+                    this.buttonsHidden = false;
+                    this.lastScrollTop = current;
+                    return;
+                }
+
+                if (current > this.lastScrollTop + 8) {
                     this.buttonsHidden = true;
-                } else if (current < this.lastScroll - 6) {
+                } else if (current < this.lastScrollTop - 8) {
                     this.buttonsHidden = false;
                 }
 
-                this.lastScroll = current;
-            }, { passive: true });
+                this.lastScrollTop = current;
+            };
+
+            onScroll();
+            el.addEventListener('scroll', onScroll, { passive: true });
         }
     }"
     class="flex h-full min-h-0 flex-col bg-[#F4F7FB]"
@@ -777,33 +811,33 @@ new class extends Component {
             class="flex-1 min-h-0 overflow-y-auto"
         >
             <div class="min-h-full rounded-t-[38px] bg-white">
-                <div class="p-[20px]">
+              <div class="p-[20px] pb-[82px]">
                     <div class="mb-[24px]">
-                        <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
+                        <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
                             Когда вас не будет?
                         </h2>
 
-                        <div class="rounded-[30px] border border-[#D9E4EC] bg-[#EAF1F6] px-[16px] py-[18px]">
+                        <div class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] py-[20px]">
                             <div class="mb-[18px] flex items-center justify-between">
-                                <button
-                                    type="button"
-                                    wire:click="prevMonth"
-                                    class="flex h-[42px] w-[42px] items-center justify-center rounded-full border border-[#D7E2EA] bg-[#F8FBFD] text-[#213259] transition duration-200 hover:bg-white active:scale-[0.97]"
-                                >
-                                    <x-heroicon-o-chevron-left class="h-[18px] w-[18px]" />
-                                </button>
+                          <button
+    type="button"
+    wire:click="prevMonth"
+    class="ml-[15px] group flex h-[40px] w-[40px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 cursor-pointer active:scale-[0.96]"
+>
+    <x-heroicon-o-chevron-left class="h-[20px] w-[20px] stroke-[2.5px] transition-transform duration-200 group-hover:-translate-x-[2px]" />
+</button>
 
-                                <div class="text-[18px] font-semibold tracking-[-0.02em] text-[#213259] capitalize">
+                                <div class="text-[17px] tracking-[-0.02em] text-[#213259] capitalize">
                                     {{ $month->translatedFormat('F Y') }}
                                 </div>
 
-                                <button
-                                    type="button"
-                                    wire:click="nextMonth"
-                                    class="flex h-[42px] w-[42px] items-center justify-center rounded-full border border-[#D7E2EA] bg-[#F8FBFD] text-[#213259] transition duration-200 hover:bg-white active:scale-[0.97]"
-                                >
-                                    <x-heroicon-o-chevron-right class="h-[18px] w-[18px]" />
-                                </button>
+                     <button
+    type="button"
+    wire:click="nextMonth"
+        class="mr-[15px] group flex h-[40px] w-[40px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 cursor-pointer active:scale-[0.96]"
+>
+    <x-heroicon-o-chevron-right class="h-[20px] w-[20px] stroke-[2.5px] transition-transform duration-200 group-hover:translate-x-[2px]" />
+</button>
                             </div>
 
                             <div class="mb-[12px] grid grid-cols-7">
@@ -876,7 +910,7 @@ new class extends Component {
                             rows="4"
                             maxlength="500"
                             placeholder="Поделитесь планами на время отсутствия"
-                            class="w-full rounded-[23px] border border-[#D9E4EC] bg-[#EAF1F6] px-[20px] py-[15px] text-[16px] text-[#213259] placeholder:text-[16px] placeholder:text-[#6F8096] outline-none transition duration-200 focus:border-[#9FB4C9] focus:bg-[#F4F8FB] focus:ring-0"
+                            class="w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[16px] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
                         ></textarea>
 
                         @error('comment')
@@ -895,39 +929,51 @@ new class extends Component {
             </div>
         </div>
 
-        <div
-            :class="buttonsHidden
-                ? 'translate-y-full opacity-0 pointer-events-none'
-                : 'translate-y-0 opacity-100'"
-            class="shrink-0 border-t border-[#E3EAF0] bg-white p-5 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
-        >
-            <div class="grid grid-cols-3 gap-[10px]">
-                <div class="col-span-1">
-                    <x-ui.button
-                        type="button"
-                        variant="secondary"
-                        wire:click="resetForm"
-                    >
-                        Сбросить
-                    </x-ui.button>
-                </div>
-
-                <div class="col-span-2">
-                  <x-ui.button
-    type="submit"
-    variant="primary"
-    wire:loading.attr="disabled"
-    wire:target="submit"
-    :disabled="empty($ranges) || blank($comment)"
+<div
+    x-ref="footerBar"
+    class="shrink-0 overflow-hidden bg-transparent"
+    :class="buttonsHidden ? 'max-h-0' : 'max-h-[82px]'"
+    style="transition: max-height 300ms ease;"
 >
-                        <span wire:loading.remove wire:target="submit">
-                            Отправить заявку
-                        </span>
+           <div class="border-t border-[#E3EAF0] bg-white/95 px-5 pb-5 pt-4 backdrop-blur transition-all duration-300 supports-[backdrop-filter]:bg-white/80">
+                <div class="grid grid-cols-3 gap-[10px]">
+                    <div class="col-span-1">
+                        <x-ui.button
+                            type="button"
+                            variant="secondary"
+                            wire:click="resetForm"
+                        >
+                            Сбросить
+                        </x-ui.button>
+                    </div>
 
-                        <span wire:loading wire:target="submit">
-                            Отправляем...
-                        </span>
-                    </x-ui.button>
+                    <div class="col-span-2">
+                        <x-ui.button
+                            type="submit"
+                            variant="primary"
+                            wire:loading.attr="disabled"
+                            wire:target="submit"
+                            :disabled="empty($ranges) || blank($comment)"
+                        >
+                            <span wire:loading.remove wire:target="submit">
+                                Отправить заявку
+                            </span>
+
+<span
+    wire:loading
+    wire:target="submit"
+    class="inline-flex items-center"
+>
+    <span>Отправляем</span>
+
+    <span class="inline-flex items-center relative top-[-1px] leading-none">
+        <span class="inline-block animate-bounce [animation-delay:0ms]">.</span>
+        <span class="inline-block animate-bounce [animation-delay:150ms]">.</span>
+        <span class="inline-block animate-bounce [animation-delay:300ms]">.</span>
+    </span>
+</span>
+                        </x-ui.button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -942,13 +988,15 @@ new class extends Component {
                     alt="warning cat"
                 >
 
-                <h1 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
+                <h1 class="mt-[28px] text-[22px]! font-semibold tracking-[-0.02em] text-[#111111]">
                     Обязательные рабочие дни
                 </h1>
 
-                <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">
-                    Воскресенье и понедельник — обязательные рабочие дни.
-                    Выходной на эти дни можно согласовать только в пятницу.
+                <p class="pt-[18px] text-[16px] leading-[1.5] text-black/55 flex flex-col">
+                    <span>Воскресенье и понедельник — обязательные рабочие дни</span>
+                     <span> Выходной на эти дни можно согласовать только в пятницу</span>
+                    
+                   
                 </p>
 
                 <div class="flex gap-[10px] pt-[32px]">
@@ -965,7 +1013,7 @@ new class extends Component {
                             href="{{ $adminChatUrl }}"
                             target="_blank"
                         >
-                            Написать администратору
+                            Написать
                         </x-ui.button>
                     @endif
                 </div>
@@ -983,7 +1031,7 @@ new class extends Component {
                 >
 
                 <h1 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Заявка успешно отправлена!
+                    Заявка отправлена!
                 </h1>
 
                 <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">

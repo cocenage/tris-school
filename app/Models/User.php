@@ -63,7 +63,9 @@ class User extends Authenticatable
 
     public function canAccessPanel(Panel $panel): bool
     {
-        return $this->role === 'admin' && $this->status === 'approved';
+        return $panel->getId() === 'admin'
+            && $this->role === 'admin'
+            && $this->status === 'approved';
     }
 
     public function isAdmin(): bool
@@ -78,7 +80,7 @@ class User extends Authenticatable
 
     public function hasTelegramWriteAccess(): bool
     {
-        return ! is_null($this->telegram_write_access_granted_at);
+        return !is_null($this->telegram_write_access_granted_at);
     }
 
     public function getAvatarUrlAttribute(): ?string

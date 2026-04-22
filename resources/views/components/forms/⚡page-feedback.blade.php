@@ -32,6 +32,24 @@ new class extends Component {
         );
     }
 
+    protected function buildSuccessMessage(): string
+    {
+        $now = now()->setTimezone(config('app.timezone'));
+
+        $start = $now->copy()->setTime(10, 0);
+        $end = $now->copy()->setTime(18, 0);
+
+        if ($now->between($start, $end)) {
+            return 'Ответ ожидайте сегодня с 10:00 до 18:00';
+        }
+
+        if ($now->greaterThan($end)) {
+            return 'Мы получили её после окончания рабочего дня. Ответ ожидайте завтра с 10:00 до 18:00';
+        }
+
+        return 'Ответ ожидайте сегодня с 10:00 до 18:00';
+    }
+
     public function removeAttachment(int $index): void
     {
         if (! isset($this->attachments[$index])) {
@@ -103,7 +121,7 @@ new class extends Component {
 
             $this->resetForm();
 
-            $this->successMessage = 'Ваш отзыв или предложение отправлены.';
+            $this->successMessage = $this->buildSuccessMessage();
             $this->successSheetOpen = true;
         } catch (\Throwable $e) {
             Log::error('Feedback suggestion submit error', [
@@ -125,182 +143,248 @@ new class extends Component {
 };
 
 ?>
+
+@push('meta')
+<title>Отзыв или предложение • Tris Service Academy</title>
+<meta name="description" content="">
+<meta name="keywords" content="">
+@endpush
+
+<x-slot:header>
+    <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
+        <button
+            type="button"
+            onclick="history.back()"
+            class="group flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 active:bg-[#213259]/10"
+        >
+            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2] transition-all duration-200 group-hover:-translate-x-[1px] group-hover:text-[#2D6494]" />
+        </button>
+
+        <span class="flex items-center justify-center text-[18px] leading-none">
+            Отзыв или предложение
+        </span>
+
+        <button
+            type="button"
+            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 hover:text-[#2D6494] active:bg-[#213259]/10"
+        >
+            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2]" />
+        </button>
+    </div>
+</x-slot:header>
+
 <div
     x-data="{
-        lastScroll: 0,
-        showFloatingBar: true,
-        docked: true,
+        lastScrollTop: 0,
+        buttonsHidden: false,
+        nearBottom: false,
 
         init() {
-            const scrollArea = this.$refs.scrollArea;
-            const footerAnchor = this.$refs.footerAnchor;
+            const el = this.$refs.scrollArea;
+            if (!el) return;
 
-            if (!scrollArea || !footerAnchor) return;
+            const onScroll = () => {
+                const current = el.scrollTop;
+                const maxScroll = el.scrollHeight - el.clientHeight;
 
-            this.lastScroll = scrollArea.scrollTop;
+                this.nearBottom = current >= (maxScroll - 140);
 
-            const updateDockedState = () => {
-                const scrollRect = scrollArea.getBoundingClientRect();
-                const anchorRect = footerAnchor.getBoundingClientRect();
-
-                this.docked = anchorRect.top <= scrollRect.bottom;
-            };
-
-            updateDockedState();
-
-            scrollArea.addEventListener('scroll', () => {
-                const current = scrollArea.scrollTop;
-
-                updateDockedState();
-
-                if (current <= 8) {
-                    this.showFloatingBar = true;
-                    this.lastScroll = current;
+                if (this.nearBottom) {
+                    this.buttonsHidden = false;
+                    this.lastScrollTop = current;
                     return;
                 }
 
-                if (current > this.lastScroll + 8) {
-                    this.showFloatingBar = false;
-                } else if (current < this.lastScroll - 8) {
-                    this.showFloatingBar = true;
+                if (current <= 8) {
+                    this.buttonsHidden = false;
+                    this.lastScrollTop = current;
+                    return;
                 }
 
-                this.lastScroll = current;
-            }, { passive: true });
+                if (current > this.lastScrollTop + 8) {
+                    this.buttonsHidden = true;
+                } else if (current < this.lastScrollTop - 8) {
+                    this.buttonsHidden = false;
+                }
 
-            window.addEventListener('resize', updateDockedState);
+                this.lastScrollTop = current;
+            };
+
+            onScroll();
+            el.addEventListener('scroll', onScroll, { passive: true });
         }
     }"
-    class="flex h-full min-h-0 flex-col bg-[#F5F6F7]"
+    class="flex h-full min-h-0 flex-col bg-[#F4F7FB]"
 >
     <form wire:submit="submit" class="flex h-full min-h-0 flex-col">
-        <div class="flex-1 min-h-0 overflow-y-auto">
-            <div class="mx-auto w-full max-w-[768px]">
-                <div class="rounded-t-[32px] bg-white px-[20px] pb-[140px] pt-[20px]">
-       
+        <div
+            x-ref="scrollArea"
+            class="flex-1 min-h-0 overflow-y-auto"
+        >
+            <div class="min-h-full rounded-t-[38px] bg-white">
+                <div class="p-[20px] pb-[82px]">
+                    <div class="mb-[24px] relative z-20" x-data="{ open: false }">
+                        <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
+                            Что хотите отправить?
+                        </h2>
 
-                    <div class="space-y-[18px]">
-                        <div>
-                            <label class="mb-[8px] block text-[14px] font-medium text-[#111111]">
-                                Тип вопроса
-                            </label>
+                        <button
+                            type="button"
+                            @click="open = !open"
+                            class="w-full flex items-center justify-between rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[18px] py-[14px] text-left transition duration-200 hover:bg-white"
+                        >
+                            <span class="text-[15px] text-[#213259]">
+                                {{ $type ?: 'Выберите тип' }}
+                            </span>
 
-                            <div class="relative">
-                                <select
-                                    wire:model="type"
-                                    class="w-full appearance-none rounded-[18px] border border-[#E7E7E7] bg-[#F8F8F8] px-[16px] py-[14px] pr-[42px] text-[15px] text-[#111111] outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
-                                >
-                                    <option value="">Выберите тип</option>
-                                    <option value="Отзыв">Отзыв</option>
-                                    <option value="Предложение">Предложение</option>
-                                    <option value="Жалоба">Жалоба</option>
-                                    <option value="Идея">Идея</option>
-                                    <option value="Другое">Другое</option>
-                                </select>
-
-                                <div class="pointer-events-none absolute inset-y-0 right-[16px] flex items-center text-black/35">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="m19 9-7 7-7-7" />
-                                    </svg>
-                                </div>
+                            <div
+                                class="transition-transform duration-200"
+                                :class="open ? 'rotate-180' : ''"
+                            >
+                                <x-heroicon-o-chevron-down class="w-[18px] h-[18px] text-[#213259]" />
                             </div>
+                        </button>
 
-                            @error('type')
-                                <div class="mt-[8px] text-[13px] text-[#D92D20]">
-                                    {{ $message }}
-                                </div>
-                            @enderror
-                        </div>
-
-                        <div>
-                            <label class="mb-[8px] block text-[14px] font-medium text-[#111111]">
-                                Комментарий
-                            </label>
-
-                            <textarea
-                                wire:model.live.debounce.400ms="comment"
-                                rows="6"
-                                maxlength="2000"
-                                placeholder="Например: было бы удобно, если бы..."
-                                class="w-full rounded-[18px] border border-[#E7E7E7] bg-[#F8F8F8] px-[16px] py-[14px] text-[15px] text-[#111111] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
-                            ></textarea>
-
-                            <div class="mt-[8px] flex items-center justify-between gap-[12px]">
-                                @error('comment')
-                                    <div class="text-[13px] text-[#D92D20]">
-                                        {{ $message }}
-                                    </div>
-                                @else
-                           
-                                @enderror
-
-                                
-                            </div>
-                        </div>
-
-                        <div>
-                            <label class="mb-[8px] block text-[14px] font-medium text-[#111111]">
-                                Вложения
-                                <span class="font-normal text-black/35">(необязательно)</span>
-                            </label>
-
-                            <label class="flex cursor-pointer items-center justify-center rounded-[18px] border border-dashed border-[#DADADA] bg-[#FAFAFA] px-[16px] py-[18px] text-center transition hover:bg-white">
-                                <input
-                                    type="file"
-                                    wire:model="attachments"
-                                    multiple
-                                    class="hidden"
+                        <div
+                            x-show="open"
+                            x-transition.origin.top
+                            @click.outside="open = false"
+                            class="absolute left-0 right-0 top-full mt-[8px] overflow-hidden rounded-[20px] border border-[#E7E7E7] bg-white shadow-[0_10px_24px_rgba(33,50,89,0.08)]"
+                            style="display: none;"
+                        >
+                            @foreach ([
+                                'Отзыв',
+                                'Предложение',
+                                'Жалоба',
+                                'Идея',
+                                'Другое',
+                            ] as $option)
+                                <button
+                                    type="button"
+                                    wire:click="$set('type', '{{ $option }}')"
+                                    @click="open = false"
+                                    class="w-full px-[18px] py-[14px] text-left text-[15px] text-[#213259] transition duration-150 {{ $type === $option ? 'bg-[#F4F7FB] font-medium' : 'hover:bg-[#F8F8F8]' }}"
                                 >
-
-                                <div>
-                                    <div class="text-[14px] font-medium text-[#111111]">
-                                        Добавить файлы
-                                    </div>
-                                    <div class="mt-[4px] text-[12px] text-black/40">
-                                        Фото, скриншоты, документы
-                                    </div>
-                                </div>
-                            </label>
-
-                            @error('attachments.*')
-                                <div class="mt-[8px] text-[13px] text-[#D92D20]">
-                                    {{ $message }}
-                                </div>
-                            @enderror
-
-                            @if (! empty($attachments))
-                                <div class="mt-[10px] space-y-[8px]">
-                                    @foreach ($attachments as $index => $file)
-                                        <div class="flex items-center justify-between gap-[10px] rounded-[16px] border border-[#ECECEC] bg-[#F8F8F8] px-[14px] py-[12px]">
-                                            <div class="min-w-0 truncate text-[14px] text-[#111111]">
-                                                {{ $file->getClientOriginalName() }}
-                                            </div>
-
-                                            <button
-                                                type="button"
-                                                wire:click="removeAttachment({{ $index }})"
-                                                class="shrink-0 text-[12px] font-medium text-black/45 transition hover:text-black"
-                                            >
-                                                Убрать
-                                            </button>
-                                        </div>
-                                    @endforeach
-                                </div>
-                            @endif
+                                    {{ $option }}
+                                </button>
+                            @endforeach
                         </div>
 
-                        @error('form')
-                            <div class="rounded-[18px] border border-[#F3D1D1] bg-[#FFF6F6] px-[14px] py-[12px] text-[14px] text-[#9B1C1C]">
+                        @error('type')
+                            <div class="mt-[8px] px-[4px] text-[15px] text-[#D92D20]">
                                 {{ $message }}
                             </div>
                         @enderror
                     </div>
+
+                    <div class="mb-[18px]">
+                        <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
+                            Расскажите подробней
+                        </h2>
+
+                        <textarea
+                            wire:model.live.debounce.400ms="comment"
+                            rows="6"
+                            maxlength="2000"
+                            placeholder="Например: было бы удобно, если бы..."
+                            class="w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[16px] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
+                        ></textarea>
+
+               
+                    </div>
+
+                    <div class="mb-[8px]">
+                        <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
+                            Добавьте фото
+                        </h2>
+
+                        <label class="block cursor-pointer rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[18px] py-[16px] transition duration-200 hover:bg-white">
+                            <input
+                                type="file"
+                                wire:model="attachments"
+                                multiple
+                                accept="image/*"
+                                class="hidden"
+                            >
+
+                            <div class="flex items-center gap-[12px]">
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-[15px] font-medium text-[#213259]">
+                                        Выбрать фото
+                                    </div>
+
+                                    <div class="mt-[2px] text-[13px] text-black/40">
+                                        Можно добавить одну или несколько фотографий
+                                    </div>
+                                </div>
+                            </div>
+                        </label>
+
+                        <div
+                            wire:loading
+                            wire:target="attachments"
+                            class="mt-[8px] px-[4px] text-[13px] text-black/40"
+                        >
+                            Загружаем фото...
+                        </div>
+
+                        @error('attachments.*')
+                            <div class="mt-[8px] px-[4px] text-[15px] text-[#D92D20]">
+                                {{ $message }}
+                            </div>
+                        @enderror
+
+                        @if (! empty($attachments))
+                            <div class="mt-[12px] grid grid-cols-3 gap-[8px] sm:grid-cols-4">
+                                @foreach ($attachments as $index => $file)
+                                    <div class="relative overflow-hidden rounded-[18px] border border-[#E7E7E7] bg-[#F8F8F8]">
+                                        @if (str_starts_with((string) $file->getMimeType(), 'image/'))
+                                            <img
+                                                src="{{ $file->temporaryUrl() }}"
+                                                alt="{{ $file->getClientOriginalName() }}"
+                                                class="h-[96px] w-full object-cover"
+                                            >
+                                        @else
+                                            <div class="flex h-[96px] items-center justify-center px-[10px] text-center text-[12px] text-black/40">
+                                                Файл
+                                            </div>
+                                        @endif
+
+                                        <div class="border-t border-[#E7E7E7] px-[10px] py-[8px]">
+                                            <div class="truncate text-[12px] font-medium text-[#213259]">
+                                                {{ $file->getClientOriginalName() }}
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            type="button"
+                                            wire:click="removeAttachment({{ $index }})"
+                                            class="absolute right-[6px] top-[6px] flex h-[26px] w-[26px] items-center justify-center rounded-full bg-white/95 text-[12px] font-medium text-[#213259] shadow-sm"
+                                        >
+                                            ✕
+                                        </button>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
+                    </div>
+
+                    @error('form')
+                        <div class="mt-[14px] rounded-[23px] bg-[#FDF2F2] px-[16px] py-[14px] text-[15px] text-[#9B1C1C]">
+                            ⚠️ {{ $message }}
+                        </div>
+                    @enderror
                 </div>
             </div>
         </div>
 
-        <div class="sticky bottom-0 z-20 shrink-0 border-t border-[#EAEAEA] bg-white/95 backdrop-blur">
-            <div class="mx-auto w-full max-w-[768px] p-[16px]">
+        <div
+            x-ref="footerBar"
+            class="shrink-0 overflow-hidden bg-transparent"
+            :class="buttonsHidden ? 'max-h-0' : 'max-h-[82px]'"
+            style="transition: max-height 300ms ease;"
+        >
+            <div class="border-t border-[#E3EAF0] bg-white/95 px-5 pb-5 pt-4 backdrop-blur transition-all duration-300 supports-[backdrop-filter]:bg-white/80">
                 <div class="grid grid-cols-3 gap-[10px]">
                     <div class="col-span-1">
                         <x-ui.button
@@ -317,14 +401,25 @@ new class extends Component {
                             type="submit"
                             variant="primary"
                             wire:loading.attr="disabled"
-                            wire:target="submit,attachments"
+                            wire:target="submit"
+                            :disabled="blank($type) || blank(trim($comment))"
                         >
-                            <span wire:loading.remove wire:target="submit,attachments">
+                            <span wire:loading.remove wire:target="submit">
                                 Отправить
                             </span>
 
-                            <span wire:loading wire:target="submit,attachments">
-                                Отправляем...
+                            <span
+                                wire:loading
+                                wire:target="submit"
+                                class="inline-flex items-center"
+                            >
+                                <span>Отправляем</span>
+
+                                <span class="inline-flex items-center relative top-[-1px] leading-none">
+                                    <span class="inline-block animate-bounce [animation-delay:0ms]">.</span>
+                                    <span class="inline-block animate-bounce [animation-delay:150ms]">.</span>
+                                    <span class="inline-block animate-bounce [animation-delay:300ms]">.</span>
+                                </span>
                             </span>
                         </x-ui.button>
                     </div>
@@ -343,7 +438,7 @@ new class extends Component {
                 >
 
                 <h2 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Готово
+                    Ваш отзыв отправлен!
                 </h2>
 
                 <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">

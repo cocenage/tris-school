@@ -697,20 +697,25 @@ foreach ($vacationRequests as $vacationRequest) {
 ?>
 
 <x-slot:header>
- <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
+    <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
         <button
             type="button"
             onclick="history.back()"
-            class=" duration-200 flex items-center justify-center shrink-0"
+            class="group flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 active:bg-[#213259]/10"
         >
-            <x-heroicon-o-arrow-left class="w-[20px] h-[20px] stroke-[2]" />
+            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2] transition-all duration-200 group-hover:-translate-x-[1px] group-hover:text-[#2D6494]" />
         </button>
-  <span class="capitalize text-[18px] leading-none transition-all duration-300 flex items-center justify-center">
-            {{ $month->translatedFormat('F') }}
-        </span>
-      
 
-        <x-heroicon-o-magnifying-glass class="w-[20px] h-[20px] stroke-[2] shrink-0" />
+        <span class="text-[18px] leading-none flex items-center justify-center">
+            Календарь
+        </span>
+
+        <button
+            type="button"
+            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 hover:text-[#2D6494] active:bg-[#213259]/10"
+        >
+            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2]" />
+        </button>
     </div>
 </x-slot:header>
 
@@ -1170,7 +1175,11 @@ foreach ($vacationRequests as $vacationRequest) {
                     </div>
                 @endforeach
             </div>
+            <span class="text-[32px] p-[20px]">
+            {{ $month->translatedFormat('F') }}
+        </span>
         </div>
+          
     </div>
 
     <div x-show="open" x-cloak class="fixed inset-0 z-40">
@@ -1271,11 +1280,7 @@ foreach ($vacationRequests as $vacationRequest) {
                     </div>
                 </div>
 
-                <div class="border-t border-b border-[#D9D9D9] pt-[10px] pb-[10px]">
-                    <p class="text-[16px] text-center capitalize">
-                        {{ $this->selectedDay->translatedFormat('l - j F Y') }}
-                    </p>
-                </div>
+              
             </div>
 
             <div

@@ -229,6 +229,48 @@ public function saveAvatar(): void
 
            
         </div>
+
+
+                            <div class="mb-[10px] pt-[20px]">
+            <span class="text-[16px] opacity-50">
+                Блок только для админа 
+            </span>
+        </div>
+
+        <div class="overflow-hidden rounded-[23px] bg-[#F8F7F5]">
+
+
+   
+
+            <a
+            target="_blank"
+              href="https://t.me/cocenage"
+                class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
+            >
+                <div class="flex min-w-0 items-center gap-4">
+                      <x-heroicon-o-cog-6-tooth class="w-[24px] h-[24px] 
+                }}" />
+                
+                   
+
+                    <span class="truncate text-[18px]">
+                        Связь с разрабом
+                    </span>
+                </div>
+
+                      <div class="ml-[15px] flex shrink-0 items-center">
+                     <x-heroicon-o-chevron-right class="w-[18px] h-[18px] transition-transform duration-200 group-hover:translate-x-[2px] stroke-2
+                }}" />
+                  
+                </div>
+            </a>
+
+           
+
+          
+
+           
+        </div>
     </div>
 
 </div>
