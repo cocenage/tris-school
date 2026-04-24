@@ -43,6 +43,8 @@
 html {
     background-color: #f2f3f7;
     color: var(--color-text);
+
+    scroll-behavior: smooth;
 }
 
 h1 {

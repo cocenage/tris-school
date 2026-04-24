@@ -103,7 +103,7 @@ public function saveAvatar(): void
 
         <div class="overflow-hidden rounded-[23px] bg-[#F8F7F5]">
             <a
-                href="#"
+             href="{{ route('page-profile.checks') }}"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
             >
                 <div class="flex min-w-0 items-center gap-4">

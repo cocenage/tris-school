@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    if (! auth()->check()) {
+    if (!auth()->check()) {
         return redirect()->route('landing.page');
     }
 
@@ -57,6 +57,7 @@ Route::middleware(['auth', 'approved'])->group(function () {
 
     Route::livewire('/profile', 'page-profile')->name('page-profile');
     Route::livewire('/profile/calendar', 'profile.page-calendar')->name('page-profile.calendar');
+    Route::livewire('/profile/checks', 'profile.page-checks')->name('page-profile.checks');
     Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
 });
 

@@ -24,16 +24,10 @@ class ControlForm
     public static function configure(Schema $schema): Schema
     {
         return $schema->components([
-            Grid::make([
-                'default' => 1,
-                'lg' => 3,
-            ])->schema([
-                Section::make()
-                    ->columnSpan([
-                        'default' => 1,
-                        'lg' => 2,
-                    ])
-                    ->schema([
+           
+            
+           
+                
                         Tabs::make('control_tabs')
                             ->persistTabInQueryString()
                             ->tabs([
@@ -48,7 +42,7 @@ class ControlForm
                                         self::roomsSection(),
                                     ]),
                             ]),
-                    ]),
+              
 
                 Section::make('Быстрые настройки')
                     ->columnSpan([
@@ -64,7 +58,7 @@ class ControlForm
                             ->label('Логика оценки')
                             ->content('Положительный ответ обычно = 2 балла. Если у критического вопроса выбран отрицательный ответ, итог не сможет попасть в зелёную зону.'),
                     ]),
-            ]),
+          
         ]);
     }
 

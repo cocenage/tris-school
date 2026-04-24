@@ -68,7 +68,8 @@ new class extends Component {
 
 
 
-                <a       href="{{ route('page-profile.calendar') }}" class="group flex flex-col items-center justify-center gap-[5px]">
+        <!-- <a href="{{ route('page-profile.calendar') }}"
+            class="group flex flex-col items-center justify-center gap-[5px]">
 
             <x-heroicon-s-calendar-days class="w-[20px] h-[20px] transition-all duration-300
                 {{ request()->routeIs('page-checks*')
@@ -83,7 +84,7 @@ new class extends Component {
                 }}">
                 Календарь
             </span>
-        </a>
+        </a> -->
 
         <a href="{{ route('page-applications') }}" class="group flex flex-col items-center justify-center gap-[5px]">
 
