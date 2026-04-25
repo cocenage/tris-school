@@ -3,24 +3,43 @@
 use App\Http\Controllers\LogoutController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
-use App\Http\Controllers\TelegramWriteAccessController;
+use App\Models\User;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    if (!auth()->check()) {
-        return redirect()->route('landing.page');
+    if (auth()->check()) {
+        return redirect()->route('page-wishlists');
     }
 
-    return redirect()->route(match (auth()->user()->status) {
-        'approved' => 'page-home',
-        'pending' => 'access.pending',
-        'rejected' => 'access.rejected',
-        default => 'landing.page',
-    });
+    return redirect()->route('login');
 })->name('landing');
 
-Route::livewire('/login', 'landing')->name('landing.page');
+Route::livewire('/login', 'landing')->name('login');
+
+Route::get('/dev-login', function () {
+    abort_unless(app()->environment('local'), 404);
+
+    $user = User::query()->updateOrCreate(
+        ['email' => 'dev@example.com'],
+        [
+            'name' => 'Dev User',
+            'password' => Hash::make('password'),
+            'telegram_id' => 999999999,
+            'telegram_username' => 'dev_user',
+            'status' => 'approved',
+            'is_active' => true,
+            'approved_at' => now(),
+            'last_login_at' => now(),
+        ]
+    );
+
+    Auth::login($user, true);
+    request()->session()->regenerate();
+
+    return redirect()->route('page-wishlists');
+})->name('dev-login');
 
 Route::post('/telegram/auth', TelegramAuthController::class)
     ->name('telegram.auth');
@@ -28,50 +47,45 @@ Route::post('/telegram/auth', TelegramAuthController::class)
 Route::get('/telegram/login', TelegramLoginWidgetController::class)
     ->name('telegram.login.widget');
 
-Route::post('/telegram/write-access', TelegramWriteAccessController::class)
-    ->middleware('auth')
-    ->name('telegram.write-access');
-
 Route::post('/logout', LogoutController::class)
     ->middleware('auth')
     ->name('logout');
 
-Route::livewire('/access/pending', 'access.pending')
-    ->name('access.pending');
+/*
+|--------------------------------------------------------------------------
+| Wishli app
+|--------------------------------------------------------------------------
+| В браузере работает через /dev-login.
+| В Telegram работает через tg.auth.
+*/
 
-Route::livewire('/access/rejected', 'access.rejected')
-    ->name('access.rejected');
+Route::middleware(['tg.auth'])->group(function () {
+    Route::livewire('/wishlists', 'page-wishlists')
+        ->name('page-wishlists');
 
-Route::middleware(['auth', 'approved'])->group(function () {
-    Route::livewire('/home', 'page-home')->name('page-home');
-    Route::livewire('/checks', 'page-checks')->name('page-checks');
-    Route::livewire('/checks/control', 'forms.page-control')->name('page-checks.control');
+    Route::livewire('/wishlists/create', 'page-wishlist-create')
+        ->name('page-wishlist-create');
 
-    Route::livewire('/applications', 'page-applications')->name('page-applications');
-    Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
-    Route::livewire('/applications/vacation', 'forms.page-vacation')->name('page-applications.vacation');
-    Route::livewire('/applications/inventory', 'forms.page-inventory')->name('page-applications.inventory');
-    Route::livewire('/applications/salary', 'forms.page-salary')->name('page-applications.salary');
-    Route::livewire('/applications/schedule', 'forms.page-schedule')->name('page-applications.schedule');
-    Route::livewire('/applications/feedback', 'forms.page-feedback')->name('page-applications.feedback');
+    Route::livewire('/wishlists/{wishlist}', 'page-wishlist-show')
+        ->name('page-wishlist-show');
 
-    Route::livewire('/profile', 'page-profile')->name('page-profile');
-    Route::livewire('/profile/calendar', 'profile.page-calendar')->name('page-profile.calendar');
-    Route::livewire('/profile/checks', 'profile.page-checks')->name('page-profile.checks');
-    Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
+    Route::livewire('/wishlists/{wishlist}/edit', 'page-wishlist-edit')
+        ->name('page-wishlist-edit');
+
+    Route::livewire('/wishlists/{wishlist}/items/create', 'page-wishlist-item-create')
+        ->name('page-wishlist-item-create');
+
+    Route::livewire('/wishlists/{wishlist}/items/{item}/edit', 'page-wishlist-item-edit')
+        ->name('page-wishlist-item-edit');
+
+    Route::livewire('/invite/{token}', 'page-wishlist-invite')
+        ->name('page-wishlist-invite');
 });
 
 Route::fallback(function () {
-    if (!Auth::check()) {
-        return redirect()->route('landing');
+    if (auth()->check()) {
+        return redirect()->route('page-wishlists');
     }
 
-    $user = Auth::user();
-
-    return redirect()->route(match ($user->status) {
-        'approved' => 'page-home',
-        'pending' => 'access.pending',
-        'rejected' => 'access.rejected',
-        default => 'landing',
-    });
+    return redirect()->route('login');
 });

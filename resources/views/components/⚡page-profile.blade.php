@@ -198,7 +198,28 @@ public function saveAvatar(): void
 
         <div class="overflow-hidden rounded-[23px] bg-[#F8F7F5]">
 
+  <a
+ 
+               href="{{ route('page-profile.all-checks') }}"
+                class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
+            >
+                <div class="flex min-w-0 items-center gap-4">
+                      <x-heroicon-o-cog-6-tooth class="w-[24px] h-[24px] 
+                }}" />
+                
+                   
 
+                    <span class="truncate text-[18px]">
+                        Все проверки
+                    </span>
+                </div>
+
+                      <div class="ml-[15px] flex shrink-0 items-center">
+                     <x-heroicon-o-chevron-right class="w-[18px] h-[18px] transition-transform duration-200 group-hover:translate-x-[2px] stroke-2
+                }}" />
+                  
+                </div>
+            </a>
    
 
             <a

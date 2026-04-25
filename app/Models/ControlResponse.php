@@ -85,7 +85,7 @@ class ControlResponse extends Model
             $roomOptional = (bool) ($room['is_optional'] ?? false);
             $items = Arr::get($room, 'items', []);
 
-            if (! is_array($items)) {
+            if (!is_array($items)) {
                 continue;
             }
 
@@ -125,7 +125,7 @@ class ControlResponse extends Model
                         $isCritical = (bool) ($question['is_critical'] ?? false);
                         $isPositive = (bool) ($selectedOption['is_positive'] ?? false);
 
-                        if ($isCritical && ! $isPositive) {
+                        if ($isCritical && !$isPositive) {
                             $hasCriticalFailure = true;
                         }
                     }
@@ -164,4 +164,10 @@ class ControlResponse extends Model
 
         return 'yellow';
     }
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+
 }
