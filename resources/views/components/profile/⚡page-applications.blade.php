@@ -12,6 +12,40 @@ use Livewire\Component;
 
 new class extends Component
 {
+public function mount(): void
+{
+    foreach ([
+        DayOffRequest::class,
+        VacationRequest::class,
+        InventoryRequest::class,
+        SalaryQuestion::class,
+        ScheduleQuestion::class,
+        FeedbackSuggestion::class,
+    ] as $model) {
+        $model::query()
+            ->where('user_id', auth()->id())
+            ->whereNull('answer_seen_at')
+            ->where(function ($query) {
+                $query
+                    ->whereNotNull('answered_at')
+                    ->orWhereNotNull('admin_comment')
+                    ->orWhereIn('status', [
+                        'approved',
+                        'rejected',
+                        'partially_approved',
+                        'issued',
+                        'partially_issued',
+                        'cancelled',
+                        'reviewed',
+                        'closed',
+                    ]);
+            })
+            ->update([
+                'answer_seen_at' => now(),
+            ]);
+    }
+}
+
     public function getRequestsProperty(): Collection
     {
         $dayOffs = DayOffRequest::query()

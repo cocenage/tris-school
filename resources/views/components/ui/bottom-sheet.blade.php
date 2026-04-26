@@ -1,11 +1,12 @@
 {{-- resources/views/components/ui/bottom-sheet.blade.php --}}
 @props([
     'open' => false,
+    'model' => null,
 ])
 
 <div
     x-data="{
-        open: @js($open),
+        open: @if($model) @entangle($model).live @else @js($open) @endif,
         translateY: 0,
         startY: 0,
         dragging: false,

@@ -13,13 +13,16 @@ class EditInventoryItem extends EditRecord
     {
         $data['main'] = $this->normalizeMain($data['main'] ?? []);
 
+        $data['answered_at'] = now();
+        $data['answer_seen_at'] = null;
+
         return $data;
     }
 
     protected function normalizeMain(array $main): array
     {
         $variants = collect($main['variants'] ?? [])
-            ->filter(fn ($variant) => is_array($variant))
+            ->filter(fn($variant) => is_array($variant))
             ->map(function ($variant) {
                 return [
                     'type' => filled($variant['type'] ?? null) ? trim((string) $variant['type']) : null,

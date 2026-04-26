@@ -4,10 +4,18 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Component;
 use Livewire\WithFileUploads;
+use App\Services\UserApplicationBadgeService;
 
 new class extends Component
 {
         use WithFileUploads;
+
+public ?string $applicationsBadge = null;
+
+public function mount(UserApplicationBadgeService $badgeService): void
+{
+    $this->applicationsBadge = $badgeService->label(auth()->id());
+}
 
     public $avatar;
 public function saveAvatar(): void
@@ -129,6 +137,7 @@ public function saveAvatar(): void
               <a href="{{ route('page-profile.applications') }}"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
             >
+            
                 <div class="flex min-w-0 items-center gap-4">
             
 
@@ -142,11 +151,15 @@ public function saveAvatar(): void
                     </span>
                 </div>
 
-                <div class="ml-[15px] flex shrink-0 items-center">
-                     <x-heroicon-o-chevron-right class="w-[18px] h-[18px] transition-transform duration-200 group-hover:translate-x-[2px] stroke-2
-                }}" />
-                  
-                </div>
+       <div class="ml-[15px] flex shrink-0 items-center gap-[8px]">
+    @if($this->applicationsBadge)
+        <span class="flex h-[22px] min-w-[22px] items-center justify-center rounded-full bg-[#E53935] px-[7px] text-[12px] font-bold leading-none text-white shadow-sm">
+            {{ $this->applicationsBadge }}
+        </span>
+    @endif
+
+    <x-heroicon-o-chevron-right class="w-[18px] h-[18px] transition-transform duration-200 group-hover:translate-x-[2px] stroke-2" />
+</div>
             </a>
 
            

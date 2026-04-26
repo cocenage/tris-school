@@ -1,11 +1,17 @@
 <?php
 
+
 use Livewire\Component;
 
 new class extends Component {
-    //
+
 };
 ?>
+
+@php
+    $applicationsBadge = app(\App\Services\UserApplicationBadgeService::class)
+        ->label(auth()->id());
+@endphp
 
 <nav class="w-full h-full p-[15px] relative">
     <svg width="0" height="0" class="absolute">
@@ -86,39 +92,52 @@ new class extends Component {
             </span>
         </a> -->
 
-        <a href="{{ route('page-applications') }}" class="group flex flex-col items-center justify-center gap-[5px]">
+<a href="{{ route('page-applications') }}" class="group  flex flex-col items-center justify-center gap-[5px]">
 
-            <x-heroicon-s-clipboard-document-list class="w-[20px] h-[20px] transition-all duration-300
-                {{ request()->routeIs('page-applications*')
-    ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
-                }}" />
+    <x-heroicon-s-clipboard-document-list class="w-[20px] h-[20px] transition-all duration-300
+        {{ request()->routeIs('page-applications*')
+            ? '[&>*]:fill-[url(#nav-gradient)]'
+            : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
+        }}" />
 
-            <span class="text-[12px] font-medium transition-all duration-300
-                {{ request()->routeIs('page-applications*')
-    ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
-                }}">
-                Заявки
+    <span class="text-[12px] font-medium transition-all duration-300
+        {{ request()->routeIs('page-applications*')
+            ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
+            : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
+        }}">
+        Заявки
+    </span>
+
+</a>
+
+ <a href="{{ route('page-profile') }}" class="group relative flex flex-col items-center justify-center gap-[5px]">
+
+    <div class="relative">
+        <x-heroicon-s-user class="w-[20px] h-[20px] transition-all duration-300
+            {{ request()->routeIs('page-profile*')
+                ? '[&>*]:fill-[url(#nav-gradient)]'
+                : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
+            }}" />
+
+        @if($applicationsBadge)
+            <span class="absolute -top-[4px] -right-[8px] z-20 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF)] px-[5px] text-[10px] font-semibold leading-none text-white shadow-sm border-2 border-white">
+                {{ $applicationsBadge }}
             </span>
-        </a>
+        @endif
+    </div>
 
-        <a href="{{ route('page-profile') }}" class="group flex flex-col items-center justify-center gap-[5px]">
+    <span class="text-[12px] font-medium transition-all duration-300
+        {{ request()->routeIs('page-profile*')
+            ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
+            : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
+        }}">
+        Профиль
+    </span>
 
-            <x-heroicon-s-user class="w-[20px] h-[20px] transition-all duration-300
-                {{ request()->routeIs('page-profile*')
-    ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
-                }}" />
+</a>
 
-            <span class="text-[12px] font-medium transition-all duration-300
-                {{ request()->routeIs('page-profile*')
-    ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
-                }}">
-                Профиль
-            </span>
-        </a>
+
+
 
     </div>
 </nav>

@@ -23,6 +23,9 @@ class EditSalaryQuestion extends EditRecord
         $data['reviewed_by'] = auth()->id();
         $data['reviewed_at'] = now();
 
+$data['answered_at'] = now();
+$data['answer_seen_at'] = null;
+
         return $data;
     }
 }

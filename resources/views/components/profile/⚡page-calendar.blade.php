@@ -697,24 +697,36 @@ foreach ($vacationRequests as $vacationRequest) {
 ?>
 
 <x-slot:header>
-    <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
-        <button
+    <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
+     <button
             type="button"
             onclick="history.back()"
-            class="group flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 active:bg-[#213259]/10"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
+                   bg-[#E1E1E1] backdrop-blur-md
+                   text-white
+                   transition-all duration-300
+                   hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2] transition-all duration-200 group-hover:-translate-x-[1px] group-hover:text-[#2D6494]" />
+            <x-heroicon-o-arrow-left
+                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
+            />
         </button>
-
-        <span class="text-[18px] leading-none flex items-center justify-center">
+        <span class="flex items-center justify-center text-[18px] leading-none">
             Календарь
         </span>
 
-        <button
+     <button
             type="button"
-            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 hover:text-[#2D6494] active:bg-[#213259]/10"
+     
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
+                   bg-[#E1E1E1] backdrop-blur-md
+                   text-white
+                   transition-all duration-300
+                   hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2]" />
+            <x-heroicon-o-magnifying-glass
+                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
+            />
         </button>
     </div>
 </x-slot:header>
@@ -724,9 +736,6 @@ foreach ($vacationRequests as $vacationRequest) {
         open: @entangle('sheetOpen').live,
         selectedDateValue: @entangle('selectedDate').live,
 
-        translateY: 0,
-        canDrag: true,
-
         monthTranslateX: -33.3333,
         monthDragStartX: 0,
         monthDragStartY: 0,
@@ -735,10 +744,6 @@ foreach ($vacationRequests as $vacationRequest) {
         monthAnimating: false,
         monthGestureLock: null,
         monthMoved: false,
-
-        sheetStartX: 0,
-        sheetStartY: 0,
-        gestureLock: null,
 
         weekTranslateX: -33.3333,
         weekDragStartX: 0,
@@ -923,51 +928,6 @@ foreach ($vacationRequests as $vacationRequest) {
                 }, 260)
             }
         },
-
-        startSheetGesture(e) {
-            if (!this.open) return
-
-            const touch = e.changedTouches[0]
-            this.sheetStartX = touch.screenX
-            this.sheetStartY = touch.clientY
-            this.gestureLock = null
-        },
-
-        moveSheetGesture(e) {
-            if (!this.open) return
-
-            const touch = e.changedTouches[0]
-            const dx = touch.screenX - this.sheetStartX
-            const dy = touch.clientY - this.sheetStartY
-
-            if (this.gestureLock === null) {
-                if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
-                    this.gestureLock = Math.abs(dx) > Math.abs(dy) ? 'horizontal' : 'vertical'
-                }
-            }
-
-            if (this.gestureLock === 'vertical' && this.canDrag) {
-                this.translateY = Math.max(0, dy)
-            }
-        },
-
-        endSheetGesture(e) {
-            if (!this.open) return
-
-            const touch = e.changedTouches[0]
-            const dy = touch.clientY - this.sheetStartY
-
-            if (this.gestureLock === 'vertical' && dy > 120) {
-                this.translateY = 0
-                this.gestureLock = null
-                this.open = false
-                $wire.closeSheet()
-                return
-            }
-
-            this.translateY = 0
-            this.gestureLock = null
-        }
     }"
     class="h-full w-full flex flex-col overflow-hidden overflow-x-hidden"
 >
@@ -1182,144 +1142,107 @@ foreach ($vacationRequests as $vacationRequest) {
           
     </div>
 
-    <div x-show="open" x-cloak class="fixed inset-0 z-40">
-        <div
-            x-show="open"
-            x-transition:enter="transition ease-out duration-220"
-            x-transition:enter-start="opacity-0"
-            x-transition:enter-end="opacity-100"
-            x-transition:leave="transition ease-in duration-180"
-            x-transition:leave-start="opacity-100"
-            x-transition:leave-end="opacity-0"
-            class="absolute inset-0 bg-black/20"
-            @click="open = false; $wire.closeSheet()"
-        ></div>
-
-        <div
-            x-show="open"
-            x-transition:enter="transition ease-out duration-260"
-            x-transition:enter-start="translate-y-full"
-            x-transition:enter-end="translate-y-0"
-            x-transition:leave="transition ease-in duration-200"
-            x-transition:leave-start="translate-y-0"
-            x-transition:leave-end="translate-y-full"
-            class="absolute inset-x-0 bottom-0 bg-[#F3F3F3] rounded-t-[45px] h-[90vh] flex flex-col will-change-transform overflow-hidden"
-            :style="`transform: translateY(${translateY}px)`"
-        >
-            <div class="shrink-0 pt-[20px]">
-                <div
-                    class="w-full flex justify-center mb-[30px]"
-                    @touchstart.passive="startSheetGesture($event)"
-                    @touchmove.passive="moveSheetGesture($event)"
-                    @touchend.passive="endSheetGesture($event)"
-                >
-                    <div class="w-[50px] h-[4px] rounded-full bg-[#CFCFCF]"></div>
-                </div>
-
-                <div
-                    x-ref="weekViewport"
-                    class="overflow-hidden select-none mb-[5px]"
-                    @touchstart.passive="weekStart($event)"
-                    @touchmove.passive="weekMove($event)"
-                    @touchend.passive="weekEnd()"
-                >
-                    <div
-                        class="flex w-[300%]"
-                        :class="weekAnimating ? 'transition-transform duration-300 ease-out' : ''"
-                        :style="`transform: translateX(${weekTranslateX}%);`"
-                    >
-                        @foreach ($this->sheetCarouselWeeks as $weekIndex => $sheetWeek)
-                            <div
-                                class="w-1/3 shrink-0"
-                                wire:key="sheet-week-{{ $weekIndex }}-{{ $sheetWeek[0]->format('Y-m-d') }}-{{ $selectedDate }}"
-                            >
-                                <div class="grid grid-cols-7 gap-0">
-                                    @foreach ($sheetWeek as $index => $sheetDay)
-                                        @php
-                                            $isSheetSelected = $sheetDay->isSameDay($this->selectedDay);
-                                            $isSheetToday = $sheetDay->isToday();
-                                            $isCurrentMonth = $sheetDay->month === $this->selectedDay->month;
-
-                                            $sheetBackground = 'transparent';
-                                            $sheetColor = $isCurrentMonth ? '#000000' : '#9A9A9A';
-
-                                            if ($isSheetToday) {
-                                                $sheetBackground = '#111111';
-                                                $sheetColor = '#FFFFFF';
-                                            }
-
-                                            if ($isSheetSelected && ! $isSheetToday) {
-                                                $sheetBackground = '#FFFFFF';
-                                                $sheetColor = '#111111';
-                                            }
-                                        @endphp
-
-                                        <div class="flex flex-col items-center gap-[15px] py-[4px]">
-                                            <span class="text-[14px] leading-none">
-                                                {{ $this->dayLetters[$index] }}
-                                            </span>
-
-                                            <button
-                                                type="button"
-                                                wire:click="openDay('{{ $sheetDay->toDateString() }}')"
-                                                class="w-[34px] h-[34px] rounded-full flex items-center justify-center text-[16px] leading-none transition-all duration-200"
-                                                style="
-                                                    background: {{ $sheetBackground }};
-                                                    color: {{ $sheetColor }};
-                                                    font-weight: {{ ($isSheetSelected || $isSheetToday) ? '700' : '500' }};
-                                                    box-shadow: {{ $isSheetSelected && ! $isSheetToday ? '0 6px 18px rgba(0,0,0,.08)' : 'none' }};
-                                                "
-                                            >
-                                                {{ $sheetDay->day }}
-                                            </button>
-                                        </div>
-                                    @endforeach
-                                </div>
-                            </div>
-                        @endforeach
-                    </div>
-                </div>
-
-              
-            </div>
-
+    <x-ui.bottom-sheet model="sheetOpen">
+    <div class="h-[90vh] overflow-hidden rounded-[28px] flex flex-col">
+        <div class="shrink-0 pt-[20px]">
             <div
-                class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain px-[14px] pb-[10px] pt-[10px]"
-                @touchstart="canDrag = $el.scrollTop <= 0"
-                @scroll="canDrag = $el.scrollTop <= 0"
+                x-ref="weekViewport"
+                class="overflow-hidden select-none mb-[5px]"
+                @touchstart.passive="weekStart($event)"
+                @touchmove.passive="weekMove($event)"
+                @touchend.passive="weekEnd()"
             >
-                <div class="space-y-[8px]">
-                    @forelse ($this->selectedDayEvents as $event)
-                        <button
-                            type="button"
-                            class="w-full rounded-[30px] px-[15px] py-[15px] text-left"
-                            style="{{ $event['style'] }}"
+                <div
+                    class="flex w-[300%]"
+                    :class="weekAnimating ? 'transition-transform duration-300 ease-out' : ''"
+                    :style="`transform: translateX(${weekTranslateX}%);`"
+                >
+                    @foreach ($this->sheetCarouselWeeks as $weekIndex => $sheetWeek)
+                        <div
+                            class="w-1/3 shrink-0"
+                            wire:key="sheet-week-{{ $weekIndex }}-{{ $sheetWeek[0]->format('Y-m-d') }}-{{ $selectedDate }}"
                         >
-                            <p class="text-[12px] font-[500] leading-none text-black/65 mb-[6px]">
-                                {{ $this->formatEventRange($event) }}
-                            </p>
+                            <div class="grid grid-cols-7 gap-0">
+                                @foreach ($sheetWeek as $index => $sheetDay)
+                                    @php
+                                        $isSheetSelected = $sheetDay->isSameDay($this->selectedDay);
+                                        $isSheetToday = $sheetDay->isToday();
+                                        $isCurrentMonth = $sheetDay->month === $this->selectedDay->month;
 
-                            <p class="text-[16px] leading-[1.1] mb-[4px]">
-                                {{ $event['title'] }}
-                            </p>
+                                        $sheetBackground = 'transparent';
+                                        $sheetColor = $isCurrentMonth ? '#000000' : '#9A9A9A';
 
-                            @if (filled($event['description']))
-                                <p class="text-[14px] leading-[1.25] text-black">
-                                    {{ $event['description'] }}
-                                </p>
-                            @endif
-                        </button>
-                    @empty
-                        <div class="rounded-[30px] bg-white px-[15px] py-[15px]">
-                            <p class="text-[16px] text-[#6F6F6F]">
-                                На эту дату событий нет
-                            </p>
+                                        if ($isSheetToday) {
+                                            $sheetBackground = '#111111';
+                                            $sheetColor = '#FFFFFF';
+                                        }
+
+                                        if ($isSheetSelected && ! $isSheetToday) {
+                                            $sheetBackground = '#FFFFFF';
+                                            $sheetColor = '#111111';
+                                        }
+                                    @endphp
+
+                                    <div class="flex flex-col items-center gap-[15px] py-[4px]">
+                                        <span class="text-[14px] leading-none">
+                                            {{ $this->dayLetters[$index] }}
+                                        </span>
+
+                                        <button
+                                            type="button"
+                                            wire:click="openDay('{{ $sheetDay->toDateString() }}')"
+                                            class="w-[34px] h-[34px] rounded-full flex items-center justify-center text-[16px] leading-none transition-all duration-200"
+                                            style="
+                                                background: {{ $sheetBackground }};
+                                                color: {{ $sheetColor }};
+                                                font-weight: {{ ($isSheetSelected || $isSheetToday) ? '700' : '500' }};
+                                                box-shadow: {{ $isSheetSelected && ! $isSheetToday ? '0 6px 18px rgba(0,0,0,.08)' : 'none' }};
+                                            "
+                                        >
+                                            {{ $sheetDay->day }}
+                                        </button>
+                                    </div>
+                                @endforeach
+                            </div>
                         </div>
-                    @endforelse
+                    @endforeach
                 </div>
             </div>
         </div>
+
+        <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain px-[14px] pb-[10px] pt-[10px]">
+            <div class="space-y-[8px]">
+                @forelse ($this->selectedDayEvents as $event)
+                    <button
+                        type="button"
+                        class="w-full rounded-[30px] px-[15px] py-[15px] text-left"
+                        style="{{ $event['style'] }}"
+                    >
+                        <p class="text-[12px] font-[500] leading-none text-black/65 mb-[6px]">
+                            {{ $this->formatEventRange($event) }}
+                        </p>
+
+                        <p class="text-[16px] leading-[1.1] mb-[4px]">
+                            {{ $event['title'] }}
+                        </p>
+
+                        @if (filled($event['description']))
+                            <p class="text-[14px] leading-[1.25] text-black">
+                                {{ $event['description'] }}
+                            </p>
+                        @endif
+                    </button>
+                @empty
+                    <div class="rounded-[30px] bg-white px-[15px] py-[15px]">
+                        <p class="text-[16px] text-[#6F6F6F]">
+                            На эту дату событий нет
+                        </p>
+                    </div>
+                @endforelse
+            </div>
+        </div>
     </div>
+</x-ui.bottom-sheet>
 
     <x-slot:navbarTop>
         <div class="flex items-center gap-[8px] overflow-x-auto no-scrollbar">
