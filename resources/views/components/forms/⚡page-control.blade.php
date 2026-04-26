@@ -6,7 +6,6 @@ use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Storage;
 use Livewire\Component;
 
 new class extends Component {
@@ -14,6 +13,9 @@ new class extends Component {
 
     public array $rooms = [];
     public array $answers = [];
+
+    public ?int $openRoomIndex = 0;
+    public bool $attemptedSubmit = false;
 
     public ?int $draftId = null;
     public string $draftState = 'idle';
@@ -103,6 +105,8 @@ new class extends Component {
             'lastDraftHash',
             'successSheetOpen',
             'successMessage',
+            'openRoomIndex',
+            'attemptedSubmit',
         ], true)) {
             return;
         }
@@ -296,6 +300,8 @@ new class extends Component {
         $this->is_assigned = false;
         $this->previous_cleaner = '';
         $this->comment = '';
+        $this->openRoomIndex = 0;
+        $this->attemptedSubmit = false;
 
         $this->buildEmptyAnswers();
 
@@ -324,55 +330,155 @@ new class extends Component {
         };
     }
 
-    public function getRoomStatus(int $roomIndex): string
+    public function getFormProgressProperty(): int
+    {
+        $total = 0;
+        $done = 0;
+
+        foreach ([
+            $this->cleaner_id,
+            $this->apartment_id,
+            $this->cleaning_date,
+            $this->inspection_date,
+        ] as $field) {
+            $total++;
+
+            if (filled($field)) {
+                $done++;
+            }
+        }
+
+        foreach ($this->rooms as $roomIndex => $room) {
+            foreach (($room['items'] ?? []) as $questionIndex => $question) {
+                if ($this->questionIsOptional($room, $question)) {
+                    continue;
+                }
+
+                $total++;
+
+                $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
+
+                if ($this->isQuestionFilled($question, $answer)) {
+                    $done++;
+                }
+            }
+        }
+
+        return $total > 0 ? (int) round(($done / $total) * 100) : 0;
+    }
+
+    public function getFormReadyProperty(): bool
+    {
+        return $this->formProgress >= 100;
+    }
+
+    public function getFormButtonTextProperty(): string
+    {
+        return $this->formReady ? 'Отправить контроль' : 'Продолжить';
+    }
+
+    public function getRoomProgress(int $roomIndex): array
     {
         $room = $this->rooms[$roomIndex] ?? null;
 
         if (! $room) {
-            return 'empty';
+            return ['done' => 0, 'total' => 0, 'percent' => 0];
         }
 
-        $hasErrors = false;
-        $hasSomething = false;
-        $allRequiredFilled = true;
-        $requiredCount = 0;
+        $total = 0;
+        $done = 0;
 
         foreach (($room['items'] ?? []) as $questionIndex => $question) {
+            if ($this->questionIsOptional($room, $question)) {
+                continue;
+            }
+
+            $total++;
+
             $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
-            $optional = $this->questionIsOptional($room, $question);
 
-            if (! $optional) {
-                $requiredCount++;
-            }
-
-            $filled = $this->isQuestionFilled($question, $answer);
-
-            if ($filled) {
-                $hasSomething = true;
-            }
-
-            if (! $optional && ! $filled) {
-                $allRequiredFilled = false;
-            }
-
-            if ($this->getErrorBag()->has("answers.$roomIndex.$questionIndex")) {
-                $hasErrors = true;
+            if ($this->isQuestionFilled($question, $answer)) {
+                $done++;
             }
         }
 
-        if ($hasErrors) {
+        return [
+            'done' => $done,
+            'total' => $total,
+            'percent' => $total > 0 ? (int) round(($done / $total) * 100) : 100,
+        ];
+    }
+
+    public function getRoomStatus(int $roomIndex): string
+    {
+        $progress = $this->getRoomProgress($roomIndex);
+
+        if ($this->attemptedSubmit && $progress['done'] < $progress['total']) {
             return 'error';
         }
 
-        if ($requiredCount > 0 && $allRequiredFilled) {
+        if ($progress['total'] > 0 && $progress['done'] >= $progress['total']) {
             return 'done';
         }
 
-        if ($hasSomething) {
+        if ($progress['done'] > 0) {
             return 'partial';
         }
 
         return 'empty';
+    }
+
+    public function toggleRoom(int $roomIndex): void
+    {
+        $this->openRoomIndex = $this->openRoomIndex === $roomIndex
+            ? null
+            : $roomIndex;
+    }
+
+    public function setAnswer(int $roomIndex, int $questionIndex, string $value): void
+    {
+        $this->answers[$roomIndex][$questionIndex]['selected'] = $value;
+
+        $this->resetErrorBag("answers.$roomIndex.$questionIndex");
+        $this->touchAutosave();
+    }
+
+    public function continueForm(): void
+    {
+        $this->resetErrorBag();
+
+        $this->validateMeta();
+
+        if ($this->getErrorBag()->isNotEmpty()) {
+            $this->dispatch('toast', type: 'error', message: 'Заполните основную информацию');
+            $this->scrollToFirstError();
+            return;
+        }
+
+        foreach ($this->rooms as $roomIndex => $room) {
+            foreach (($room['items'] ?? []) as $questionIndex => $question) {
+                if ($this->questionIsOptional($room, $question)) {
+                    continue;
+                }
+
+                $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
+
+                if (! $this->isQuestionFilled($question, $answer)) {
+                    $this->openRoomIndex = $roomIndex;
+
+                    $this->dispatch(
+                        'control-scroll',
+                        type: 'question',
+                        room: $roomIndex,
+                        q: $questionIndex
+                    );
+
+                    return;
+                }
+            }
+        }
+
+        $this->submit();
     }
 
     protected function validateMeta(): void
@@ -446,6 +552,7 @@ new class extends Component {
         }
 
         if (preg_match('/^answers\.(\d+)\.(\d+)/', $firstKey, $m)) {
+            $this->openRoomIndex = (int) $m[1];
             $this->dispatch('control-scroll', type: 'question', room: (int) $m[1], q: (int) $m[2]);
             return;
         }
@@ -513,6 +620,7 @@ new class extends Component {
 
     public function submit(): void
     {
+        $this->attemptedSubmit = true;
         $this->resetErrorBag();
 
         $this->validateMeta();
@@ -547,7 +655,7 @@ new class extends Component {
         $this->clearDraft();
         $this->resetControlForm();
 
-        $this->successMessage = 'Всё круто, контроль отправился.';
+        $this->successMessage = "Контроль отправлен. Оценка: {$totalPoints} / {$maxPoints}.";
         $this->successSheetOpen = true;
     }
 };
@@ -565,7 +673,7 @@ new class extends Component {
 
 <x-slot:header>
     <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
-        <button type="button" onclick="history.back()" class="group flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259]">
+        <button type="button" onclick="history.back()" class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259]">
             <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2]" />
         </button>
 
@@ -580,44 +688,15 @@ new class extends Component {
 <style>
     html { scroll-behavior: smooth; }
     [x-cloak] { display: none !important; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 </style>
 
-<div class="flex h-full min-h-0 flex-col bg-[#F4F7FB]">
+<div class="flex h-full min-h-0 flex-col bg-[#EEF3F8]">
     <form
         wire:submit.prevent="submit"
         x-data="{
             timer: null,
-            lastScrollTop: 0,
-            buttonsHidden: false,
-
-            init() {
-                const el = this.$refs.scrollArea;
-                if (!el) return;
-
-                const onScroll = () => {
-                    const current = el.scrollTop;
-                    const maxScroll = el.scrollHeight - el.clientHeight;
-                    const nearBottom = current >= (maxScroll - 140);
-
-                    if (nearBottom || current <= 8) {
-                        this.buttonsHidden = false;
-                        this.lastScrollTop = current;
-                        return;
-                    }
-
-                    if (current > this.lastScrollTop + 8) {
-                        this.buttonsHidden = true;
-                    } else if (current < this.lastScrollTop - 8) {
-                        this.buttonsHidden = false;
-                    }
-
-                    this.lastScrollTop = current;
-                };
-
-                onScroll();
-                el.addEventListener('scroll', onScroll, { passive: true });
-            },
-
             save() {
                 clearTimeout(this.timer);
                 this.timer = setTimeout(() => $wire.saveDraftAuto(), 1200);
@@ -627,385 +706,420 @@ new class extends Component {
         x-on:change="save()"
         class="flex h-full min-h-0 flex-col"
     >
-        <div x-ref="scrollArea" class="flex-1 min-h-0 overflow-y-auto">
-            <div class="min-h-full rounded-t-[38px] bg-white">
-                <div class="p-[20px] pb-[96px]">                    <div class="mb-[26px]" id="meta-block">
-                        <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
-                            Основная информация
-                        </h2>
+        <div id="control-scroll-area" class="flex-1 min-h-0 overflow-y-auto">
+            <div class="min-h-full rounded-t-[34px] bg-white">
+                <div class="p-[16px] pb-[120px]">
 
-                        <div class="space-y-[18px]">
+                    <div class="mb-[18px] rounded-[30px] bg-[#F6F8FB] p-[16px]">
+                        <h1 class="text-[24px] font-semibold tracking-[-0.04em] text-[#111827]">
+                            {{ $control?->name ?? 'Контроль качества' }}
+                        </h1>
 
-                            {{-- Кого проверили --}}
-                            <div id="field-cleaner_id">
-                                <div class="mb-[10px] text-[15px] font-semibold text-[#111111]">
-                                    Кого проверили
-                                    <span class="text-[#2D6494]">*</span>
-                                </div>
+                        <p class="mt-[7px] text-[14px] leading-[1.45] text-[#64748B]">
+                            Заполните основную информацию и пройдите комнаты по порядку.
+                        </p>
+                    </div>
 
-                                <select
-                                    wire:model.live="cleaner_id"
-                                    class="h-[44px] w-full rounded-full border-0 bg-[#E2E2E2] px-[18px] text-[15px] font-medium text-[#111111] focus:ring-0"
-                                >
-                                    <option value="">Выберите человека</option>
+                    <div class="mb-[24px]" id="meta-block">
+                        <div class="mb-[12px] flex items-center justify-between">
+                            <h2 class="text-[17px] font-semibold tracking-[-0.02em] text-[#111827]">
+                                Основная информация
+                            </h2>
 
-                                    @foreach($this->people as $person)
-                                        <option value="{{ $person->id }}">
-                                            {{ $person->name }}
-                                        </option>
-                                    @endforeach
-                                </select>
-
-                                @error('cleaner_id')
-                                    <div class="mt-[8px] px-[4px] text-[14px] text-[#D92D20]">
-                                        {{ $message }}
-                                    </div>
-                                @enderror
+                            <div class="rounded-full bg-[#EEF3F8] px-[10px] py-[6px] text-[12px] font-semibold text-[#64748B]">
+                                обязательная
                             </div>
+                        </div>
 
-                            {{-- Квартира --}}
-                            <div id="field-apartment_id">
-                                <div class="mb-[10px] text-[15px] font-semibold text-[#111111]">
-                                    Квартира
-                                    <span class="text-[#2D6494]">*</span>
+                        <div class="rounded-[30px] border border-[#E6ECF2] bg-white p-[14px] shadow-[0_14px_40px_rgba(33,50,89,0.05)]">
+                            <div class="space-y-[14px]">
+                                <div id="field-cleaner_id">
+                                    <div class="mb-[8px] px-[4px] text-[14px] font-semibold text-[#111827]">
+                                        Кого проверили <span class="text-[#2D6494]">*</span>
+                                    </div>
+
+                                    <select
+                                        wire:model.change="cleaner_id"
+                                        class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
+                                    >
+                                        <option value="">Выберите человека</option>
+
+                                        @foreach($this->people as $person)
+                                            <option value="{{ $person->id }}">
+                                                {{ $person->name }}
+                                            </option>
+                                        @endforeach
+                                    </select>
+
+                                    @error('cleaner_id')
+                                        <div class="mt-[8px] px-[4px] text-[13px] font-medium text-[#D92D20]">
+                                            {{ $message }}
+                                        </div>
+                                    @enderror
                                 </div>
 
-                                <select
-                                    wire:model.live="apartment_id"
-                                    class="h-[44px] w-full rounded-full border-0 bg-[#E2E2E2] px-[18px] text-[15px] font-medium text-[#111111] focus:ring-0"
-                                >
-                                    <option value="">Выберите квартиру</option>
-
-                                    @foreach($this->apartments as $apartment)
-                                        <option value="{{ $apartment->id }}">
-                                            {{ $apartment->name }}
-                                        </option>
-                                    @endforeach
-                                </select>
-
-                                @error('apartment_id')
-                                    <div class="mt-[8px] px-[4px] text-[14px] text-[#D92D20]">
-                                        {{ $message }}
+                                <div id="field-apartment_id">
+                                    <div class="mb-[8px] px-[4px] text-[14px] font-semibold text-[#111827]">
+                                        Квартира <span class="text-[#2D6494]">*</span>
                                     </div>
-                                @enderror
-                            </div>
 
-                            {{-- Дата уборки --}}
-                            <div id="field-cleaning_date">
-                                <div class="mb-[10px] text-[15px] font-semibold text-[#111111]">
-                                    Дата уборки
-                                    <span class="text-[#2D6494]">*</span>
+                                    <select
+                                        wire:model.change="apartment_id"
+                                        class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
+                                    >
+                                        <option value="">Выберите квартиру</option>
+
+                                        @foreach($this->apartments as $apartment)
+                                            <option value="{{ $apartment->id }}">
+                                                {{ $apartment->name }}
+                                            </option>
+                                        @endforeach
+                                    </select>
+
+                                    @error('apartment_id')
+                                        <div class="mt-[8px] px-[4px] text-[13px] font-medium text-[#D92D20]">
+                                            {{ $message }}
+                                        </div>
+                                    @enderror
                                 </div>
 
-                                <input
-                                    type="date"
-                                    wire:model.live="cleaning_date"
-                                    class="h-[44px] w-full rounded-full border-0 bg-[#E2E2E2] px-[18px] text-[15px] font-medium text-[#111111] focus:ring-0"
-                                >
+                                <div class="grid grid-cols-2 gap-[10px]">
+                                    <div id="field-cleaning_date">
+                                        <div class="mb-[8px] px-[4px] text-[14px] font-semibold text-[#111827]">
+                                            Дата уборки <span class="text-[#2D6494]">*</span>
+                                        </div>
 
-                                @error('cleaning_date')
-                                    <div class="mt-[8px] px-[4px] text-[14px] text-[#D92D20]">
-                                        {{ $message }}
+                                        <input
+                                            type="date"
+                                            wire:model.change="cleaning_date"
+                                            class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[12px] text-[14px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
+                                        >
+
+                                        @error('cleaning_date')
+                                            <div class="mt-[8px] px-[4px] text-[13px] font-medium text-[#D92D20]">
+                                                {{ $message }}
+                                            </div>
+                                        @enderror
                                     </div>
-                                @enderror
-                            </div>
 
-                            {{-- Дата проверки --}}
-                            <div id="field-inspection_date">
-                                <div class="mb-[10px] text-[15px] font-semibold text-[#111111]">
-                                    Дата проверки
-                                    <span class="text-[#2D6494]">*</span>
+                                    <div id="field-inspection_date">
+                                        <div class="mb-[8px] px-[4px] text-[14px] font-semibold text-[#111827]">
+                                            Дата проверки <span class="text-[#2D6494]">*</span>
+                                        </div>
+
+                                        <input
+                                            type="date"
+                                            wire:model.change="inspection_date"
+                                            class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[12px] text-[14px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
+                                        >
+
+                                        @error('inspection_date')
+                                            <div class="mt-[8px] px-[4px] text-[13px] font-medium text-[#D92D20]">
+                                                {{ $message }}
+                                            </div>
+                                        @enderror
+                                    </div>
                                 </div>
 
-                                <input
-                                    type="date"
-                                    wire:model.live="inspection_date"
-                                    class="h-[44px] w-full rounded-full border-0 bg-[#E2E2E2] px-[18px] text-[15px] font-medium text-[#111111] focus:ring-0"
-                                >
+                                <label class="flex items-center gap-[10px] rounded-[22px] bg-[#F8FAFC] p-[14px]">
+                                    <input
+                                        type="checkbox"
+                                        wire:model.change="is_assigned"
+                                        class="h-[18px] w-[18px] rounded border-[#CBD5E1] text-[#213259] focus:ring-[#213259]"
+                                    >
 
-                                @error('inspection_date')
-                                    <div class="mt-[8px] px-[4px] text-[14px] text-[#D92D20]">
-                                        {{ $message }}
+                                    <span class="text-[14px] font-semibold text-[#111827]">
+                                        Человек закреплён за этой квартирой
+                                    </span>
+                                </label>
+
+                                <div id="field-previous_cleaner">
+                                    <div class="mb-[8px] px-[4px] text-[14px] font-semibold text-[#111827]">
+                                        Кто делал уборку до этого
                                     </div>
-                                @enderror
-                            </div>
 
-                            {{-- Закреплён --}}
-                            <label class="flex items-center gap-[10px] px-[4px]">
-                                <input
-                                    type="checkbox"
-                                    wire:model.live="is_assigned"
-                                    class="h-[18px] w-[18px] rounded border-[#D1D5DB] text-[#213259] focus:ring-[#213259]"
-                                >
+                                    <input
+                                        type="text"
+                                        wire:model.blur="previous_cleaner"
+                                        placeholder="Введите имя"
+                                        class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
+                                    >
 
-                                <span class="text-[15px] font-medium text-[#111111]">
-                                    Человек закреплён за этой квартирой
-                                </span>
-                            </label>
-
-                            {{-- Кто убирал до --}}
-                            <div id="field-previous_cleaner">
-                                <div class="mb-[10px] text-[15px] font-semibold text-[#111111]">
-                                    Кто делал уборку до этого
+                                    @error('previous_cleaner')
+                                        <div class="mt-[8px] px-[4px] text-[13px] font-medium text-[#D92D20]">
+                                            {{ $message }}
+                                        </div>
+                                    @enderror
                                 </div>
-
-                                <input
-                                    type="text"
-                                    wire:model.live.debounce.300ms="previous_cleaner"
-                                    placeholder="Введите имя"
-                                    class="h-[44px] w-full rounded-full border-0 bg-[#E2E2E2] px-[18px] text-[15px] font-medium text-[#111111] placeholder:text-black/40 focus:ring-0"
-                                >
-
-                                @error('previous_cleaner')
-                                    <div class="mt-[8px] px-[4px] text-[14px] text-[#D92D20]">
-                                        {{ $message }}
-                                    </div>
-                                @enderror
                             </div>
                         </div>
                     </div>
 
-                    {{-- Якоря комнат --}}
                     @if(count($rooms))
-                        <div class="sticky top-[10px] z-40 mb-[14px] bg-white/90 py-[4px] backdrop-blur">
-                            <div class="flex gap-[8px] overflow-x-auto">
-                                @foreach($rooms as $roomIndex => $roomTab)
-                                    @php
-                                        $status = $this->getRoomStatus($roomIndex);
+                        <div class="sticky top-[10px] z-40 mb-[16px]">
+                            <div class="rounded-[26px] border border-[#E6ECF2] bg-white/95 p-[8px] shadow-[0_12px_34px_rgba(33,50,89,0.08)] backdrop-blur">
+                                <div class="flex gap-[8px] overflow-x-auto no-scrollbar">
+                                    @foreach($rooms as $roomIndex => $roomTab)
+                                        @php
+                                            $status = $this->getRoomStatus($roomIndex);
+                                            $progress = $this->getRoomProgress($roomIndex);
+                                            $isActive = $openRoomIndex === $roomIndex;
 
-                                        $tabClass = match($status) {
-                                            'done' => 'bg-[#27AE60] text-white',
-                                            'partial' => 'bg-[#2D6494] text-white',
-                                            'error' => 'bg-[#D92D20] text-white',
-                                            default => 'bg-[#7D7D7D] text-white',
-                                        };
-                                    @endphp
+                                            $dotClass = match($status) {
+                                                'done' => 'bg-[#2DBE72]',
+                                                'partial' => 'bg-[#3B82F6]',
+                                                'error' => 'bg-[#EF4444]',
+                                                default => 'bg-[#CBD5E1]',
+                                            };
+                                        @endphp
 
-                                    <button
-                                        type="button"
-                                        onclick="document.getElementById('room-{{ $roomIndex }}')?.scrollIntoView({ behavior: 'smooth', block: 'start' })"
-                                        class="shrink-0 rounded-full px-[14px] py-[8px] text-[13px] font-semibold {{ $tabClass }}"
-                                    >
-                                        {{ $roomTab['title'] ?? ('Комната ' . ($roomIndex + 1)) }}
-                                    </button>
-                                @endforeach
+                                        <button
+                                            type="button"
+                                            wire:click="toggleRoom({{ $roomIndex }})"
+                                            onclick="setTimeout(() => {
+                                                document.getElementById('room-{{ $roomIndex }}')?.scrollIntoView({
+                                                    behavior: 'smooth',
+                                                    block: 'start'
+                                                })
+                                            }, 120)"
+                                            class="shrink-0 rounded-[20px] px-[13px] py-[10px] text-left transition
+                                                {{ $isActive ? 'bg-[#213259] text-white shadow-[0_10px_24px_rgba(33,50,89,0.22)]' : 'bg-[#F1F5F9] text-[#213259]' }}"
+                                        >
+                                            <div class="flex items-center gap-[8px]">
+                                                <span class="h-[7px] w-[7px] shrink-0 rounded-full {{ $dotClass }}"></span>
+
+                                                <span class="max-w-[118px] truncate text-[13px] font-semibold">
+                                                    {{ $roomTab['title'] ?? ('Комната ' . ($roomIndex + 1)) }}
+                                                </span>
+                                            </div>
+
+                                            <div class="mt-[4px] text-[11px] font-semibold {{ $isActive ? 'text-white/55' : 'text-[#94A3B8]' }}">
+                                                {{ $progress['done'] }} / {{ $progress['total'] }}
+                                            </div>
+                                        </button>
+                                    @endforeach
+                                </div>
                             </div>
                         </div>
 
-                        {{-- Комнаты --}}
-                        <div class="space-y-[16px]">
+                        <div class="space-y-[12px]">
                             @foreach($rooms as $roomIndex => $room)
                                 @php
                                     $roomStatus = $this->getRoomStatus($roomIndex);
+                                    $roomProgress = $this->getRoomProgress($roomIndex);
+                                    $isOpen = $openRoomIndex === $roomIndex;
 
-                                    $roomColor = match($roomStatus) {
-                                        'done' => '#27AE60',
-                                        'partial' => '#2D6494',
-                                        'error' => '#D92D20',
-                                        default => '#7D7D7D',
+                                    $statusText = match($roomStatus) {
+                                        'done' => 'готово',
+                                        'partial' => 'в процессе',
+                                        'error' => 'нужно заполнить',
+                                        default => 'не начато',
+                                    };
+
+                                    $statusClass = match($roomStatus) {
+                                        'done' => 'bg-[#E7F8EF] text-[#16834B]',
+                                        'partial' => 'bg-[#EAF2FF] text-[#2563EB]',
+                                        'error' => 'bg-[#FEECEC] text-[#DC2626]',
+                                        default => 'bg-[#F1F5F9] text-[#64748B]',
                                     };
                                 @endphp
 
                                 <div
                                     id="room-{{ $roomIndex }}"
-                                    class="overflow-hidden border-[2px] bg-white scroll-mt-[90px]"
-                                    style="border-color: {{ $roomColor }}; border-radius: 48px 28px 28px 28px;"
+                                    class="overflow-hidden rounded-[30px] border border-[#E6ECF2] bg-white shadow-[0_14px_38px_rgba(33,50,89,0.05)]"
                                 >
-                                    <div
-                                        class="px-[28px] pb-[54px] pt-[22px] text-white"
-                                        style="background: {{ $roomColor }};"
+                                    <button
+                                        type="button"
+                                        wire:click="toggleRoom({{ $roomIndex }})"
+                                        class="flex w-full items-center justify-between gap-[14px] px-[18px] py-[17px] text-left"
                                     >
-                                        <div class="text-[18px] font-semibold">
-                                            {{ $room['title'] ?? ('Комната ' . ($roomIndex + 1)) }}
+                                        <div class="min-w-0">
+                                            <div class="truncate text-[18px] font-semibold tracking-[-0.025em] text-[#111827]">
+                                                {{ $room['title'] ?? ('Комната ' . ($roomIndex + 1)) }}
+                                            </div>
+
+                                            <div class="mt-[5px] text-[13px] font-medium text-[#64748B]">
+                                                {{ $roomProgress['done'] }} из {{ $roomProgress['total'] }} обязательных
+                                            </div>
                                         </div>
 
-                                        @if(!empty($room['description']))
-                                            <div class="mt-[6px] text-[13px] opacity-80">
-                                                {{ $room['description'] }}
-                                            </div>
-                                        @endif
-                                    </div>
+                                        <div class="flex shrink-0 items-center gap-[8px]">
+                                            <span class="rounded-full px-[10px] py-[6px] text-[12px] font-semibold {{ $statusClass }}">
+                                                {{ $statusText }}
+                                            </span>
 
-                                    <div
-                                        class="-mt-[34px] space-y-[14px] bg-white p-[14px]"
-                                        style="border-radius: 38px 24px 24px 24px;"
-                                    >
-                                        @foreach(($room['items'] ?? []) as $questionIndex => $question)
-                                            @php
-                                                $opts = $question['answer_options_scored'] ?? [];
-                                                $type = $question['answer_type'] ?? 'options';
-                                                $optional = $this->questionIsOptional($room, $question);
-                                            @endphp
+                                            <span class="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[#F1F5F9] text-[20px] font-medium text-[#64748B]">
+                                                {{ $isOpen ? '−' : '+' }}
+                                            </span>
+                                        </div>
+                                    </button>
 
-                                            <div id="question-{{ $roomIndex }}-{{ $questionIndex }}">
-                                                <div class="mb-[10px] px-[4px] text-[14px] font-semibold text-[#111111]">
-                                                    {{ $question['question'] ?? 'Вопрос' }}
-
-                                                    @if(!$optional)
-                                                        <span class="text-[#2D6494]">*</span>
-                                                    @endif
+                                    @if($isOpen)
+                                        <div class="border-t border-[#E6ECF2] bg-[#F8FAFC] p-[12px]">
+                                            @if(!empty($room['description']))
+                                                <div class="mb-[12px] rounded-[22px] bg-white px-[14px] py-[12px] text-[13px] leading-[1.45] text-[#64748B]">
+                                                    {{ $room['description'] }}
                                                 </div>
+                                            @endif
 
-                                                @error("answers.$roomIndex.$questionIndex")
-                                                    <div class="mb-[8px] px-[4px] text-[14px] text-[#D92D20]">
-                                                        {{ $message }}
-                                                    </div>
-                                                @enderror
+                                            <div class="space-y-[12px]">
+                                                @foreach(($room['items'] ?? []) as $questionIndex => $question)
+                                                    @php
+                                                        $opts = $question['answer_options_scored'] ?? [];
+                                                        $type = $question['answer_type'] ?? 'options';
+                                                        $optional = $this->questionIsOptional($room, $question);
+                                                        $answer = $answers[$roomIndex][$questionIndex] ?? [];
+                                                        $selected = (string) ($answer['selected'] ?? '');
+                                                    @endphp
 
-                                                @if($type === 'options')
-                                                    <div class="space-y-[8px]">
-                                                        @foreach($opts as $optIndex => $opt)
-                                                            <label class="flex h-[42px] items-center gap-[10px] rounded-full bg-[#E2E2E2] px-[16px]">
-                                                                <input
-                                                                    type="radio"
-                                                                    wire:model.live="answers.{{ $roomIndex }}.{{ $questionIndex }}.selected"
-                                                                    value="{{ $opt['value'] ?? ('option_' . $optIndex) }}"
-                                                                    class="h-[16px] w-[16px]"
-                                                                >
-
-                                                                <span class="text-[14px] font-medium text-black/50">
-                                                                    {{ $opt['label'] ?? 'Вариант' }}
-                                                                </span>
-                                                            </label>
-                                                        @endforeach
-                                                    </div>
-                                                @endif
-
-                                                @if($type === 'text')
-                                                    <input
-                                                        type="text"
-                                                        wire:model.live.debounce.300ms="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom"
-                                                        placeholder="Введите ответ"
-                                                        class="h-[42px] w-full rounded-full border-0 bg-[#E2E2E2] px-[16px] text-[14px] focus:ring-0"
+                                                    <div
+                                                        id="question-{{ $roomIndex }}-{{ $questionIndex }}"
+                                                        @class([
+                                                            'rounded-[26px] border bg-white p-[14px] shadow-[0_8px_24px_rgba(15,23,42,0.03)]',
+                                                            'border-[#F04438]' => $errors->has("answers.$roomIndex.$questionIndex"),
+                                                            'border-[#E6ECF2]' => ! $errors->has("answers.$roomIndex.$questionIndex"),
+                                                        ])
                                                     >
-                                                @endif
+                                                        <div class="mb-[12px] text-[15px] font-semibold leading-[1.35] tracking-[-0.01em] text-[#111827]">
+                                                            {{ $question['question'] ?? 'Вопрос' }}
 
-                                                @if($type === 'both')
-                                                    <div class="space-y-[8px]">
-                                                        @foreach($opts as $optIndex => $opt)
-                                                            <label class="flex h-[42px] items-center gap-[10px] rounded-full bg-[#E2E2E2] px-[16px]">
-                                                                <input
-                                                                    type="radio"
-                                                                    wire:model.live="answers.{{ $roomIndex }}.{{ $questionIndex }}.selected"
-                                                                    value="{{ $opt['value'] ?? ('option_' . $optIndex) }}"
-                                                                    class="h-[16px] w-[16px]"
-                                                                >
+                                                            @if(!$optional)
+                                                                <span class="text-[#2D6494]">*</span>
+                                                            @else
+                                                                <span class="ml-[4px] text-[12px] font-medium text-[#94A3B8]">необязательно</span>
+                                                            @endif
+                                                        </div>
 
-                                                                <span class="text-[14px] font-medium text-black/50">
-                                                                    {{ $opt['label'] ?? 'Вариант' }}
-                                                                </span>
-                                                            </label>
-                                                        @endforeach
+                                                        @error("answers.$roomIndex.$questionIndex")
+                                                            <div class="mb-[10px] rounded-[18px] bg-[#FEE4E2] px-[12px] py-[9px] text-[13px] font-semibold text-[#B42318]">
+                                                                {{ $message }}
+                                                            </div>
+                                                        @enderror
 
-                                                        <input
-                                                            type="text"
-                                                            wire:model.live.debounce.300ms="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom"
-                                                            placeholder="Другое"
-                                                            class="h-[42px] w-full rounded-full border-0 bg-[#E2E2E2] px-[16px] text-[14px] focus:ring-0"
-                                                        >
+                                                        @if($type === 'options' || $type === 'both')
+                                                            <div class="grid gap-[8px]">
+                                                                @foreach($opts as $optIndex => $opt)
+                                                                    @php
+                                                                        $value = (string) ($opt['value'] ?? ('option_' . $optIndex));
+                                                                        $active = $selected === $value;
+                                                                    @endphp
+
+                                                                    <button
+                                                                        type="button"
+                                                                        wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
+                                                                        class="flex min-h-[48px] w-full items-center justify-between rounded-[20px] px-[15px] text-left text-[14px] font-semibold transition
+                                                                            {{ $active ? 'bg-[#213259] text-white shadow-[0_10px_24px_rgba(33,50,89,0.18)]' : 'bg-[#F1F5F9] text-[#111827]' }}"
+                                                                    >
+                                                                        <span>{{ $opt['label'] ?? 'Вариант' }}</span>
+
+                                                                        @if($active)
+                                                                            <span class="rounded-full bg-white/15 px-[8px] py-[4px] text-[11px] text-white/75">
+                                                                                выбрано
+                                                                            </span>
+                                                                        @endif
+                                                                    </button>
+                                                                @endforeach
+                                                            </div>
+                                                        @endif
+
+                                                        @if($type === 'text' || $type === 'both')
+                                                            <input
+                                                                type="text"
+                                                                wire:model.blur="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom"
+                                                                placeholder="{{ $type === 'both' ? 'Комментарий / другое' : 'Введите ответ' }}"
+                                                                class="mt-[10px] h-[46px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[15px] text-[14px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
+                                                            >
+                                                        @endif
                                                     </div>
-                                                @endif
+                                                @endforeach
                                             </div>
-                                        @endforeach
-                                    </div>
+                                        </div>
+                                    @endif
                                 </div>
                             @endforeach
                         </div>
                     @endif
 
-                    {{-- Комментарий --}}
                     <div class="mt-[24px]" id="field-comment">
-                        <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
-                            Комментарий
-                        </h2>
+                        <div class="mb-[12px] flex items-center justify-between">
+                            <h2 class="text-[17px] font-semibold tracking-[-0.02em] text-[#111827]">
+                                Комментарий
+                            </h2>
+
+                            <div class="rounded-full bg-[#EEF3F8] px-[10px] py-[6px] text-[12px] font-semibold text-[#64748B]">
+                                необязательно
+                            </div>
+                        </div>
 
                         <textarea
-                            wire:model.live.debounce.300ms="comment"
+                            wire:model.blur="comment"
                             rows="4"
                             placeholder="Комментарий супервайзера"
-                            class="w-full rounded-[24px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[15px] focus:ring-0"
+                            class="w-full rounded-[26px] border border-[#E6ECF2] bg-white px-[18px] py-[15px] text-[15px] font-medium text-[#111827] placeholder:text-[#94A3B8] shadow-[0_14px_38px_rgba(33,50,89,0.05)] focus:ring-2 focus:ring-[#213259]/15"
                         ></textarea>
+
+                        @error('comment')
+                            <div class="mt-[8px] px-[4px] text-[13px] font-medium text-[#D92D20]">
+                                {{ $message }}
+                            </div>
+                        @enderror
                     </div>
                 </div>
             </div>
         </div>
 
-                <div
-            class="shrink-0 overflow-hidden bg-transparent"
-            :class="buttonsHidden ? 'max-h-0' : 'max-h-[104px]'"
-            style="transition: max-height 300ms ease;"
-        >
-            <div class="border-t border-[#E3EAF0] bg-white/95 px-5 pb-5 pt-4 backdrop-blur supports-[backdrop-filter]:bg-white/80">
-                <div class="grid grid-cols-3 gap-[10px]">
-                    <div class="col-span-1">
-                        <x-ui.button
-                            type="button"
-                            variant="secondary"
-                            wire:click="saveDraft"
-                            wire:loading.attr="disabled"
-                            wire:target="saveDraft,saveDraftAuto,submit"
-                        >
-                            <span wire:loading.remove wire:target="saveDraft">
-                                Сохранить
-                            </span>
+        <div class="shrink-0 border-t border-[#E6ECF2] bg-white/95 px-[16px] pb-[16px] pt-[12px] backdrop-blur">
+            <div class="grid grid-cols-3 gap-[10px]">
+                <div class="col-span-1">
+                    <x-ui.button
+                        type="button"
+                        variant="secondary"
+                        wire:click="saveDraft"
+                        wire:loading.attr="disabled"
+                        wire:target="saveDraft,saveDraftAuto,continueForm,submit"
+                    >
+                        <span wire:loading.remove wire:target="saveDraft">
+                            Сохранить
+                        </span>
 
-                            <span
-                                wire:loading
-                                wire:target="saveDraft"
-                                class="inline-flex items-center"
-                            >
-                                <span>Сохраняем</span>
-
-                                <span class="inline-flex items-center relative top-[-1px] leading-none">
-                                    <span class="inline-block animate-bounce [animation-delay:0ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:150ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:300ms]">.</span>
-                                </span>
-                            </span>
-                        </x-ui.button>
-                    </div>
-
-                    <div class="col-span-2">
-                        <x-ui.button
-                            type="submit"
-                            variant="primary"
-                            wire:loading.attr="disabled"
-                            wire:target="submit"
-                        >
-                            <span wire:loading.remove wire:target="submit">
-                                Отправить
-                            </span>
-
-                            <span
-                                wire:loading
-                                wire:target="submit"
-                                class="inline-flex items-center"
-                            >
-                                <span>Отправляем</span>
-
-                                <span class="inline-flex items-center relative top-[-1px] leading-none">
-                                    <span class="inline-block animate-bounce [animation-delay:0ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:150ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:300ms]">.</span>
-                                </span>
-                            </span>
-                        </x-ui.button>
-                    </div>
+                        <span wire:loading wire:target="saveDraft">
+                            ...
+                        </span>
+                    </x-ui.button>
                 </div>
 
-                <div class="mt-[8px] min-h-[17px] text-center text-[12px] font-medium text-black/40">
-                    @if($draftState === 'saving')
-                        Сохраняем черновик...
-                    @elseif($draftState === 'dirty')
-                        Есть несохранённые изменения
-                    @elseif($draftState === 'saved' && $draftSavedAt)
-                        Черновик сохранён в {{ $draftSavedAt }}
-                    @elseif($draftState === 'error')
-                        Не удалось сохранить черновик
-                    @else
-                        Черновик ещё не сохранялся
-                    @endif
+                <div class="col-span-2">
+                    <x-ui.button
+                        type="button"
+                        variant="primary"
+                        :progress="$this->formProgress"
+                        wire:click="continueForm"
+                        wire:loading.attr="disabled"
+                        wire:target="continueForm,submit"
+                    >
+                        <span wire:loading.remove wire:target="continueForm,submit">
+                            {{ $this->formButtonText }}
+                        </span>
+
+                        <span wire:loading wire:target="continueForm,submit">
+                            Сохраняем...
+                        </span>
+                    </x-ui.button>
                 </div>
+            </div>
+
+            <div class="mt-[8px] min-h-[17px] text-center text-[12px] font-medium text-[#94A3B8]">
+                @if($draftState === 'saving')
+                    Сохраняем черновик...
+                @elseif($draftState === 'dirty')
+                    Есть несохранённые изменения
+                @elseif($draftState === 'saved' && $draftSavedAt)
+                    Черновик сохранён в {{ $draftSavedAt }}
+                @elseif($draftState === 'error')
+                    Не удалось сохранить черновик
+                @else
+                    Черновик ещё не сохранялся
+                @endif
             </div>
         </div>
     </form>
@@ -1020,7 +1134,7 @@ new class extends Component {
                 >
 
                 <h1 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Контроль отправлен!
+                    Контроль успешно отправлен
                 </h1>
 
                 <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">
@@ -1032,7 +1146,7 @@ new class extends Component {
                         variant="primary"
                         @click="sheetOpen = false"
                     >
-                        Отлично
+                        Понятно
                     </x-ui.button>
                 </div>
             </div>
@@ -1055,14 +1169,16 @@ new class extends Component {
             }
 
             if (!target) {
-                target = document.querySelector('[x-ref="scrollArea"]');
+                target = document.getElementById('control-scroll-area');
             }
 
             requestAnimationFrame(() => {
-                target?.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'center',
-                });
+                setTimeout(() => {
+                    target?.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center',
+                    });
+                }, 120);
             });
         });
     });
