@@ -89,7 +89,7 @@ class StaffFormTelegramService
         }
 
         $message[] = '';
-        $message[] = '⛓️ <a href="' . $adminUrl . '"><b>Открыть в админке</b></a>';
+        $message[] = '⛓️ <a href="' . e($adminUrl) . '"><b>Открыть в админке</b></a>';
 
         $payload = [
             'chat_id' => $chatId,
@@ -112,6 +112,75 @@ class StaffFormTelegramService
                 'status' => $response->status(),
                 'body' => $response->body(),
             ]);
+
+            return;
+        }
+
+        $this->sendAttachments(
+            token: $token,
+            chatId: $chatId,
+            threadId: $threadId,
+            attachments: $attachments,
+        );
+    }
+
+    protected function sendAttachments(
+        string $token,
+        string $chatId,
+        mixed $threadId,
+        array $attachments,
+    ): void {
+        if (empty($attachments)) {
+            return;
+        }
+
+        $photos = collect($attachments)
+            ->filter(function (array $file) {
+                return str_starts_with((string) ($file['mime'] ?? ''), 'image/')
+                    && filled($file['path'] ?? null);
+            })
+            ->values();
+
+        if ($photos->isEmpty()) {
+            return;
+        }
+
+        foreach ($photos->chunk(10) as $chunk) {
+            $media = $chunk
+                ->map(function (array $file, int $index) {
+                    $url = asset('storage/' . ltrim($file['path'], '/'));
+
+                    return [
+                        'type' => 'photo',
+                        'media' => $url,
+                        'caption' => $index === 0 ? '📎 Фото к заявке' : null,
+                        'parse_mode' => 'HTML',
+                    ];
+                })
+                ->values()
+                ->all();
+
+            $payload = [
+                'chat_id' => $chatId,
+                'media' => $media,
+            ];
+
+            if (filled($threadId)) {
+                $payload['message_thread_id'] = (int) $threadId;
+            }
+
+            $response = Http::timeout(20)->post(
+                "https://api.telegram.org/bot{$token}/sendMediaGroup",
+                $payload
+            );
+
+            if ($response->failed()) {
+                Log::error('Staff form telegram media group failed', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                    'media' => $media,
+                ]);
+            }
         }
     }
 }

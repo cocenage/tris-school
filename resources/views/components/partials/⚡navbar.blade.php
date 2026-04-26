@@ -39,7 +39,7 @@ new class extends Component {
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
-            <span class="text-[10px] font-medium transition-all duration-300
+            <span class="text-[12px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-home*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
@@ -56,7 +56,7 @@ new class extends Component {
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
-            <span class="text-[10px] font-medium transition-all duration-300
+            <span class="text-[12px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-checks*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
@@ -77,7 +77,7 @@ new class extends Component {
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
-            <span class="text-[10px] font-medium transition-all duration-300
+            <span class="text-[12px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-checks*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
@@ -94,7 +94,7 @@ new class extends Component {
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
-            <span class="text-[10px] font-medium transition-all duration-300
+            <span class="text-[12px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-applications*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
@@ -111,7 +111,7 @@ new class extends Component {
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
-            <span class="text-[10px] font-medium transition-all duration-300
+            <span class="text-[12px] font-medium transition-all duration-300
                 {{ request()->routeIs('page-profile*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
