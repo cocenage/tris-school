@@ -5,46 +5,166 @@ use Illuminate\Support\Facades\Storage;
 use Livewire\Component;
 use Livewire\WithFileUploads;
 use App\Services\UserApplicationBadgeService;
+use App\Models\CalendarEvent;
+use App\Models\DayOffRequestDay;
+use App\Models\VacationRequest;
+use Carbon\Carbon;
+use Illuminate\Support\Collection;
 
 new class extends Component
 {
-        use WithFileUploads;
+   
+
+        public ?string $calendarBadge = null;
 
 public ?string $applicationsBadge = null;
 
 public function mount(UserApplicationBadgeService $badgeService): void
 {
     $this->applicationsBadge = $badgeService->label(auth()->id());
+    $this->calendarBadge = $this->buildCalendarBadge();
 }
 
-    public $avatar;
-public function saveAvatar(): void
+protected function buildCalendarBadge(): ?string
 {
-    $user = Auth::user();
+    Carbon::setLocale('ru');
 
-    if (! $user || ! $this->avatar) {
-        return;
+    $startOffset = now()->hour >= 20 ? 1 : 0;
+
+    for ($i = $startOffset; $i <= 7; $i++) {
+        $day = now()->copy()->addDays($i)->startOfDay();
+        $events = $this->eventsForDay($day);
+
+        if ($events->isEmpty()) {
+            continue;
+        }
+
+        $prefix = match (true) {
+            $day->isToday() => 'Сегодня',
+            $day->isTomorrow() => 'Завтра',
+            default => $day->translatedFormat('j M'),
+        };
+
+        if ($events->count() === 1) {
+            return $prefix . ': ' . $this->shortCalendarTitle($events->first()['title']);
+        }
+
+        return $prefix . ': ' . $events->count() . ' ' . $this->pluralEvents($events->count());
     }
 
-    $this->validate([
-        'avatar' => ['required', 'image', 'max:5120'],
-    ]);
-
-    if (
-        $user->telegram_avatar_path &&
-        Storage::disk('public')->exists($user->telegram_avatar_path)
-    ) {
-        Storage::disk('public')->delete($user->telegram_avatar_path);
-    }
-
-    $path = $this->avatar->store('user-avatars', 'public');
-
-    $user->update([
-        'telegram_avatar_path' => $path,
-    ]);
-
-    $this->reset('avatar');
+    return 'Нет событий';
 }
+
+protected function shortCalendarTitle(string $title): string
+{
+    $title = str_replace(' — ', ': ', $title);
+
+    return mb_strimwidth($title, 0, 28, '...');
+}
+
+protected function pluralEvents(int $count): string
+{
+    $mod10 = $count % 10;
+    $mod100 = $count % 100;
+
+    if ($mod10 === 1 && $mod100 !== 11) {
+        return 'событие';
+    }
+
+    if ($mod10 >= 2 && $mod10 <= 4 && ! in_array($mod100, [12, 13, 14], true)) {
+        return 'события';
+    }
+
+    return 'событий';
+}
+
+protected function eventsForDay(Carbon $day): Collection
+{
+    $events = collect();
+
+    $start = $day->copy()->startOfDay();
+    $end = $day->copy()->endOfDay();
+
+    CalendarEvent::query()
+        ->where('is_active', true)
+        ->get()
+        ->each(function (CalendarEvent $event) use ($events, $start, $end) {
+            $eventStart = Carbon::parse($event->start_date)->startOfDay();
+
+            $eventEnd = $event->end_date
+                ? Carbon::parse($event->end_date)->startOfDay()
+                : $eventStart->copy();
+
+            if ($eventEnd->lt($eventStart)) {
+                $eventEnd = $eventStart->copy();
+            }
+
+            if ($event->repeat_type === 'none') {
+                if ($eventStart->lte($end) && $eventEnd->gte($start)) {
+                    $events->push([
+                        'title' => $event->title,
+                        'priority' => (int) ($event->priority ?? 0),
+                    ]);
+                }
+
+                return;
+            }
+
+            if ($event->repeat_type === 'weekly' && $eventStart->dayOfWeek === $start->dayOfWeek) {
+                $events->push([
+                    'title' => $event->title,
+                    'priority' => (int) ($event->priority ?? 0),
+                ]);
+
+                return;
+            }
+
+            if ($event->repeat_type === 'monthly' && $eventStart->day === $start->day) {
+                $events->push([
+                    'title' => $event->title,
+                    'priority' => (int) ($event->priority ?? 0),
+                ]);
+
+                return;
+            }
+
+            if ($event->repeat_type === 'yearly' && $eventStart->month === $start->month && $eventStart->day === $start->day) {
+                $events->push([
+                    'title' => $event->title,
+                    'priority' => (int) ($event->priority ?? 0),
+                ]);
+            }
+        });
+
+    DayOffRequestDay::query()
+        ->with(['user', 'request'])
+        ->whereDate('date', $start)
+        ->whereHas('request', fn ($query) => $query->where('status', 'approved'))
+        ->get()
+        ->each(function ($dayOffDay) use ($events) {
+            $events->push([
+                'title' => ($dayOffDay->user?->name ?? 'Сотрудник') . ' — выходной',
+                'priority' => 85,
+            ]);
+        });
+
+    VacationRequest::query()
+        ->with(['user', 'days'])
+        ->where('status', 'approved')
+        ->whereHas('days', fn ($query) => $query->whereDate('date', $start))
+        ->get()
+        ->each(function ($vacation) use ($events) {
+            $events->push([
+                'title' => ($vacation->user?->name ?? 'Сотрудник') . ' — отпуск',
+                'priority' => 80,
+            ]);
+        });
+
+    return $events
+        ->sortByDesc('priority')
+        ->values();
+}
+
 };
 ?>
 <x-slot:header>
@@ -191,11 +311,15 @@ public function saveAvatar(): void
                     </span>
                 </div>
 
-                      <div class="ml-[15px] flex shrink-0 items-center">
-                     <x-heroicon-o-chevron-right class="w-[18px] h-[18px] transition-transform duration-200 group-hover:translate-x-[2px] stroke-2
-                }}" />
-                  
-                </div>
+          <div class="ml-[15px] flex min-w-0 shrink-0 items-center gap-[8px]">
+    @if($this->calendarBadge)
+        <span class="max-w-[155px] truncate rounded-full bg-white px-[10px] py-[5px] text-[12px] font-medium text-[#555555]">
+           {{ $this->calendarBadge }}
+        </span>
+    @endif
+
+    <x-heroicon-o-chevron-right class="w-[18px] h-[18px] transition-transform duration-200 group-hover:translate-x-[2px] stroke-2" />
+</div>
             </a>
 
 

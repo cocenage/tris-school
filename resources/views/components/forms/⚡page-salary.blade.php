@@ -143,6 +143,16 @@ public function resetForm(): void
                 'status' => 'pending',
             ]);
 
+            activity()
+    ->causedBy(Auth::user())
+    ->performedOn($record)
+    ->event('salary_question_created')
+    ->withProperties([
+        'type' => $record->type,
+        'attachments_count' => count($storedAttachments),
+    ])
+    ->log('Пользователь отправил вопрос по зарплате');
+
             try {
                 $telegram->sendSalaryQuestion($record);
             } catch (\Throwable $e) {

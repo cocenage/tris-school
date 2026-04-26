@@ -14,13 +14,13 @@ new class extends Component
     public array $selected = [];
     public string $search = '';
 
-    public bool $cartSheetOpen = false;
     public bool $successSheetOpen = false;
     public ?string $successMessage = null;
 
     public function mount(): void
     {
         $this->catalog = $this->buildCatalog();
+        $this->restoreDraft();
     }
 
     protected function toast(
@@ -37,6 +37,42 @@ new class extends Component
             duration: $duration,
         );
     }
+
+    protected function draftKey(): string
+    {
+        return 'inventory_request_draft_' . (Auth::id() ?: 'guest');
+    }
+
+    protected function persistDraft(): void
+    {
+        session()->put($this->draftKey(), [
+            'selected' => $this->selected,
+            'search' => $this->search,
+        ]);
+    }
+
+    protected function restoreDraft(): void
+    {
+        $draft = session()->get($this->draftKey());
+
+        if (! is_array($draft)) {
+            return;
+        }
+
+        $this->selected = is_array($draft['selected'] ?? null) ? $draft['selected'] : [];
+        $this->search = (string) ($draft['search'] ?? '');
+    }
+
+    protected function clearDraft(): void
+    {
+        session()->forget($this->draftKey());
+    }
+
+    public function updatedSearch(): void
+    {
+        $this->persistDraft();
+    }
+
 
     protected function buildSuccessMessage(): string
     {
@@ -103,7 +139,7 @@ new class extends Component
                             'item_name' => $productName,
                             'type_name' => $type,
                             'size_name' => $size,
-                            'variant_label' => ! empty($parts) ? implode(' • ', $parts) : null,
+                            'variant_label' => ! empty($parts) ? implode(' • ', $parts) : 'Стандартный вариант',
                         ];
                     })
                     ->values()
@@ -116,7 +152,7 @@ new class extends Component
                         'item_name' => $productName,
                         'type_name' => null,
                         'size_name' => null,
-                        'variant_label' => null,
+                        'variant_label' => 'Стандартный вариант',
                     ];
                 }
 
@@ -133,12 +169,14 @@ new class extends Component
     public function selectOne(string $key): void
     {
         $this->selected[$key]['requested_qty'] = 1;
+        $this->persistDraft();
     }
 
     public function increment(string $key): void
     {
         $current = (int) ($this->selected[$key]['requested_qty'] ?? 0);
         $this->selected[$key]['requested_qty'] = $current + 1;
+        $this->persistDraft();
     }
 
     public function decrement(string $key): void
@@ -148,15 +186,18 @@ new class extends Component
 
         if ($next <= 0) {
             unset($this->selected[$key]);
+            $this->persistDraft();
             return;
         }
 
         $this->selected[$key]['requested_qty'] = $next;
+        $this->persistDraft();
     }
 
     public function removeSelected(string $key): void
     {
         unset($this->selected[$key]);
+        $this->persistDraft();
     }
 
     public function updatedSelected($value, string $name): void
@@ -175,10 +216,11 @@ new class extends Component
 
         if ($qty <= 0) {
             unset($this->selected[$key]);
-            return;
+        } else {
+            $this->selected[$key]['requested_qty'] = $qty;
         }
 
-        $this->selected[$key]['requested_qty'] = $qty;
+        $this->persistDraft();
     }
 
     protected function selectedLines(): array
@@ -265,29 +307,11 @@ new class extends Component
     {
         $this->selected = [];
         $this->search = '';
-        $this->cartSheetOpen = false;
 
         $this->resetErrorBag();
         $this->resetValidation();
-    }
 
-    public function openCart(): void
-    {
-        if (empty($this->selectedSummary)) {
-            $this->toast(
-                'warning',
-                'Корзина пуста',
-                'Добавьте хотя бы одну позицию'
-            );
-            return;
-        }
-
-        $this->cartSheetOpen = true;
-    }
-
-    public function closeCart(): void
-    {
-        $this->cartSheetOpen = false;
+        $this->clearDraft();
     }
 
     public function closeSuccessSheet(): void
@@ -303,7 +327,7 @@ new class extends Component
         if (empty($lines)) {
             $this->toast(
                 'warning',
-                'Корзина пуста',
+                'Ничего не выбрано',
                 'Добавьте хотя бы одну позицию'
             );
             return;
@@ -335,10 +359,10 @@ new class extends Component
 
             $this->selected = [];
             $this->search = '';
-            $this->cartSheetOpen = false;
 
             $this->resetErrorBag();
             $this->resetValidation();
+            $this->clearDraft();
 
             $this->successMessage = $this->buildSuccessMessage();
             $this->successSheetOpen = true;
@@ -436,7 +460,6 @@ new class extends Component
         >
             <div class="min-h-full rounded-t-[38px] bg-white">
                 <div class="p-[20px] pb-[110px]">
-
                     <div class="mb-[20px]">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
                             Что необходимо получить?
@@ -458,64 +481,81 @@ new class extends Component
                         </label>
                     </div>
 
-                    <div class="space-y-[10px]">
+                    <div class="space-y-[14px]">
                         @forelse ($this->filteredCatalog as $product)
-                            @foreach (($product['variants'] ?? []) as $variant)
-                                @php
-                                    $key = $variant['key'];
-                                    $requestedQty = (int) ($selected[$key]['requested_qty'] ?? 0);
-                                    $isSelected = $requestedQty > 0;
-                                @endphp
+                            <section class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] p-[14px]">
+                                <div class="mb-[12px] flex items-center justify-between gap-[12px]">
+                                    <h2 class="min-w-0 truncate text-[16px] font-medium text-[#213259]">
+                                        {{ $product['name'] }}
+                                    </h2>
 
-                                <div class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[16px] py-[14px]">
-                                    <div class="flex items-center justify-between gap-[12px]">
-                                        <div class="min-w-0 flex-1">
-                                            <div class="truncate text-[15px] font-medium text-[#213259]">
-                                                {{ $variant['item_name'] }}
-                                            </div>
+                                    @php
+                                        $productQty = collect($product['variants'] ?? [])
+                                            ->sum(fn ($variant) => (int) ($selected[$variant['key']]['requested_qty'] ?? 0));
+                                    @endphp
 
-                                            <div class="mt-[3px] truncate text-[13px] text-black/40">
-                                                {{ $variant['variant_label'] ?: 'Стандартный вариант' }}
+                                    @if ($productQty > 0)
+                                        <span class="shrink-0 rounded-full bg-white px-[10px] py-[4px] text-[12px] font-medium text-[#213259]">
+                                            {{ $productQty }} шт.
+                                        </span>
+                                    @endif
+                                </div>
+
+                                <div class="space-y-[8px]">
+                                    @foreach (($product['variants'] ?? []) as $variant)
+                                        @php
+                                            $key = $variant['key'];
+                                            $requestedQty = (int) ($selected[$key]['requested_qty'] ?? 0);
+                                            $isSelected = $requestedQty > 0;
+                                        @endphp
+
+                                        <div class="rounded-[18px] bg-white px-[12px] py-[12px]">
+                                            <div class="flex items-center justify-between gap-[10px]">
+                                                <div class="min-w-0 flex-1">
+                                                    <div class="truncate text-[14px] font-medium text-[#213259]">
+                                                        {{ $variant['variant_label'] }}
+                                                    </div>
+                                                </div>
+
+                                                @if (! $isSelected)
+                                                    <button
+                                                        type="button"
+                                                        wire:click="selectOne('{{ $key }}')"
+                                                        class="flex h-[34px] shrink-0 items-center justify-center rounded-full bg-[#F4F7FB] px-[14px] text-[13px] font-medium text-[#213259] transition duration-200 hover:bg-[#EEF4F8] active:scale-[0.97]"
+                                                    >
+                                                        Добавить
+                                                    </button>
+                                                @else
+                                                    <div class="flex shrink-0 items-center gap-[6px]">
+                                                        <button
+                                                            type="button"
+                                                            wire:click="decrement('{{ $key }}')"
+                                                            class="flex h-[32px] w-[32px] items-center justify-center rounded-full bg-[#F4F7FB] text-[18px] text-[#213259] transition active:scale-[0.96]"
+                                                        >
+                                                            −
+                                                        </button>
+
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            wire:model.live="selected.{{ $key }}.requested_qty"
+                                                            class="h-[32px] w-[46px] rounded-full border-0 bg-[#F4F7FB] px-1 text-center text-[14px] font-medium text-[#213259] outline-none focus:ring-0"
+                                                        >
+
+                                                        <button
+                                                            type="button"
+                                                            wire:click="increment('{{ $key }}')"
+                                                            class="flex h-[32px] w-[32px] items-center justify-center rounded-full bg-[#F4F7FB] text-[18px] text-[#213259] transition active:scale-[0.96]"
+                                                        >
+                                                            +
+                                                        </button>
+                                                    </div>
+                                                @endif
                                             </div>
                                         </div>
-
-                                        @if (! $isSelected)
-                                            <button
-                                                type="button"
-                                                wire:click="selectOne('{{ $key }}')"
-                                                class="flex h-[34px] shrink-0 items-center justify-center rounded-full bg-white px-[14px] text-[13px] font-medium text-[#213259] transition duration-200 hover:bg-[#EEF4F8] active:scale-[0.97]"
-                                            >
-                                                Добавить
-                                            </button>
-                                        @else
-                                            <div class="flex shrink-0 items-center gap-[6px]">
-                                                <button
-                                                    type="button"
-                                                    wire:click="decrement('{{ $key }}')"
-                                                    class="flex h-[32px] w-[32px] items-center justify-center rounded-full bg-white text-[18px] text-[#213259] transition active:scale-[0.96]"
-                                                >
-                                                    −
-                                                </button>
-
-                                                <input
-                                                    type="number"
-                                                    min="0"
-                                                    wire:model.live="selected.{{ $key }}.requested_qty"
-                                                    class="h-[32px] w-[46px] rounded-full border-0 bg-white px-1 text-center text-[14px] font-medium text-[#213259] outline-none focus:ring-0"
-                                                >
-
-                                                <button
-                                                    type="button"
-                                                    wire:click="increment('{{ $key }}')"
-                                                    class="flex h-[32px] w-[32px] items-center justify-center rounded-full bg-white text-[18px] text-[#213259] transition active:scale-[0.96]"
-                                                >
-                                                    +
-                                                </button>
-                                            </div>
-                                        @endif
-                                    </div>
+                                    @endforeach
                                 </div>
-                            @endforeach
+                            </section>
                         @empty
                             <div class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[18px] py-[18px] text-center text-[15px] text-black/45">
                                 Ничего не найдено
@@ -532,147 +572,59 @@ new class extends Component
             </div>
         </div>
 
-        @if (! empty($this->selectedSummary))
-            <div
-                x-ref="footerBar"
-                class="shrink-0 overflow-hidden bg-transparent"
-                :class="buttonsHidden ? 'max-h-0' : 'max-h-[90px]'"
-                style="transition: max-height 300ms ease;"
-            >
-                <div class="border-t border-[#E3EAF0] bg-white/95 px-5 pb-5 pt-4 backdrop-blur transition-all duration-300 supports-[backdrop-filter]:bg-white/80">
-                    <div class="grid grid-cols-3 gap-[10px]">
-                        <div class="col-span-1">
-                            <x-ui.button
-                                type="button"
-                                variant="secondary"
-                                wire:click="resetForm"
-                            >
-                                Сбросить
-                            </x-ui.button>
-                        </div>
-
-                        <div class="col-span-2">
-                            <x-ui.button
-                                type="button"
-                                variant="primary"
-                                progress="100"
-                                wire:click="openCart"
-                            >
-                                Корзина • {{ $this->totalSelectedQty }} шт.
-                            </x-ui.button>
-                        </div>
-                    </div>
-                </div>
+      <div
+    x-ref="footerBar"
+    class="shrink-0 overflow-hidden bg-transparent"
+    :class="buttonsHidden ? 'max-h-0' : 'max-h-[82px]'"
+    style="transition: max-height 300ms ease;"
+>
+    <div class="border-t border-[#E3EAF0] bg-white/95 px-5 pb-5 pt-4 backdrop-blur transition-all duration-300 supports-[backdrop-filter]:bg-white/80">
+        <div class="grid grid-cols-3 gap-[10px]">
+            <div class="col-span-1">
+                <x-ui.button
+                    type="button"
+                    variant="secondary"
+                    wire:click="resetForm"
+                    :disabled="empty($this->selectedSummary) && blank($search)"
+                >
+                    Сбросить
+                </x-ui.button>
             </div>
-        @endif
+
+            <div class="col-span-2">
+                <x-ui.button
+                    type="button"
+                    variant="primary"
+                    :progress="empty($this->selectedSummary) ? 0 : 100"
+                    wire:click="submit"
+                    wire:loading.attr="disabled"
+                    wire:target="submit"
+                    :disabled="empty($this->selectedSummary)"
+                >
+                    <span wire:loading.remove wire:target="submit">
+                        {{ empty($this->selectedSummary)
+                            ? 'Выберите'
+                            : 'Отправить • ' . $this->totalSelectedQty . ' шт.' }}
+                    </span>
+
+                    <span
+                        wire:loading
+                        wire:target="submit"
+                        class="inline-flex items-center gap-[2px]"
+                    >
+                        <span>Сохраняем</span>
+
+                        <span class="inline-flex items-end leading-none">
+                            <span class="animate-[dotFade_1.4s_infinite]">.</span>
+                            <span class="animate-[dotFade_1.4s_infinite_0.2s]">.</span>
+                            <span class="animate-[dotFade_1.4s_infinite_0.4s]">.</span>
+                        </span>
+                    </span>
+                </x-ui.button>
+            </div>
+        </div>
     </div>
-
-    <div x-data="{ sheetOpen: @entangle('cartSheetOpen').live }">
-        <x-ui.bottom-sheet x-model="sheetOpen">
-            <div class="p-5">
-                <div class="text-center">
-                    <h2 class="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                        Проверьте заявку
-                    </h2>
-
-                    <p class="pt-[10px] text-[15px] leading-[1.5] text-black/55">
-                        {{ $this->totalSelectedLines }} поз. • {{ $this->totalSelectedQty }} шт.
-                    </p>
-                </div>
-
-                <div class="mt-6 space-y-3">
-                    @forelse ($this->selectedSummary as $line)
-                        <div class="rounded-[22px] border border-[#E7E7E7] bg-[#F8F8F8] p-4">
-                            <div class="flex items-start justify-between gap-3">
-                                <div class="min-w-0">
-                                    <div class="text-[15px] font-medium text-[#213259]">
-                                        {{ $line['item_name'] }}
-                                    </div>
-
-                                    <div class="mt-1 text-[13px] text-black/40">
-                                        {{ $line['variant_label'] ?: 'Стандартный вариант' }}
-                                    </div>
-                                </div>
-
-                                <button
-                                    type="button"
-                                    wire:click="removeSelected('{{ $line['key'] }}')"
-                                    class="shrink-0 rounded-full bg-white px-3 py-1.5 text-[12px] text-[#213259] transition duration-200 hover:bg-[#EEF4F8]"
-                                >
-                                    Убрать
-                                </button>
-                            </div>
-
-                            <div class="mt-4 flex items-center gap-2">
-                                <button
-                                    type="button"
-                                    wire:click="decrement('{{ $line['key'] }}')"
-                                    class="flex h-[40px] w-[40px] items-center justify-center rounded-full bg-white text-[18px] text-[#213259]"
-                                >
-                                    −
-                                </button>
-
-                                <input
-                                    type="number"
-                                    min="0"
-                                    wire:model.live="selected.{{ $line['key'] }}.requested_qty"
-                                    class="h-[40px] min-w-0 flex-1 rounded-full border-0 bg-white px-4 text-center text-[15px] font-medium text-[#213259] outline-none focus:ring-0"
-                                >
-
-                                <button
-                                    type="button"
-                                    wire:click="increment('{{ $line['key'] }}')"
-                                    class="flex h-[40px] w-[40px] items-center justify-center rounded-full bg-white text-[18px] text-[#213259]"
-                                >
-                                    +
-                                </button>
-                            </div>
-                        </div>
-                    @empty
-                        <div class="rounded-[22px] bg-[#F8F8F8] p-4 text-center text-[14px] text-black/45">
-                            Корзина пуста
-                        </div>
-                    @endforelse
-                </div>
-
-                <div class="grid grid-cols-3 gap-[10px] pt-[20px]">
-                    <div class="col-span-1">
-                        <x-ui.button
-                            type="button"
-                            variant="secondary"
-                            wire:click="closeCart"
-                        >
-                            Назад
-                        </x-ui.button>
-                    </div>
-
-                    <div class="col-span-2">
-                        <x-ui.button
-                            type="button"
-                            variant="primary"
-                            progress="100"
-                            wire:click="submit"
-                            wire:loading.attr="disabled"
-                            wire:target="submit"
-                        >
-                            <span wire:loading.remove wire:target="submit">
-                                Отправить
-                            </span>
-
-                            <span wire:loading wire:target="submit" class="inline-flex items-center gap-[2px]">
-                                <span>Сохраняем</span>
-
-                                <span class="inline-flex items-end leading-none">
-                                    <span class="animate-[dotFade_1.4s_infinite]">.</span>
-                                    <span class="animate-[dotFade_1.4s_infinite_0.2s]">.</span>
-                                    <span class="animate-[dotFade_1.4s_infinite_0.4s]">.</span>
-                                </span>
-                            </span>
-                        </x-ui.button>
-                    </div>
-                </div>
-            </div>
-        </x-ui.bottom-sheet>
+</div>
     </div>
 
     <div x-data="{ sheetOpen: @entangle('successSheetOpen').live }">
