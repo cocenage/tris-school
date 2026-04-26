@@ -32,6 +32,37 @@ new class extends Component {
         );
     }
 
+public function getFormProgressProperty(): int
+{
+    $total = 2;
+    $done = 0;
+
+    if (filled($this->type)) {
+        $done++;
+    }
+
+    if (mb_strlen(trim($this->comment)) >= 3) {
+        $done++;
+    }
+
+    return (int) round(($done / $total) * 100);
+}
+
+public function getFormReadyProperty(): bool
+{
+    return $this->formProgress >= 100;
+}
+
+public function getFormButtonTextProperty(): string
+{
+    return match (true) {
+        $this->formProgress >= 100 => 'Отправить',
+        $this->formProgress >= 70 => 'Почти готово',
+        $this->formProgress >= 30 => 'Продолжайте',
+        default => 'Заполните',
+    };
+}
+    
     protected function buildSuccessMessage(): string
     {
         $now = now()->setTimezone(config('app.timezone'));
@@ -60,15 +91,17 @@ new class extends Component {
         $this->attachments = array_values($this->attachments);
     }
 
-    public function resetForm(): void
-    {
-        $this->type = '';
-        $this->comment = '';
-        $this->attachments = [];
+public function resetForm(): void
+{
+    $this->type = '';
+    $this->comment = '';
+    $this->attachments = [];
 
-        $this->resetErrorBag();
-        $this->resetValidation();
-    }
+    $this->resetErrorBag();
+    $this->resetValidation();
+
+    $this->dispatch('schedule-question-clear-draft');
+}
 
     public function closeSuccessSheet(): void
     {
@@ -145,24 +178,24 @@ new class extends Component {
 ?>
 
 <x-slot:header>
-    <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
+    <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
         <button
             type="button"
             onclick="history.back()"
-            class="group flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 active:bg-[#213259]/10"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2] transition-all duration-200 group-hover:-translate-x-[1px] group-hover:text-[#2D6494]" />
+            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
         </button>
 
         <span class="flex items-center justify-center text-[18px] leading-none">
-            Вопрос по графику работы
+            Вопрос по графику
         </span>
 
         <button
             type="button"
-            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 hover:text-[#2D6494] active:bg-[#213259]/10"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2]" />
+            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
         </button>
     </div>
 </x-slot:header>
@@ -173,7 +206,28 @@ new class extends Component {
         buttonsHidden: false,
         nearBottom: false,
 
+        storageKey: 'schedule-question-draft',
+
         init() {
+            const saved = localStorage.getItem(this.storageKey);
+
+            if (saved) {
+                try {
+                    const draft = JSON.parse(saved);
+
+                    if (draft.type) {
+                        $wire.set('type', draft.type);
+                    }
+
+                    if (draft.comment) {
+                        $wire.set('comment', draft.comment);
+                    }
+                } catch (e) {}
+            }
+
+            this.$watch('$wire.type', () => this.saveDraft());
+            this.$watch('$wire.comment', () => this.saveDraft());
+
             const el = this.$refs.scrollArea;
             if (!el) return;
 
@@ -183,13 +237,7 @@ new class extends Component {
 
                 this.nearBottom = current >= (maxScroll - 140);
 
-                if (this.nearBottom) {
-                    this.buttonsHidden = false;
-                    this.lastScrollTop = current;
-                    return;
-                }
-
-                if (current <= 8) {
+                if (this.nearBottom || current <= 8) {
                     this.buttonsHidden = false;
                     this.lastScrollTop = current;
                     return;
@@ -206,8 +254,21 @@ new class extends Component {
 
             onScroll();
             el.addEventListener('scroll', onScroll, { passive: true });
+        },
+
+        saveDraft() {
+            localStorage.setItem(this.storageKey, JSON.stringify({
+                type: $wire.type,
+                comment: $wire.comment,
+                savedAt: Date.now(),
+            }));
+        },
+
+        clearDraft() {
+            localStorage.removeItem(this.storageKey);
         }
     }"
+    x-on:schedule-question-clear-draft.window="clearDraft()"
     class="flex h-full min-h-0 flex-col bg-[#F4F7FB]"
 >
     <form wire:submit="submit" class="flex h-full min-h-0 flex-col">
@@ -219,7 +280,7 @@ new class extends Component {
                 <div class="p-[20px] pb-[82px]">
                     <div class="mb-[24px] relative z-20" x-data="{ open: false }">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
-                            Что случилось?
+                            Выберите тему вопроса
                         </h2>
 
                         <button
@@ -274,96 +335,96 @@ new class extends Component {
 
                     <div class="mb-[18px]">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
-                            Расскажите подробней
+                            Опишите ваш вопрос
                         </h2>
 
                         <textarea
                             wire:model.live.debounce.400ms="comment"
                             rows="6"
                             maxlength="2000"
-                            placeholder="Например: не смогу выйти в воскресенье вечером, нужен перенос и тд.."
+                            placeholder="Например: не получается выйти в смену или нужно обсудить изменение графика"
                             class="w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[16px] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
                         ></textarea>
 
                     </div>
 
-                    <div class="mb-[8px]">
-                        <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
-                            Добавьте фото
-                 
-                        </h2>
+         <div class="mb-[8px]">
+    <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
+        Прикрепите файлы
+    </h2>
 
-                <label class="block cursor-pointer rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[18px] py-[16px] transition duration-200 hover:bg-white">
-    <input
-        type="file"
-        wire:model="attachments"
-        multiple
-        accept="image/*"
-        class="hidden"
-    >
+    <label class="block cursor-pointer rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[18px] py-[14px] transition duration-200 hover:bg-white">
+        <input
+            type="file"
+            wire:model="attachments"
+            multiple
+            accept="image/*,video/*"
+            class="hidden"
+        >
 
-    <div class="flex items-center gap-[12px]">
+        <div class="flex items-center justify-between">
+            <span class="text-[15px] text-[#213259] inline-flex items-center">
+                <span wire:loading.remove wire:target="attachments">
+                    {{ empty($attachments)
+                        ? 'Прикрепите фото или видео'
+                        : 'Добавлено файлов: ' . count($attachments) }}
+                </span>
 
-        <div class="min-w-0 flex-1">
-            <div class="text-[15px] font-medium text-[#213259]">
-                Выбрать фото
-            </div>
+                <span wire:loading wire:target="attachments" class="inline-flex items-center gap-[2px]">
+                    <span>Загружаем файлы</span>
 
-            <div class="mt-[2px] text-[13px] text-black/40">
-                Можно добавить одну или несколько фотографий
-            </div>
+                    <span class="inline-flex items-end leading-none">
+                        <span class="animate-[dotFade_1.4s_infinite]">.</span>
+                        <span class="animate-[dotFade_1.4s_infinite_0.2s]">.</span>
+                        <span class="animate-[dotFade_1.4s_infinite_0.4s]">.</span>
+                    </span>
+                </span>
+            </span>
+
+            <x-heroicon-o-arrow-up-tray class="h-[18px] w-[18px] text-[#213259]" />
         </div>
-    </div>
-</label>
 
-                        <div
-                            wire:loading
-                            wire:target="attachments"
-                            class="mt-[8px] px-[4px] text-[13px] text-black/40"
-                        >
-                            Загружаем фото...
-                        </div>
-
-                        @error('attachments.*')
-                            <div class="mt-[8px] px-[4px] text-[15px] text-[#D92D20]">
-                                {{ $message }}
-                            </div>
-                        @enderror
-
-                        @if (! empty($attachments))
-                            <div class="mt-[12px] grid grid-cols-3 gap-[8px] sm:grid-cols-4">
-                                @foreach ($attachments as $index => $file)
-                                    <div class="relative overflow-hidden rounded-[18px] border border-[#E7E7E7] bg-[#F8F8F8]">
-                                        @if (str_starts_with((string) $file->getMimeType(), 'image/'))
-                                            <img
-                                                src="{{ $file->temporaryUrl() }}"
-                                                alt="{{ $file->getClientOriginalName() }}"
-                                                class="h-[96px] w-full object-cover"
-                                            >
-                                        @else
-                                            <div class="flex h-[96px] items-center justify-center px-[10px] text-center text-[12px] text-black/40">
-                                                Файл
-                                            </div>
-                                        @endif
-
-                                        <div class="border-t border-[#E7E7E7] px-[10px] py-[8px]">
-                                            <div class="truncate text-[12px] font-medium text-[#213259]">
-                                                {{ $file->getClientOriginalName() }}
-                                            </div>
-                                        </div>
-
-                                        <button
-                                            type="button"
-                                            wire:click="removeAttachment({{ $index }})"
-                                            class="absolute right-[6px] top-[6px] flex h-[26px] w-[26px] items-center justify-center rounded-full bg-white/95 text-[12px] font-medium text-[#213259] shadow-sm"
-                                        >
-                                            ✕
-                                        </button>
-                                    </div>
-                                @endforeach
+        @if (! empty($attachments))
+            <div class="mt-[14px] flex gap-[10px] overflow-x-auto pb-[2px] no-scrollbar">
+                @foreach ($attachments as $index => $file)
+                    <div class="relative h-[132px] w-[112px] shrink-0 overflow-hidden rounded-[16px] border border-[#E7E7E7] bg-white">
+                        @if (str_starts_with((string) $file->getMimeType(), 'image/'))
+                            <img
+                                src="{{ $file->temporaryUrl() }}"
+                                alt="{{ $file->getClientOriginalName() }}"
+                                class="h-[96px] w-full object-cover"
+                            >
+                        @else
+                            <div class="flex h-[96px] items-center justify-center text-[12px] text-black/40">
+                                Видео
                             </div>
                         @endif
+
+                        <div class="border-t border-[#E7E7E7] px-[8px] py-[7px]">
+                            <div class="truncate text-[12px] font-medium text-[#213259]">
+                                {{ $file->getClientOriginalName() }}
+                            </div>
+                        </div>
+
+                        <button
+                            type="button"
+                            wire:click.prevent="removeAttachment({{ $index }})"
+                            class="absolute right-[6px] top-[6px] flex h-[24px] w-[24px] items-center justify-center rounded-full bg-white/95 text-[#213259]"
+                        >
+                            ✕
+                        </button>
                     </div>
+                @endforeach
+            </div>
+        @endif
+    </label>
+
+    @error('attachments.*')
+        <div class="mt-[8px] px-[4px] text-[15px] text-[#D92D20]">
+            {{ $message }}
+        </div>
+    @enderror
+</div>
 
                     @error('form')
                         <div class="mt-[14px] rounded-[23px] bg-[#FDF2F2] px-[16px] py-[14px] text-[15px] text-[#9B1C1C]">
@@ -393,31 +454,28 @@ new class extends Component {
                     </div>
 
                     <div class="col-span-2">
-                        <x-ui.button
-                            type="submit"
-                            variant="primary"
-                            wire:loading.attr="disabled"
-                            wire:target="submit"
-                            :disabled="blank($type) || blank(trim($comment))"
-                        >
-                            <span wire:loading.remove wire:target="submit">
-                                Отправить
-                            </span>
+                       <x-ui.button
+    type="submit"
+    variant="primary"
+    :progress="$this->formProgress"
+    :disabled="! $this->formReady"
+    wire:loading.attr="disabled"
+    wire:target="submit"
+>
+    <span wire:loading.remove wire:target="submit">
+        {{ $this->formButtonText }}
+    </span>
 
-                            <span
-                                wire:loading
-                                wire:target="submit"
-                                class="inline-flex items-center"
-                            >
-                                <span>Отправляем</span>
+    <span wire:loading wire:target="submit" class="inline-flex items-center gap-[2px]">
+        <span>Сохраняем</span>
 
-                                <span class="inline-flex items-center relative top-[-1px] leading-none">
-                                    <span class="inline-block animate-bounce [animation-delay:0ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:150ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:300ms]">.</span>
-                                </span>
-                            </span>
-                        </x-ui.button>
+        <span class="inline-flex items-end leading-none">
+            <span class="animate-[dotFade_1.4s_infinite]">.</span>
+            <span class="animate-[dotFade_1.4s_infinite_0.2s]">.</span>
+            <span class="animate-[dotFade_1.4s_infinite_0.4s]">.</span>
+        </span>
+    </span>
+</x-ui.button>
                     </div>
                 </div>
             </div>
@@ -434,7 +492,7 @@ new class extends Component {
                 >
 
                 <h2 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Ваш вопрос отправлен!
+                    Ваш вопрос успешно отправлен
                 </h2>
 
                 <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">
@@ -453,7 +511,7 @@ new class extends Component {
                         variant="primary"
                         @click="sheetOpen = false"
                     >
-                        Закрыть
+                        Понятно
                     </x-ui.button>
                 </div>
             </div>

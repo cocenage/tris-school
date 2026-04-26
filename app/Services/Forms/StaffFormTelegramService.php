@@ -40,20 +40,20 @@ class StaffFormTelegramService
         );
     }
 
-    public function sendFeedbackSuggestion(FeedbackSuggestion $record): void
-    {
-        $record->loadMissing('user');
+public function sendFeedbackSuggestion(FeedbackSuggestion $record): void
+{
+    $record->loadMissing('user');
 
-        $this->send(
-            title: '💡 Новый отзыв / предложение',
-            typeLabel: 'Отзыв / предложение',
-            userName: $record->user?->name ?? 'Неизвестный сотрудник',
-            type: $record->type,
-            comment: $record->comment,
-            attachments: $record->attachments ?? [],
-            adminUrl: url('/admin/feedback-suggestions/' . $record->id . '/edit'),
-        );
-    }
+    $this->send(
+        title: '💡 Новое обращение',
+        typeLabel: 'Обратная связь',
+        userName: $record->user?->name ?? 'Неизвестный сотрудник',
+        type: $record->type,
+        comment: $record->comment,
+        attachments: $record->attachments ?? [],
+        adminUrl: url('/admin/feedback-suggestions/' . $record->id . '/edit'),
+    );
+}
 
     protected function send(
         string $title,
@@ -78,7 +78,7 @@ class StaffFormTelegramService
         $message[] = '';
         $message[] = '👤 <b>Сотрудник:</b> ' . e($userName);
         $message[] = '🧾 <b>Форма:</b> ' . e($typeLabel);
-        $message[] = '🏷️ <b>Тип вопроса:</b> ' . e($type);
+        $message[] = '🏷️ <b>Тема:</b> ' . e($type);
         $message[] = '';
         $message[] = '💬 <b>Комментарий:</b>';
         $message[] = '<blockquote>' . e(trim($comment)) . '</blockquote>';

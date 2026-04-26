@@ -48,7 +48,7 @@ new class extends Component {
             {{-- квадрат --}}
             <a href="{{ route('page-applications.feedback') }}"
                 class="aspect-square rounded-[30px] bg-[#E1E1E1] p-[15px] flex items-start">
-                <p class="text-[14px] leading-[1.2]">Отзывы или предложение</p>
+                <p class="text-[14px] leading-[1.2]">Обратная связь</p>
             </a>
 
         </div>

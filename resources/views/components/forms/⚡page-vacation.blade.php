@@ -52,6 +52,41 @@ new class extends Component {
         );
     }
 
+public function getFormProgressProperty(): int
+{
+    $total = 3;
+    $done = 0;
+
+    if (filled($this->draftStartDate)) {
+        $done++;
+    }
+
+    if (filled($this->draftEndDate)) {
+        $done++;
+    }
+
+    if (mb_strlen(trim($this->comment)) >= 5) {
+        $done++;
+    }
+
+    return (int) round(($done / $total) * 100);
+}
+
+public function getFormReadyProperty(): bool
+{
+    return $this->formProgress >= 100;
+}
+
+public function getFormButtonTextProperty(): string
+{
+    return match (true) {
+        $this->formProgress >= 100 => 'Отправить',
+        $this->formProgress >= 70 => 'Почти готово',
+        $this->formProgress >= 30 => 'Продолжайте',
+        default => 'Заполните',
+    };
+}
+
     protected function draftKey(): string
     {
         return 'vacation_request_draft_' . (Auth::id() ?: 'guest');
@@ -511,13 +546,13 @@ new class extends Component {
 ?>
 
 <x-slot:header>
-    <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
+    <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
         <button
             type="button"
             onclick="history.back()"
-            class="group flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 active:bg-[#213259]/10"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2] transition-all duration-200 group-hover:-translate-x-[1px] group-hover:text-[#2D6494]" />
+            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
         </button>
 
         <span class="text-[18px] leading-none flex items-center justify-center">
@@ -526,9 +561,9 @@ new class extends Component {
 
         <button
             type="button"
-            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 hover:text-[#2D6494] active:bg-[#213259]/10"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2]" />
+            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
         </button>
     </div>
 </x-slot:header>
@@ -585,7 +620,7 @@ new class extends Component {
                 <div class="p-[20px] pb-[82px]">
                     <div class="mb-[24px]">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
-                            Когда у вас отпуск?
+                            Выберите период отпуска
                         </h2>
 
                         <div class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] py-[20px]">
@@ -664,14 +699,14 @@ new class extends Component {
 
                     <div class="mb-[8px]">
                         <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
-                            Почему вам нужен отпуск?
+                            Опишите причину отпуска
                         </h2>
 
                         <textarea
                             wire:model.live.debounce.500ms="comment"
                             rows="4"
                             maxlength="500"
-                            placeholder="Поделитесь планами на время отсутствия"
+                            placeholder="Например: планирую отпуск в выбранные даты"
                             class="w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[16px] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
                         ></textarea>
 
@@ -710,31 +745,28 @@ new class extends Component {
                     </div>
 
                     <div class="col-span-2">
-                        <x-ui.button
-                            type="submit"
-                            variant="primary"
-                            wire:loading.attr="disabled"
-                            wire:target="submit"
-                            :disabled="blank($draftStartDate) || blank($draftEndDate) || blank(trim($comment))"
-                        >
-                            <span wire:loading.remove wire:target="submit">
-                                Отправить заявку
-                            </span>
+                       <x-ui.button
+    type="submit"
+    variant="primary"
+    :progress="$this->formProgress"
+    :disabled="! $this->formReady"
+    wire:loading.attr="disabled"
+    wire:target="submit"
+>
+    <span wire:loading.remove wire:target="submit">
+        {{ $this->formButtonText }}
+    </span>
 
-                            <span
-                                wire:loading
-                                wire:target="submit"
-                                class="inline-flex items-center"
-                            >
-                                <span>Отправляем</span>
+    <span wire:loading wire:target="submit" class="inline-flex items-center gap-[2px]">
+        <span>Сохраняем</span>
 
-                                <span class="inline-flex items-center relative top-[-1px] leading-none">
-                                    <span class="inline-block animate-bounce [animation-delay:0ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:150ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:300ms]">.</span>
-                                </span>
-                            </span>
-                        </x-ui.button>
+        <span class="inline-flex items-end leading-none">
+            <span class="animate-[dotFade_1.4s_infinite]">.</span>
+            <span class="animate-[dotFade_1.4s_infinite_0.2s]">.</span>
+            <span class="animate-[dotFade_1.4s_infinite_0.4s]">.</span>
+        </span>
+    </span>
+</x-ui.button>
                     </div>
                 </div>
             </div>
@@ -751,7 +783,7 @@ new class extends Component {
                 >
 
                 <h1 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Заявка на отпуск отправлена!
+                   Заявка на отпуск успешно отправлена
                 </h1>
 
                 <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">
@@ -760,18 +792,18 @@ new class extends Component {
 
                 <div class="flex gap-[10px] pt-[32px]">
                     <x-ui.button
-                        variant="secondary"
-                        @click="sheetOpen = false"
-                    >
-                        Закрыть
-                    </x-ui.button>
+    variant="secondary"
+    href="{{ route('page-profile.applications') }}"
+>
+    К заявкам
+</x-ui.button>
 
-                    <x-ui.button
-                        variant="primary"
-                        href="{{ route('page-profile.applications') }}"
-                    >
-                        Мои заявки
-                    </x-ui.button>
+<x-ui.button
+    variant="primary"
+    @click="sheetOpen = false"
+>
+    Понятно
+</x-ui.button>
                 </div>
             </div>
         </x-ui.bottom-sheet>

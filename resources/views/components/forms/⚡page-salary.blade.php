@@ -57,7 +57,7 @@ public function getFormButtonTextProperty(): string
 {
     return match (true) {
         $this->formProgress >= 100 => 'Отправить',
-        $this->formProgress >= 70 => 'Почти отово',
+        $this->formProgress >= 70 => 'Почти готово',
         $this->formProgress >= 30 => 'Продолжайте',
         default => 'Заполните',
     };
@@ -539,7 +539,7 @@ public function resetForm(): void
                         variant="secondary"
                         href="{{ route('page-profile.applications') }}"
                     >
-                        Перейти к заявкам
+                        К заявкам
                     </x-ui.button>
 
                     <x-ui.button

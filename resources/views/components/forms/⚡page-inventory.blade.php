@@ -77,7 +77,12 @@ new class extends Component
             ->map(function (InventoryItem $item) {
                 $main = $this->itemMain($item);
 
-                $productName = trim((string) ($main['name'] ?? $main['title'] ?? $main['product_name'] ?? 'Без названия'));
+                $productName = trim((string) (
+                    $main['name']
+                    ?? $main['title']
+                    ?? $main['product_name']
+                    ?? 'Без названия'
+                ));
 
                 $variants = collect($main['variants'] ?? [])
                     ->filter(fn ($variant) => is_array($variant))
@@ -93,7 +98,7 @@ new class extends Component
                         $parts = array_values(array_filter([$type, $size], fn ($value) => filled($value)));
 
                         return [
-                            'key' => (string) $item->id . '_' . $index,
+                            'key' => $item->id . '_' . $index,
                             'inventory_item_id' => $item->id,
                             'item_name' => $productName,
                             'type_name' => $type,
@@ -106,7 +111,7 @@ new class extends Component
 
                 if (empty($variants)) {
                     $variants[] = [
-                        'key' => (string) $item->id . '_base',
+                        'key' => $item->id . '_base',
                         'inventory_item_id' => $item->id,
                         'item_name' => $productName,
                         'type_name' => null,
@@ -127,7 +132,7 @@ new class extends Component
 
     public function selectOne(string $key): void
     {
-        $this->selected[$key]['requested_qty'] = max(1, (int) ($this->selected[$key]['requested_qty'] ?? 0));
+        $this->selected[$key]['requested_qty'] = 1;
     }
 
     public function increment(string $key): void
@@ -160,8 +165,7 @@ new class extends Component
             return;
         }
 
-        $parts = explode('.', $name);
-        $key = $parts[0] ?? null;
+        $key = explode('.', $name)[0] ?? null;
 
         if (! $key) {
             return;
@@ -220,7 +224,9 @@ new class extends Component
                 $variants = collect($product['variants'] ?? [])
                     ->filter(function (array $variant) use ($search, $productName) {
                         $variantText = mb_strtolower(trim((string) ($variant['variant_label'] ?? '')));
-                        return str_contains($productName, $search) || str_contains($variantText, $search);
+
+                        return str_contains($productName, $search)
+                            || str_contains($variantText, $search);
                     })
                     ->values()
                     ->all();
@@ -259,6 +265,7 @@ new class extends Component
     {
         $this->selected = [];
         $this->search = '';
+        $this->cartSheetOpen = false;
 
         $this->resetErrorBag();
         $this->resetValidation();
@@ -267,6 +274,11 @@ new class extends Component
     public function openCart(): void
     {
         if (empty($this->selectedSummary)) {
+            $this->toast(
+                'warning',
+                'Корзина пуста',
+                'Добавьте хотя бы одну позицию'
+            );
             return;
         }
 
@@ -291,8 +303,8 @@ new class extends Component
         if (empty($lines)) {
             $this->toast(
                 'warning',
-                'Ничего не выбрано',
-                'Добавьте хотя бы один товар в корзину'
+                'Корзина пуста',
+                'Добавьте хотя бы одну позицию'
             );
             return;
         }
@@ -342,7 +354,7 @@ new class extends Component
             $this->toast(
                 'error',
                 'Не получилось отправить',
-                'Попробуй ещё раз через пару минут',
+                'Попробуйте ещё раз через пару минут',
                 5000
             );
         }
@@ -358,13 +370,13 @@ new class extends Component
 @endpush
 
 <x-slot:header>
-    <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
+    <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
         <button
             type="button"
             onclick="history.back()"
-            class="group flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 active:bg-[#213259]/10"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2] transition-all duration-200 group-hover:-translate-x-[1px] group-hover:text-[#2D6494]" />
+            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
         </button>
 
         <span class="flex items-center justify-center text-[18px] leading-none">
@@ -373,9 +385,9 @@ new class extends Component
 
         <button
             type="button"
-            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259] transition-all duration-200 hover:bg-[#213259]/6 hover:text-[#2D6494] active:bg-[#213259]/10"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2]" />
+            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
         </button>
     </div>
 </x-slot:header>
@@ -396,13 +408,7 @@ new class extends Component
 
                 this.nearBottom = current >= (maxScroll - 140);
 
-                if (this.nearBottom) {
-                    this.buttonsHidden = false;
-                    this.lastScrollTop = current;
-                    return;
-                }
-
-                if (current <= 8) {
+                if (this.nearBottom || current <= 8) {
                     this.buttonsHidden = false;
                     this.lastScrollTop = current;
                     return;
@@ -430,9 +436,10 @@ new class extends Component
         >
             <div class="min-h-full rounded-t-[38px] bg-white">
                 <div class="p-[20px] pb-[110px]">
-                    <div class="mb-[24px]">
+
+                    <div class="mb-[20px]">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
-                            Что нужно?
+                            Что необходимо получить?
                         </h2>
 
                         <label class="block">
@@ -444,90 +451,74 @@ new class extends Component
                                 <input
                                     type="text"
                                     wire:model.live.debounce.250ms="search"
-                                    placeholder="Поиск товара или варианта"
+                                    placeholder="Поиск по названию или варианту"
                                     class="h-[50px] w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] pl-[46px] pr-[16px] text-[15px] text-[#213259] outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
                                 >
                             </span>
                         </label>
                     </div>
 
-                    <div class="space-y-[14px]">
+                    <div class="space-y-[10px]">
                         @forelse ($this->filteredCatalog as $product)
-                            <section class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] p-[16px]">
-                                <div class="mb-[14px]">
-                                    <h2 class="text-[16px] font-medium text-[#213259]">
-                                        {{ $product['name'] }}
-                                    </h2>
-                                </div>
+                            @foreach (($product['variants'] ?? []) as $variant)
+                                @php
+                                    $key = $variant['key'];
+                                    $requestedQty = (int) ($selected[$key]['requested_qty'] ?? 0);
+                                    $isSelected = $requestedQty > 0;
+                                @endphp
 
-                                <div class="space-y-[10px]">
-                                    @foreach (($product['variants'] ?? []) as $variant)
-                                        @php
-                                            $key = $variant['key'];
-                                            $requestedQty = (int) ($selected[$key]['requested_qty'] ?? 0);
-                                            $isSelected = $requestedQty > 0;
-                                        @endphp
-
-                                        <div class="rounded-[20px] border border-[#E7E7E7] bg-white px-[14px] py-[14px]">
-                                            <div class="mb-[12px] flex items-start justify-between gap-[10px]">
-                                                <div class="min-w-0">
-                                                    <div class="text-[15px] font-medium text-[#213259]">
-                                                        {{ $variant['item_name'] }}
-                                                    </div>
-
-                                                    <div class="mt-[2px] text-[13px] text-black/40">
-                                                        {{ $variant['variant_label'] ?: 'Стандартный вариант' }}
-                                                    </div>
-                                                </div>
-
-                                                @if ($isSelected)
-                                                    <div class="shrink-0 rounded-full bg-[#213259] px-[9px] py-[4px] text-[12px] font-medium text-white">
-                                                        {{ $requestedQty }}
-                                                    </div>
-                                                @endif
+                                <div class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[16px] py-[14px]">
+                                    <div class="flex items-center justify-between gap-[12px]">
+                                        <div class="min-w-0 flex-1">
+                                            <div class="truncate text-[15px] font-medium text-[#213259]">
+                                                {{ $variant['item_name'] }}
                                             </div>
 
-                                            @if (! $isSelected)
+                                            <div class="mt-[3px] truncate text-[13px] text-black/40">
+                                                {{ $variant['variant_label'] ?: 'Стандартный вариант' }}
+                                            </div>
+                                        </div>
+
+                                        @if (! $isSelected)
+                                            <button
+                                                type="button"
+                                                wire:click="selectOne('{{ $key }}')"
+                                                class="flex h-[34px] shrink-0 items-center justify-center rounded-full bg-white px-[14px] text-[13px] font-medium text-[#213259] transition duration-200 hover:bg-[#EEF4F8] active:scale-[0.97]"
+                                            >
+                                                Добавить
+                                            </button>
+                                        @else
+                                            <div class="flex shrink-0 items-center gap-[6px]">
                                                 <button
                                                     type="button"
-                                                    wire:click="selectOne('{{ $key }}')"
-                                                    class="flex h-[42px] w-full items-center justify-center rounded-full bg-[#213259] px-4 text-[14px] font-medium text-white transition duration-200 hover:opacity-95 active:scale-[0.99]"
+                                                    wire:click="decrement('{{ $key }}')"
+                                                    class="flex h-[32px] w-[32px] items-center justify-center rounded-full bg-white text-[18px] text-[#213259] transition active:scale-[0.96]"
                                                 >
-                                                    Добавить
+                                                    −
                                                 </button>
-                                            @else
-                                                <div class="flex items-center gap-[8px]">
-                                                    <button
-                                                        type="button"
-                                                        wire:click="decrement('{{ $key }}')"
-                                                        class="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full border border-[#D7E2EA] bg-white text-[18px] text-[#213259] transition duration-200 hover:bg-[#F8FBFD] active:scale-[0.97]"
-                                                    >
-                                                        −
-                                                    </button>
 
-                                                    <input
-                                                        type="number"
-                                                        min="0"
-                                                        wire:model.live="selected.{{ $key }}.requested_qty"
-                                                        class="h-[42px] min-w-0 flex-1 rounded-full border border-[#D7E2EA] bg-white px-4 text-center text-[15px] font-medium text-[#213259] outline-none focus:border-[#9FB4C9] focus:ring-0"
-                                                    >
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    wire:model.live="selected.{{ $key }}.requested_qty"
+                                                    class="h-[32px] w-[46px] rounded-full border-0 bg-white px-1 text-center text-[14px] font-medium text-[#213259] outline-none focus:ring-0"
+                                                >
 
-                                                    <button
-                                                        type="button"
-                                                        wire:click="increment('{{ $key }}')"
-                                                        class="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full border border-[#D7E2EA] bg-white text-[18px] text-[#213259] transition duration-200 hover:bg-[#F8FBFD] active:scale-[0.97]"
-                                                    >
-                                                        +
-                                                    </button>
-                                                </div>
-                                            @endif
-                                        </div>
-                                    @endforeach
+                                                <button
+                                                    type="button"
+                                                    wire:click="increment('{{ $key }}')"
+                                                    class="flex h-[32px] w-[32px] items-center justify-center rounded-full bg-white text-[18px] text-[#213259] transition active:scale-[0.96]"
+                                                >
+                                                    +
+                                                </button>
+                                            </div>
+                                        @endif
+                                    </div>
                                 </div>
-                            </section>
+                            @endforeach
                         @empty
                             <div class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[18px] py-[18px] text-center text-[15px] text-black/45">
-                                Ничего не найдено.
+                                Ничего не найдено
                             </div>
                         @endforelse
                     </div>
@@ -561,25 +552,14 @@ new class extends Component
                         </div>
 
                         <div class="col-span-2">
-                            <button
+                            <x-ui.button
                                 type="button"
+                                variant="primary"
+                                progress="100"
                                 wire:click="openCart"
-                                class="flex h-[48px] w-full items-center justify-between rounded-full bg-[#213259] px-[18px] text-left text-white transition duration-200 hover:opacity-95 active:scale-[0.99]"
                             >
-                                <div class="min-w-0">
-                                    <div class="truncate text-[14px] font-medium">
-                                        Корзина
-                                    </div>
-
-                                    <div class="mt-[1px] truncate text-[12px] text-white/75">
-                                        {{ $this->totalSelectedLines }} поз. • {{ $this->totalSelectedQty }} шт.
-                                    </div>
-                                </div>
-
-                                <div class="shrink-0 text-[13px] font-medium">
-                                    Открыть
-                                </div>
-                            </button>
+                                Корзина • {{ $this->totalSelectedQty }} шт.
+                            </x-ui.button>
                         </div>
                     </div>
                 </div>
@@ -592,11 +572,11 @@ new class extends Component
             <div class="p-5">
                 <div class="text-center">
                     <h2 class="mt-2 text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                        Корзина
+                        Проверьте заявку
                     </h2>
 
                     <p class="pt-[10px] text-[15px] leading-[1.5] text-black/55">
-                        Проверьте выбранные позиции перед отправкой.
+                        {{ $this->totalSelectedLines }} поз. • {{ $this->totalSelectedQty }} шт.
                     </p>
                 </div>
 
@@ -627,7 +607,7 @@ new class extends Component
                                 <button
                                     type="button"
                                     wire:click="decrement('{{ $line['key'] }}')"
-                                    class="flex h-[40px] w-[40px] items-center justify-center rounded-full border border-[#D7E2EA] bg-white text-[18px] text-[#213259]"
+                                    class="flex h-[40px] w-[40px] items-center justify-center rounded-full bg-white text-[18px] text-[#213259]"
                                 >
                                     −
                                 </button>
@@ -636,13 +616,13 @@ new class extends Component
                                     type="number"
                                     min="0"
                                     wire:model.live="selected.{{ $line['key'] }}.requested_qty"
-                                    class="h-[40px] min-w-0 flex-1 rounded-full border border-[#D7E2EA] bg-white px-4 text-center text-[15px] font-medium text-[#213259] outline-none focus:border-[#9FB4C9] focus:ring-0"
+                                    class="h-[40px] min-w-0 flex-1 rounded-full border-0 bg-white px-4 text-center text-[15px] font-medium text-[#213259] outline-none focus:ring-0"
                                 >
 
                                 <button
                                     type="button"
                                     wire:click="increment('{{ $line['key'] }}')"
-                                    class="flex h-[40px] w-[40px] items-center justify-center rounded-full border border-[#D7E2EA] bg-white text-[18px] text-[#213259]"
+                                    class="flex h-[40px] w-[40px] items-center justify-center rounded-full bg-white text-[18px] text-[#213259]"
                                 >
                                     +
                                 </button>
@@ -650,23 +630,9 @@ new class extends Component
                         </div>
                     @empty
                         <div class="rounded-[22px] bg-[#F8F8F8] p-4 text-center text-[14px] text-black/45">
-                            Корзина пуста.
+                            Корзина пуста
                         </div>
                     @endforelse
-                </div>
-
-                <div class="mt-6 rounded-[22px] bg-[#EEF4F8] p-4">
-                    <div class="flex items-center justify-between gap-3">
-                        <div>
-                            <div class="text-[14px] font-semibold text-[#213259]">
-                                Итого
-                            </div>
-
-                            <div class="mt-1 text-[13px] text-black/45">
-                                {{ $this->totalSelectedLines }} позиций • {{ $this->totalSelectedQty }} шт.
-                            </div>
-                        </div>
-                    </div>
                 </div>
 
                 <div class="grid grid-cols-3 gap-[10px] pt-[20px]">
@@ -684,25 +650,22 @@ new class extends Component
                         <x-ui.button
                             type="button"
                             variant="primary"
+                            progress="100"
                             wire:click="submit"
                             wire:loading.attr="disabled"
                             wire:target="submit"
                         >
                             <span wire:loading.remove wire:target="submit">
-                                Отправить заявку
+                                Отправить
                             </span>
 
-                            <span
-                                wire:loading
-                                wire:target="submit"
-                                class="inline-flex items-center"
-                            >
-                                <span>Отправляем</span>
+                            <span wire:loading wire:target="submit" class="inline-flex items-center gap-[2px]">
+                                <span>Сохраняем</span>
 
-                                <span class="inline-flex items-center relative top-[-1px] leading-none">
-                                    <span class="inline-block animate-bounce [animation-delay:0ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:150ms]">.</span>
-                                    <span class="inline-block animate-bounce [animation-delay:300ms]">.</span>
+                                <span class="inline-flex items-end leading-none">
+                                    <span class="animate-[dotFade_1.4s_infinite]">.</span>
+                                    <span class="animate-[dotFade_1.4s_infinite_0.2s]">.</span>
+                                    <span class="animate-[dotFade_1.4s_infinite_0.4s]">.</span>
                                 </span>
                             </span>
                         </x-ui.button>
@@ -722,7 +685,7 @@ new class extends Component
                 >
 
                 <h1 class="mt-[28px] text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Заявка успешно отправлена!
+                    Заявка на инвентарь успешно отправлена
                 </h1>
 
                 <p class="pt-[18px] text-[15px] leading-[1.5] text-black/55">
@@ -732,16 +695,16 @@ new class extends Component
                 <div class="flex gap-[10px] pt-[32px]">
                     <x-ui.button
                         variant="secondary"
-                        @click="sheetOpen = false"
+                        href="{{ route('page-profile.applications') }}"
                     >
-                        Закрыть
+                        К заявкам
                     </x-ui.button>
 
                     <x-ui.button
                         variant="primary"
-                        href="{{ route('page-profile.applications') }}"
+                        @click="sheetOpen = false"
                     >
-                        Мои заявки
+                        Понятно
                     </x-ui.button>
                 </div>
             </div>
