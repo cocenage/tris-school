@@ -54,11 +54,11 @@ class InventoryRequestsTable
                     ->limit(90)
                     ->wrap(),
 
-                TextColumn::make('lines_count')
-                    ->label('Позиций')
-                    ->state(fn (InventoryRequest $record): int => $record->lines->count())
-                    ->badge()
-                    ->color('gray'),
+                // TextColumn::make('lines_count')
+                //     ->label('Позиций')
+                //     ->state(fn (InventoryRequest $record): int => $record->lines->count())
+                //     ->badge()
+                //     ->color('gray'),
 
                 TextColumn::make('status')
                     ->label('Статус')

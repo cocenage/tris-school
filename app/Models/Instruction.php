@@ -50,4 +50,9 @@ class Instruction extends Model
     {
         return $this->status === 'published' && $this->published_at !== null;
     }
+
+    public function tags()
+    {
+        return $this->morphToMany(\App\Models\Tag::class, 'taggable');
+    }
 }

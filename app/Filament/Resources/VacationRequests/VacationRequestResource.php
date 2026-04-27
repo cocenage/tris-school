@@ -6,6 +6,7 @@ use App\Filament\Resources\VacationRequests\Pages\CreateVacationRequest;
 use App\Filament\Resources\VacationRequests\Pages\EditVacationRequest;
 use App\Filament\Resources\VacationRequests\Pages\ListVacationRequests;
 use App\Filament\Resources\VacationRequests\Pages\ViewVacationRequest;
+use App\Filament\Resources\VacationRequests\RelationManagers\DaysRelationManager;
 use App\Filament\Resources\VacationRequests\Schemas\VacationRequestForm;
 use App\Filament\Resources\VacationRequests\Schemas\VacationRequestInfolist;
 use App\Filament\Resources\VacationRequests\Tables\VacationRequestsTable;
@@ -15,19 +16,25 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use UnitEnum;
 
 class VacationRequestResource extends Resource
 {
     protected static ?string $model = VacationRequest::class;
 
-    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCalendar;
+
+    protected static string|UnitEnum|null $navigationGroup = 'Заявки';
+
+    protected static ?int $navigationSort = 4;
 
     protected static ?string $recordTitleAttribute = 'id';
 
-    protected static ?string $navigationLabel = 'Отпуск';
-    protected static ?string $modelLabel = 'Отпуск';
-    protected static ?string $pluralModelLabel = 'Заявки формы отпуска';
-    protected static string|\UnitEnum|null $navigationGroup = 'Заявки';
+    protected static ?string $navigationLabel = 'Отпуска';
+
+    protected static ?string $modelLabel = 'заявка на отпуск';
+
+    protected static ?string $pluralModelLabel = 'заявки на отпуск';
 
     public static function form(Schema $schema): Schema
     {
@@ -47,7 +54,7 @@ class VacationRequestResource extends Resource
     public static function getRelations(): array
     {
         return [
-            \App\Filament\Resources\VacationRequests\RelationManagers\DaysRelationManager::class,
+            DaysRelationManager::class,
         ];
     }
 
@@ -63,6 +70,15 @@ class VacationRequestResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return (string) static::getModel()::count();
+        $pendingCount = static::getModel()::query()
+            ->where('status', 'pending')
+            ->count();
+
+        return $pendingCount > 0 ? (string) $pendingCount : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'warning';
     }
 }

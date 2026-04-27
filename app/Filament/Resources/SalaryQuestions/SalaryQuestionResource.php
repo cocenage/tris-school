@@ -15,19 +15,25 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use UnitEnum;
 
 class SalaryQuestionResource extends Resource
 {
     protected static ?string $model = SalaryQuestion::class;
 
-    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCurrencyDollar;
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedBanknotes;
+
+    protected static string|UnitEnum|null $navigationGroup = 'Заявки';
+
+    protected static ?int $navigationSort = 2;
 
     protected static ?string $recordTitleAttribute = 'user_name';
 
     protected static ?string $navigationLabel = 'Вопросы по зарплате';
-    protected static ?string $modelLabel = 'Вопрос по зарплате';
-    protected static ?string $pluralModelLabel = 'Вопросы по зарплате';
-    protected static string|\UnitEnum|null $navigationGroup = 'Формы';
+
+    protected static ?string $modelLabel = 'вопрос по зарплате';
+
+    protected static ?string $pluralModelLabel = 'вопросы по зарплате';
 
     public static function form(Schema $schema): Schema
     {
@@ -52,5 +58,19 @@ class SalaryQuestionResource extends Resource
             'view' => ViewSalaryQuestion::route('/{record}'),
             'edit' => EditSalaryQuestion::route('/{record}/edit'),
         ];
+    }
+
+    public static function getNavigationBadge(): ?string
+    {
+        $pendingCount = static::getModel()::query()
+            ->where('status', 'pending')
+            ->count();
+
+        return $pendingCount > 0 ? (string) $pendingCount : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'warning';
     }
 }

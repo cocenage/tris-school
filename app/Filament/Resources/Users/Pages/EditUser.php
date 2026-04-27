@@ -33,6 +33,7 @@ class EditUser extends EditRecord
                 ->url(UserResource::getUrl('index')),
         ];
     }
+    
     protected function savePanelAccess(string $panel, bool $canAccess): void
     {
         $this->record->panelAccesses()->updateOrCreate(

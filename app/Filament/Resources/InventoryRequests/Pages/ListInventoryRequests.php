@@ -21,28 +21,34 @@ class ListInventoryRequests extends ListRecords
         return [
             'pending' => Tab::make('На рассмотрении')
                 ->icon('heroicon-m-clock')
-                ->badge(fn (): int => InventoryRequestResource::getModel()::query()
-                    ->where('status', 'pending')
-                    ->count())
+                ->badge(fn (): int => $this->countByStatus('pending'))
                 ->modifyQueryUsing(fn (Builder $query): Builder => $query->where('status', 'pending')),
 
             'partially_issued' => Tab::make('Частично')
                 ->icon('heroicon-m-adjustments-horizontal')
-                ->badge(fn (): int => InventoryRequestResource::getModel()::query()
-                    ->where('status', 'partially_issued')
-                    ->count())
+                ->badge(fn (): int => $this->countByStatus('partially_issued'))
                 ->modifyQueryUsing(fn (Builder $query): Builder => $query->where('status', 'partially_issued')),
 
             'issued' => Tab::make('Выдано')
                 ->icon('heroicon-m-check-circle')
+                ->badge(fn (): int => $this->countByStatus('issued'))
                 ->modifyQueryUsing(fn (Builder $query): Builder => $query->where('status', 'issued')),
 
             'cancelled' => Tab::make('Не выдано')
                 ->icon('heroicon-m-x-circle')
+                ->badge(fn (): int => $this->countByStatus('cancelled'))
                 ->modifyQueryUsing(fn (Builder $query): Builder => $query->where('status', 'cancelled')),
 
             'all' => Tab::make('Все')
-                ->icon('heroicon-m-circle-stack'),
+                ->icon('heroicon-m-circle-stack')
+                ->badge(fn (): int => InventoryRequestResource::getModel()::query()->count()),
         ];
+    }
+
+    protected function countByStatus(string $status): int
+    {
+        return InventoryRequestResource::getModel()::query()
+            ->where('status', $status)
+            ->count();
     }
 }

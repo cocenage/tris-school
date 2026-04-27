@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\SalaryQuestions\Schemas;
 
 use Filament\Infolists\Components\TextEntry;
+use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 
@@ -11,23 +12,64 @@ class SalaryQuestionInfolist
     public static function configure(Schema $schema): Schema
     {
         return $schema->components([
-            Section::make('Заявка')
+            Grid::make(12)
                 ->schema([
-                    TextEntry::make('user.name')->label('Сотрудник'),
-                    TextEntry::make('type')->label('Тип вопроса'),
-                    TextEntry::make('status')
-                        ->label('Статус')
-                        ->badge()
-                        ->formatStateUsing(fn (string $state) => match ($state) {
-                            'reviewed' => 'Рассмотрено',
-                            'closed' => 'Закрыто',
-                            default => 'На рассмотрении',
-                        }),
-                    TextEntry::make('comment')->label('Комментарий')->columnSpanFull(),
-                    TextEntry::make('admin_comment')->label('Комментарий администратора')->placeholder('—')->columnSpanFull(),
-                    TextEntry::make('created_at')->label('Создано')->dateTime('d.m.Y H:i'),
-                ])
-                ->columns(2),
+                    Section::make('Вопрос')
+                        ->schema([
+                            TextEntry::make('user.name')
+                                ->label('Сотрудник')
+                                ->weight('bold'),
+
+                            TextEntry::make('type')
+                                ->label('Тип вопроса')
+                                ->badge()
+                                ->color('gray'),
+
+                            TextEntry::make('status')
+                                ->label('Статус')
+                                ->badge()
+                                ->formatStateUsing(fn (?string $state): string => self::statusLabel($state))
+                                ->color(fn (?string $state): string => self::statusColor($state)),
+
+                            TextEntry::make('created_at')
+                                ->label('Создано')
+                                ->dateTime('d.m.Y H:i'),
+                        ])
+                        ->columns(2)
+                        ->columnSpan(12),
+
+                    Section::make('Комментарии')
+                        ->schema([
+                            TextEntry::make('comment')
+                                ->label('Комментарий сотрудника')
+                                ->placeholder('—')
+                                ->columnSpanFull(),
+
+                            TextEntry::make('admin_comment')
+                                ->label('Комментарий администратора')
+                                ->placeholder('—')
+                                ->columnSpanFull(),
+                        ])
+                        ->columnSpan(12),
+                ]),
         ]);
+    }
+
+    protected static function statusLabel(?string $status): string
+    {
+        return match ($status) {
+            'reviewed' => 'Рассмотрено',
+            'closed' => 'Закрыто',
+            default => 'На рассмотрении',
+        };
+    }
+
+    protected static function statusColor(?string $status): string
+    {
+        return match ($status) {
+            'reviewed' => 'info',
+            'closed' => 'success',
+            default => 'warning',
+        };
     }
 }

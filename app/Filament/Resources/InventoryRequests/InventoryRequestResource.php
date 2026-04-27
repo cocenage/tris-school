@@ -21,15 +21,15 @@ class InventoryRequestResource extends Resource
 {
     protected static ?string $model = InventoryRequest::class;
 
-    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedClipboardDocumentList;
 
     protected static string|UnitEnum|null $navigationGroup = 'Заявки';
 
-    protected static ?int $navigationSort = 3;
+    protected static ?int $navigationSort = 1;
 
     protected static ?string $recordTitleAttribute = 'user_name';
 
-    protected static ?string $navigationLabel = 'Инвентарь';
+    protected static ?string $navigationLabel = 'Запрос инвентаря';
 
     protected static ?string $modelLabel = 'заявка на инвентарь';
 

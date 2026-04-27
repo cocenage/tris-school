@@ -15,12 +15,7 @@ class EditDayOffRequest extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
-            Action::make('back')
-                ->label('Назад')
-                ->icon('heroicon-m-arrow-left')
-                ->url(DayOffRequestResource::getUrl('index'))
-                ->color('gray')
-                ->outlined(),
+
             ViewAction::make(),
             DeleteAction::make(),
         ];
@@ -28,6 +23,15 @@ class EditDayOffRequest extends EditRecord
 
     protected function getFormActions(): array
     {
-        return [];
+        return [
+            ...parent::getFormActions(),
+
+            Action::make('back')
+                ->icon('heroicon-m-arrow-left')
+                ->label('Назад')
+                ->color('gray')
+                ->outlined()
+                ->url(DayOffRequestResource::getUrl('index')),
+        ];
     }
 }

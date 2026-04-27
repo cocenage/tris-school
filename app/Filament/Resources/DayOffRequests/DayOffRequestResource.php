@@ -6,6 +6,7 @@ use App\Filament\Resources\DayOffRequests\Pages\CreateDayOffRequest;
 use App\Filament\Resources\DayOffRequests\Pages\EditDayOffRequest;
 use App\Filament\Resources\DayOffRequests\Pages\ListDayOffRequests;
 use App\Filament\Resources\DayOffRequests\Pages\ViewDayOffRequest;
+use App\Filament\Resources\DayOffRequests\RelationManagers\DaysRelationManager;
 use App\Filament\Resources\DayOffRequests\Schemas\DayOffRequestForm;
 use App\Filament\Resources\DayOffRequests\Schemas\DayOffRequestInfolist;
 use App\Filament\Resources\DayOffRequests\Tables\DayOffRequestsTable;
@@ -15,19 +16,25 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use UnitEnum;
 
 class DayOffRequestResource extends Resource
 {
     protected static ?string $model = DayOffRequest::class;
 
-    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCalendarDays;
+
+    protected static string|UnitEnum|null $navigationGroup = 'Заявки';
+
+    protected static ?int $navigationSort = 3;
 
     protected static ?string $recordTitleAttribute = 'user_name';
 
-    protected static ?string $navigationLabel = 'Выходной день';
-    protected static ?string $modelLabel = 'Выходной день';
-    protected static ?string $pluralModelLabel = 'Заявки формы выходного дня';
-    protected static string|\UnitEnum|null $navigationGroup = 'Заявки';
+    protected static ?string $navigationLabel = 'Выходные дни';
+
+    protected static ?string $modelLabel = 'заявка на выходной';
+
+    protected static ?string $pluralModelLabel = 'заявки на выходные';
 
     public static function form(Schema $schema): Schema
     {
@@ -47,7 +54,7 @@ class DayOffRequestResource extends Resource
     public static function getRelations(): array
     {
         return [
-            \App\Filament\Resources\DayOffRequests\RelationManagers\DaysRelationManager::class,
+            DaysRelationManager::class,
         ];
     }
 
@@ -63,6 +70,15 @@ class DayOffRequestResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return static::getModel()::count();
+        $pendingCount = static::getModel()::query()
+            ->where('status', 'pending')
+            ->count();
+
+        return $pendingCount > 0 ? (string) $pendingCount : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'warning';
     }
 }

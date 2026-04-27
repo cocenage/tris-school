@@ -49,4 +49,36 @@ class VacationRequest extends Model
             'notified_at' => null,
         ])->saveQuietly();
     }
+
+    public function recalculateStatus(): void
+{
+    $statuses = $this->days()
+        ->pluck('status')
+        ->values();
+
+    if ($statuses->isEmpty()) {
+        $this->update([
+            'status' => 'pending',
+        ]);
+
+        return;
+    }
+
+    $approvedCount = $statuses->filter(fn ($status) => $status === 'approved')->count();
+    $rejectedCount = $statuses->filter(fn ($status) => $status === 'rejected')->count();
+    $pendingCount = $statuses->filter(fn ($status) => $status === 'pending')->count();
+
+    $totalCount = $statuses->count();
+
+    $status = match (true) {
+        $approvedCount === $totalCount => 'approved',
+        $rejectedCount === $totalCount => 'rejected',
+        $pendingCount === $totalCount => 'pending',
+        default => 'partially_approved',
+    };
+
+    $this->update([
+        'status' => $status,
+    ]);
+}
 }
