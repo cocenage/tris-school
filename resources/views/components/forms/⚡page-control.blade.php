@@ -634,23 +634,43 @@ new class extends Component {
 
         [$totalPoints, $maxPoints] = $this->calculatePoints();
 
-        ControlResponse::create([
-            'control_id' => $this->control->id,
-            'user_id' => $this->cleaner_id,
-            'supervisor_id' => Auth::id(),
-            'apartment' => (string) Apartment::query()->whereKey($this->apartment_id)->value('name'),
-            'is_assigned' => $this->is_assigned,
-            'previous_cleaner' => $this->previous_cleaner,
-            'cleaning_date' => $this->cleaning_date,
-            'inspection_date' => $this->inspection_date,
-            'responses' => $this->answers,
-            'schema_snapshot' => $this->rooms,
-            'supervisor_comment' => $this->comment,
-            'status' => 'sent',
-            'sent_at' => now(),
-            'total_points' => $totalPoints,
-            'max_points' => $maxPoints,
-        ]);
+        $apartmentName = (string) Apartment::query()
+    ->whereKey($this->apartment_id)
+    ->value('name');
+
+$response = ControlResponse::create([
+    'control_id' => $this->control->id,
+    'user_id' => $this->cleaner_id,
+    'supervisor_id' => Auth::id(),
+    'apartment' => $apartmentName,
+    'is_assigned' => $this->is_assigned,
+    'previous_cleaner' => $this->previous_cleaner,
+    'cleaning_date' => $this->cleaning_date,
+    'inspection_date' => $this->inspection_date,
+    'responses' => $this->answers,
+    'schema_snapshot' => $this->rooms,
+    'supervisor_comment' => $this->comment,
+    'status' => 'sent',
+    'sent_at' => now(),
+    'total_points' => $totalPoints,
+    'max_points' => $maxPoints,
+]);
+
+activity()
+    ->causedBy(Auth::user())
+    ->performedOn($response)
+    ->event('control_completed')
+    ->withProperties([
+        'control_id' => $this->control->id,
+        'control_name' => $this->control->name,
+        'cleaner_id' => $this->cleaner_id,
+        'apartment' => $apartmentName,
+        'cleaning_date' => $this->cleaning_date,
+        'inspection_date' => $this->inspection_date,
+        'total_points' => $totalPoints,
+        'max_points' => $maxPoints,
+    ])
+    ->log('Супервайзер отправил контроль качества');
 
         $this->clearDraft();
         $this->resetControlForm();

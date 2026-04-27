@@ -143,6 +143,16 @@ public function resetForm(): void
                 'status' => 'pending',
             ]);
 
+            activity()
+    ->causedBy(Auth::user())
+    ->performedOn($record)
+    ->event('schedule_question_created')
+    ->withProperties([
+        'type' => $record->type,
+        'attachments_count' => count($storedAttachments),
+    ])
+    ->log('Пользователь отправил вопрос по графику');
+
             try {
                 $telegram->sendScheduleQuestion($record);
             } catch (\Throwable $e) {

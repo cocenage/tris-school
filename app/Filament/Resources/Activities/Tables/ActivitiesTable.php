@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Activities\Tables;
 
 use App\Models\User;
+use Filament\Actions\ViewAction;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
@@ -106,22 +107,38 @@ class ActivitiesTable
 
                 Filter::make('requests')
                     ->label('Только заявки')
+                    ->query(fn (Builder $query): Builder => $query->whereIn('event', self::requestEvents())),
+
+                Filter::make('controls')
+                    ->label('Только контроли')
                     ->query(fn (Builder $query): Builder => $query->whereIn('event', [
-                        'salary_question_created',
-                        'day_off_request_created',
-                        'vacation_request_created',
-                        'inventory_request_created',
+                        'control_started',
+                        'control_completed',
                     ])),
             ])
             ->recordActions([
-    \Filament\Actions\ViewAction::make(),
-]);
+                ViewAction::make(),
+            ]);
+    }
+
+    protected static function requestEvents(): array
+    {
+        return [
+            'salary_question_created',
+            'feedback_suggestion_created',
+            'schedule_question_created',
+            'day_off_request_created',
+            'vacation_request_created',
+            'inventory_request_created',
+        ];
     }
 
     protected static function eventLabel(?string $event): string
     {
         return match ($event) {
             'salary_question_created' => 'Вопрос по зарплате',
+            'feedback_suggestion_created' => 'Обратная связь',
+            'schedule_question_created' => 'Вопрос по графику',
             'day_off_request_created' => 'Заявка на выходной',
             'vacation_request_created' => 'Заявка на отпуск',
             'inventory_request_created' => 'Заявка на инвентарь',
@@ -140,6 +157,8 @@ class ActivitiesTable
     {
         return match ($event) {
             'salary_question_created',
+            'feedback_suggestion_created',
+            'schedule_question_created',
             'day_off_request_created',
             'vacation_request_created',
             'inventory_request_created' => 'success',

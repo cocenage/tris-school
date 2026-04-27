@@ -44,6 +44,11 @@ Route::livewire('/access/rejected', 'access.rejected')
 
 Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/home', 'page-home')->name('page-home');
+Route::livewire('/home/instructions', 'home.page-instructions')
+    ->name('page-home.instructions');
+Route::livewire('/home/instructions/{instruction:slug}', 'home.page-instructions-single')
+    ->name('page-home.instructions.single');
+
     Route::livewire('/checks', 'page-checks')->name('page-checks');
     Route::livewire('/checks/control', 'forms.page-control')->name('page-checks.control');
 

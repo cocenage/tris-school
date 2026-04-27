@@ -23,6 +23,7 @@ class ActivityOverview extends StatsOverviewWidget
 
         $activeUsersToday = Activity::query()
             ->whereDate('created_at', today())
+            ->where('causer_type', User::class)
             ->whereNotNull('causer_id')
             ->distinct('causer_id')
             ->count('causer_id');
@@ -31,12 +32,12 @@ class ActivityOverview extends StatsOverviewWidget
 
         $requestsToday = Activity::query()
             ->whereDate('created_at', today())
-            ->whereIn('event', [
-                'salary_question_created',
-                'day_off_request_created',
-                'vacation_request_created',
-                'inventory_request_created',
-            ])
+            ->whereIn('event', self::requestEvents())
+            ->count();
+
+        $controlsToday = Activity::query()
+            ->whereDate('created_at', today())
+            ->where('event', 'control_completed')
             ->count();
 
         $mostPopularEvent = Activity::query()
@@ -76,19 +77,17 @@ class ActivityOverview extends StatsOverviewWidget
                 ->color('warning'),
 
             Stat::make('Новые заявки сегодня', $requestsToday)
-                ->description('Отправленные формы и заявки')
+                ->description('Формы, обращения и заявки')
                 ->descriptionIcon('heroicon-m-inbox-arrow-down')
                 ->color('primary'),
 
-            Stat::make(
-                'Топ действие недели',
-                $mostPopularEvent?->event ?? 'Нет данных'
-            )
-                ->description(
-                    $mostPopularEvent
-                        ? "{$mostPopularEvent->total} раз"
-                        : 'Пока нет активности'
-                )
+            Stat::make('Контроли сегодня', $controlsToday)
+                ->description('Отправленные проверки качества')
+                ->descriptionIcon('heroicon-m-clipboard-document-check')
+                ->color('info'),
+
+            Stat::make('Топ действие недели', $mostPopularEvent ? self::eventLabel($mostPopularEvent->event) : 'Нет данных')
+                ->description($mostPopularEvent ? "{$mostPopularEvent->total} раз" : 'Пока нет активности')
                 ->descriptionIcon('heroicon-m-fire')
                 ->color('danger'),
 
@@ -102,11 +101,35 @@ class ActivityOverview extends StatsOverviewWidget
     protected function dailyActivityChart(): array
     {
         return collect(range(6, 0))
-            ->map(function (int $daysAgo) {
-                return Activity::query()
-                    ->whereDate('created_at', now()->subDays($daysAgo))
-                    ->count();
-            })
+            ->map(fn (int $daysAgo): int => Activity::query()
+                ->whereDate('created_at', now()->subDays($daysAgo))
+                ->count())
             ->toArray();
+    }
+
+    protected static function requestEvents(): array
+    {
+        return [
+            'salary_question_created',
+            'feedback_suggestion_created',
+            'schedule_question_created',
+            'day_off_request_created',
+            'vacation_request_created',
+            'inventory_request_created',
+        ];
+    }
+
+    protected static function eventLabel(?string $event): string
+    {
+        return match ($event) {
+            'salary_question_created' => 'Вопрос по зарплате',
+            'feedback_suggestion_created' => 'Обратная связь',
+            'schedule_question_created' => 'Вопрос по графику',
+            'day_off_request_created' => 'Заявка на выходной',
+            'vacation_request_created' => 'Заявка на отпуск',
+            'inventory_request_created' => 'Заявка на инвентарь',
+            'control_completed' => 'Контроль пройден',
+            default => $event ?: 'Без события',
+        };
     }
 }

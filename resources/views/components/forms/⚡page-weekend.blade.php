@@ -695,23 +695,33 @@ public function getFormButtonTextProperty(): string
             sort($dates);
 
             $request = DB::transaction(function () use ($dates) {
-                $request = DayOffRequest::create([
-                    'user_id' => Auth::id(),
-                    'reason' => trim($this->comment),
-                    'status' => 'pending',
-                ]);
+    $request = DayOffRequest::create([
+        'user_id' => Auth::id(),
+        'reason' => trim($this->comment),
+        'status' => 'pending',
+    ]);
 
-                foreach ($dates as $date) {
-                    DayOffRequestDay::create([
-                        'day_off_request_id' => $request->id,
-                        'user_id' => Auth::id(),
-                        'date' => $date,
-                        'status' => 'pending',
-                    ]);
-                }
+    foreach ($dates as $date) {
+        DayOffRequestDay::create([
+            'day_off_request_id' => $request->id,
+            'user_id' => Auth::id(),
+            'date' => $date,
+            'status' => 'pending',
+        ]);
+    }
 
-                return $request;
-            });
+    activity()
+        ->causedBy(Auth::user())
+        ->performedOn($request)
+        ->event('day_off_request_created')
+        ->withProperties([
+            'days_count' => count($dates),
+            'dates' => $dates,
+        ])
+        ->log('Пользователь отправил заявку на выходной');
+
+    return $request;
+});
 
             try {
                 $this->sendTelegramNotification($request);

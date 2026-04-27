@@ -333,29 +333,58 @@ new class extends Component
             return;
         }
 
-        try {
-            DB::transaction(function () use ($lines) {
-                $request = InventoryRequest::create([
-                    'user_id' => Auth::id(),
-                    'status' => 'pending',
-                    'submitted_at' => now(),
-                ]);
+    try {
+    DB::transaction(function () use ($lines) {
+        $request = InventoryRequest::create([
+            'user_id' => Auth::id(),
+            'status' => 'pending',
+            'submitted_at' => now(),
+        ]);
 
-                foreach ($lines as $line) {
-                    InventoryRequestLine::create([
-                        'inventory_request_id' => $request->id,
-                        'inventory_item_id' => $line['inventory_item_id'],
-                        'user_id' => Auth::id(),
-                        'item_name' => $line['item_name'],
-                        'type_name' => $line['type_name'],
-                        'size_name' => $line['size_name'],
-                        'variant_label' => $line['variant_label'],
-                        'requested_qty' => (int) $line['requested_qty'],
-                        'issued_qty' => 0,
-                        'status' => 'pending',
-                    ]);
-                }
-            });
+        foreach ($lines as $line) {
+            InventoryRequestLine::create([
+                'inventory_request_id' => $request->id,
+                'inventory_item_id' => $line['inventory_item_id'],
+                'user_id' => Auth::id(),
+                'item_name' => $line['item_name'],
+                'type_name' => $line['type_name'],
+                'size_name' => $line['size_name'],
+                'variant_label' => $line['variant_label'],
+                'requested_qty' => (int) $line['requested_qty'],
+                'issued_qty' => 0,
+                'status' => 'pending',
+            ]);
+        }
+
+        activity()
+            ->causedBy(Auth::user())
+            ->performedOn($request)
+            ->event('inventory_request_created')
+            ->withProperties([
+                'lines_count' => count($lines),
+                'total_qty' => collect($lines)->sum('requested_qty'),
+                'items' => collect($lines)
+                    ->map(fn (array $line): array => [
+                        'name' => $line['item_name'],
+                        'variant' => $line['variant_label'],
+                        'qty' => (int) $line['requested_qty'],
+                    ])
+                    ->values()
+                    ->all(),
+            ])
+            ->log('Пользователь отправил заявку на инвентарь');
+    });
+
+    $this->selected = [];
+    $this->search = '';
+
+    $this->resetErrorBag();
+    $this->resetValidation();
+    $this->clearDraft();
+
+    $this->successMessage = $this->buildSuccessMessage();
+    $this->successSheetOpen = true;
+} catch (\Throwable $e) {
 
             $this->selected = [];
             $this->search = '';

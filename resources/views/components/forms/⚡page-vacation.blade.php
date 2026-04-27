@@ -469,26 +469,38 @@ public function getFormButtonTextProperty(): string
             }
 
             $request = DB::transaction(function () use ($dates) {
-                $request = VacationRequest::create([
-                    'user_id' => Auth::id(),
-                    'start_date' => $this->draftStartDate,
-                    'end_date' => $this->draftEndDate,
-                    'days_count' => count($dates),
-                    'reason' => trim($this->comment),
-                    'status' => 'pending',
-                ]);
+    $request = VacationRequest::create([
+        'user_id' => Auth::id(),
+        'start_date' => $this->draftStartDate,
+        'end_date' => $this->draftEndDate,
+        'days_count' => count($dates),
+        'reason' => trim($this->comment),
+        'status' => 'pending',
+    ]);
 
-                foreach ($dates as $date) {
-                    VacationRequestDay::create([
-                        'vacation_request_id' => $request->id,
-                        'user_id' => Auth::id(),
-                        'date' => $date,
-                        'status' => 'pending',
-                    ]);
-                }
+    foreach ($dates as $date) {
+        VacationRequestDay::create([
+            'vacation_request_id' => $request->id,
+            'user_id' => Auth::id(),
+            'date' => $date,
+            'status' => 'pending',
+        ]);
+    }
 
-                return $request;
-            });
+    activity()
+        ->causedBy(Auth::user())
+        ->performedOn($request)
+        ->event('vacation_request_created')
+        ->withProperties([
+            'start_date' => $request->start_date,
+            'end_date' => $request->end_date,
+            'days_count' => count($dates),
+            'dates' => $dates,
+        ])
+        ->log('Пользователь отправил заявку на отпуск');
+
+    return $request;
+});
 
             try {
                 $telegram->sendCreated($request);

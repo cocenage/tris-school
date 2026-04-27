@@ -135,13 +135,23 @@ public function resetForm(): void
                 ];
             }
 
-            $record = FeedbackSuggestion::create([
-                'user_id' => Auth::id(),
-                'type' => trim($this->type),
-                'comment' => trim($this->comment),
-                'attachments' => $storedAttachments,
-                'status' => 'pending',
-            ]);
+        $record = FeedbackSuggestion::create([
+    'user_id' => Auth::id(),
+    'type' => trim($this->type),
+    'comment' => trim($this->comment),
+    'attachments' => $storedAttachments,
+    'status' => 'pending',
+]);
+
+activity()
+    ->causedBy(Auth::user())
+    ->performedOn($record)
+    ->event('feedback_suggestion_created')
+    ->withProperties([
+        'type' => $record->type,
+        'attachments_count' => count($storedAttachments),
+    ])
+    ->log('Пользователь отправил обратную связь');
 
             try {
                 $telegram->sendFeedbackSuggestion($record);
