@@ -15,6 +15,8 @@ class LinesRelationManager extends RelationManager
 {
     protected static string $relationship = 'lines';
 
+    protected static ?string $title = 'Позиции заявки';
+
     public function form(Schema $schema): Schema
     {
         return $schema
@@ -38,44 +40,47 @@ class LinesRelationManager extends RelationManager
             ->defaultSort('id')
             ->columns([
                 TextColumn::make('item_name')
-                    ->label('Товар'),
+                    ->label('Товар')
+                    ->weight('medium')
+                    ->searchable(),
 
                 TextColumn::make('variant_label')
                     ->label('Вариант')
                     ->placeholder('—'),
 
                 TextColumn::make('requested_qty')
-                    ->label('Запрошено'),
+                    ->label('Запрошено')
+                    ->badge()
+                    ->color('gray'),
 
                 TextColumn::make('issued_qty')
-                    ->label('Выдано'),
+                    ->label('Выдано')
+                    ->badge()
+                    ->color(fn ($state): string => (int) $state > 0 ? 'success' : 'gray'),
 
                 TextColumn::make('status')
                     ->label('Статус')
                     ->badge()
-                    ->formatStateUsing(fn (string $state): string => match ($state) {
-                        'issued' => 'Выдано',
-                        'partially_issued' => 'Частично',
-                        'cancelled' => 'Не выдано',
-                        default => 'На рассмотрении',
-                    })
-                    ->color(fn (string $state): string => match ($state) {
-                        'issued' => 'success',
-                        'partially_issued' => 'warning',
-                        'cancelled' => 'danger',
-                        default => 'info',
-                    }),
+                    ->formatStateUsing(fn (?string $state): string => self::statusLabel($state))
+                    ->color(fn (?string $state): string => self::statusColor($state)),
 
                 TextColumn::make('admin_comment')
                     ->label('Комментарий')
                     ->placeholder('—')
+                    ->limit(60)
                     ->wrap(),
+
+                TextColumn::make('processed_at')
+                    ->label('Обработано')
+                    ->dateTime('d.m.Y H:i')
+                    ->placeholder('—')
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->headerActions([])
-            ->recordActions([
+            ->actions([
                 Action::make('issue')
                     ->label('Выдать')
-                    ->icon('heroicon-o-check')
+                    ->icon('heroicon-m-check')
                     ->color('success')
                     ->requiresConfirmation()
                     ->schema([
@@ -96,28 +101,31 @@ class LinesRelationManager extends RelationManager
 
                         $issuedQty = max(0, (int) ($data['issued_qty'] ?? 0));
                         $requestedQty = (int) $record->requested_qty;
+                        $finalIssuedQty = min($issuedQty, $requestedQty);
 
                         $status = match (true) {
-                            $issuedQty <= 0 => 'cancelled',
-                            $issuedQty >= $requestedQty => 'issued',
+                            $finalIssuedQty <= 0 => 'cancelled',
+                            $finalIssuedQty >= $requestedQty => 'issued',
                             default => 'partially_issued',
                         };
 
+                        $adminComment = filled($data['admin_comment'] ?? null)
+                            ? trim((string) $data['admin_comment'])
+                            : null;
+
                         $changed =
                             $record->status !== $status
-                            || (int) $record->issued_qty !== min($issuedQty, $requestedQty)
-                            || $record->admin_comment !== ($data['admin_comment'] ?? null);
+                            || (int) $record->issued_qty !== $finalIssuedQty
+                            || $record->admin_comment !== $adminComment;
 
                         if ($changed) {
                             $request->resetNotification();
                         }
 
                         $record->update([
-                            'issued_qty' => min($issuedQty, $requestedQty),
+                            'issued_qty' => $finalIssuedQty,
                             'status' => $status,
-                            'admin_comment' => filled($data['admin_comment'] ?? null)
-                                ? trim((string) $data['admin_comment'])
-                                : null,
+                            'admin_comment' => $adminComment,
                             'processed_at' => now(),
                             'processed_by' => auth()->id(),
                         ]);
@@ -127,7 +135,7 @@ class LinesRelationManager extends RelationManager
 
                 Action::make('cancel')
                     ->label('Не выдавать')
-                    ->icon('heroicon-o-x-mark')
+                    ->icon('heroicon-m-x-mark')
                     ->color('danger')
                     ->requiresConfirmation()
                     ->schema([
@@ -139,10 +147,14 @@ class LinesRelationManager extends RelationManager
                     ->action(function (InventoryRequestLine $record, array $data): void {
                         $request = $record->request;
 
+                        $adminComment = filled($data['admin_comment'] ?? null)
+                            ? trim((string) $data['admin_comment'])
+                            : null;
+
                         $changed =
                             $record->status !== 'cancelled'
                             || (int) $record->issued_qty !== 0
-                            || $record->admin_comment !== ($data['admin_comment'] ?? null);
+                            || $record->admin_comment !== $adminComment;
 
                         if ($changed) {
                             $request->resetNotification();
@@ -151,9 +163,7 @@ class LinesRelationManager extends RelationManager
                         $record->update([
                             'issued_qty' => 0,
                             'status' => 'cancelled',
-                            'admin_comment' => filled($data['admin_comment'] ?? null)
-                                ? trim((string) $data['admin_comment'])
-                                : null,
+                            'admin_comment' => $adminComment,
                             'processed_at' => now(),
                             'processed_by' => auth()->id(),
                         ]);
@@ -163,7 +173,7 @@ class LinesRelationManager extends RelationManager
 
                 Action::make('reset')
                     ->label('Сбросить')
-                    ->icon('heroicon-o-arrow-path')
+                    ->icon('heroicon-m-arrow-path')
                     ->color('gray')
                     ->requiresConfirmation()
                     ->action(function (InventoryRequestLine $record): void {
@@ -181,5 +191,25 @@ class LinesRelationManager extends RelationManager
                         $request->recalculateStatus();
                     }),
             ]);
+    }
+
+    protected static function statusLabel(?string $status): string
+    {
+        return match ($status) {
+            'issued' => 'Выдано',
+            'partially_issued' => 'Частично',
+            'cancelled' => 'Не выдано',
+            default => 'На рассмотрении',
+        };
+    }
+
+    protected static function statusColor(?string $status): string
+    {
+        return match ($status) {
+            'issued' => 'success',
+            'partially_issued' => 'warning',
+            'cancelled' => 'danger',
+            default => 'info',
+        };
     }
 }

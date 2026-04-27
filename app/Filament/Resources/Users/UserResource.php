@@ -21,13 +21,19 @@ class UserResource extends Resource
 {
     protected static ?string $model = User::class;
 
-    protected static string|BackedEnum|null $navigationIcon = Heroicon::User;
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::Users;
 
-    protected static ?string $recordTitleAttribute = 'telegram_username';
+    protected static string|\UnitEnum|null $navigationGroup = 'Пользователи';
 
-    protected static ?string $navigationLabel = 'Пользоватили';
-    protected static ?string $modelLabel = 'Пользоватиль';
-    protected static ?string $pluralModelLabel = 'Пользоватили';
+    protected static ?int $navigationSort = 1;
+
+    protected static ?string $recordTitleAttribute = 'name';
+
+    protected static ?string $navigationLabel = 'Пользователи';
+
+    protected static ?string $modelLabel = 'пользователь';
+
+    protected static ?string $pluralModelLabel = 'пользователи';
 
     public static function form(Schema $schema): Schema
     {
@@ -46,9 +52,7 @@ class UserResource extends Resource
 
     public static function getRelations(): array
     {
-        return [
-            //
-        ];
+        return [];
     }
 
     public static function getPages(): array
@@ -65,18 +69,27 @@ class UserResource extends Resource
     {
         return parent::getEloquentQuery()
             ->orderByRaw("
-            CASE status
-                WHEN 'pending' THEN 0
-                WHEN 'approved' THEN 1
-                WHEN 'rejected' THEN 2
-                ELSE 3
-            END
-        ")
+                CASE status
+                    WHEN 'pending' THEN 0
+                    WHEN 'approved' THEN 1
+                    WHEN 'rejected' THEN 2
+                    ELSE 3
+                END
+            ")
             ->orderBy('name');
     }
 
     public static function getNavigationBadge(): ?string
     {
-        return static::getModel()::count();
+        $pendingCount = static::getModel()::query()
+            ->where('status', 'pending')
+            ->count();
+
+        return $pendingCount > 0 ? (string) $pendingCount : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'warning';
     }
 }

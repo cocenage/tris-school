@@ -3,6 +3,8 @@
 namespace App\Providers\Filament;
 
 use App\Filament\Widgets\ActivityOverview;
+use App\Filament\Widgets\AdminRequestsOverview;
+use App\Filament\Widgets\LatestActivity;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -29,9 +31,16 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->login()
+            ->brandName('Админ-панель')
             ->colors([
-                'primary' => Color::Blue,
+                'primary' => Color::Sky,
+                'gray' => Color::Slate,
+                'success' => Color::Emerald,
+                'warning' => Color::Amber,
+                'danger' => Color::Rose,
             ])
+            ->sidebarCollapsibleOnDesktop()
+            ->globalSearchKeyBindings(['command+k', 'ctrl+k'])
             ->maxContentWidth('full')
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\Filament\Pages')
@@ -41,6 +50,8 @@ class AdminPanelProvider extends PanelProvider
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\Filament\Widgets')
             ->widgets([
                 ActivityOverview::class,
+                AdminRequestsOverview::class,
+                LatestActivity::class,
             ])
             ->middleware([
                 EncryptCookies::class,
@@ -56,6 +67,5 @@ class AdminPanelProvider extends PanelProvider
             ->authMiddleware([
                 Authenticate::class,
             ]);
-            
     }
 }

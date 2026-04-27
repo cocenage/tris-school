@@ -15,6 +15,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use UnitEnum;
 
 class InventoryRequestResource extends Resource
 {
@@ -22,12 +23,17 @@ class InventoryRequestResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
 
+    protected static string|UnitEnum|null $navigationGroup = 'Заявки';
+
+    protected static ?int $navigationSort = 3;
+
     protected static ?string $recordTitleAttribute = 'user_name';
 
     protected static ?string $navigationLabel = 'Инвентарь';
-    protected static ?string $modelLabel = 'Заявка на инвентарь';
-    protected static ?string $pluralModelLabel = 'Заявки на инвентарь';
-    protected static string|\UnitEnum|null $navigationGroup = 'Заявки';
+
+    protected static ?string $modelLabel = 'заявка на инвентарь';
+
+    protected static ?string $pluralModelLabel = 'заявки на инвентарь';
 
     public static function form(Schema $schema): Schema
     {
@@ -62,8 +68,15 @@ class InventoryRequestResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return (string) static::getModel()::query()
+        $pendingCount = static::getModel()::query()
             ->where('status', 'pending')
             ->count();
+
+        return $pendingCount > 0 ? (string) $pendingCount : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'warning';
     }
 }

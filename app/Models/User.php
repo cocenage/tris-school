@@ -61,12 +61,72 @@ class User extends Authenticatable
         ];
     }
 
+    public function panelAccesses()
+    {
+        return $this->hasMany(UserPanelAccess::class);
+    }
+
+    public function hasPanelAccess(string $panel): bool
+    {
+        if ($this->role === 'admin') {
+            return true;
+        }
+
+        return $this->panelAccesses()
+            ->where('panel', $panel)
+            ->where('can_access', true)
+            ->exists();
+    }
+
     public function canAccessPanel(Panel $panel): bool
     {
-        return $panel->getId() === 'admin'
-            && $this->role === 'admin'
-            && $this->status === 'approved';
+        if ($this->status !== 'approved') {
+            return false;
+        }
+
+        if ($this->role === 'admin') {
+            return true;
+        }
+
+        return $this->hasPanelAccess($panel->getId());
     }
+
+public function calendarTypeAccesses()
+{
+    return $this->hasMany(UserCalendarTypeAccess::class);
+}
+
+public function hasCalendarTypeAccess(string $type): bool
+{
+    if ($this->role === 'admin') {
+        return true;
+    }
+
+    return $this->calendarTypeAccesses()
+        ->where('type', $type)
+        ->where('can_view', true)
+        ->exists();
+}
+
+public function allowedCalendarTypes(): array
+{
+    if ($this->role === 'admin') {
+        return [
+            'workflow',
+            'finance',
+            'holiday',
+            'peak',
+            'vacation',
+            'strike',
+        ];
+    }
+
+    return $this->calendarTypeAccesses()
+        ->where('can_view', true)
+        ->pluck('type')
+        ->values()
+        ->all();
+}
 
     public function isAdmin(): bool
     {
@@ -115,4 +175,6 @@ class User extends Authenticatable
     {
         return $this->hasMany(\App\Models\InventoryRequest::class);
     }
+
+
 }

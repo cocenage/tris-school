@@ -382,6 +382,49 @@ protected function eventsForDay(Carbon $day): Collection
             </a>
 
            
+                       <a
+              href="/admin/finance"
+                class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
+            >
+                <div class="flex min-w-0 items-center gap-4">
+                      <x-heroicon-o-cog-6-tooth class="w-[24px] h-[24px] 
+                }}" />
+                
+                   
+
+                    <span class="truncate text-[18px]">
+                        Админ-панель финансы
+                    </span>
+                </div>
+
+                      <div class="ml-[15px] flex shrink-0 items-center">
+                     <x-heroicon-o-chevron-right class="w-[18px] h-[18px] transition-transform duration-200 group-hover:translate-x-[2px] stroke-2
+                }}" />
+                  
+                </div>
+            </a>
+
+                       <a
+              href="/education"
+                class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
+            >
+                <div class="flex min-w-0 items-center gap-4">
+                      <x-heroicon-o-cog-6-tooth class="w-[24px] h-[24px] 
+                }}" />
+                
+                   
+
+                    <span class="truncate text-[18px]">
+                        Админ-панель обучения
+                    </span>
+                </div>
+
+                      <div class="ml-[15px] flex shrink-0 items-center">
+                     <x-heroicon-o-chevron-right class="w-[18px] h-[18px] transition-transform duration-200 group-hover:translate-x-[2px] stroke-2
+                }}" />
+                  
+                </div>
+            </a>
 
           
 

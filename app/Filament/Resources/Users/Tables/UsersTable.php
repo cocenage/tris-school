@@ -3,11 +3,11 @@
 namespace App\Filament\Resources\Users\Tables;
 
 use App\Filament\Resources\Users\UserResource;
+use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
-use Filament\Tables\Columns\BadgeColumn;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\ImageColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -19,132 +19,127 @@ class UsersTable
     public static function configure(Table $table): Table
     {
         return $table
-            ->defaultSort('name', 'asc')
-            ->recordUrl(fn($record) => UserResource::getUrl('edit', ['record' => $record]))
-            ->columns([
-                ImageColumn::make('avatar')
-                    ->label('')
-                    ->getStateUsing(function ($record) {
-                        if ($record->telegram_avatar_path) {
-                            return $record->telegram_avatar_path;
-                        }
+            ->recordTitleAttribute('name')
+            ->recordUrl(fn ($record) => UserResource::getUrl('edit', ['record' => $record]))
 
-                        return null;
-                    })
+            ->columns([
+                ImageColumn::make('telegram_avatar_path')
+                    ->label('')
                     ->disk('public')
                     ->circular()
-                    ->size(48)
+                    ->size(44)
                     ->defaultImageUrl(asset('images/avatar-placeholder.png'))
                     ->grow(false),
 
                 TextColumn::make('name')
-                    ->label('Имя')
-                    ->searchable()
+                    ->label('Пользователь')
+                    ->searchable(['name', 'telegram_username', 'telegram_first_name', 'telegram_last_name', 'telegram_id'])
                     ->sortable()
-                    ->toggleable(),
+                    ->weight('medium')
+                    ->description(function ($record): string {
+                        if (filled($record->telegram_username)) {
+                            return '@' . ltrim($record->telegram_username, '@');
+                        }
 
-                TextColumn::make('telegram_username')
-                    ->label('Тг')
-                    ->searchable()
-                    ->sortable()
-                    ->formatStateUsing(fn(?string $state): string => filled($state) ? '@' . ltrim($state, '@') : '—')
-                    ->toggleable(),
+                        if (filled($record->telegram_first_name) || filled($record->telegram_last_name)) {
+                            return trim($record->telegram_first_name . ' ' . $record->telegram_last_name);
+                        }
 
-                TextColumn::make('work_started_at')
-                    ->label('Начало работы')
-                    ->formatStateUsing(fn($state) => $state?->translatedFormat('d F Y'))
-                    ->sortable()
-                    ->toggleable(),
-
-                TextColumn::make('birthday')
-                    ->label('ДР')
-                    ->formatStateUsing(fn($state) => $state?->translatedFormat('d F') ?? '—')
-                    ->sortable()
-                    ->toggleable(),
-
-                TextColumn::make('dip')
-                    ->label('Dip')
-                    ->badge()
-                    ->formatStateUsing(fn(bool $state): string => $state ? 'dip' : 'no dip')
-                    ->color(fn(bool $state): string => $state ? 'info' : 'gray')
-                    ->sortable()
-                    ->toggleable(),
+                        return 'Telegram не указан';
+                    }),
 
                 TextColumn::make('role')
                     ->label('Роль')
                     ->badge()
-                    ->icon(fn(string $state) => match ($state) {
+                    ->icon(fn (?string $state): string => match ($state) {
                         'admin' => 'heroicon-m-shield-exclamation',
                         'supervisor' => 'heroicon-m-eye',
                         'cleaner' => 'heroicon-m-sparkles',
                         default => 'heroicon-m-user',
                     })
-                    ->color(fn(string $state) => match ($state) {
+                    ->color(fn (?string $state): string => match ($state) {
                         'admin' => 'danger',
                         'supervisor' => 'warning',
                         'cleaner' => 'success',
                         default => 'gray',
                     })
-                    ->formatStateUsing(fn(string $state) => match ($state) {
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
                         'admin' => 'Админ',
                         'supervisor' => 'Супервайзер',
                         'cleaner' => 'Клинер',
-                        default => $state,
+                        default => '—',
                     })
-                    ->toggleable(),
+                    ->sortable(),
 
                 TextColumn::make('status')
                     ->label('Доступ')
                     ->badge()
-                    ->color(fn(string $state) => match ($state) {
+                    ->color(fn (?string $state): string => match ($state) {
                         'approved' => 'success',
                         'pending' => 'warning',
                         'rejected' => 'danger',
                         default => 'gray',
                     })
-                    ->formatStateUsing(fn(string $state) => match ($state) {
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
                         'approved' => 'Одобрен',
                         'pending' => 'Ожидает',
                         'rejected' => 'Отклонён',
-                        default => $state,
+                        default => '—',
                     })
+                    ->sortable(),
+
+                TextColumn::make('dip')
+                    ->label('DIP')
+                    ->badge()
+                    ->formatStateUsing(fn (?bool $state): string => $state ? 'DIP' : 'NO DIP')
+                    ->color(fn (?bool $state): string => $state ? 'info' : 'gray')
+                    ->sortable()
                     ->toggleable(),
 
                 IconColumn::make('is_active')
-                    ->label('Статус')
+                    ->label('Активен')
                     ->boolean()
-                    ->trueIcon('heroicon-o-check-circle')
-                    ->falseIcon('heroicon-o-x-circle')
+                    ->trueIcon('heroicon-m-check-circle')
+                    ->falseIcon('heroicon-m-x-circle')
                     ->trueColor('success')
                     ->falseColor('danger')
+                    ->sortable(),
+
+                TextColumn::make('work_started_at')
+                    ->label('Работает с')
+                    ->date('d.m.Y')
+                    ->placeholder('—')
                     ->sortable()
-                    ->toggleable(),
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('birthday')
+                    ->label('ДР')
+                    ->formatStateUsing(fn ($state) => $state?->translatedFormat('d F') ?? '—')
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('last_login_at')
+                    ->label('Последний вход')
+                    ->since()
+                    ->placeholder('—')
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('created_at')
+                    ->label('Создан')
+                    ->dateTime('d.m.Y H:i')
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
+
             ->filters([
-                SelectFilter::make('role')
-                    ->label('Роль')
-                    ->options([
-                        'cleaner' => 'Клинер',
-                        'supervisor' => 'Супервайзер',
-                        'admin' => 'Админ',
-                    ]),
-
-                SelectFilter::make('dip')
-                    ->label('Dip')
-                    ->options([
-                        '1' => 'Dip',
-                        '0' => 'No dip',
-                    ])
-                    ->placeholder('Все'),
-
                 SelectFilter::make('is_active')
-                    ->label('Статус пользователя')
+                    ->label('Активность')
                     ->options([
                         '1' => 'Активные',
                         '0' => 'Неактивные',
                     ])
-                    ->default('1')
-                    ->placeholder('Все статусы'),
+                    ->placeholder('Все'),
 
                 SelectFilter::make('status')
                     ->label('Доступ')
@@ -154,14 +149,88 @@ class UsersTable
                         'rejected' => 'Отклонён',
                     ])
                     ->placeholder('Все'),
+
+                SelectFilter::make('role')
+                    ->label('Роль')
+                    ->options([
+                        'cleaner' => 'Клинер',
+                        'supervisor' => 'Супервайзер',
+                        'admin' => 'Админ',
+                    ])
+                    ->placeholder('Все'),
+
+                SelectFilter::make('dip')
+                    ->label('DIP')
+                    ->options([
+                        '1' => 'DIP',
+                        '0' => 'NO DIP',
+                    ])
+                    ->placeholder('Все'),
             ])
-            ->actions([
-                ActionGroup::make([
-                    ViewAction::make(),
-                    EditAction::make(),
-                    DeleteAction::make(),
-                ]),
-            ])
+
+           ->actions([
+    ActionGroup::make([
+        Action::make('approveAccess')
+            ->label('Одобрить доступ')
+            ->icon('heroicon-m-check')
+            ->color('success')
+            ->visible(fn ($record): bool => $record->status !== 'approved')
+            ->requiresConfirmation()
+            ->action(function ($record): void {
+                $record->update([
+                    'status' => 'approved',
+                    'approved_at' => now(),
+                    'approved_by' => auth()->id(),
+                ]);
+            }),
+
+        Action::make('rejectAccess')
+            ->label('Запретить доступ')
+            ->icon('heroicon-m-no-symbol')
+            ->color('danger')
+            ->visible(fn ($record): bool => $record->status !== 'rejected')
+            ->requiresConfirmation()
+            ->action(function ($record): void {
+                $record->update([
+                    'status' => 'rejected',
+                ]);
+            }),
+
+        Action::make('makeEmployee')
+            ->label('Вернуть в сотрудники')
+            ->icon('heroicon-m-arrow-uturn-left')
+            ->color('success')
+            ->visible(fn ($record): bool => ! $record->is_active)
+            ->requiresConfirmation()
+            ->action(function ($record): void {
+                $record->update([
+                    'is_active' => true,
+                ]);
+            }),
+
+        Action::make('fireEmployee')
+            ->label('Уволить')
+            ->icon('heroicon-m-user-minus')
+            ->color('warning')
+            ->visible(fn ($record): bool => $record->is_active)
+            ->requiresConfirmation()
+            ->action(function ($record): void {
+                $record->update([
+                    'is_active' => false,
+                ]);
+            }),
+
+        ViewAction::make()
+            ->label('Открыть'),
+
+        EditAction::make()
+            ->label('Редактировать'),
+
+        DeleteAction::make()
+            ->label('Удалить'),
+    ]),
+])
+
             ->bulkActions([]);
     }
 }

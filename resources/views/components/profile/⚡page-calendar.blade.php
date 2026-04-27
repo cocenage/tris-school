@@ -32,10 +32,15 @@ new class extends Component {
         $this->month = $this->month->copy()->addMonth()->startOfMonth();
     }
 
-    public function setFilter(string $filter): void
-    {
-        $this->activeFilter = $filter;
+public function setFilter(string $filter): void
+{
+    if ($filter !== 'all' && ! $this->canViewCalendarType($filter)) {
+        $this->activeFilter = 'all';
+        return;
     }
+
+    $this->activeFilter = $filter;
+}
 
     public function openDay(string $date): void
     {
@@ -60,18 +65,38 @@ new class extends Component {
         $this->sheetOpen = true;
     }
 
-    public function getFiltersProperty(): array
-    {
-        return [
-            'all' => 'Все',
-            'workflow' => 'Рабочие процессы',
-            'finance' => 'Финансы',
-            'holiday' => 'Праздники',
-            'peak' => 'Пики загрузки',
-            'vacation' => 'Выходные и отпуска',
-            'strike' => 'Забастовки',
-        ];
-    }
+public function getFiltersProperty(): array
+{
+    $all = [
+        'workflow' => 'Рабочие процессы',
+        'finance' => 'Финансы',
+        'holiday' => 'Праздники',
+        'peak' => 'Пики загрузки',
+        'vacation' => 'Выходные и отпуска',
+        'strike' => 'Забастовки',
+    ];
+
+    $allowed = auth()->user()?->allowedCalendarTypes() ?? [];
+
+    $filters = collect($all)
+        ->only($allowed)
+        ->toArray();
+
+    return [
+        'all' => 'Все',
+        ...$filters,
+    ];
+}
+
+protected function allowedCalendarTypes(): array
+{
+    return auth()->user()?->allowedCalendarTypes() ?? [];
+}
+
+protected function canViewCalendarType(string $type): bool
+{
+    return in_array($type, $this->allowedCalendarTypes(), true);
+}
 
     public function getWeeksForMonth(Carbon $month): array
     {
@@ -361,12 +386,18 @@ new class extends Component {
 
     protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Collection
     {
-        $baseEvents = CalendarEvent::query()
-            // ->with('user')
-            ->where('is_active', true)
-            ->orderByDesc('priority')
-            ->orderBy('start_date')
-            ->get();
+        $allowedTypes = $this->allowedCalendarTypes();
+
+if (empty($allowedTypes)) {
+    return collect();
+}
+
+$baseEvents = CalendarEvent::query()
+    ->where('is_active', true)
+    ->whereIn('type', $allowedTypes)
+    ->orderByDesc('priority')
+    ->orderBy('start_date')
+    ->get();
 
         $expanded = collect();
 
@@ -376,61 +407,63 @@ new class extends Component {
             );
         }
 
-        $users = User::query()
-            ->where('is_active', true)
-            ->where(function ($q) {
-                $q->whereNotNull('birthday')
-                    ->orWhereNotNull('work_started_at');
-            })
-            ->get();
+        if ($this->canViewCalendarType('holiday')) {
+    $users = User::query()
+        ->where('is_active', true)
+        ->where(function ($q) {
+            $q->whereNotNull('birthday')
+                ->orWhereNotNull('work_started_at');
+        })
+        ->get();
 
-        foreach ($users as $user) {
-            if ($user->birthday) {
-                $birthday = Carbon::parse($user->birthday);
+    foreach ($users as $user) {
+        if ($user->birthday) {
+            $birthday = Carbon::parse($user->birthday);
 
-                for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
-                    $date = $this->safeDateForYear($birthday, $year);
+            for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
+                $date = $this->safeDateForYear($birthday, $year);
 
-                    if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
-                        $expanded->push([
-                            'id' => 'birthday_' . $user->id . '_' . $year,
-                            'title' => "{$user->name}{$this->formatUserDip($user)} — День рождения",
-                            'description' => null,
-                            'short' => mb_strimwidth("🎂 {$user->name}", 0, 12, '...'),
-                            'type' => 'holiday',
-                            'priority' => 100,
-                            'start' => $date->copy()->startOfDay(),
-                            'end' => $date->copy()->startOfDay(),
-                            'style' => $this->eventStyle('holiday'),
-                        ]);
-                    }
-                }
-            }
-
-            if ($user->work_started_at) {
-                $workStarted = Carbon::parse($user->work_started_at);
-
-                for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
-                    $date = $this->safeDateForYear($workStarted, $year);
-
-                    if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
-                        $years = Carbon::parse($user->work_started_at)->diffInYears($date);
-
-                        $expanded->push([
-                            'id' => 'work_' . $user->id . '_' . $year,
-                            'title' => "{$user->name}{$this->formatUserDip($user)} — {$years} лет в компании",
-                            'description' => null,
-                            'short' => mb_strimwidth("🏢 {$user->name}", 0, 12, '...'),
-                            'type' => 'holiday',
-                            'priority' => 90,
-                            'start' => $date->copy()->startOfDay(),
-                            'end' => $date->copy()->startOfDay(),
-                            'style' => $this->eventStyle('holiday'),
-                        ]);
-                    }
+                if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
+                    $expanded->push([
+                        'id' => 'birthday_' . $user->id . '_' . $year,
+                        'title' => "{$user->name}{$this->formatUserDip($user)} — День рождения",
+                        'description' => null,
+                        'short' => mb_strimwidth("🎂 {$user->name}", 0, 12, '...'),
+                        'type' => 'holiday',
+                        'priority' => 100,
+                        'start' => $date->copy()->startOfDay(),
+                        'end' => $date->copy()->startOfDay(),
+                        'style' => $this->eventStyle('holiday'),
+                    ]);
                 }
             }
         }
+
+        if ($user->work_started_at) {
+            $workStarted = Carbon::parse($user->work_started_at);
+
+            for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
+                $date = $this->safeDateForYear($workStarted, $year);
+
+                if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
+                    $years = Carbon::parse($user->work_started_at)->diffInYears($date);
+
+                    $expanded->push([
+                        'id' => 'work_' . $user->id . '_' . $year,
+                        'title' => "{$user->name}{$this->formatUserDip($user)} — {$years} лет в компании",
+                        'description' => null,
+                        'short' => mb_strimwidth("🏢 {$user->name}", 0, 12, '...'),
+                        'type' => 'holiday',
+                        'priority' => 90,
+                        'start' => $date->copy()->startOfDay(),
+                        'end' => $date->copy()->startOfDay(),
+                        'style' => $this->eventStyle('holiday'),
+                    ]);
+                }
+            }
+        }
+    }
+}
 
 $dayOffDays = DayOffRequestDay::query()
     ->with(['user', 'request'])
