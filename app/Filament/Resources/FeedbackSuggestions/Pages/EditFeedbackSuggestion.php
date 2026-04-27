@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\FeedbackSuggestions\Pages;
 
 use App\Filament\Resources\FeedbackSuggestions\FeedbackSuggestionResource;
+use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\ViewAction;
 use Filament\Resources\Pages\EditRecord;
@@ -28,5 +29,18 @@ class EditFeedbackSuggestion extends EditRecord
         $data['answer_seen_at'] = null;
 
         return $data;
+    }
+
+        protected function getFormActions(): array
+    {
+        return [
+            ...parent::getFormActions(),
+
+            Action::make('back')
+                ->label('Назад')
+                ->color('gray')
+                ->outlined()
+                ->url(FeedbackSuggestionResource::getUrl('index')),
+        ];
     }
 }

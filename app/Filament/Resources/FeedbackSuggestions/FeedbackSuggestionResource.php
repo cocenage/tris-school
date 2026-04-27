@@ -15,6 +15,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use UnitEnum;
 
 class FeedbackSuggestionResource extends Resource
 {
@@ -22,12 +23,17 @@ class FeedbackSuggestionResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedChatBubbleBottomCenterText;
 
+    protected static string|UnitEnum|null $navigationGroup = 'Заявки';
+
+    protected static ?int $navigationSort = 6;
+
     protected static ?string $recordTitleAttribute = 'user_name';
 
-    protected static ?string $navigationLabel = 'Отзывы и предложения';
-    protected static ?string $modelLabel = 'Отзыв / предложение';
-    protected static ?string $pluralModelLabel = 'Отзывы и предложения';
-    protected static string|\UnitEnum|null $navigationGroup = 'Формы';
+    protected static ?string $navigationLabel = 'Обратная связь';
+
+    protected static ?string $modelLabel = 'отзыв / предложение';
+
+    protected static ?string $pluralModelLabel = 'отзывы и предложения';
 
     public static function form(Schema $schema): Schema
     {
@@ -52,5 +58,19 @@ class FeedbackSuggestionResource extends Resource
             'view' => ViewFeedbackSuggestion::route('/{record}'),
             'edit' => EditFeedbackSuggestion::route('/{record}/edit'),
         ];
+    }
+
+    public static function getNavigationBadge(): ?string
+    {
+        $pendingCount = static::getModel()::query()
+            ->where('status', 'pending')
+            ->count();
+
+        return $pendingCount > 0 ? (string) $pendingCount : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'warning';
     }
 }

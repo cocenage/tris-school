@@ -15,6 +15,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use UnitEnum;
 
 class CalendarEventResource extends Resource
 {
@@ -22,12 +23,17 @@ class CalendarEventResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCalendarDays;
 
+    protected static string|UnitEnum|null $navigationGroup = 'Контент';
+
+    protected static ?int $navigationSort = 1;
+
     protected static ?string $recordTitleAttribute = 'title';
 
     protected static ?string $navigationLabel = 'Календарь';
-    protected static ?string $modelLabel = 'Событие календаря';
-    protected static ?string $pluralModelLabel = 'События календаря';
-    protected static string|\UnitEnum|null $navigationGroup = 'Контент';
+
+    protected static ?string $modelLabel = 'событие календаря';
+
+    protected static ?string $pluralModelLabel = 'события календаря';
 
     public static function form(Schema $schema): Schema
     {
@@ -61,6 +67,13 @@ class CalendarEventResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return static::getModel()::count();
+        return (string) static::getModel()::query()
+            ->where('is_active', true)
+            ->count();
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'success';
     }
 }

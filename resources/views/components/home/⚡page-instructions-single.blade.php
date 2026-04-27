@@ -52,22 +52,44 @@ new class extends Component {
 ?>
 
 <x-slot:header>
-    <livewire:search.search-bar />
-</x-slot:header>
+        <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
+     <button
+            type="button"
+            onclick="history.back()"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
+                   bg-[#E1E1E1] backdrop-blur-md
+                   text-white
+                   transition-all duration-300
+                   hover:bg-[#7D7D7D]"
+        >
+            <x-heroicon-o-arrow-left
+                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
+            />
+        </button>
+        <span class="flex items-center justify-center text-[18px] leading-none">
+            тут нужно сделать новый app
+        </span>
 
+     <button
+            type="button"
+     
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
+                   bg-[#E1E1E1] backdrop-blur-md
+                   text-white
+                   transition-all duration-300
+                   hover:bg-[#7D7D7D]"
+        >
+            <x-heroicon-o-magnifying-glass
+                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
+            />
+        </button>
+    </div>
+</x-slot:header>
 <section
     x-data="{ imageOpen: false, imageSrc: '', imageAlt: '' }"
     class="min-h-screen bg-white px-[17px] py-[22px]"
 >
-    <article class="mx-auto max-w-[760px] pb-[120px]">
-
-        <a
-            href="{{ route('page-home.instructions') }}"
-            class="mb-[24px] inline-flex items-center gap-2 text-[15px] font-medium text-[#5F6673]"
-        >
-            ↖ Полезные материалы
-        </a>
-
+    <article class="mx-auto max-w-[768px] pb-[120px]">
         <header>
             <div class="mb-[18px] text-[15px] leading-none text-[#4B5563]">
                 Обновлено {{ $instruction->updated_at->translatedFormat('j F, Y') }}

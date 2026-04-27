@@ -25,4 +25,17 @@ class EditCalendarEvent extends EditRecord
             DeleteAction::make(),
         ];
     }
+
+          protected function getFormActions(): array
+    {
+        return [
+            ...parent::getFormActions(),
+
+            Action::make('back')
+                ->label('Назад')
+                ->color('gray')
+                ->outlined()
+                ->url(CalendarEventResource::getUrl('index')),
+        ];
+    }
 }

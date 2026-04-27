@@ -465,83 +465,73 @@ $baseEvents = CalendarEvent::query()
     }
 }
 
-$dayOffDays = DayOffRequestDay::query()
-    ->with(['user', 'request'])
-    ->whereBetween('date', [
-        $rangeStart->copy()->toDateString(),
-        $rangeEnd->copy()->toDateString(),
-    ])
-    ->whereHas('request', function ($query) {
-    $query->where('status', 'approved');
-})
-    ->get();
-
-foreach ($dayOffDays as $dayOffDay) {
-    $user = $dayOffDay->user;
-    $date = Carbon::parse($dayOffDay->date)->startOfDay();
-
-    $statusLabel = match ($dayOffDay->status) {
-        'approved' => 'Выходной',
-        'rejected' => 'Выходной отклонён',
-        default => 'Выходной',
-    };
-
-    $expanded->push([
-        'id' => 'day_off_' . $dayOffDay->id,
-        'title' => "{$user?->name}{$this->formatUserDip($user)} — {$statusLabel}",
-        'description' => $dayOffDay->request?->reason,
-        'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 12, '...'),
-        'type' => 'vacation',
-        'priority' => 85,
-        'start' => $date->copy(),
-        'end' => $date->copy(),
-        'style' => $this->eventStyle('vacation'),
-    ]);
-}
-
-$vacationRequests = VacationRequest::query()
-    ->with(['user', 'days'])
-    ->where('status', 'approved')
-    ->whereHas('days', function ($query) use ($rangeStart, $rangeEnd) {
-        $query->whereBetween('date', [
+if ($this->canViewCalendarType('vacation')) {
+    $dayOffDays = DayOffRequestDay::query()
+        ->with(['user', 'request'])
+        ->whereBetween('date', [
             $rangeStart->copy()->toDateString(),
             $rangeEnd->copy()->toDateString(),
+        ])
+        ->whereHas('request', function ($query) {
+            $query->where('status', 'approved');
+        })
+        ->get();
+
+    foreach ($dayOffDays as $dayOffDay) {
+        $user = $dayOffDay->user;
+        $date = Carbon::parse($dayOffDay->date)->startOfDay();
+
+        $expanded->push([
+            'id' => 'day_off_' . $dayOffDay->id,
+            'title' => "{$user?->name}{$this->formatUserDip($user)} — Выходной",
+            'description' => $dayOffDay->request?->reason,
+            'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 12, '...'),
+            'type' => 'vacation',
+            'priority' => 85,
+            'start' => $date->copy(),
+            'end' => $date->copy(),
+            'style' => $this->eventStyle('vacation'),
         ]);
-    })
-    ->get();
-
-foreach ($vacationRequests as $vacationRequest) {
-    $user = $vacationRequest->user;
-
-    $vacationDays = $vacationRequest->days
-        ->filter(fn ($day) => Carbon::parse($day->date)->betweenIncluded($rangeStart, $rangeEnd))
-        ->sortBy('date')
-        ->values();
-
-    if ($vacationDays->isEmpty()) {
-        continue;
     }
 
-    $start = Carbon::parse($vacationDays->first()->date)->startOfDay();
-    $end = Carbon::parse($vacationDays->last()->date)->startOfDay();
+    $vacationRequests = VacationRequest::query()
+        ->with(['user', 'days'])
+        ->where('status', 'approved')
+        ->whereHas('days', function ($query) use ($rangeStart, $rangeEnd) {
+            $query->whereBetween('date', [
+                $rangeStart->copy()->toDateString(),
+                $rangeEnd->copy()->toDateString(),
+            ]);
+        })
+        ->get();
 
-    $statusLabel = match ($vacationRequest->status) {
-        'approved' => 'Отпуск',
-        'partially_approved' => 'Отпуск частично одобрен',
-        default => 'Отпуск',
-    };
+    foreach ($vacationRequests as $vacationRequest) {
+        $user = $vacationRequest->user;
 
-    $expanded->push([
-        'id' => 'vacation_' . $vacationRequest->id . '_' . $start->format('Ymd'),
-        'title' => "{$user?->name}{$this->formatUserDip($user)} — {$statusLabel}",
-        'description' => $vacationRequest->reason,
-        'short' => mb_strimwidth("🏖 " . ($user?->name ?? 'Отпуск'), 0, 12, '...'),
-        'type' => 'vacation',
-        'priority' => 80,
-        'start' => $start,
-        'end' => $end,
-        'style' => $this->eventStyle('vacation'),
-    ]);
+        $vacationDays = $vacationRequest->days
+            ->filter(fn ($day) => Carbon::parse($day->date)->betweenIncluded($rangeStart, $rangeEnd))
+            ->sortBy('date')
+            ->values();
+
+        if ($vacationDays->isEmpty()) {
+            continue;
+        }
+
+        $start = Carbon::parse($vacationDays->first()->date)->startOfDay();
+        $end = Carbon::parse($vacationDays->last()->date)->startOfDay();
+
+        $expanded->push([
+            'id' => 'vacation_' . $vacationRequest->id . '_' . $start->format('Ymd'),
+            'title' => "{$user?->name}{$this->formatUserDip($user)} — Отпуск",
+            'description' => $vacationRequest->reason,
+            'short' => mb_strimwidth("🏖 " . ($user?->name ?? 'Отпуск'), 0, 12, '...'),
+            'type' => 'vacation',
+            'priority' => 80,
+            'start' => $start,
+            'end' => $end,
+            'style' => $this->eventStyle('vacation'),
+        ]);
+    }
 }
 
         if ($this->activeFilter !== 'all') {

@@ -33,6 +33,7 @@ class CalendarEvent extends Model
     public const TYPE_FINANCE = 'finance';
     public const TYPE_HOLIDAY = 'holiday';
     public const TYPE_PEAK = 'peak';
+    public const TYPE_VACATION = 'vacation';
     public const TYPE_STRIKE = 'strike';
 
     public const REPEAT_NONE = 'none';
@@ -47,6 +48,7 @@ class CalendarEvent extends Model
             self::TYPE_FINANCE => 'Финансы',
             self::TYPE_HOLIDAY => 'Праздник',
             self::TYPE_PEAK => 'Пик загрузки',
+            self::TYPE_VACATION => 'Выходные и отпуска',
             self::TYPE_STRIKE => 'Забастовки',
         ];
     }

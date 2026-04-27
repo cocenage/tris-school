@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\ScheduleQuestions\Pages;
 
 use App\Filament\Resources\ScheduleQuestions\ScheduleQuestionResource;
+use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\ViewAction;
 use Filament\Resources\Pages\EditRecord;
@@ -27,5 +28,18 @@ class EditScheduleQuestion extends EditRecord
         $data['answer_seen_at'] = null;
 
         return $data;
+    }
+
+    protected function getFormActions(): array
+    {
+        return [
+            ...parent::getFormActions(),
+
+            Action::make('back')
+                ->label('Назад')
+                ->color('gray')
+                ->outlined()
+                ->url(ScheduleQuestionResource::getUrl('index')),
+        ];
     }
 }

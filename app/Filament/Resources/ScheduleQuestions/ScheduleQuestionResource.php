@@ -15,6 +15,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use UnitEnum;
 
 class ScheduleQuestionResource extends Resource
 {
@@ -22,12 +23,17 @@ class ScheduleQuestionResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCalendarDays;
 
+    protected static string|UnitEnum|null $navigationGroup = 'Заявки';
+
+    protected static ?int $navigationSort = 5;
+
     protected static ?string $recordTitleAttribute = 'user_name';
 
     protected static ?string $navigationLabel = 'Вопросы по графику';
-    protected static ?string $modelLabel = 'Вопрос по графику';
-    protected static ?string $pluralModelLabel = 'Вопросы по графику';
-    protected static string|\UnitEnum|null $navigationGroup = 'Формы';
+
+    protected static ?string $modelLabel = 'вопрос по графику';
+
+    protected static ?string $pluralModelLabel = 'вопросы по графику';
 
     public static function form(Schema $schema): Schema
     {
@@ -52,5 +58,19 @@ class ScheduleQuestionResource extends Resource
             'view' => ViewScheduleQuestion::route('/{record}'),
             'edit' => EditScheduleQuestion::route('/{record}/edit'),
         ];
+    }
+
+    public static function getNavigationBadge(): ?string
+    {
+        $pendingCount = static::getModel()::query()
+            ->where('status', 'pending')
+            ->count();
+
+        return $pendingCount > 0 ? (string) $pendingCount : null;
+    }
+
+    public static function getNavigationBadgeColor(): ?string
+    {
+        return 'warning';
     }
 }
