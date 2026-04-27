@@ -12,39 +12,39 @@ use Livewire\Component;
 
 new class extends Component
 {
-public function mount(): void
-{
-    foreach ([
-        DayOffRequest::class,
-        VacationRequest::class,
-        InventoryRequest::class,
-        SalaryQuestion::class,
-        ScheduleQuestion::class,
-        FeedbackSuggestion::class,
-    ] as $model) {
-        $model::query()
-            ->where('user_id', auth()->id())
-            ->whereNull('answer_seen_at')
-            ->where(function ($query) {
-                $query
-                    ->whereNotNull('answered_at')
-                    ->orWhereNotNull('admin_comment')
-                    ->orWhereIn('status', [
-                        'approved',
-                        'rejected',
-                        'partially_approved',
-                        'issued',
-                        'partially_issued',
-                        'cancelled',
-                        'reviewed',
-                        'closed',
-                    ]);
-            })
-            ->update([
-                'answer_seen_at' => now(),
-            ]);
+    public function mount(): void
+    {
+        foreach ([
+            DayOffRequest::class,
+            VacationRequest::class,
+            InventoryRequest::class,
+            SalaryQuestion::class,
+            ScheduleQuestion::class,
+            FeedbackSuggestion::class,
+        ] as $model) {
+            $model::query()
+                ->where('user_id', auth()->id())
+                ->whereNull('answer_seen_at')
+                ->where(function ($query) {
+                    $query
+                        ->whereNotNull('answered_at')
+                        ->orWhereNotNull('admin_comment')
+                        ->orWhereIn('status', [
+                            'approved',
+                            'rejected',
+                            'partially_approved',
+                            'issued',
+                            'partially_issued',
+                            'cancelled',
+                            'reviewed',
+                            'closed',
+                        ]);
+                })
+                ->update([
+                    'answer_seen_at' => now(),
+                ]);
+        }
     }
-}
 
     public function getRequestsProperty(): Collection
     {
@@ -56,8 +56,6 @@ public function mount(): void
             ->map(function ($request) {
                 $request->request_type = 'day_off';
                 $request->request_type_label = 'Выходной';
-                $request->request_type_icon = '🌿';
-
                 return $request;
             });
 
@@ -69,8 +67,6 @@ public function mount(): void
             ->map(function ($request) {
                 $request->request_type = 'vacation';
                 $request->request_type_label = 'Отпуск';
-                $request->request_type_icon = '🏖';
-
                 return $request;
             });
 
@@ -82,8 +78,6 @@ public function mount(): void
             ->map(function ($request) {
                 $request->request_type = 'inventory';
                 $request->request_type_label = 'Инвентарь';
-                $request->request_type_icon = '📦';
-
                 return $request;
             });
 
@@ -94,8 +88,6 @@ public function mount(): void
             ->map(function ($request) {
                 $request->request_type = 'salary';
                 $request->request_type_label = 'Зарплата';
-                $request->request_type_icon = '💰';
-
                 return $request;
             });
 
@@ -106,8 +98,6 @@ public function mount(): void
             ->map(function ($request) {
                 $request->request_type = 'schedule';
                 $request->request_type_label = 'График';
-                $request->request_type_icon = '📅';
-
                 return $request;
             });
 
@@ -117,9 +107,7 @@ public function mount(): void
             ->get()
             ->map(function ($request) {
                 $request->request_type = 'feedback';
-                $request->request_type_label = 'Отзыв / предложение';
-                $request->request_type_icon = '💡';
-
+                $request->request_type_label = 'Отзыв';
                 return $request;
             });
 
@@ -133,44 +121,41 @@ public function mount(): void
             ->values();
     }
 
-    public function statusLabel(string $status): string
+    public function statusLabel(?string $status): string
     {
         return match ($status) {
             'approved' => 'одобрено',
             'rejected' => 'отклонено',
-            'partially_approved' => 'частично одобрено',
-
+            'partially_approved' => 'частично',
             'issued' => 'выдано',
-            'partially_issued' => 'выдано частично',
-            'cancelled' => 'не выдано',
-
+            'partially_issued' => 'частично',
+            'cancelled' => 'отменено',
             'reviewed' => 'рассмотрено',
             'closed' => 'закрыто',
-
             default => 'на рассмотрении',
         };
     }
 
-    public function statusTextClasses(string $status): string
+    public function statusBadgeClasses(?string $status): string
     {
         return match ($status) {
-            'approved', 'issued', 'reviewed' => 'text-[#1F7A45]',
-            'rejected', 'cancelled', 'closed' => 'text-[#C53B32]',
-            'partially_approved', 'partially_issued' => 'text-[#B76A16]',
-            default => 'text-[#2457A5]',
+            'approved', 'issued', 'reviewed' => 'bg-[#EAF7EF] text-[#1F7A45]',
+            'rejected', 'cancelled', 'closed' => 'bg-[#FDEDEC] text-[#C53B32]',
+            'partially_approved', 'partially_issued' => 'bg-[#FFF4E5] text-[#B76A16]',
+            default => 'bg-[#EEF4FF] text-[#2457A5]',
         };
     }
 
-    public function dayStatusLabel(string $status): string
+    public function dayStatusLabel(?string $status): string
     {
         return match ($status) {
             'approved' => 'одобрено',
             'rejected' => 'отказ',
-            default => 'на рассмотрении',
+            default => 'ожидает',
         };
     }
 
-    public function dayStatusClasses(string $status): string
+    public function dayStatusClasses(?string $status): string
     {
         return match ($status) {
             'approved' => 'text-[#1F7A45]',
@@ -179,17 +164,17 @@ public function mount(): void
         };
     }
 
-    public function itemStatusLabel(string $status): string
+    public function itemStatusLabel(?string $status): string
     {
         return match ($status) {
             'issued' => 'выдано',
             'partially_issued' => 'частично',
             'cancelled' => 'не выдано',
-            default => 'на рассмотрении',
+            default => 'ожидает',
         };
     }
 
-    public function itemStatusClasses(string $status): string
+    public function itemStatusClasses(?string $status): string
     {
         return match ($status) {
             'issued' => 'text-[#1F7A45]',
@@ -202,29 +187,30 @@ public function mount(): void
     public function typeLabel(string $type): string
     {
         return match ($type) {
-            'vacation' => 'отпуск',
-            'inventory' => 'инвентарь',
-            'salary' => 'вопрос по зарплате',
-            'schedule' => 'вопрос по графику',
-            'feedback' => 'отзыв / предложение',
-            default => 'выходной',
+            'vacation' => 'Отпуск',
+            'inventory' => 'Инвентарь',
+            'salary' => 'Зарплата',
+            'schedule' => 'График',
+            'feedback' => 'Отзыв',
+            default => 'Выходной',
+        };
+    }
+
+    public function typeIcon(string $type): string
+    {
+        return match ($type) {
+            'vacation' => '🏖',
+            'inventory' => '📦',
+            'salary' => '💰',
+            'schedule' => '📅',
+            'feedback' => '💡',
+            default => '🌿',
         };
     }
 
     public function plusUrl(): string
     {
         return route('page-profile.applications');
-    }
-
-    public function stats(): array
-    {
-        $requests = $this->requests;
-
-        return [
-            'all' => $requests->count(),
-            'pending' => $requests->where('status', 'pending')->count(),
-            'approved' => $requests->filter(fn ($request) => in_array($request->status, ['approved', 'issued', 'reviewed'], true))->count(),
-        ];
     }
 
     public function daysWord(int $count): string
@@ -278,6 +264,41 @@ public function mount(): void
 };
 ?>
 
+<x-slot:header>
+    <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
+     <button
+            type="button"
+            onclick="history.back()"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
+                   bg-[#E1E1E1] backdrop-blur-md
+                   text-white
+                   transition-all duration-300
+                   hover:bg-[#7D7D7D]"
+        >
+            <x-heroicon-o-arrow-left
+                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
+            />
+        </button>
+        <span class="flex items-center justify-center text-[18px] leading-none">
+            Мои заявки
+        </span>
+
+     <button
+            type="button"
+     
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
+                   bg-[#E1E1E1] backdrop-blur-md
+                   text-white
+                   transition-all duration-300
+                   hover:bg-[#7D7D7D]"
+        >
+            <x-heroicon-o-magnifying-glass
+                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
+            />
+        </button>
+    </div>
+</x-slot:header>
+
 <div
     x-data="{
         tab: 'all',
@@ -285,29 +306,12 @@ public function mount(): void
             return this.tab === 'all' || this.tab === type
         }
     }"
-    class="flex h-full flex-col overflow-hidden bg-[#F6F7F8]"
+    class="flex h-full flex-col overflow-hidden"
 >
-    <div class="shrink-0 px-[16px] pt-[20px] pb-[14px]">
-        <div class="flex items-start justify-between gap-[12px]">
-            <div class="min-w-0">
-                <h1 class="text-[28px] font-semibold leading-none tracking-[-0.03em] text-[#111111]">
-                    Мои заявки
-                </h1>
+    <div class="shrink-0 px-[15px] pt-[20px] pb-[10px]">
+    
 
-                <p class="mt-[8px] text-[14px] leading-[1.45] text-[#7E7E77]">
-                    Выходные, отпуск, инвентарь, зарплата, график и отзывы
-                </p>
-            </div>
-
-            <a
-                href="{{ $this->plusUrl() }}"
-                class="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-full bg-[#111111] text-white transition active:scale-[0.96]"
-            >
-                <x-heroicon-o-plus class="h-[22px] w-[22px] stroke-[2.5]" />
-            </a>
-        </div>
-
-        <div class="mt-[16px] flex gap-[8px] overflow-x-auto no-scrollbar">
+        <div class="mt-[18px] flex gap-[8px] overflow-x-auto no-scrollbar">
             @foreach ([
                 'all' => 'Все',
                 'day_off' => 'Выходные',
@@ -322,8 +326,8 @@ public function mount(): void
                     @click="tab = '{{ $value }}'"
                     :class="tab === '{{ $value }}'
                         ? 'bg-[#111111] text-white'
-                        : 'bg-white text-[#5F5F59] border border-[#E8EAEE]'"
-                    class="h-[38px] shrink-0 rounded-full px-[15px] text-[14px] font-medium transition"
+                        : 'bg-white text-[#777770]'"
+                    class="h-[36px] shrink-0 rounded-full px-[14px] text-[13px] font-medium shadow-[0_1px_0_rgba(0,0,0,0.04)] transition active:scale-[0.98]"
                 >
                     {{ $label }}
                 </button>
@@ -331,246 +335,203 @@ public function mount(): void
         </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto px-[16px] pb-[28px]">
+    <div class="flex-1 overflow-y-auto px-[18px] pb-[28px]">
         @php
-            $hasRequests = $this->requests->isNotEmpty();
-            $dayOffCount = $this->requests->where('request_type', 'day_off')->count();
-            $vacationCount = $this->requests->where('request_type', 'vacation')->count();
-            $inventoryCount = $this->requests->where('request_type', 'inventory')->count();
-            $salaryCount = $this->requests->where('request_type', 'salary')->count();
-            $scheduleCount = $this->requests->where('request_type', 'schedule')->count();
-            $feedbackCount = $this->requests->where('request_type', 'feedback')->count();
+            $requests = $this->requests;
+
+            $hasRequests = $requests->isNotEmpty();
+
+            $counts = [
+                'day_off' => $requests->where('request_type', 'day_off')->count(),
+                'vacation' => $requests->where('request_type', 'vacation')->count(),
+                'inventory' => $requests->where('request_type', 'inventory')->count(),
+                'salary' => $requests->where('request_type', 'salary')->count(),
+                'schedule' => $requests->where('request_type', 'schedule')->count(),
+                'feedback' => $requests->where('request_type', 'feedback')->count(),
+            ];
         @endphp
 
         @if ($hasRequests)
             <div class="space-y-[10px]">
-                @foreach ($this->requests as $request)
-                    @if ($request->request_type === 'inventory')
-                        <article
-                            x-show="matches('{{ $request->request_type }}')"
-                            x-transition.opacity.duration.150ms
-                            class="rounded-[24px] border border-[#E8EAEE] bg-white px-[18px] py-[16px]"
-                        >
-                            <div class="flex items-start justify-between gap-[16px]">
-                                <div class="min-w-0">
-                                    <div class="text-[24px] font-semibold leading-[1.1] tracking-[-0.03em] text-[#111111]">
-                                        Запрос инвентаря
+                @foreach ($requests as $request)
+                    <article
+                        x-show="matches('{{ $request->request_type }}')"
+                        x-transition.opacity.duration.150ms
+                        class="rounded-[26px] bg-zinc-50 p-[16px] shadow-[0_1px_0_rgba(0,0,0,0.04)]"
+                    >
+                        <div class="flex items-start justify-between gap-[14px]">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-[8px]">
+                                    <div class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-[#F4F4F1] text-[15px]">
+                                        {{ $this->typeIcon($request->request_type) }}
                                     </div>
 
-                                    <div class="mt-[6px] text-[14px] text-[#7B7B76]">
-                                        {{ $request->lines->count() }} {{ $this->positionsWord($request->lines->count()) }}
-                                        ·
+                                    <div class="truncate text-[13px] font-medium text-[#8A8A84]">
                                         {{ $this->typeLabel($request->request_type) }}
                                     </div>
                                 </div>
 
-                                <div class="shrink-0 text-right">
-                                    <div class="text-[14px] font-medium {{ $this->statusTextClasses($request->status) }}">
-                                        {{ $this->statusLabel($request->status) }}
-                                    </div>
+                                <div class="mt-[12px] text-[19px] font-semibold leading-[1.15] tracking-[-0.03em] text-[#111111]">
+                                    @if ($request->request_type === 'inventory')
+                                        Запрос инвентаря
+                                    @elseif (in_array($request->request_type, ['salary', 'schedule', 'feedback'], true))
+                                        {{ $request->request_type_label }}
+                                    @else
+                                        {{ $this->requestRange($request) }}
+                                    @endif
+                                </div>
+
+                                <div class="mt-[6px] text-[13px] leading-[1.4] text-[#8A8A84]">
+                                    @if ($request->request_type === 'inventory')
+                                        {{ $request->lines->count() }} {{ $this->positionsWord($request->lines->count()) }}
+                                    @elseif (in_array($request->request_type, ['salary', 'schedule', 'feedback'], true))
+                                        {{ $request->type ?: 'Без категории' }}
+                                    @else
+                                        {{ $request->days->count() }} {{ $this->daysWord($request->days->count()) }}
+                                    @endif
+
+                                    <span class="text-[#C2C2BC]">·</span>
+
+                                    {{ $request->created_at->translatedFormat('d F, H:i') }}
                                 </div>
                             </div>
 
-                            <div class="mt-[14px] border-t border-[#F0F1F3] pt-[10px]">
-                                <div class="space-y-[8px]">
+                            <span class="inline-flex shrink-0 rounded-full px-[10px] py-[5px] text-[12px] font-medium {{ $this->statusBadgeClasses($request->status) }}">
+                                {{ $this->statusLabel($request->status) }}
+                            </span>
+                        </div>
+
+                        @if ($request->request_type === 'inventory')
+                            @if ($request->lines->isNotEmpty())
+                                <div class="mt-[14px] space-y-[6px]">
                                     @foreach ($request->lines as $item)
-                                        <div class="rounded-[18px] bg-[#F8F9FB] px-[14px] py-[12px]">
+                                        <div class="rounded-[18px] bg-[#F7F7F5] px-[13px] py-[11px]">
                                             <div class="flex items-start justify-between gap-[12px]">
                                                 <div class="min-w-0">
-                                                    <div class="text-[15px] text-[#151515]">
+                                                    <div class="text-[14px] font-medium leading-[1.35] text-[#1A1A1A]">
                                                         {{ $item->item_name }}
+
                                                         @if ($item->variant_label)
-                                                            <span class="text-[#7B7B76]">· {{ $item->variant_label }}</span>
+                                                            <span class="font-normal text-[#8A8A84]">
+                                                                · {{ $item->variant_label }}
+                                                            </span>
                                                         @endif
                                                     </div>
 
-                                                    <div class="mt-[6px] text-[13px] text-[#7B7B76]">
+                                                    <div class="mt-[4px] text-[12px] text-[#8A8A84]">
                                                         Запрошено: {{ $item->requested_qty }}
-                                                        ·
+                                                        <span class="text-[#C2C2BC]">·</span>
                                                         Выдано: {{ $item->issued_qty }}
                                                     </div>
-
-                                                    @if ($item->admin_comment)
-                                                        <div class="mt-[4px] text-[13px] leading-[1.45] text-[#777770]">
-                                                            {{ $item->admin_comment }}
-                                                        </div>
-                                                    @endif
                                                 </div>
 
-                                                <div class="shrink-0 text-right">
-                                                    <div class="text-[13px] font-medium {{ $this->itemStatusClasses($item->status) }}">
-                                                        {{ $this->itemStatusLabel($item->status) }}
-                                                    </div>
+                                                <div class="shrink-0 text-[12px] font-medium {{ $this->itemStatusClasses($item->status) }}">
+                                                    {{ $this->itemStatusLabel($item->status) }}
                                                 </div>
                                             </div>
+
+                                            @if ($item->admin_comment)
+                                                <div class="mt-[7px] text-[13px] leading-[1.45] text-[#6F6F69]">
+                                                    {{ $item->admin_comment }}
+                                                </div>
+                                            @endif
                                         </div>
                                     @endforeach
                                 </div>
-                            </div>
-
-                            <div class="mt-[12px] text-[12px] text-[#9A9A93]">
-                                Создано {{ $request->created_at->translatedFormat('d F Y, H:i') }}
-                            </div>
-
-                            @if ($request->admin_comment)
-                                <div class="mt-[8px] text-[13px] leading-[1.5] text-[#6C6C66]">
-                                    <span class="text-[#90908A]">Комментарий администратора:</span>
-                                    {{ $request->admin_comment }}
+                            @endif
+                        @elseif (in_array($request->request_type, ['salary', 'schedule', 'feedback'], true))
+                            @if ($request->comment)
+                                <div class="mt-[14px] rounded-[18px] bg-[#F7F7F5] px-[13px] py-[11px] text-[14px] leading-[1.55] text-[#4F4F49]">
+                                    {{ $request->comment }}
                                 </div>
                             @endif
-                        </article>
-                    @elseif (in_array($request->request_type, ['salary', 'schedule', 'feedback'], true))
-                        <article
-                            x-show="matches('{{ $request->request_type }}')"
-                            x-transition.opacity.duration.150ms
-                            class="rounded-[24px] border border-[#E8EAEE] bg-white px-[18px] py-[16px]"
-                        >
-                            <div class="flex items-start justify-between gap-[16px]">
-                                <div class="min-w-0">
-                                    <div class="text-[24px] font-semibold leading-[1.1] tracking-[-0.03em] text-[#111111]">
-                                        {{ $request->request_type_label }}
-                                    </div>
-
-                                    <div class="mt-[6px] text-[14px] text-[#7B7B76]">
-                                        {{ $request->type }}
-                                    </div>
-                                </div>
-
-                                <div class="shrink-0 text-right">
-                                    <div class="text-[14px] font-medium {{ $this->statusTextClasses($request->status) }}">
-                                        {{ $this->statusLabel($request->status) }}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="mt-[14px] text-[14px] leading-[1.55] text-[#4F4F49]">
-                                {{ $request->comment }}
-                            </div>
 
                             @if (! empty($request->attachments))
-                                <div class="mt-[10px] text-[13px] text-[#7B7B76]">
-                                    📎 {{ count($request->attachments) }} {{ $this->filesWord(count($request->attachments)) }}
+                                <div class="mt-[10px] text-[13px] text-[#8A8A84]">
+                                    {{ count($request->attachments) }} {{ $this->filesWord(count($request->attachments)) }}
                                 </div>
                             @endif
-
-                            <div class="mt-[12px] text-[12px] text-[#9A9A93]">
-                                Создано {{ $request->created_at->translatedFormat('d F Y, H:i') }}
-                            </div>
-
-                            @if ($request->admin_comment)
-                                <div class="mt-[8px] text-[13px] leading-[1.5] text-[#6C6C66]">
-                                    <span class="text-[#90908A]">Ответ администратора:</span>
-                                    {{ $request->admin_comment }}
-                                </div>
-                            @endif
-                        </article>
-                    @else
-                        <article
-                            x-show="matches('{{ $request->request_type }}')"
-                            x-transition.opacity.duration.150ms
-                            class="rounded-[24px] border border-[#E8EAEE] bg-white px-[18px] py-[16px]"
-                        >
-                            <div class="flex items-start justify-between gap-[16px]">
-                                <div class="min-w-0">
-                                    <div class="text-[24px] font-semibold leading-[1.1] tracking-[-0.03em] text-[#111111]">
-                                        {{ $this->requestRange($request) }}
-                                    </div>
-
-                                    <div class="mt-[6px] text-[14px] text-[#7B7B76]">
-                                        {{ $request->days->count() }} {{ $this->daysWord($request->days->count()) }}
-                                        ·
-                                        {{ $this->typeLabel($request->request_type) }}
-                                    </div>
-                                </div>
-
-                                <div class="shrink-0 text-right">
-                                    <div class="text-[14px] font-medium {{ $this->statusTextClasses($request->status) }}">
-                                        {{ $this->statusLabel($request->status) }}
-                                    </div>
-                                </div>
-                            </div>
-
+                        @else
                             @if ($request->reason)
-                                <div class="mt-[14px] text-[14px] leading-[1.55] text-[#4F4F49]">
-                                    <span class="text-[#8B8B84]">Причина:</span>
+                                <div class="mt-[14px] rounded-[18px] bg-[#F7F7F5] px-[13px] py-[11px] text-[14px] leading-[1.55] text-[#4F4F49]">
+                                    <span class="text-[#8A8A84]">Причина:</span>
                                     {{ $request->reason }}
                                 </div>
                             @endif
 
-                            <div class="mt-[14px] border-t border-[#F0F1F3] pt-[10px]">
-                                <div class="space-y-[2px]">
+                            @if ($request->days->isNotEmpty())
+                                <div class="mt-[12px] divide-y divide-[#EFEFEB] overflow-hidden rounded-[18px] bg-[#F7F7F5]">
                                     @foreach ($request->days->sortBy('date') as $day)
-                                        <div class="py-[9px]">
-                                            <div class="flex items-start justify-between gap-[14px]">
-                                                <div class="min-w-0 text-[15px] text-[#151515]">
+                                        <div class="px-[13px] py-[10px]">
+                                            <div class="flex items-center justify-between gap-[12px]">
+                                                <div class="min-w-0 text-[14px] text-[#1A1A1A]">
                                                     {{ Carbon::parse($day->date)->translatedFormat('d F Y') }}
                                                 </div>
 
-                                                <div class="shrink-0 text-[14px] font-medium {{ $this->dayStatusClasses($day->status) }}">
+                                                <div class="shrink-0 text-[12px] font-medium {{ $this->dayStatusClasses($day->status) }}">
                                                     {{ $this->dayStatusLabel($day->status) }}
                                                 </div>
                                             </div>
 
                                             @if ($day->admin_comment)
-                                                <div class="mt-[4px] text-[13px] leading-[1.5] text-[#777770]">
+                                                <div class="mt-[5px] text-[13px] leading-[1.45] text-[#6F6F69]">
                                                     {{ $day->admin_comment }}
                                                 </div>
                                             @endif
                                         </div>
                                     @endforeach
                                 </div>
-                            </div>
-
-                            <div class="mt-[12px] text-[12px] text-[#9A9A93]">
-                                Создано {{ $request->created_at->translatedFormat('d F Y, H:i') }}
-                            </div>
-
-                            @if ($request->admin_comment)
-                                <div class="mt-[8px] text-[13px] leading-[1.5] text-[#6C6C66]">
-                                    <span class="text-[#90908A]">Комментарий администратора:</span>
-                                    {{ $request->admin_comment }}
-                                </div>
                             @endif
-                        </article>
-                    @endif
+                        @endif
+
+                        @if ($request->admin_comment)
+                            <div class="mt-[12px] rounded-[18px] bg-[#F1F1EE] px-[13px] py-[11px] text-[13px] leading-[1.5] text-[#5F5F59]">
+                                <div class="mb-[3px] text-[12px] font-medium text-[#8A8A84]">
+                                    Ответ администратора
+                                </div>
+
+                                {{ $request->admin_comment }}
+                            </div>
+                        @endif
+                    </article>
                 @endforeach
             </div>
 
             <div
                 x-show="
-                    (tab === 'day_off' && !{{ $dayOffCount }}) ||
-                    (tab === 'vacation' && !{{ $vacationCount }}) ||
-                    (tab === 'inventory' && !{{ $inventoryCount }}) ||
-                    (tab === 'salary' && !{{ $salaryCount }}) ||
-                    (tab === 'schedule' && !{{ $scheduleCount }}) ||
-                    (tab === 'feedback' && !{{ $feedbackCount }})
+                    (tab === 'day_off' && !{{ $counts['day_off'] }}) ||
+                    (tab === 'vacation' && !{{ $counts['vacation'] }}) ||
+                    (tab === 'inventory' && !{{ $counts['inventory'] }}) ||
+                    (tab === 'salary' && !{{ $counts['salary'] }}) ||
+                    (tab === 'schedule' && !{{ $counts['schedule'] }}) ||
+                    (tab === 'feedback' && !{{ $counts['feedback'] }})
                 "
                 x-transition.opacity.duration.150ms
-                class="flex h-full flex-col items-center justify-center px-[20px] text-center"
+                class="flex min-h-[360px] flex-col items-center justify-center px-[20px] text-center"
             >
-                <div class="mb-[16px] flex h-[72px] w-[72px] items-center justify-center rounded-full border border-[#ECEEF2] bg-white">
-                    <x-heroicon-o-calendar-days class="h-[34px] w-[34px] text-[#A5A5A0]" />
+                <div class="mb-[14px] flex h-[64px] w-[64px] items-center justify-center rounded-full bg-white shadow-[0_1px_0_rgba(0,0,0,0.04)]">
+                    <x-heroicon-o-inbox class="h-[30px] w-[30px] text-[#A5A5A0]" />
                 </div>
 
-                <h2 class="text-[20px] font-semibold text-[#111111]">
-                    Здесь пока пусто
+                <h2 class="text-[19px] font-semibold tracking-[-0.02em] text-[#111111]">
+                    Здесь пусто
                 </h2>
 
-                <p class="mt-[8px] max-w-[280px] text-[15px] leading-[1.5] text-[#7B7B76]">
+                <p class="mt-[7px] max-w-[260px] text-[14px] leading-[1.5] text-[#8A8A84]">
                     В этом разделе пока нет заявок.
                 </p>
             </div>
         @else
-            <div class="flex h-full flex-col items-center justify-center px-[20px] text-center">
-                <div class="mb-[16px] flex h-[72px] w-[72px] items-center justify-center rounded-full border border-[#ECEEF2] bg-white">
-                    <x-heroicon-o-calendar-days class="h-[34px] w-[34px] text-[#A5A5A0]" />
+            <div class="flex min-h-[520px] flex-col items-center justify-center px-[20px] text-center">
+                <div class="mb-[14px] flex h-[68px] w-[68px] items-center justify-center rounded-full bg-white shadow-[0_1px_0_rgba(0,0,0,0.04)]">
+                    <x-heroicon-o-inbox class="h-[32px] w-[32px] text-[#A5A5A0]" />
                 </div>
 
-                <h2 class="text-[20px] font-semibold text-[#111111]">
+                <h2 class="text-[20px] font-semibold tracking-[-0.02em] text-[#111111]">
                     Пока нет заявок
                 </h2>
 
-                <p class="mt-[8px] max-w-[280px] text-[15px] leading-[1.5] text-[#7B7B76]">
+                <p class="mt-[8px] max-w-[280px] text-[14px] leading-[1.5] text-[#8A8A84]">
                     Когда вы отправите первую заявку, она появится здесь.
                 </p>
 

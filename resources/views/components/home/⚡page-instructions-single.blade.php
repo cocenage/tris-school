@@ -24,8 +24,7 @@ new class extends Component {
             ->map(function ($block, $index) {
                 $type = $block['type'] ?? null;
                 $data = $block['data'] ?? [];
-
-                $title = $data['title'] ?? null;
+                $title = trim($data['title'] ?? '');
 
                 if (! $title || ! in_array($type, ['text', 'hero', 'steps', 'checklist', 'tips', 'faq', 'links'])) {
                     return null;
@@ -47,11 +46,7 @@ new class extends Component {
             $image = collect($image)->first();
         }
 
-        if (! $image) {
-            return null;
-        }
-
-        return Storage::disk('public')->url($image);
+        return $image ? Storage::disk('public')->url($image) : null;
     }
 };
 ?>
@@ -60,22 +55,23 @@ new class extends Component {
     <livewire:search.search-bar />
 </x-slot:header>
 
-<section class="min-h-screen bg-white px-[18px] py-[24px]">
-    <article class="mx-auto max-w-[1120px] pb-[120px]">
+<section
+    x-data="{ imageOpen: false, imageSrc: '', imageAlt: '' }"
+    class="min-h-screen bg-white px-[17px] py-[22px]"
+>
+    <article class="mx-auto max-w-[760px] pb-[120px]">
 
         <a
             href="{{ route('page-home.instructions') }}"
-            class="mb-[34px] inline-flex text-[15px] font-medium text-[#6B7280]"
+            class="mb-[24px] inline-flex items-center gap-2 text-[15px] font-medium text-[#5F6673]"
         >
-            ← Все инструкции
+            ↖ Полезные материалы
         </a>
 
-        <header class="max-w-[860px]">
-            @if ($instruction->published_at)
-                <div class="mb-[22px] text-[15px] text-[#8A8F98]">
-                    {{ $instruction->published_at->translatedFormat('j F, Y') }}
-                </div>
-            @endif
+        <header>
+            <div class="mb-[18px] text-[15px] leading-none text-[#4B5563]">
+                Обновлено {{ $instruction->updated_at->translatedFormat('j F, Y') }}
+            </div>
 
             <h1 class="article-title">
                 {{ $instruction->title }}
@@ -94,335 +90,411 @@ new class extends Component {
             @endphp
 
             @if ($coverUrl)
-                <figure class="article-image-block article-cover">
-                    <div class="article-image-frame">
-                        <img
-                            src="{{ $coverUrl }}"
-                            alt="{{ $instruction->title }}"
-                        >
-
-                        <a
-                            href="{{ $coverUrl }}"
-                            target="_blank"
-                            class="article-image-open"
-                            aria-label="Открыть изображение"
-                        >
-                            ↗
-                        </a>
-                    </div>
+                <figure class="article-cover">
+                    <button
+                        type="button"
+                        class="article-cover-button"
+                        @click="imageOpen = true; imageSrc = '{{ $coverUrl }}'; imageAlt = '{{ e($instruction->title) }}'"
+                    >
+                        <img src="{{ $coverUrl }}" alt="{{ $instruction->title }}">
+                    </button>
                 </figure>
             @endif
         @endif
 
-        <div class="mt-[56px] grid gap-[64px] lg:grid-cols-[minmax(0,740px)_250px]">
+        @if (count($this->toc))
+            <div class="article-toc-mobile">
+                <div class="article-toc-title">Содержание</div>
 
-            <main class="article-body">
-                @forelse (($instruction->blocks ?? []) as $index => $block)
+                <nav>
+                    @foreach ($this->toc as $item)
+                        <a href="#{{ $item['id'] }}">
+                            {{ $item['title'] }}
+                        </a>
+                    @endforeach
+                </nav>
+            </div>
+        @endif
+
+        <main class="article-body">
+            @forelse (($instruction->blocks ?? []) as $index => $block)
+                @php
+                    $type = $block['type'] ?? null;
+                    $data = $block['data'] ?? [];
+                    $sectionId = 'section-' . $index;
+                    $title = trim($data['title'] ?? '');
+                @endphp
+
+                @if ($type === 'hero')
+                    <section id="{{ $sectionId }}" class="article-section">
+                        @if ($title)
+                            <h2>{{ $title }}</h2>
+                        @endif
+
+                        @if (!empty($data['description']))
+                            <p>{{ $data['description'] }}</p>
+                        @endif
+                    </section>
+                @endif
+
+                @if ($type === 'text')
+                    <section id="{{ $sectionId }}" class="article-section">
+                        @if ($title)
+                            <h2>{{ $title }}</h2>
+                        @endif
+
+                        @if (!empty($data['content']))
+                            <div class="{{ $title ? '' : 'article-no-title' }}">
+                                {!! $data['content'] !!}
+                            </div>
+                        @endif
+                    </section>
+                @endif
+
+                @if ($type === 'warning')
                     @php
-                        $type = $block['type'] ?? null;
-                        $data = $block['data'] ?? [];
-                        $sectionId = 'section-' . $index;
+                        $noteClass = match ($data['type'] ?? 'warning') {
+                            'info' => 'article-note-info',
+                            'success' => 'article-note-success',
+                            'danger' => 'article-note-danger',
+                            default => 'article-note-warning',
+                        };
+
+                        $noteTitle = trim($data['title'] ?? '');
                     @endphp
 
-                    @if ($type === 'hero')
-                        <section id="{{ $sectionId }}" class="article-intro">
-                            @if (!empty($data['badge']))
-                                <div class="article-badge">
-                                    {{ $data['badge'] }}
-                                </div>
-                            @endif
-
-                            @if (!empty($data['title']))
-                                <h2>{{ $data['title'] }}</h2>
-                            @endif
-
-                            @if (!empty($data['description']))
-                                <p>{{ $data['description'] }}</p>
-                            @endif
-                        </section>
-                    @endif
-
-                    @if ($type === 'text')
-                        <section id="{{ $sectionId }}">
-                            @if (!empty($data['title']))
-                                <h2>{{ $data['title'] }}</h2>
-                            @endif
-
-                            @if (!empty($data['content']))
-                                {!! $data['content'] !!}
-                            @endif
-                        </section>
-                    @endif
-
-                    @if ($type === 'warning')
-                        @php
-                            $warningType = $data['type'] ?? 'warning';
-
-                            $noteClass = match ($warningType) {
-                                'info' => 'article-note-info',
-                                'success' => 'article-note-success',
-                                'danger' => 'article-note-danger',
-                                default => 'article-note-warning',
-                            };
-                        @endphp
-
-                        <aside class="article-note {{ $noteClass }}">
-                            <strong>{{ $data['title'] ?? 'Важно' }}</strong>
-
-                            @if (!empty($data['content']))
-                                <p>{{ $data['content'] }}</p>
-                            @endif
-                        </aside>
-                    @endif
-
-                    @if ($type === 'steps')
-                        <section id="{{ $sectionId }}">
-                            <h2>{{ $data['title'] ?? 'Пошаговая инструкция' }}</h2>
-
-                            <div class="article-steps">
-                                @foreach (($data['items'] ?? []) as $stepIndex => $item)
-                                    <div class="article-step">
-                                        <h3>
-                                            Шаг {{ $stepIndex + 1 }}. {{ $item['title'] ?? '' }}
-                                        </h3>
-
-                                        @if (!empty($item['text']))
-                                            <p>{{ $item['text'] }}</p>
-                                        @endif
-                                    </div>
-                                @endforeach
-                            </div>
-                        </section>
-                    @endif
-
-                    @if ($type === 'checklist')
-                        <section id="{{ $sectionId }}">
-                            <h2>{{ $data['title'] ?? 'Проверьте себя' }}</h2>
-
-                            <ul>
-                                @foreach (($data['items'] ?? []) as $item)
-                                    <li>{{ $item['text'] ?? '' }}</li>
-                                @endforeach
-                            </ul>
-                        </section>
-                    @endif
-
-                    @if ($type === 'tips')
-                        <aside id="{{ $sectionId }}" class="article-note article-note-success">
-                            <strong>{{ $data['title'] ?? 'Полезные советы' }}</strong>
-
-                            <ul>
-                                @foreach (($data['items'] ?? []) as $item)
-                                    <li>{{ $item['text'] ?? '' }}</li>
-                                @endforeach
-                            </ul>
-                        </aside>
-                    @endif
-
-                    @if ($type === 'faq')
-                        <section id="{{ $sectionId }}">
-                            <h2>{{ $data['title'] ?? 'Частые вопросы' }}</h2>
-
-                            <div class="article-faq">
-                                @foreach (($data['items'] ?? []) as $item)
-                                    <details>
-                                        <summary>{{ $item['question'] ?? '' }}</summary>
-
-                                        @if (!empty($item['answer']))
-                                            <p>{{ $item['answer'] }}</p>
-                                        @endif
-                                    </details>
-                                @endforeach
-                            </div>
-                        </section>
-                    @endif
-
-                    @if ($type === 'image' && !empty($data['image']))
-                        @php
-                            $imageUrl = $this->imageUrl($data['image']);
-                        @endphp
-
-                        @if ($imageUrl)
-                            <figure class="article-image-block">
-                                <div class="article-image-frame">
-                                    <img
-                                        src="{{ $imageUrl }}"
-                                        alt="{{ $data['caption'] ?? $instruction->title }}"
-                                    >
-
-                                    <a
-                                        href="{{ $imageUrl }}"
-                                        target="_blank"
-                                        class="article-image-open"
-                                        aria-label="Открыть изображение"
-                                    >
-                                        ↗
-                                    </a>
-                                </div>
-
-                                @if (!empty($data['caption']))
-                                    <figcaption>
-                                        {{ $data['caption'] }}
-                                    </figcaption>
-                                @endif
-                            </figure>
+                    <aside class="article-note {{ $noteClass }}">
+                        @if ($noteTitle)
+                            <strong>{{ $noteTitle }}</strong>
                         @endif
-                    @endif
 
-                    @if ($type === 'video')
-                        <section>
-                            <h2>{{ $data['title'] ?? 'Видео' }}</h2>
+                        @if (!empty($data['content']))
+                            <p class="{{ $noteTitle ? '' : 'article-note-no-title' }}">
+                                {{ $data['content'] }}
+                            </p>
+                        @endif
+                    </aside>
+                @endif
 
-                            @if (!empty($data['url']))
-                                <a href="{{ $data['url'] }}" target="_blank" class="article-button">
-                                    Открыть видео →
-                                </a>
-                            @endif
-                        </section>
-                    @endif
+                @if ($type === 'steps')
+                    <section id="{{ $sectionId }}" class="article-section">
+                        @if ($title)
+                            <h2>{{ $title }}</h2>
+                        @endif
 
-                    @if ($type === 'links')
-                        <section id="{{ $sectionId }}">
-                            <h2>{{ $data['title'] ?? 'Смотрите также' }}</h2>
+                        <div class="{{ $title ? 'article-steps' : 'article-steps article-no-title' }}">
+                            @foreach (($data['items'] ?? []) as $stepIndex => $item)
+                                @php
+                                    $stepTitle = trim($item['title'] ?? '');
+                                @endphp
 
-                            <div class="article-links">
-                                @foreach (($data['items'] ?? []) as $item)
-                                    <a href="{{ $item['url'] ?? '#' }}">
-                                        {{ $item['label'] ?? 'Ссылка' }}
-                                        <span>→</span>
-                                    </a>
-                                @endforeach
-                            </div>
-                        </section>
-                    @endif
+                                <div class="article-step">
+                                    @if ($stepTitle)
+                                        <h3>Шаг {{ $stepIndex + 1 }}. {{ $stepTitle }}</h3>
+                                    @endif
 
-                @empty
-                    <p>Контент появится после заполнения в админке.</p>
-                @endforelse
-            </main>
-
-            @if (count($this->toc))
-                <aside class="hidden lg:block">
-                    <div class="article-toc">
-                        <div class="article-toc-title">
-                            Содержание
+                                    @if (!empty($item['text']))
+                                        <p class="{{ $stepTitle ? '' : 'article-step-no-title' }}">
+                                            {{ $item['text'] }}
+                                        </p>
+                                    @endif
+                                </div>
+                            @endforeach
                         </div>
+                    </section>
+                @endif
 
-                        <nav>
-                            @foreach ($this->toc as $item)
-                                <a href="#{{ $item['id'] }}">
-                                    {{ $item['title'] }}
+                @if ($type === 'checklist')
+                    <section id="{{ $sectionId }}" class="article-section">
+                        @if ($title)
+                            <h2>{{ $title }}</h2>
+                        @endif
+
+                        <ul class="{{ $title ? '' : 'article-no-title' }}">
+                            @foreach (($data['items'] ?? []) as $item)
+                                <li>{{ $item['text'] ?? '' }}</li>
+                            @endforeach
+                        </ul>
+                    </section>
+                @endif
+
+                @if ($type === 'tips')
+                    <aside id="{{ $sectionId }}" class="article-note article-note-info">
+                        @if ($title)
+                            <strong>{{ $title }}</strong>
+                        @endif
+
+                        <ul class="{{ $title ? '' : 'article-note-no-title' }}">
+                            @foreach (($data['items'] ?? []) as $item)
+                                <li>{{ $item['text'] ?? '' }}</li>
+                            @endforeach
+                        </ul>
+                    </aside>
+                @endif
+
+                @if ($type === 'faq')
+                    <section id="{{ $sectionId }}" class="article-section">
+                        @if ($title)
+                            <h2>{{ $title }}</h2>
+                        @endif
+
+                        <div class="{{ $title ? 'article-faq' : 'article-faq article-no-title' }}">
+                            @foreach (($data['items'] ?? []) as $item)
+                                <details>
+                                    <summary>{{ $item['question'] ?? '' }}</summary>
+
+                                    @if (!empty($item['answer']))
+                                        <p>{{ $item['answer'] }}</p>
+                                    @endif
+                                </details>
+                            @endforeach
+                        </div>
+                    </section>
+                @endif
+
+                @if ($type === 'image' && !empty($data['image']))
+                    @php
+                        $imageUrl = $this->imageUrl($data['image']);
+                    @endphp
+
+                    @if ($imageUrl)
+                        <figure class="article-image-block">
+                            <button
+                                type="button"
+                                class="article-image-frame"
+                                @click="imageOpen = true; imageSrc = '{{ $imageUrl }}'; imageAlt = '{{ e($data['caption'] ?? $instruction->title) }}'"
+                            >
+                                <img
+                                    src="{{ $imageUrl }}"
+                                    alt="{{ $data['caption'] ?? $instruction->title }}"
+                                >
+
+                                <span class="article-image-open">↗</span>
+                            </button>
+
+                            @if (!empty($data['caption']))
+                                <figcaption>
+                                    {{ $data['caption'] }}
+                                </figcaption>
+                            @endif
+                        </figure>
+                    @endif
+                @endif
+
+                @if ($type === 'video')
+                    <section id="{{ $sectionId }}" class="article-section">
+                        @if ($title)
+                            <h2>{{ $title }}</h2>
+                        @endif
+
+                        @if (!empty($data['url']))
+                            <a href="{{ $data['url'] }}" target="_blank" class="article-button">
+                                Открыть видео →
+                            </a>
+                        @endif
+                    </section>
+                @endif
+
+                @if ($type === 'links')
+                    <section id="{{ $sectionId }}" class="article-section">
+                        @if ($title)
+                            <h2>{{ $title }}</h2>
+                        @endif
+
+                        <div class="{{ $title ? 'article-links' : 'article-links article-no-title' }}">
+                            @foreach (($data['items'] ?? []) as $item)
+                                <a href="{{ $item['url'] ?? '#' }}">
+                                    {{ $item['label'] ?? 'Ссылка' }}
+                                    <span>→</span>
                                 </a>
                             @endforeach
-                        </nav>
-                    </div>
-                </aside>
-            @endif
+                        </div>
+                    </section>
+                @endif
 
-        </div>
+            @empty
+                <p>Контент появится после заполнения в админке.</p>
+            @endforelse
+        </main>
     </article>
+
+    {{-- модалка картинки --}}
+    <div
+        x-show="imageOpen"
+        x-transition.opacity
+        x-cloak
+        class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 p-4"
+        @click.self="imageOpen = false"
+        @keydown.escape.window="imageOpen = false"
+    >
+        <button
+            type="button"
+            class="absolute right-4 top-4 z-10 rounded-full bg-white px-4 py-2 text-[14px] font-semibold text-[#061126]"
+            @click="imageOpen = false"
+        >
+            Закрыть
+        </button>
+
+        <img
+            :src="imageSrc"
+            :alt="imageAlt"
+            class="max-h-[86vh] max-w-full rounded-[18px] bg-white object-contain"
+        >
+    </div>
 </section>
 
 <style>
+    [x-cloak] {
+        display: none !important;
+    }
+
     html {
         scroll-behavior: smooth;
     }
 
     .article-title {
-        color: #111827;
-        font-size: clamp(38px, 6vw, 64px);
-        line-height: 1.03;
-        font-weight: 600;
+        color: #061126;
+        font-size: 31px;
+        line-height: 1.08;
+        font-weight: 800;
         letter-spacing: -0.055em;
     }
 
     .article-lead {
-        max-width: 760px;
-        margin-top: 28px;
-        color: #374151;
-        font-size: clamp(19px, 2.4vw, 23px);
-        line-height: 1.55;
+        margin-top: 22px;
+        color: #061126;
+        font-size: 18px;
+        line-height: 1.45;
         letter-spacing: -0.015em;
     }
 
-    .article-body {
-        max-width: 740px;
-        color: #1f2933;
-        font-size: 18px;
-        line-height: 1.72;
-        letter-spacing: -0.005em;
+    .article-cover {
+        margin-top: 24px;
+        overflow: hidden;
+        border-radius: 21px;
+        background: #eef3f7;
     }
 
-    .article-body section {
-        margin-bottom: 56px;
+    .article-cover-button {
+        display: block;
+        width: 100%;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+    }
+
+    .article-cover img {
+        display: block;
+        width: 100%;
+        height: auto;
+        max-height: 480px;
+        object-fit: cover;
+    }
+
+    .article-toc-mobile {
+        margin-top: 48px;
+        padding: 20px 18px 22px;
+        border-radius: 18px;
+        background: #f1f1f1;
+        color: #061126;
+    }
+
+    .article-toc-title {
+        margin-bottom: 16px;
+        color: #061126;
+        font-size: 21px;
+        line-height: 1.15;
+        font-weight: 800;
+        letter-spacing: -0.035em;
+    }
+
+    .article-toc-mobile nav {
+        display: grid;
+        gap: 14px;
+    }
+
+    .article-toc-mobile a {
+        color: #061126;
+        font-size: 16px;
+        line-height: 1.35;
+        text-decoration: none;
+    }
+
+    .article-body {
+        margin-top: 44px;
+        color: #061126;
+        font-size: 16px;
+        line-height: 1.45;
+        letter-spacing: -0.02em;
+    }
+
+    .article-section {
+        margin-bottom: 34px;
         scroll-margin-top: 28px;
     }
 
+    .article-section:has(.article-no-title) {
+        margin-top: 0;
+    }
+
     .article-body h2 {
-        margin: 0 0 20px;
-        color: #111827;
-        font-size: 32px;
-        line-height: 1.18;
-        font-weight: 600;
-        letter-spacing: -0.025em;
+        margin: 0 0 18px;
+        color: #061126;
+        font-size: 29px;
+        line-height: 1.08;
+        font-weight: 800;
+        letter-spacing: -0.055em;
     }
 
     .article-body h3 {
-        margin: 36px 0 14px;
-        color: #111827;
-        font-size: 24px;
-        line-height: 1.25;
-        font-weight: 600;
-        letter-spacing: -0.018em;
+        margin: 28px 0 10px;
+        color: #061126;
+        font-size: 22px;
+        line-height: 1.15;
+        font-weight: 800;
+        letter-spacing: -0.04em;
     }
 
     .article-body p {
-        margin: 0 0 20px;
-        color: #374151;
+        margin: 0 0 18px;
+        color: #061126;
+    }
+
+    .article-no-title,
+    .article-step-no-title,
+    .article-note-no-title {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
     }
 
     .article-body ul,
     .article-body ol {
-        margin: 18px 0 28px;
-        padding-left: 26px;
-        color: #374151;
+        margin: 16px 0 24px;
+        padding-left: 24px;
+        color: #061126;
     }
 
     .article-body li {
-        margin: 10px 0;
-        padding-left: 4px;
+        margin: 8px 0;
     }
 
     .article-body a {
-        color: #2563eb;
+        color: #2f80ff;
         text-decoration: none;
-        border-bottom: 1px solid rgba(37, 99, 235, 0.35);
-    }
-
-    .article-intro {
-        padding: 0;
     }
 
     .article-intro p {
-        font-size: 20px;
-        line-height: 1.6;
-    }
-
-    .article-badge {
-        display: inline-flex;
-        margin-bottom: 18px;
-        padding: 7px 12px;
-        border-radius: 999px;
-        background: #f3f4f6;
-        color: #6b7280;
-        font-size: 14px;
-        font-weight: 500;
+        font-size: 18px;
+        line-height: 1.45;
     }
 
     .article-note {
-        margin: 44px 0 56px;
-        padding: 24px 28px;
-        border-radius: 24px;
+        margin: 34px 0 42px;
+        padding: 22px 24px;
+        border-radius: 22px;
+        font-size: 18px;
+        line-height: 1.45;
     }
 
     .article-note strong {
@@ -430,7 +502,7 @@ new class extends Component {
         margin-bottom: 8px;
         font-size: 18px;
         line-height: 1.35;
-        font-weight: 650;
+        font-weight: 700;
     }
 
     .article-note p {
@@ -439,106 +511,107 @@ new class extends Component {
     }
 
     .article-note ul {
-        margin: 12px 0 0;
+        margin: 0;
+        padding-left: 20px;
     }
 
     .article-note-warning {
         background: #fff3bf;
-        color: #5f4600;
+        color: #061126;
     }
 
     .article-note-info {
-        background: #eaf3ff;
-        color: #123c69;
+        background: #c9efff;
+        color: #061126;
     }
 
     .article-note-success {
         background: #eaf8ef;
-        color: #14532d;
+        color: #061126;
     }
 
     .article-note-danger {
         background: #fff0f0;
-        color: #7f1d1d;
+        color: #061126;
     }
 
     .article-steps {
-        margin-top: 26px;
-    }
-
-    .article-step {
-        margin-bottom: 36px;
-    }
-
-    .article-step h3 {
         margin-top: 0;
     }
 
-    .article-image-block {
-        margin: 52px 0 60px;
+    .article-step {
+        margin-bottom: 28px;
     }
 
-    .article-cover {
-        margin-top: 46px;
+    .article-step h3:first-child {
+        margin-top: 0;
+    }
+
+    .article-step p:last-child,
+    .article-section p:last-child,
+    .article-note p:last-child {
         margin-bottom: 0;
+    }
+
+    .article-image-block {
+        margin: 34px 0 38px;
     }
 
     .article-image-frame {
         position: relative;
         display: flex;
-        min-height: 320px;
+        width: 100%;
+        min-height: 190px;
         align-items: center;
         justify-content: center;
         overflow: hidden;
-        padding: 34px;
-        border-radius: 36px;
-        background: #d8d8d8;
+        padding: 18px;
+        border: 0;
+        border-radius: 24px;
+        background: #d9d9d9;
+        cursor: pointer;
     }
 
     .article-image-frame img {
         display: block;
         width: auto;
         max-width: 100%;
-        max-height: 640px;
+        max-height: 620px;
         height: auto;
-        border-radius: 18px;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+        border-radius: 12px;
     }
 
     .article-image-open {
         position: absolute;
-        left: 32px;
-        bottom: 32px;
+        left: 18px;
+        bottom: 18px;
         display: flex;
-        width: 34px;
-        height: 34px;
+        width: 32px;
+        height: 32px;
         align-items: center;
         justify-content: center;
-        border: 0 !important;
         border-radius: 6px;
         background: rgba(17, 24, 39, 0.28);
-        color: white !important;
+        color: white;
         font-size: 18px;
-        text-decoration: none;
     }
 
     .article-image-block figcaption {
         margin-top: 12px;
-        color: #8a8f98;
-        font-size: 14px;
-        line-height: 1.45;
+        color: #061126;
+        font-size: 15px;
+        line-height: 1.4;
     }
 
     .article-faq {
         overflow: hidden;
-        border: 1px solid #e5e7eb;
-        border-radius: 24px;
+        border-radius: 18px;
+        background: #f1f1f1;
     }
 
     .article-faq details {
-        padding: 21px 24px;
-        border-bottom: 1px solid #e5e7eb;
-        background: #fff;
+        padding: 18px 20px;
+        border-bottom: 1px solid rgba(6, 17, 38, 0.08);
     }
 
     .article-faq details:last-child {
@@ -548,9 +621,9 @@ new class extends Component {
     .article-faq summary {
         cursor: pointer;
         list-style: none;
-        color: #111827;
-        font-size: 18px;
-        font-weight: 600;
+        color: #061126;
+        font-size: 17px;
+        font-weight: 700;
     }
 
     .article-faq summary::-webkit-details-marker {
@@ -558,103 +631,35 @@ new class extends Component {
     }
 
     .article-faq p {
-        margin: 14px 0 0;
+        margin: 12px 0 0;
         font-size: 16px;
-        line-height: 1.65;
     }
 
     .article-links {
         display: grid;
-        gap: 12px;
+        gap: 10px;
     }
 
     .article-links a {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 18px 20px;
-        border: 0;
-        border-radius: 18px;
-        background: #f5f7fa;
-        color: #111827;
+        padding: 17px 18px;
+        border-radius: 16px;
+        background: #f1f1f1;
+        color: #061126;
         font-size: 16px;
-        font-weight: 550;
+        font-weight: 600;
     }
 
     .article-button {
         display: inline-flex;
         margin-top: 6px;
         padding: 13px 18px;
-        border: 0 !important;
         border-radius: 999px;
-        background: #111827;
+        background: #061126;
         color: white !important;
         font-size: 15px;
-        font-weight: 600;
-    }
-
-    .article-toc {
-        position: sticky;
-        top: 28px;
-        padding-top: 4px;
-    }
-
-    .article-toc-title {
-        margin-bottom: 14px;
-        color: #111827;
-        font-size: 15px;
-        font-weight: 650;
-    }
-
-    .article-toc nav {
-        display: grid;
-        gap: 11px;
-    }
-
-    .article-toc a {
-        color: #6b7280;
-        font-size: 14px;
-        line-height: 1.35;
-        text-decoration: none;
-    }
-
-    .article-toc a:hover {
-        color: #111827;
-    }
-
-    @media (max-width: 768px) {
-        .article-body {
-            font-size: 17px;
-            line-height: 1.68;
-        }
-
-        .article-body section {
-            margin-bottom: 44px;
-        }
-
-        .article-body h2 {
-            font-size: 28px;
-        }
-
-        .article-body h3 {
-            font-size: 21px;
-        }
-
-        .article-image-frame {
-            min-height: 220px;
-            padding: 22px;
-            border-radius: 28px;
-        }
-
-        .article-image-open {
-            left: 20px;
-            bottom: 20px;
-        }
-
-        .article-note {
-            margin: 36px 0 44px;
-            padding: 22px;
-            border-radius: 22px;
-        }
+        font-weight: 700;
     }
 </style>

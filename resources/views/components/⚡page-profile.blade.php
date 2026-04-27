@@ -273,7 +273,7 @@ protected function eventsForDay(Carbon $day): Collection
 
        <div class="ml-[15px] flex shrink-0 items-center gap-[8px]">
     @if($this->applicationsBadge)
-        <span class="flex h-[22px] min-w-[22px] items-center justify-center rounded-full bg-[#E53935] px-[7px] text-[12px] font-bold leading-none text-white shadow-sm">
+        <span class="flex h-[22px] min-w-[22px] items-center justify-center rounded-full bg-[#2D6494] px-[7px] text-[12px] font-bold leading-none text-white shadow-sm">
             {{ $this->applicationsBadge }}
         </span>
     @endif

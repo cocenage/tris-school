@@ -28,7 +28,7 @@ new class extends Component
         @click="open = true"
         class="w-full"
     >
-        <div class="flex items-center h-[60px] rounded-full px-[20px] m-[15px] bg-[#E1E1E1] gap-[10px]">
+        <div class="flex items-center h-[50px] rounded-full px-[20px] m-[15px] bg-[#E1E1E1] gap-[10px]">
             <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2.5] opacity-50 shrink-0" />
 
             <span class="text-[#7A7A7A] text-[16px]">

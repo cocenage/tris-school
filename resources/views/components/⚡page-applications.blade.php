@@ -11,7 +11,7 @@ new class extends Component {
 </x-slot:header>
 
 <div class="flex flex-col justify-between h-full w-full">
-    <h1 class="m-[35px]">Заявки</h1>
+    <h1 class="m-[20px]">Заявки</h1>
     <div class="px-[20px] pb-[20px]">
         <div class="grid grid-cols-3 gap-[10px]">
 

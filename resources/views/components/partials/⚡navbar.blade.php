@@ -120,7 +120,7 @@ new class extends Component {
             }}" />
 
         @if($applicationsBadge)
-            <span class="absolute -top-[4px] -right-[8px] z-20 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF)] px-[5px] text-[10px] font-semibold leading-none text-white shadow-sm border-2 border-white">
+            <span class="absolute -top-[5px] -right-[10px] z-20 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF)] p-[5px] text-[10px] leading-none text-white border-1 border-white">
                 {{ $applicationsBadge }}
             </span>
         @endif

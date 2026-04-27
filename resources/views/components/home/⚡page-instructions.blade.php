@@ -2,36 +2,21 @@
 
 use App\Models\Instruction;
 use App\Models\InstructionCategory;
-use Livewire\Attributes\Url;
 use Livewire\Component;
 
 new class extends Component {
     public string $search = '';
 
-    #[Url(as: 'category')]
-    public ?int $categoryId = null;
-
-    public function getCategoriesProperty()
-    {
-        return InstructionCategory::query()
-            ->where('is_active', true)
-            ->orderBy('sort_order')
-            ->get();
-    }
-
-    public function getInstructionsProperty()
+    public function getUncategorizedInstructionsProperty()
     {
         return Instruction::query()
-            ->with('category')
+            ->whereNull('instruction_category_id')
             ->where('status', 'published')
             ->where('is_public', true)
-            ->when(
-                $this->categoryId,
-                fn ($query) => $query->where('instruction_category_id', $this->categoryId)
-            )
             ->when($this->search, function ($query) {
                 $query->where(function ($query) {
-                    $query->where('title', 'like', '%' . $this->search . '%')
+                    $query
+                        ->where('title', 'like', '%' . $this->search . '%')
                         ->orWhere('short_description', 'like', '%' . $this->search . '%');
                 });
             })
@@ -41,89 +26,109 @@ new class extends Component {
             ->get();
     }
 
-    public function selectCategory(?int $id): void
+    public function getCategoriesProperty()
     {
-        $this->categoryId = $id;
+        return InstructionCategory::query()
+            ->where('is_active', true)
+            ->with(['instructions' => function ($query) {
+                $query
+                    ->where('status', 'published')
+                    ->where('is_public', true)
+                    ->when($this->search, function ($query) {
+                        $query->where(function ($query) {
+                            $query
+                                ->where('title', 'like', '%' . $this->search . '%')
+                                ->orWhere('short_description', 'like', '%' . $this->search . '%');
+                        });
+                    })
+                    ->orderByDesc('is_featured')
+                    ->orderBy('sort_order')
+                    ->orderByDesc('published_at');
+            }])
+            ->orderBy('sort_order')
+            ->get()
+            ->filter(fn ($category) => $category->instructions->isNotEmpty());
     }
 };
 ?>
 
-<section class="min-h-screen bg-[#F5F7FA] px-[15px] py-[18px]">
-    <div class="mx-auto max-w-[820px] space-y-5">
+<x-slot:header>
+    <livewire:search.search-bar />
+</x-slot:header>
 
+<section class="min-h-screen p-[20px]">
+    <div class="mx-auto space-y-[20px]">
+
+        @if ($this->uncategorizedInstructions->isNotEmpty())
+            <div>
+           
+                  <h1 class="]">Инструкции</h1>
+
+<div class="grid grid-cols-3 gap-[10px] pt-[20px]">
+    @foreach ($this->uncategorizedInstructions as $instruction)
         <a
-            href="{{ route('page-home') }}"
-            class="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-[14px] font-medium text-[#4B5563] shadow-sm"
+            href="{{ route('page-home.instructions.single', $instruction) }}"
+            class="
+                rounded-[30px]
+                bg-[#E1E1E1]
+                p-[15px]
+                {{ $loop->first
+                    ? 'col-span-2 aspect-[2/1]'
+                    : 'aspect-square' }}
+            "
         >
-            ← Назад
-        </a>
-
-        <div class="rounded-[32px] bg-white p-5 shadow-sm">
-            <h1 class="text-[28px] font-semibold text-[#111827]">
-                Инструкции
-            </h1>
-
-            <p class="mt-2 text-[15px] text-[#6B7280]">
-                База знаний и полезные материалы
+            <p class="text-[14px] font-medium leading-tight">
+                {{ $instruction->title }}
             </p>
+        </a>
+    @endforeach
+</div>
+            </div>
+        @endif
 
-            <input
-                type="search"
-                wire:model.live.debounce.300ms="search"
-                placeholder="Найти инструкцию..."
-                class="mt-5 h-[52px] w-full rounded-[20px] border-0 bg-[#F3F5F8] px-4"
-            >
-        </div>
+        @foreach ($this->categories as $category)
+            <div class="pt-[10px]">
+              
+                <h1>   {{ $category->title }}</h1>
 
-        <div class="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-            <button
-                wire:click="selectCategory(null)"
-                class="shrink-0 rounded-full px-4 py-2
-                {{ $categoryId === null ? 'bg-[#111827] text-white' : 'bg-white' }}"
-            >
-                Все
-            </button>
-
-            @foreach ($this->categories as $category)
-                <button
-                    wire:click="selectCategory({{ $category->id }})"
-                    class="shrink-0 rounded-full px-4 py-2
-                    {{ $categoryId === $category->id ? 'bg-[#111827] text-white' : 'bg-white' }}"
-                >
-                    {{ $category->emoji }} {{ $category->title }}
-                </button>
-            @endforeach
-        </div>
-
-        <div class="grid gap-3">
-            @foreach ($this->instructions as $instruction)
-                <a
-                    href="{{ route('page-home.instructions.single', $instruction) }}"
-                    class="rounded-[28px] bg-white p-4 shadow-sm"
-                >
-                    <div class="flex gap-4">
-                        <div
-                            class="flex size-[54px] shrink-0 items-center justify-center rounded-[20px] text-[24px]"
-                            style="background: {{ $instruction->color ?: '#EEF2FF' }}"
+                <div class="grid grid-cols-3 gap-[10px] pt-[20px]">
+                    @foreach ($category->instructions as $instruction)
+                        <a
+                            href="{{ route('page-home.instructions.single', $instruction) }}"
+                            class="
+                               aspect-square rounded-[30px] bg-[#E1E1E1] p-[12px]
+                          
+                            "
                         >
-                            {{ $instruction->emoji ?: '📄' }}
-                        </div>
-
-                        <div class="flex-1">
-                            <h2 class="text-[16px] font-semibold text-[#111827]">
+                            <div class="text-[13px] font-semibold leading-tight text-[#111111]">
                                 {{ $instruction->title }}
-                            </h2>
+                            </div>
 
                             @if ($instruction->short_description)
-                                <p class="mt-1 text-[14px] text-[#6B7280]">
+                                <div class="mt-[6px] line-clamp-3 text-[11px] leading-tight text-[#555555]">
                                     {{ $instruction->short_description }}
-                                </p>
+                                </div>
                             @endif
-                        </div>
-                    </div>
-                </a>
-            @endforeach
-        </div>
+                        </a>
+                    @endforeach
+                </div>
+            </div>
+        @endforeach
+
+        @if (
+            $this->uncategorizedInstructions->isEmpty()
+            && $this->categories->isEmpty()
+        )
+            <div class="rounded-[28px] bg-white p-[24px] text-center">
+                <div class="text-[18px] font-bold text-[#111111]">
+                    Ничего не найдено
+                </div>
+
+                <div class="mt-[6px] text-[14px] text-[#777777]">
+                    Попробуйте изменить запрос поиска.
+                </div>
+            </div>
+        @endif
 
     </div>
 </section>
