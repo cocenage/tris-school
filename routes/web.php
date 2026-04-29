@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    if (!auth()->check()) {
+    if (! auth()->check()) {
         return redirect()->route('landing.page');
     }
 
@@ -37,17 +37,21 @@ Route::post('/logout', LogoutController::class)
     ->name('logout');
 
 Route::livewire('/access/pending', 'access.pending')
+    ->middleware('auth')
     ->name('access.pending');
 
 Route::livewire('/access/rejected', 'access.rejected')
+    ->middleware('auth')
     ->name('access.rejected');
 
 Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/home', 'page-home')->name('page-home');
-Route::livewire('/home/instructions', 'home.page-instructions')
-    ->name('page-home.instructions');
-Route::livewire('/home/instructions/{instruction:slug}', 'home.page-instructions-single')
-    ->name('page-home.instructions.single');
+
+    Route::livewire('/home/instructions', 'home.page-instructions')
+        ->name('page-home.instructions');
+
+    Route::livewire('/home/instructions/{instruction:slug}', 'home.page-instructions-single')
+        ->name('page-home.instructions.single');
 
     Route::livewire('/checks', 'page-checks')->name('page-checks');
     Route::livewire('/checks/control', 'forms.page-control')->name('page-checks.control');
@@ -60,31 +64,23 @@ Route::livewire('/home/instructions/{instruction:slug}', 'home.page-instructions
     Route::livewire('/applications/schedule', 'forms.page-schedule')->name('page-applications.schedule');
     Route::livewire('/applications/feedback', 'forms.page-feedback')->name('page-applications.feedback');
 
-    Route::livewire('/profile', 'page-profile')
-        ->name('page-profile');
-    Route::livewire('/profile/calendar', 'profile.page-calendar')
-        ->name('page-profile.calendar');
-    Route::livewire('/profile/checks', 'profile.page-checks')
-        ->name('page-profile.checks');
-    Route::livewire('/profile/checks/{controlResponse}', 'profile.page-check-result')
-        ->name('page-profile.checks.result');
-    Route::livewire('/profile/all-checks', 'profile.page-all-checks')
-        ->name('page-profile.all-checks');
-    Route::livewire('/profile/applications', 'profile.page-applications')
-        ->name('page-profile.applications');
+    Route::livewire('/profile', 'page-profile')->name('page-profile');
+    Route::livewire('/profile/calendar', 'profile.page-calendar')->name('page-profile.calendar');
+    Route::livewire('/profile/checks', 'profile.page-checks')->name('page-profile.checks');
+    Route::livewire('/profile/checks/{controlResponse}', 'profile.page-check-result')->name('page-profile.checks.result');
+    Route::livewire('/profile/all-checks', 'profile.page-all-checks')->name('page-profile.all-checks');
+    Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
 });
 
 Route::fallback(function () {
-    if (!Auth::check()) {
-        return redirect()->route('landing');
+    if (! Auth::check()) {
+        return redirect()->route('landing.page');
     }
 
-    $user = Auth::user();
-
-    return redirect()->route(match ($user->status) {
+    return redirect()->route(match (Auth::user()->status) {
         'approved' => 'page-home',
         'pending' => 'access.pending',
         'rejected' => 'access.rejected',
-        default => 'landing',
+        default => 'landing.page',
     });
 });

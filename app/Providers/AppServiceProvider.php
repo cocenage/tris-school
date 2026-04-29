@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Models\User;
+use App\Observers\UserObserver;
 use Filament\Facades\Filament;
 use Filament\Navigation\NavigationItem;
 use Illuminate\Support\ServiceProvider;
@@ -21,7 +23,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-         Filament::serving(function () {
+        Filament::serving(function () {
             Filament::registerNavigationItems([
                 NavigationItem::make('На сайт')
                     ->url('/')
@@ -29,5 +31,6 @@ class AppServiceProvider extends ServiceProvider
                     ->sort(100),
             ]);
         });
+        User::observe(UserObserver::class);
     }
 }

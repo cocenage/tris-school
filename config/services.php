@@ -36,6 +36,9 @@ return [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
         'bot_username' => env('TELEGRAM_BOT_USERNAME'),
 
+        'admin_chat_id' => env('TELEGRAM_ADMIN_CHAT_ID'),
+        'admin_thread_id' => env('TELEGRAM_ADMIN_THREAD_ID'),
+
         'chat_id_formweekend' => env('TELEGRAM_CHAT_ID_FORMWEEKEND'),
         'thread_id_formweekend' => env('TELEGRAM_THREAD_ID_FORMWEEKEND'),
 

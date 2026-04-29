@@ -17,7 +17,12 @@ class ControlResponsesTable
                     ->label('ID')
                     ->sortable(),
 
-                TextColumn::make('user.name')
+                TextColumn::make('control.name')
+                    ->label('Форма')
+                    ->searchable()
+                    ->sortable(),
+
+                TextColumn::make('cleaner.name')
                     ->label('Кого проверили')
                     ->searchable()
                     ->sortable(),
@@ -27,9 +32,10 @@ class ControlResponsesTable
                     ->searchable()
                     ->sortable(),
 
-                TextColumn::make('apartment')
+                TextColumn::make('apartment.name')
                     ->label('Квартира')
-                    ->searchable(),
+                    ->searchable()
+                    ->sortable(),
 
                 TextColumn::make('cleaning_date')
                     ->label('Дата уборки')
@@ -45,15 +51,13 @@ class ControlResponsesTable
                     ->label('Баллы')
                     ->state(fn (ControlResponse $record) => "{$record->total_points}/{$record->max_points}"),
 
-                TextColumn::make('percent')
+                TextColumn::make('score_percent')
                     ->label('%')
-                    ->state(function (ControlResponse $record) {
-                        if (! $record->max_points) {
-                            return '—';
-                        }
+                    ->suffix('%')
+                    ->sortable(),
 
-                        return round(($record->total_points / $record->max_points) * 100) . '%';
-                    }),
+                TextColumn::make('result_zone_label')
+                    ->label('Зона'),
 
                 TextColumn::make('sent_at')
                     ->label('Отправлено')

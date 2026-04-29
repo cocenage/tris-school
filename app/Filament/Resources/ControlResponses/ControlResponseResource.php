@@ -56,7 +56,6 @@ protected static ?string $recordTitleAttribute = 'apartment';
     {
         return [
             'index' => ListControlResponses::route('/'),
-            'create' => CreateControlResponse::route('/create'),
             'view' => ViewControlResponse::route('/{record}'),
             'edit' => EditControlResponse::route('/{record}/edit'),
         ];

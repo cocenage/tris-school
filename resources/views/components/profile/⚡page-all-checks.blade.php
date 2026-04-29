@@ -1,6 +1,5 @@
 <?php
 
-
 use App\Models\ControlResponse;
 use App\Models\User;
 use Illuminate\Support\Carbon;
@@ -28,19 +27,21 @@ new class extends Component {
             ->get();
 
         $responses = ControlResponse::query()
-            ->with(['control', 'user', 'supervisor'])
+            ->with(['control', 'cleaner', 'supervisor', 'apartment'])
             ->get()
-            ->map(function ($item) {
+            ->map(function (ControlResponse $item) {
                 $item->item_type = 'control';
-                $item->sort_date = $item->cleaning_date ?? $item->inspection_date ?? $item->created_at;
+                $item->sort_date = $item->inspection_date
+                    ?? $item->cleaning_date
+                    ?? $item->sent_at
+                    ?? $item->created_at;
+
                 return $item;
             });
 
-      
-
-       $allItems = $responses
-    ->sortByDesc(fn ($item) => $item->sort_date ?? $item->created_at)
-    ->values();
+        $allItems = $responses
+            ->sortByDesc(fn ($item) => $item->sort_date ?? $item->created_at)
+            ->values();
 
         $periodFrom = match ($this->activityPeriod) {
             '7' => now()->subDays(7)->startOfDay(),
@@ -53,7 +54,7 @@ new class extends Component {
 
         foreach ($cleaners as $cleaner) {
             $items = $allItems
-                ->where('user_id', $cleaner->id)
+                ->where('cleaner_id', $cleaner->id)
                 ->filter(function ($item) use ($periodFrom) {
                     if (! $periodFrom) {
                         return true;
@@ -63,6 +64,7 @@ new class extends Component {
 
                     return $date && Carbon::parse($date)->gte($periodFrom);
                 })
+                ->sortByDesc(fn ($item) => Carbon::parse($item->sort_date ?? $item->created_at)->timestamp)
                 ->values();
 
             $groupedItems[$cleaner->id] = $items;
@@ -118,12 +120,13 @@ new class extends Component {
                     return true;
                 }
 
-                $hasUserMatch = str_contains(mb_strtolower((string) $cleaner->name), $search);
+                $hasUserMatch = str_contains(
+                    mb_strtolower((string) $cleaner->name),
+                    $search
+                );
 
                 $hasApartmentMatch = $items->contains(function ($item) use ($search) {
-                    $apartmentName = ($item->item_type ?? null) === 'coaching'
-                        ? (string) ($item->apartment->name ?? '')
-                        : (string) ($item->apartment ?? '');
+                    $apartmentName = (string) ($item->apartment?->name ?? '');
 
                     return $apartmentName !== ''
                         && str_contains(mb_strtolower($apartmentName), $search);
@@ -155,10 +158,40 @@ new class extends Component {
             return 0;
         }
 
+        if ($item->score_percent !== null) {
+            return max(0, min(100, (int) $item->score_percent));
+        }
+
         $total = (int) ($item->total_points ?? 0);
         $max = (int) ($item->max_points ?? 0);
 
         return $max > 0 ? max(0, min(100, (int) round(($total / $max) * 100))) : 0;
+    }
+
+    protected function controlColor($item): string
+    {
+        $zone = (string) ($item->result_zone ?? '');
+
+        if ($zone === 'green') {
+            return '#27AE60';
+        }
+
+        if ($zone === 'yellow') {
+            return '#2D6494';
+        }
+
+        if ($zone === 'red') {
+            return '#D92D20';
+        }
+
+        $pct = $this->percent($item);
+
+        return match (true) {
+            $pct >= 80 => '#27AE60',
+            $pct >= 50 => '#2D6494',
+            $pct > 0 => '#D92D20',
+            default => '#7D7D7D',
+        };
     }
 };
 ?>
@@ -192,6 +225,7 @@ new class extends Component {
     <div class="flex-1 min-h-0 overflow-y-auto">
         <div class="min-h-full rounded-t-[38px] bg-white">
             <div class="p-[20px] pb-[40px]">
+
                 <div class="mb-[20px] space-y-[12px]">
                     <div class="flex h-[48px] items-center gap-[10px] rounded-full bg-[#E2E2E2] px-[18px]">
                         <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] shrink-0 text-black/45 stroke-[2]" />
@@ -205,19 +239,28 @@ new class extends Component {
                     </div>
 
                     <div class="grid grid-cols-3 gap-[8px]">
-                        <select wire:model.live="activityPeriod" class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0">
+                        <select
+                            wire:model.live="activityPeriod"
+                            class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0"
+                        >
                             <option value="all">Всё время</option>
                             <option value="30">30 дней</option>
                             <option value="7">7 дней</option>
                         </select>
 
-                        <select wire:model.live="activityFilter" class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0">
+                        <select
+                            wire:model.live="activityFilter"
+                            class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0"
+                        >
                             <option value="all">Все</option>
                             <option value="has_items">С контролями</option>
                             <option value="no_items">Без контролей</option>
                         </select>
 
-                        <select wire:model.live="workPeriod" class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0">
+                        <select
+                            wire:model.live="workPeriod"
+                            class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0"
+                        >
                             <option value="all">Стаж</option>
                             <option value="1">До 1 мес.</option>
                             <option value="2">1–2 мес.</option>
@@ -231,7 +274,7 @@ new class extends Component {
                     @forelse($cleaners as $cleaner)
                         @php
                             $items = ($groupedItems[$cleaner->id] ?? collect())
-                                ->sortByDesc(fn ($r) => optional($r->sort_date ?? $r->created_at)->timestamp ?? 0)
+                                ->sortByDesc(fn ($r) => Carbon::parse($r->sort_date ?? $r->created_at)->timestamp)
                                 ->values();
 
                             $controlsCount = $stats[$cleaner->id]['controls_count'] ?? 0;
@@ -297,6 +340,7 @@ new class extends Component {
 
                                                 $date = $item->inspection_date?->format('d.m.Y')
                                                     ?? $item->cleaning_date?->format('d.m.Y')
+                                                    ?? $item->sent_at?->format('d.m.Y')
                                                     ?? $item->created_at?->format('d.m.Y');
 
                                                 if ($isCoaching) {
@@ -305,18 +349,14 @@ new class extends Component {
                                                     $apartment = $item->apartment?->name ?? '—';
                                                     $circleColor = '#0EA5E9';
                                                     $note = trim((string) ($item->reason ?? ''));
+                                                    $meta = '';
                                                 } else {
-                                                    $url = route('page-profile.checks.show', $item);
+                                                    $url = route('page-profile.checks.result', $item);
                                                     $label = 'Контроль';
-                                                    $apartment = $item->apartment ?: '—';
-                                                    $pct = $this->percent($item);
-                                                    $circleColor = match (true) {
-                                                        $pct >= 80 => '#27AE60',
-                                                        $pct >= 50 => '#2D6494',
-                                                        $pct > 0 => '#D92D20',
-                                                        default => '#7D7D7D',
-                                                    };
-                                                    $note = trim((string) ($item->supervisor_comment ?? ''));
+                                                    $apartment = $item->apartment?->name ?? '—';
+                                                    $circleColor = $this->controlColor($item);
+                                                    $note = trim((string) ($item->comment ?? ''));
+                                                    $meta = $this->percent($item) . '%';
                                                 }
                                             @endphp
 
@@ -340,6 +380,12 @@ new class extends Component {
                                                                 <span class="text-[13px] text-black/45">
                                                                     {{ $date }}
                                                                 </span>
+
+                                                                @if($meta !== '')
+                                                                    <span class="rounded-full bg-white px-[8px] py-[3px] text-[11px] font-semibold text-black/45">
+                                                                        {{ $meta }}
+                                                                    </span>
+                                                                @endif
                                                             </div>
 
                                                             <div class="mt-[4px] truncate text-[13px] text-black/45">
@@ -367,7 +413,7 @@ new class extends Component {
                                     </div>
                                 @else
                                     <div class="rounded-[24px] bg-[#F8F8F8] px-[16px] py-[18px] text-[14px] text-black/45">
-                                        У этого человека пока нет контролей и коучингов
+                                        У этого человека пока нет контролей
                                     </div>
                                 @endif
                             </div>
@@ -378,6 +424,7 @@ new class extends Component {
                         </div>
                     @endforelse
                 </div>
+
             </div>
         </div>
     </div>

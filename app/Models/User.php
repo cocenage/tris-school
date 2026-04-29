@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\TelegramUserNotificationService;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -23,6 +24,7 @@ class User extends Authenticatable implements FilamentUser
         'telegram_write_access_granted_at',
         'telegram_last_auth_at',
         'telegram_login_source',
+        'telegram_access_approved_notified_at',
 
         'role',
         'status',
@@ -53,6 +55,7 @@ class User extends Authenticatable implements FilamentUser
             'last_login_at' => 'datetime',
             'telegram_write_access_granted_at' => 'datetime',
             'telegram_last_auth_at' => 'datetime',
+            'telegram_access_approved_notified_at' => 'datetime',
             'birthday' => 'date',
             'work_started_at' => 'date',
             'dip' => 'boolean',
@@ -92,42 +95,42 @@ class User extends Authenticatable implements FilamentUser
         return $this->hasPanelAccess($panel->getId());
     }
 
-public function calendarTypeAccesses()
-{
-    return $this->hasMany(UserCalendarTypeAccess::class);
-}
-
-public function hasCalendarTypeAccess(string $type): bool
-{
-    if ($this->role === 'admin') {
-        return true;
+    public function calendarTypeAccesses()
+    {
+        return $this->hasMany(UserCalendarTypeAccess::class);
     }
 
-    return $this->calendarTypeAccesses()
-        ->where('type', $type)
-        ->where('can_view', true)
-        ->exists();
-}
+    public function hasCalendarTypeAccess(string $type): bool
+    {
+        if ($this->role === 'admin') {
+            return true;
+        }
 
-public function allowedCalendarTypes(): array
-{
-    if ($this->role === 'admin') {
-        return [
-            'workflow',
-            'finance',
-            'holiday',
-            'peak',
-            'vacation',
-            'strike',
-        ];
+        return $this->calendarTypeAccesses()
+            ->where('type', $type)
+            ->where('can_view', true)
+            ->exists();
     }
 
-    return $this->calendarTypeAccesses()
-        ->where('can_view', true)
-        ->pluck('type')
-        ->values()
-        ->all();
-}
+    public function allowedCalendarTypes(): array
+    {
+        if ($this->role === 'admin') {
+            return [
+                'workflow',
+                'finance',
+                'holiday',
+                'peak',
+                'vacation',
+                'strike',
+            ];
+        }
+
+        return $this->calendarTypeAccesses()
+            ->where('can_view', true)
+            ->pluck('type')
+            ->values()
+            ->all();
+    }
 
     public function isAdmin(): bool
     {

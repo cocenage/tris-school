@@ -27,86 +27,130 @@ new class extends Component {
 };
 ?>
 
-<div class="min-h-screen bg-[#f7f7f7] flex items-center justify-center p-4">
-    <div class="w-full max-w-md rounded-[32px] bg-white border border-[#ececec] shadow-sm p-6">
-        <div class="flex items-center justify-center w-16 h-16 rounded-full bg-[#f3f4f6] mx-auto mb-5 text-[30px]">
-            ⏳
-        </div>
+<x-slot:header>
+    <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
+        <div class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full bg-transparent"></div>
 
-        <h1 class="text-center text-[28px] leading-[34px] font-semibold text-[#111827]">
-            Заявка отправлена
-        </h1>
+        <span class="flex items-center justify-center text-[18px] leading-none">
+            Ожидание доступа
+        </span>
 
-        <p class="mt-3 text-center text-[15px] leading-6 text-[#6b7280]">
-            Аккаунт ожидает подтверждения администратора. Обычно это занимает совсем немного времени.
-        </p>
-
-        <div class="mt-6 rounded-[24px] bg-[#f8f8f8] border border-[#eeeeee] p-4">
-            <div class="flex items-start gap-3">
-                <div class="w-10 h-10 rounded-full bg-white border border-[#ececec] flex items-center justify-center text-[18px] shrink-0">
-                    🤖
-                </div>
-
-                <div class="min-w-0">
-                    <div class="text-[15px] font-medium text-[#111827]">
-                        Telegram бот
-                    </div>
-
-                    @if ($hasWriteAccess)
-                        <div class="mt-1 text-[14px] leading-5 text-[#16a34a]">
-                            Бот уже может отправлять вам уведомления.
-                        </div>
-                    @else
-                        <div class="mt-1 text-[14px] leading-5 text-[#6b7280]">
-                            Разрешите боту писать вам, чтобы получать уведомления о статусе заявки.
-                        </div>
-                    @endif
-                </div>
-            </div>
-
-            @if (! $hasWriteAccess)
-                <button
-                    id="telegram-write-access-btn"
-                    type="button"
-                    class="mt-4 w-full h-12 rounded-full bg-[#111827] text-white text-[15px] font-medium transition hover:opacity-95 active:scale-[0.99]"
-                >
-                    Разрешить уведомления
-                </button>
-            @endif
-
-            <a
-                href="https://t.me/{{ config('services.telegram.bot_username') }}"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="mt-3 w-full h-12 rounded-full border border-[#e5e7eb] bg-white text-[#111827] text-[15px] font-medium flex items-center justify-center transition hover:bg-[#f8f8f8]"
-            >
-                Открыть бота
-            </a>
-        </div>
-
-        <form method="POST" action="{{ route('logout') }}" class="mt-6">
+        <form method="POST" action="{{ route('logout') }}">
             @csrf
 
             <button
                 type="submit"
-                class="w-full h-12 rounded-full text-[15px] font-medium text-[#6b7280] bg-[#f3f4f6] hover:bg-[#eceff1] transition"
+                class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
             >
-                Выйти
+                <x-heroicon-o-arrow-right-on-rectangle class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
             </button>
         </form>
+    </div>
+</x-slot:header>
 
-        <div
-            id="write-access-success"
-            class="hidden mt-4 rounded-[20px] border border-[#dcfce7] bg-[#f0fdf4] p-4 text-[14px] leading-5 text-[#166534]"
-        >
-            Отлично! Теперь бот сможет присылать вам уведомления.
-        </div>
+<div class="flex h-full min-h-0 flex-col bg-[#F4F7FB]">
+    <div class="flex-1 min-h-0 overflow-y-auto">
+        <div class="min-h-full rounded-t-[38px] bg-white">
+            <div class="p-[20px] pb-[28px]">
 
-        <div
-            id="write-access-error"
-            class="hidden mt-4 rounded-[20px] border border-[#fecaca] bg-[#fef2f2] p-4 text-[14px] leading-5 text-[#991b1b]"
-        >
-            Не удалось получить разрешение. Попробуйте открыть страницу внутри Telegram.
+                <div class="rounded-[30px] border border-[#E7E7E7] bg-[#F8F8F8] p-[20px]">
+                    <div class="mb-[22px] flex h-[68px] w-[68px] items-center justify-center rounded-[26px] bg-white border border-[#E7E7E7] text-[#213259]">
+                        <x-heroicon-o-clock class="h-[31px] w-[31px] stroke-[2]" />
+                    </div>
+
+                    <h1 class="text-[28px] font-semibold leading-[1.1] tracking-[-0.03em] text-[#111111]">
+                        Заявка отправлена
+                    </h1>
+
+                    <p class="mt-[14px] text-[15px] leading-[1.5] text-black/55">
+                        Аккаунт ожидает подтверждения администратора. Когда доступ одобрят — вы получите уведомление в Telegram.
+                    </p>
+                </div>
+
+                <div class="mt-[14px] rounded-[30px] border border-[#E7E7E7] bg-white p-[18px]">
+                    <div class="flex items-start gap-[12px]">
+                        <div class="flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-[18px] bg-[#F4F7FB] text-[#213259]">
+                            <x-heroicon-o-paper-airplane class="h-[22px] w-[22px] stroke-[2]" />
+                        </div>
+
+                        <div class="min-w-0">
+                            <h2 class="text-[16px] font-medium text-[#213259]">
+                                Telegram уведомления
+                            </h2>
+
+                            @if ($hasWriteAccess)
+                                <p class="mt-[6px] text-[14px] leading-[1.45] text-[#168A3A]">
+                                    Всё готово. Бот сможет прислать сообщение, когда доступ одобрят.
+                                </p>
+                            @else
+                                <p class="mt-[6px] text-[14px] leading-[1.45] text-black/50">
+                                    Разрешите боту писать вам, чтобы получить уведомление об одобрении.
+                                </p>
+                            @endif
+                        </div>
+                    </div>
+
+                    @if (! $hasWriteAccess)
+                        <div class="mt-[16px]">
+                            <x-ui.button
+                                id="telegram-write-access-btn"
+                                type="button"
+                                variant="primary"
+                            >
+                                Разрешить уведомления
+                            </x-ui.button>
+                        </div>
+                    @endif
+
+                    <div class="mt-[10px]">
+                        <x-ui.button
+                            variant="secondary"
+                            href="https://t.me/{{ config('services.telegram.bot_username') }}"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >
+                            Открыть бота
+                        </x-ui.button>
+                    </div>
+                </div>
+
+                <div
+                    id="write-access-success"
+                    class="hidden mt-[14px] rounded-[23px] border border-[#BDECCB] bg-[#F0FDF4] px-[16px] py-[14px] text-[15px] leading-[1.45] text-[#166534]"
+                >
+                    Отлично! Теперь бот сможет присылать вам уведомления.
+                </div>
+
+                <div
+                    id="write-access-error"
+                    class="hidden mt-[14px] rounded-[23px] border border-[#F5C2C2] bg-[#FDF2F2] px-[16px] py-[14px] text-[15px] leading-[1.45] text-[#9B1C1C]"
+                >
+                    Не удалось получить разрешение. Попробуйте открыть страницу внутри Telegram.
+                </div>
+
+                <div class="mt-[14px] rounded-[23px] bg-[#F4F7FB] px-[16px] py-[14px]">
+                    <div class="flex items-start gap-[10px]">
+                        <div class="mt-[1px] flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-white text-[#213259]">
+                            <x-heroicon-o-information-circle class="h-[18px] w-[18px] stroke-[2]" />
+                        </div>
+
+                        <p class="text-[14px] leading-[1.45] text-black/50">
+                            Если вы не получите уведомление, просто откройте приложение позже — после одобрения вход станет доступен автоматически.
+                        </p>
+                    </div>
+                </div>
+
+                <form method="POST" action="{{ route('logout') }}" class="mt-[16px]">
+                    @csrf
+
+                    <x-ui.button
+                        type="submit"
+                        variant="secondary"
+                    >
+                        Выйти
+                    </x-ui.button>
+                </form>
+            </div>
         </div>
     </div>
 
@@ -123,12 +167,14 @@ new class extends Component {
 
                 if (!tg || typeof tg.requestWriteAccess !== 'function') {
                     errorBlock.classList.remove('hidden');
+                    successBlock.classList.add('hidden');
                     return;
                 }
 
                 tg.requestWriteAccess(async function (granted) {
                     if (!granted) {
                         errorBlock.classList.remove('hidden');
+                        successBlock.classList.add('hidden');
                         return;
                     }
 
@@ -150,15 +196,15 @@ new class extends Component {
                             throw new Error('save failed');
                         }
 
-                        if (writeAccessBtn) {
-                            writeAccessBtn.remove();
-                        }
+                        writeAccessBtn.remove();
 
                         successBlock.classList.remove('hidden');
                         errorBlock.classList.add('hidden');
                     } catch (e) {
                         console.error(e);
+
                         errorBlock.classList.remove('hidden');
+                        successBlock.classList.add('hidden');
                     }
                 });
             });

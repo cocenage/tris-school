@@ -10,8 +10,8 @@ new class extends Component {
     public function getReceivedProperty()
     {
         return ControlResponse::query()
-            ->with(['control', 'user', 'supervisor'])
-            ->where('user_id', Auth::id())
+            ->with(['control', 'cleaner', 'supervisor', 'apartment'])
+            ->where('cleaner_id', Auth::id())
             ->latest('sent_at')
             ->get();
     }
@@ -19,7 +19,7 @@ new class extends Component {
     public function getConductedProperty()
     {
         return ControlResponse::query()
-            ->with(['control', 'user', 'supervisor'])
+            ->with(['control', 'cleaner', 'supervisor', 'apartment'])
             ->where('supervisor_id', Auth::id())
             ->latest('sent_at')
             ->get();
@@ -27,6 +27,10 @@ new class extends Component {
 
     protected function percent(ControlResponse $record): ?int
     {
+        if ($record->score_percent !== null) {
+            return max(0, min(100, (int) $record->score_percent));
+        }
+
         if (! $record->max_points) {
             return null;
         }
@@ -36,6 +40,20 @@ new class extends Component {
 
     protected function color(ControlResponse $record): string
     {
+        $zone = (string) ($record->result_zone ?? '');
+
+        if ($zone === 'green') {
+            return '#27AE60';
+        }
+
+        if ($zone === 'yellow') {
+            return '#2D6494';
+        }
+
+        if ($zone === 'red') {
+            return '#D92D20';
+        }
+
         $percent = $this->percent($record);
 
         return match (true) {
@@ -43,6 +61,16 @@ new class extends Component {
             $percent >= 80 => '#27AE60',
             $percent >= 50 => '#2D6494',
             default => '#D92D20',
+        };
+    }
+
+    protected function zoneLabel(ControlResponse $record): string
+    {
+        return match ($record->result_zone) {
+            'green' => 'Зелёная зона',
+            'yellow' => 'Жёлтая зона',
+            'red' => 'Красная зона',
+            default => 'Без зоны',
         };
     }
 };
@@ -70,6 +98,7 @@ new class extends Component {
     <div class="flex-1 min-h-0 overflow-y-auto">
         <div class="min-h-full rounded-t-[38px] bg-white">
             <div class="p-[20px] pb-[40px]">
+
                 <div class="mb-[20px] grid grid-cols-2 gap-[10px] rounded-full bg-[#E2E2E2] p-[4px]">
                     <button
                         type="button"
@@ -97,13 +126,18 @@ new class extends Component {
                         @php
                             $percent = $this->percent($item);
                             $color = $this->color($item);
+                            $zoneLabel = $this->zoneLabel($item);
+
                             $title = $tab === 'received'
                                 ? 'Контроль прошёл'
                                 : 'Вы провели контроль';
 
                             $person = $tab === 'received'
                                 ? ($item->supervisor?->name ?? '—')
-                                : ($item->user?->name ?? '—');
+                                : ($item->cleaner?->name ?? '—');
+
+                            $apartmentName = $item->apartment?->name ?? 'Квартира не указана';
+                            $comment = trim((string) ($item->comment ?? ''));
                         @endphp
 
                         <a
@@ -122,7 +156,7 @@ new class extends Component {
                                         </div>
 
                                         <div class="mt-[5px] text-[13px] text-white/75">
-                                            {{ $item->apartment ?: 'Квартира не указана' }}
+                                            {{ $apartmentName }}
                                         </div>
                                     </div>
 
@@ -141,31 +175,63 @@ new class extends Component {
                                         <div class="text-black/40">
                                             {{ $tab === 'received' ? 'Проверил' : 'Кого проверили' }}
                                         </div>
+
                                         <div class="mt-[3px] font-semibold text-[#111111] truncate">
                                             {{ $person }}
                                         </div>
                                     </div>
 
                                     <div class="rounded-[18px] bg-[#F8F8F8] px-[13px] py-[11px]">
-                                        <div class="text-black/40">Дата проверки</div>
+                                        <div class="text-black/40">
+                                            Дата проверки
+                                        </div>
+
                                         <div class="mt-[3px] font-semibold text-[#111111]">
                                             {{ optional($item->inspection_date)->format('d.m.Y') ?? '—' }}
                                         </div>
                                     </div>
 
                                     <div class="rounded-[18px] bg-[#F8F8F8] px-[13px] py-[11px]">
-                                        <div class="text-black/40">Баллы</div>
+                                        <div class="text-black/40">
+                                            Баллы
+                                        </div>
+
                                         <div class="mt-[3px] font-semibold text-[#111111]">
                                             {{ (int) $item->total_points }}/{{ (int) $item->max_points }}
                                         </div>
                                     </div>
 
                                     <div class="rounded-[18px] bg-[#F8F8F8] px-[13px] py-[11px]">
-                                        <div class="text-black/40">Дата уборки</div>
+                                        <div class="text-black/40">
+                                            Дата уборки
+                                        </div>
+
                                         <div class="mt-[3px] font-semibold text-[#111111]">
                                             {{ optional($item->cleaning_date)->format('d.m.Y') ?? '—' }}
                                         </div>
                                     </div>
+
+                                    <div class="col-span-2 rounded-[18px] bg-[#F8F8F8] px-[13px] py-[11px]">
+                                        <div class="text-black/40">
+                                            Итог
+                                        </div>
+
+                                        <div class="mt-[3px] font-semibold text-[#111111]">
+                                            {{ $zoneLabel }}
+                                        </div>
+                                    </div>
+
+                                    @if($comment !== '')
+                                        <div class="col-span-2 rounded-[18px] bg-[#F8F8F8] px-[13px] py-[11px]">
+                                            <div class="text-black/40">
+                                                Комментарий
+                                            </div>
+
+                                            <div class="mt-[3px] text-[13px] leading-[1.4] font-medium text-[#111111]">
+                                                {{ $comment }}
+                                            </div>
+                                        </div>
+                                    @endif
                                 </div>
                             </div>
                         </a>
@@ -175,6 +241,7 @@ new class extends Component {
                         </div>
                     @endforelse
                 </div>
+
             </div>
         </div>
     </div>

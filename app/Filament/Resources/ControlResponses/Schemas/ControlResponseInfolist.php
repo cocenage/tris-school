@@ -16,13 +16,16 @@ class ControlResponseInfolist
                 Section::make('Основная информация')
                     ->columns(2)
                     ->schema([
-                        TextEntry::make('user.name')
+                        TextEntry::make('control.name')
+                            ->label('Форма контроля'),
+
+                        TextEntry::make('cleaner.name')
                             ->label('Кого проверили'),
 
                         TextEntry::make('supervisor.name')
                             ->label('Кто проверил'),
 
-                        TextEntry::make('apartment')
+                        TextEntry::make('apartment.name')
                             ->label('Квартира'),
 
                         TextEntry::make('cleaning_date')
@@ -41,17 +44,18 @@ class ControlResponseInfolist
                             ->label('Баллы')
                             ->state(fn (ControlResponse $record) => "{$record->total_points}/{$record->max_points}"),
 
-                        TextEntry::make('percent')
+                        TextEntry::make('score_percent')
                             ->label('Процент')
-                            ->state(function (ControlResponse $record) {
-                                if (! $record->max_points) {
-                                    return '—';
-                                }
+                            ->suffix('%'),
 
-                                return round(($record->total_points / $record->max_points) * 100) . '%';
-                            }),
+                        TextEntry::make('result_zone_label')
+                            ->label('Зона'),
 
-                        TextEntry::make('supervisor_comment')
+                        TextEntry::make('has_critical_failure')
+                            ->label('Критическая ошибка')
+                            ->formatStateUsing(fn ($state) => $state ? 'Да' : 'Нет'),
+
+                        TextEntry::make('comment')
                             ->label('Комментарий')
                             ->placeholder('—')
                             ->columnSpanFull(),

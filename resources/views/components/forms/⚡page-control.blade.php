@@ -221,6 +221,8 @@ new class extends Component {
                 $this->dispatch('toast', type: 'success', message: 'Черновик сохранён');
             }
         } catch (\Throwable $e) {
+            report($e);
+
             $this->draftState = 'error';
 
             if (! $silent) {
@@ -264,7 +266,7 @@ new class extends Component {
         $this->comment = (string) ($draft->comment ?? '');
 
         if (is_array($draft->responses)) {
-            $this->answers = $draft->responses;
+            $this->answers = array_replace_recursive($this->answers, $draft->responses);
         }
 
         $this->draftSavedAt = optional($draft->updated_at)->format('H:i');
@@ -330,31 +332,30 @@ new class extends Component {
         };
     }
 
-    public function getFormProgressProperty(): int
+    public function getRequiredQuestionsTotalProperty(): int
     {
         $total = 0;
-        $done = 0;
 
-        foreach ([
-            $this->cleaner_id,
-            $this->apartment_id,
-            $this->cleaning_date,
-            $this->inspection_date,
-        ] as $field) {
-            $total++;
-
-            if (filled($field)) {
-                $done++;
+        foreach ($this->rooms as $room) {
+            foreach (($room['items'] ?? []) as $question) {
+                if (! $this->questionIsOptional($room, $question)) {
+                    $total++;
+                }
             }
         }
+
+        return $total;
+    }
+
+    public function getRequiredQuestionsDoneProperty(): int
+    {
+        $done = 0;
 
         foreach ($this->rooms as $roomIndex => $room) {
             foreach (($room['items'] ?? []) as $questionIndex => $question) {
                 if ($this->questionIsOptional($room, $question)) {
                     continue;
                 }
-
-                $total++;
 
                 $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
 
@@ -364,12 +365,41 @@ new class extends Component {
             }
         }
 
+        return $done;
+    }
+
+    public function getMetaReadyProperty(): bool
+    {
+        return filled($this->cleaner_id)
+            && filled($this->apartment_id)
+            && filled($this->cleaning_date)
+            && filled($this->inspection_date);
+    }
+
+    public function getFormProgressProperty(): int
+    {
+        $total = 4 + $this->requiredQuestionsTotal;
+        $done = 0;
+
+        foreach ([
+            $this->cleaner_id,
+            $this->apartment_id,
+            $this->cleaning_date,
+            $this->inspection_date,
+        ] as $field) {
+            if (filled($field)) {
+                $done++;
+            }
+        }
+
+        $done += $this->requiredQuestionsDone;
+
         return $total > 0 ? (int) round(($done / $total) * 100) : 0;
     }
 
     public function getFormReadyProperty(): bool
     {
-        return $this->formProgress >= 100;
+        return $this->metaReady && $this->requiredQuestionsDone >= $this->requiredQuestionsTotal;
     }
 
     public function getFormButtonTextProperty(): string
@@ -433,6 +463,11 @@ new class extends Component {
         $this->openRoomIndex = $this->openRoomIndex === $roomIndex
             ? null
             : $roomIndex;
+    }
+
+    public function openRoom(int $roomIndex): void
+    {
+        $this->openRoomIndex = $roomIndex;
     }
 
     public function setAnswer(int $roomIndex, int $questionIndex, string $value): void
@@ -553,69 +588,18 @@ new class extends Component {
 
         if (preg_match('/^answers\.(\d+)\.(\d+)/', $firstKey, $m)) {
             $this->openRoomIndex = (int) $m[1];
-            $this->dispatch('control-scroll', type: 'question', room: (int) $m[1], q: (int) $m[2]);
+
+            $this->dispatch(
+                'control-scroll',
+                type: 'question',
+                room: (int) $m[1],
+                q: (int) $m[2]
+            );
+
             return;
         }
 
         $this->dispatch('control-scroll', type: 'top');
-    }
-
-    protected function calcPointsForAnswer(array $room, array $question, array $answer): int
-    {
-        $type = $question['answer_type'] ?? null;
-
-        if ($type === 'text') {
-            return 0;
-        }
-
-        $selected = trim((string) ($answer['selected'] ?? ''));
-
-        if ($selected === '') {
-            return 0;
-        }
-
-        foreach (($question['answer_options_scored'] ?? []) as $optIndex => $opt) {
-            $value = trim((string) ($opt['value'] ?? ('option_' . $optIndex)));
-            $label = trim((string) ($opt['label'] ?? ''));
-
-            if ($selected === $value || $selected === $label) {
-                return (int) ($opt['points'] ?? 0);
-            }
-        }
-
-        return 0;
-    }
-
-    protected function calcMaxPointsForQuestion(array $room, array $question): int
-    {
-        if (($question['answer_type'] ?? null) === 'text') {
-            return 0;
-        }
-
-        $max = 0;
-
-        foreach (($question['answer_options_scored'] ?? []) as $opt) {
-            $max = max($max, (int) ($opt['points'] ?? 0));
-        }
-
-        return $max;
-    }
-
-    protected function calculatePoints(): array
-    {
-        $totalPoints = 0;
-        $maxPoints = 0;
-
-        foreach ($this->rooms as $roomIndex => $room) {
-            foreach (($room['items'] ?? []) as $questionIndex => $question) {
-                $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
-
-                $totalPoints += $this->calcPointsForAnswer($room, $question, $answer);
-                $maxPoints += $this->calcMaxPointsForQuestion($room, $question);
-            }
-        }
-
-        return [$totalPoints, $maxPoints];
     }
 
     public function submit(): void
@@ -627,55 +611,60 @@ new class extends Component {
         $this->validateRooms();
 
         if ($this->getErrorBag()->isNotEmpty()) {
-            $this->dispatch('toast', type: 'error', message: 'Вы заполнили не все поля');
+            $this->dispatch('toast', type: 'error', message: 'Вы заполнили не все обязательные поля');
             $this->scrollToFirstError();
             return;
         }
 
-        [$totalPoints, $maxPoints] = $this->calculatePoints();
+        $score = ControlResponse::calculateScores($this->rooms, $this->answers);
 
-        $apartmentName = (string) Apartment::query()
-    ->whereKey($this->apartment_id)
-    ->value('name');
+        $response = ControlResponse::create([
+            'control_id' => $this->control->id,
+            'cleaner_id' => $this->cleaner_id,
+            'supervisor_id' => Auth::id(),
+            'apartment_id' => $this->apartment_id,
 
-$response = ControlResponse::create([
-    'control_id' => $this->control->id,
-    'user_id' => $this->cleaner_id,
-    'supervisor_id' => Auth::id(),
-    'apartment' => $apartmentName,
-    'is_assigned' => $this->is_assigned,
-    'previous_cleaner' => $this->previous_cleaner,
-    'cleaning_date' => $this->cleaning_date,
-    'inspection_date' => $this->inspection_date,
-    'responses' => $this->answers,
-    'schema_snapshot' => $this->rooms,
-    'supervisor_comment' => $this->comment,
-    'status' => 'sent',
-    'sent_at' => now(),
-    'total_points' => $totalPoints,
-    'max_points' => $maxPoints,
-]);
+            'is_assigned' => $this->is_assigned,
+            'previous_cleaner' => $this->previous_cleaner,
+            'cleaning_date' => $this->cleaning_date,
+            'inspection_date' => $this->inspection_date,
 
-activity()
-    ->causedBy(Auth::user())
-    ->performedOn($response)
-    ->event('control_completed')
-    ->withProperties([
-        'control_id' => $this->control->id,
-        'control_name' => $this->control->name,
-        'cleaner_id' => $this->cleaner_id,
-        'apartment' => $apartmentName,
-        'cleaning_date' => $this->cleaning_date,
-        'inspection_date' => $this->inspection_date,
-        'total_points' => $totalPoints,
-        'max_points' => $maxPoints,
-    ])
-    ->log('Супервайзер отправил контроль качества');
+            'comment' => $this->comment,
+            'responses' => $this->answers,
+            'schema_snapshot' => $this->rooms,
+
+            'total_points' => $score['total_points'],
+            'max_points' => $score['max_points'],
+            'score_percent' => $score['score_percent'],
+            'has_critical_failure' => $score['has_critical_failure'],
+            'result_zone' => $score['result_zone'],
+
+            'status' => 'sent',
+            'sent_at' => now(),
+        ]);
+
+        activity()
+            ->causedBy(Auth::user())
+            ->performedOn($response)
+            ->event('control_completed')
+            ->withProperties([
+                'control_id' => $this->control->id,
+                'control_name' => $this->control->name,
+                'cleaner_id' => $this->cleaner_id,
+                'apartment_id' => $this->apartment_id,
+                'cleaning_date' => $this->cleaning_date,
+                'inspection_date' => $this->inspection_date,
+                'total_points' => $score['total_points'],
+                'max_points' => $score['max_points'],
+                'score_percent' => $score['score_percent'],
+                'result_zone' => $score['result_zone'],
+            ])
+            ->log('Супервайзер отправил контроль качества');
 
         $this->clearDraft();
         $this->resetControlForm();
 
-        $this->successMessage = "Контроль отправлен. Оценка: {$totalPoints} / {$maxPoints}.";
+        $this->successMessage = "Контроль отправлен. Оценка: {$score['total_points']} / {$score['max_points']} ({$score['score_percent']}%).";
         $this->successSheetOpen = true;
     }
 };
@@ -693,7 +682,11 @@ activity()
 
 <x-slot:header>
     <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
-        <button type="button" onclick="history.back()" class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259]">
+        <button
+            type="button"
+            onclick="history.back()"
+            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259]"
+        >
             <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2]" />
         </button>
 
@@ -706,10 +699,22 @@ activity()
 </x-slot:header>
 
 <style>
-    html { scroll-behavior: smooth; }
-    [x-cloak] { display: none !important; }
-    .no-scrollbar::-webkit-scrollbar { display: none; }
-    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    html {
+        scroll-behavior: smooth;
+    }
+
+    [x-cloak] {
+        display: none !important;
+    }
+
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
+    }
+
+    .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
 </style>
 
 <div class="flex h-full min-h-0 flex-col bg-[#EEF3F8]">
@@ -717,9 +722,25 @@ activity()
         wire:submit.prevent="submit"
         x-data="{
             timer: null,
+            hasUnsavedChanges: @entangle('hasUnsavedChanges').live,
+
             save() {
                 clearTimeout(this.timer);
-                this.timer = setTimeout(() => $wire.saveDraftAuto(), 1200);
+
+                this.timer = setTimeout(() => {
+                    $wire.saveDraftAuto();
+                }, 1200);
+            },
+
+            init() {
+                window.addEventListener('beforeunload', (event) => {
+                    if (!this.hasUnsavedChanges) {
+                        return;
+                    }
+
+                    event.preventDefault();
+                    event.returnValue = '';
+                });
             }
         }"
         x-on:input="save()"
@@ -730,29 +751,60 @@ activity()
             <div class="min-h-full rounded-t-[34px] bg-white">
                 <div class="p-[16px] pb-[120px]">
 
-                    <div class="mb-[18px] rounded-[30px] bg-[#F6F8FB] p-[16px]">
-                        <h1 class="text-[24px] font-semibold tracking-[-0.04em] text-[#111827]">
-                            {{ $control?->name ?? 'Контроль качества' }}
-                        </h1>
+                    <div class="mb-[14px] rounded-[30px] bg-[#F6F8FB] p-[16px]">
+                        <div class="flex items-start justify-between gap-[14px]">
+                            <div class="min-w-0">
+                                <h1 class="text-[24px] font-semibold tracking-[-0.04em] text-[#111827]">
+                                    {{ $control?->name ?? 'Контроль качества' }}
+                                </h1>
 
-                        <p class="mt-[7px] text-[14px] leading-[1.45] text-[#64748B]">
-                            Заполните основную информацию и пройдите комнаты по порядку.
-                        </p>
+                                <p class="mt-[7px] text-[14px] leading-[1.45] text-[#64748B]">
+                                    Заполните данные, пройдите комнаты и отправьте результат проверки.
+                                </p>
+                            </div>
+
+                            <div class="shrink-0 rounded-[22px] bg-white px-[12px] py-[10px] text-center shadow-[0_10px_28px_rgba(33,50,89,0.06)]">
+                                <div class="text-[20px] font-semibold leading-none text-[#213259]">
+                                    {{ $this->formProgress }}%
+                                </div>
+                                <div class="mt-[4px] text-[11px] font-semibold text-[#94A3B8]">
+                                    прогресс
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mt-[14px] h-[8px] overflow-hidden rounded-full bg-[#E2E8F0]">
+                            <div
+                                class="h-full rounded-full bg-[#213259] transition-all duration-300"
+                                style="width: {{ $this->formProgress }}%"
+                            ></div>
+                        </div>
+
+                        <div class="mt-[10px] text-[12px] font-medium text-[#64748B]">
+                            Обязательные вопросы: {{ $this->requiredQuestionsDone }} / {{ $this->requiredQuestionsTotal }}
+                        </div>
                     </div>
 
-                    <div class="mb-[24px]" id="meta-block">
+                    <div class="mb-[20px]" id="meta-block">
                         <div class="mb-[12px] flex items-center justify-between">
                             <h2 class="text-[17px] font-semibold tracking-[-0.02em] text-[#111827]">
                                 Основная информация
                             </h2>
 
-                            <div class="rounded-full bg-[#EEF3F8] px-[10px] py-[6px] text-[12px] font-semibold text-[#64748B]">
-                                обязательная
-                            </div>
+                            @if($this->metaReady)
+                                <div class="rounded-full bg-[#E7F8EF] px-[10px] py-[6px] text-[12px] font-semibold text-[#16834B]">
+                                    заполнено
+                                </div>
+                            @else
+                                <div class="rounded-full bg-[#EEF3F8] px-[10px] py-[6px] text-[12px] font-semibold text-[#64748B]">
+                                    обязательно
+                                </div>
+                            @endif
                         </div>
 
                         <div class="rounded-[30px] border border-[#E6ECF2] bg-white p-[14px] shadow-[0_14px_40px_rgba(33,50,89,0.05)]">
                             <div class="space-y-[14px]">
+
                                 <div id="field-cleaner_id">
                                     <div class="mb-[8px] px-[4px] text-[14px] font-semibold text-[#111827]">
                                         Кого проверили <span class="text-[#2D6494]">*</span>
@@ -760,7 +812,7 @@ activity()
 
                                     <select
                                         wire:model.change="cleaner_id"
-                                        class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
+                                        class="h-[50px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
                                     >
                                         <option value="">Выберите человека</option>
 
@@ -785,7 +837,7 @@ activity()
 
                                     <select
                                         wire:model.change="apartment_id"
-                                        class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
+                                        class="h-[50px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
                                     >
                                         <option value="">Выберите квартиру</option>
 
@@ -812,7 +864,7 @@ activity()
                                         <input
                                             type="date"
                                             wire:model.change="cleaning_date"
-                                            class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[12px] text-[14px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
+                                            class="h-[50px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[12px] text-[14px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
                                         >
 
                                         @error('cleaning_date')
@@ -830,7 +882,7 @@ activity()
                                         <input
                                             type="date"
                                             wire:model.change="inspection_date"
-                                            class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[12px] text-[14px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
+                                            class="h-[50px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[12px] text-[14px] font-medium text-[#111827] focus:ring-2 focus:ring-[#213259]/15"
                                         >
 
                                         @error('inspection_date')
@@ -862,7 +914,7 @@ activity()
                                         type="text"
                                         wire:model.blur="previous_cleaner"
                                         placeholder="Введите имя"
-                                        class="h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
+                                        class="h-[50px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[16px] text-[15px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
                                     >
 
                                     @error('previous_cleaner')
@@ -895,7 +947,7 @@ activity()
 
                                         <button
                                             type="button"
-                                            wire:click="toggleRoom({{ $roomIndex }})"
+                                            wire:click="openRoom({{ $roomIndex }})"
                                             onclick="setTimeout(() => {
                                                 document.getElementById('room-{{ $roomIndex }}')?.scrollIntoView({
                                                     behavior: 'smooth',
@@ -1006,7 +1058,9 @@ activity()
                                                             @if(!$optional)
                                                                 <span class="text-[#2D6494]">*</span>
                                                             @else
-                                                                <span class="ml-[4px] text-[12px] font-medium text-[#94A3B8]">необязательно</span>
+                                                                <span class="ml-[4px] text-[12px] font-medium text-[#94A3B8]">
+                                                                    необязательно
+                                                                </span>
                                                             @endif
                                                         </div>
 
@@ -1027,7 +1081,7 @@ activity()
                                                                     <button
                                                                         type="button"
                                                                         wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
-                                                                        class="flex min-h-[48px] w-full items-center justify-between rounded-[20px] px-[15px] text-left text-[14px] font-semibold transition
+                                                                        class="flex min-h-[50px] w-full items-center justify-between rounded-[20px] px-[15px] text-left text-[14px] font-semibold transition
                                                                             {{ $active ? 'bg-[#213259] text-white shadow-[0_10px_24px_rgba(33,50,89,0.18)]' : 'bg-[#F1F5F9] text-[#111827]' }}"
                                                                     >
                                                                         <span>{{ $opt['label'] ?? 'Вариант' }}</span>
@@ -1047,7 +1101,7 @@ activity()
                                                                 type="text"
                                                                 wire:model.blur="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom"
                                                                 placeholder="{{ $type === 'both' ? 'Комментарий / другое' : 'Введите ответ' }}"
-                                                                class="mt-[10px] h-[46px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[15px] text-[14px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
+                                                                class="mt-[10px] h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[15px] text-[14px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
                                                             >
                                                         @endif
                                                     </div>

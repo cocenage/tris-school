@@ -169,11 +169,10 @@ class ControlForm
                             'default' => 1,
                             'md' => 2,
                         ])->schema([
-                            Textarea::make('title')
-                                ->label('Название комнаты')
-                                ->rows(2)
-                                ->required()
-                                ->maxLength(255),
+                            TextInput::make('title')
+    ->label('Название комнаты')
+    ->required()
+    ->maxLength(255),
 
                             Textarea::make('description')
                                 ->label('Описание')
