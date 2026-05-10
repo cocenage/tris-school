@@ -36,8 +36,6 @@ class FinancePanelProvider extends PanelProvider
             ])
             ->discoverWidgets(in: app_path('Filament/Finance/Widgets'), for: 'App\Filament\Finance\Widgets')
             ->widgets([
-                AccountWidget::class,
-                FilamentInfoWidget::class,
             ])
             ->middleware([
                 EncryptCookies::class,

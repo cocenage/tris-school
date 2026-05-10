@@ -2,6 +2,7 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Resources\Users\UserResource;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -26,6 +27,7 @@ class EducationPanelProvider extends PanelProvider
         return $panel
             ->id('education')
             ->path('admin/education')
+            ->brandName('Админ-панель обучения')
             ->colors([
                 'primary' => Color::Amber,
             ])
@@ -36,8 +38,6 @@ class EducationPanelProvider extends PanelProvider
             ])
             ->discoverWidgets(in: app_path('Filament/Education/Widgets'), for: 'App\Filament\Education\Widgets')
             ->widgets([
-                AccountWidget::class,
-                FilamentInfoWidget::class,
             ])
             ->middleware([
                 EncryptCookies::class,
@@ -52,6 +52,9 @@ class EducationPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
+            ])
+            ->resources([
+                UserResource::class,
             ]);
     }
 }

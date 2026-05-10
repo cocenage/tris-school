@@ -11,8 +11,8 @@
     @livewireStyles
 </head>
 
-<body class="bg-[#F2F3F7] text-[#111]">
-    <div class="mx-auto flex h-[100dvh] w-full max-w-[768px] flex-col overflow-hidden bg-[#F2F3F7]">
+<body class="bg-[#FAFAFA] text-[#111]">
+    <div class="mx-auto flex h-[100dvh] w-full max-w-[768px] flex-col overflow-hidden bg-[#FAFAFA]">
 
         <header class="shrink-0">
             @includeIf('components.partials.⚡header', [

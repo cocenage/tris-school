@@ -221,37 +221,25 @@ protected function eventsForDay(Carbon $day): Collection
 </x-slot:header>
 <div class="bg-white w-full p-[15px]">
 
-<div class="relative mb-[20px] h-[134px] overflow-hidden rounded-[35px] bg-[#F8F7F5] px-[22px] py-[18px]">
-    <div class="absolute right-[-18px] top-[-18px] h-[150px] w-[150px] rounded-full bg-white/70"></div>
+<div class="mb-[20px] min-h-[134px] rounded-[35px] bg-[#F8F7F5] p-[20px]">
 
+      <span class="truncate text-[18px]">
+        Открывайте Tris Academy в одно касание
+    </span>
 
-        <div class="min-w-0 flex flex-col p-[15px]">
-           
-                <p class="truncate text-[22px] font-semibold leading-none text-[#111111]">
-                    Открывайте Tris Academy в одно касание
-                </p>
+    <p class="mt-[10px] text-[15px] leading-[1.25] text-[#777777]">
+        Добавьте Tris Academy на экран Домой для быстрого доступа
+    </p>
 
-     
+    <div class="mt-[16px]">
+        <x-ui.button
+            variant="primary"
+            onclick="window.Telegram?.WebApp?.addToHomeScreen?.()"
+        >
+            Добавить на экран Домой
+        </x-ui.button>
+    </div>
 
-            <p class="mt-[10px] max-w-[230px] text-[15px] leading-[1.25] text-[#777777]">
-                Добавьте Tris Academy на экран Домой для быстрого доступа
-            </p>
-
-        
-
-
-
-                    <x-ui.button
-                        variant="primary"
-                         onclick="window.Telegram?.WebApp?.addToHomeScreen?.()"
-                    >
-                            Добавить на экран Домой
-                    </x-ui.button>
-             
-
-        </div>
-
- 
 </div>
 
 <!-- <div class="w-full h-[100px] bg-[#F8F7F5] rounded-[35px]"></div> -->

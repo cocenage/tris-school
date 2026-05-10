@@ -18,9 +18,9 @@ $base = '
     inline-flex items-center justify-center
     px-5
     text-[15px] font-medium
-    transition-all duration-300
+    transition-all duration-500 ease-out
     active:scale-[0.985]
-    disabled:opacity-40 disabled:pointer-events-none
+    disabled:opacity-50 disabled:pointer-events-none
 ';
 
     $variants = [
@@ -64,7 +64,7 @@ $base = '
 
         {{-- progress fill --}}
 <span
-    class="absolute inset-y-0 left-0 rounded-full transition-all duration-500 ease-out"
+    class="absolute inset-y-0 left-0 rounded-full transition-[width,filter] duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]"
     style="
         width: {{ $safeProgress }}%;
         background:
@@ -101,7 +101,7 @@ $base = '
 @endif
 
     <span
-        class="relative z-10 transition-all duration-300"
+        class="relative z-10 transition-colors duration-500 ease-out"
         @if($variant === 'primary')
             style="color: {{ $textColor }};"
         @endif

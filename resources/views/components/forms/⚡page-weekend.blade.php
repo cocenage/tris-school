@@ -79,8 +79,8 @@ public function getFormButtonTextProperty(): string
 {
     return match (true) {
         $this->formProgress >= 100 => 'Отправить',
-        $this->formProgress >= 70 => 'Почти готово',
-        $this->formProgress >= 30 => 'Продолжайте',
+        ! empty($this->ranges) && mb_strlen(trim($this->comment)) < 5 => 'Опишите причину',
+        empty($this->ranges) => 'Выбери дату',
         default => 'Заполните',
     };
 }
@@ -782,24 +782,28 @@ public function getFormButtonTextProperty(): string
 
 <x-slot:header>
     <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
-        <button
-            type="button"
-            onclick="history.back()"
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
-        >
-            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
-        </button>
+   <button
+    type="button"
+    onclick="history.back()"
+    class="group flex h-[40px] min-w-[40px] items-center justify-center rounded-full cursor-pointer bg-[#E1E1E1] text-white backdrop-blur-md transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#7D7D7D] hover:scale-[1.04] active:scale-[0.92]"
+>
+    <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2.4] transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.08]" />
+</button>
 
         <span class="text-[18px] leading-none flex items-center justify-center">
             Запрос выходного
         </span>
 
-        <button
-            type="button"
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
-        >
-            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
-        </button>
+
+
+<button
+    type="button"
+    @click="$dispatch('open-guide')"
+    class="group flex h-[40px] min-w-[40px] items-center justify-center rounded-full cursor-pointer bg-[#E1E1E1] text-white backdrop-blur-md transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#7D7D7D] hover:scale-[1.04] active:scale-[0.92]"
+>
+    <x-heroicon-o-question-mark-circle class="h-[20px] w-[20px] stroke-[2.2] transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.08]" />
+</button>
+
     </div>
 </x-slot:header>
 
@@ -842,7 +846,44 @@ public function getFormButtonTextProperty(): string
 
             onScroll();
             el.addEventListener('scroll', onScroll, { passive: true });
+        },
+
+scrollToNextRequired(hasRanges, hasComment) {
+    this.buttonsHidden = false;
+
+    this.$nextTick(() => {
+        const scrollArea = this.$refs.scrollArea;
+
+        if (!scrollArea) return;
+
+        let target = null;
+
+        if (!hasRanges) {
+            target = this.$refs.calendarBlock;
+        } else if (!hasComment) {
+            target = this.$refs.reasonBlock;
         }
+
+        if (!target) return;
+
+        const top =
+            target.offsetTop
+            - scrollArea.offsetTop
+            - 16;
+
+        scrollArea.scrollTo({
+            top: Math.max(top, 0),
+            behavior: 'smooth'
+        });
+
+        if (target === this.$refs.reasonBlock) {
+            setTimeout(() => {
+                this.$refs.reasonInput?.focus();
+            }, 500);
+        }
+    });
+},
+
     }"
     class="flex h-full min-h-0 flex-col bg-[#F4F7FB]"
 >
@@ -853,7 +894,7 @@ public function getFormButtonTextProperty(): string
         >
             <div class="min-h-full rounded-t-[38px] bg-white">
               <div class="p-[20px] pb-[82px]">
-                    <div class="mb-[24px]">
+                    <div class="mb-[24px]" x-ref="calendarBlock">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
                            Когда нужен выходной?
                         </h2>
@@ -941,13 +982,14 @@ public function getFormButtonTextProperty(): string
                         </div>
                     </div>
 
-                    <div class="mb-[8px]">
+                    <div class="mb-[8px]" x-ref="reasonBlock">
                         <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
                          Опишите причину
                         </h2>
 
                         <textarea
-                            wire:model.live.debounce.500ms="comment"
+                                x-ref="reasonInput"
+    wire:model.live.debounce.500ms="comment"
                             rows="4"
                             maxlength="500"
                             placeholder="Например: нужен выходной в выбранные даты"
@@ -989,13 +1031,22 @@ public function getFormButtonTextProperty(): string
                     </div>
 
                     <div class="col-span-2">
-                       <x-ui.button
+                     <x-ui.button
     type="submit"
     variant="primary"
     :progress="$this->formProgress"
-    :disabled="! $this->formReady"
     wire:loading.attr="disabled"
     wire:target="submit"
+    x-on:click="
+        if (!{{ $this->formReady ? 'true' : 'false' }}) {
+            $event.preventDefault();
+
+            scrollToNextRequired(
+                {{ ! empty($this->ranges) ? 'true' : 'false' }},
+                {{ mb_strlen(trim($this->comment)) >= 5 ? 'true' : 'false' }}
+            );
+        }
+    "
 >
     <span wire:loading.remove wire:target="submit">
         {{ $this->formButtonText }}
@@ -1092,5 +1143,153 @@ public function getFormButtonTextProperty(): string
 </x-ui.button>
             </div>
         </x-ui.bottom-sheet>
+<x-ui.guide guide-key="day-off-request-guide-v1">
+    <div
+        x-data="{
+            current: 0,
+
+            steps: [
+                {
+                    icon: 'calendar',
+                    title: 'Запрос выходного',
+                    text: 'Выберите даты, укажите причину и отправьте заявку на согласование.',
+                },
+                {
+                    icon: 'calendar',
+                    title: 'Выберите даты',
+                    text: 'Нажмите на дату. Для диапазона выберите начало, потом конец.',
+                },
+                {
+                    icon: 'range',
+                    title: 'Можно несколько раз',
+                    text: 'Если нужны разные периоды, добавьте несколько диапазонов.',
+                },
+                {
+                    icon: 'warning',
+                    title: 'Обязательные дни',
+                    text: 'Воскресенье и понедельник нужно согласовать отдельно.',
+                },
+                {
+                    icon: 'pencil',
+                    title: 'Напишите причину',
+                    text: 'После выбора дат коротко объясните, почему нужен выходной.',
+                },
+                {
+                    icon: 'send',
+                    title: 'Отправьте заявку',
+                    text: 'Когда всё заполнено, нажмите «Отправить».',
+                },
+            ],
+
+            next() {
+                if (this.current >= this.steps.length - 1) {
+                    this.$dispatch('close-guide', { save: true });
+                    return;
+                }
+
+                this.current++;
+            },
+
+            back() {
+                if (this.current > 0) {
+                    this.current--;
+                }
+            },
+        }"
+        class="flex min-h-screen flex-col bg-[#F4F7FB]"
+    >
+        <div class="flex items-center justify-between px-[20px] pt-[20px]">
+            <div class="flex gap-[6px]">
+                <template x-for="(_, index) in steps" :key="index">
+                    <div
+                        class="h-[5px] rounded-full transition-all duration-300"
+                        :class="index <= current
+                            ? 'w-[26px] bg-[#213259]'
+                            : 'w-[5px] bg-[#D7E0EA]'"
+                    ></div>
+                </template>
+            </div>
+
+            <button
+                type="button"
+                @click="$dispatch('close-guide', { save: true })"
+                class="flex h-[42px] w-[42px] items-center justify-center rounded-full bg-white text-[#213259] shadow-sm transition-all duration-300 active:scale-[0.94]"
+            >
+                <x-heroicon-o-x-mark class="h-[20px] w-[20px] stroke-[2.4]" />
+            </button>
+        </div>
+
+        <div class="flex flex-1 flex-col items-center justify-center px-[24px]">
+            <template x-for="(step, index) in steps" :key="index">
+                <div
+                    x-show="current === index"
+                    x-transition:enter="transition duration-400 ease-out"
+                    x-transition:enter-start="opacity-0 translate-y-[14px]"
+                    x-transition:enter-end="opacity-100 translate-y-0"
+                    x-transition:leave="transition duration-200 ease-in"
+                    x-transition:leave-start="opacity-100"
+                    x-transition:leave-end="opacity-0"
+                    class="w-full"
+                >
+                    <div class="mx-auto flex h-[124px] w-[124px] items-center justify-center rounded-[40px] bg-white shadow-[0_18px_40px_rgba(33,50,89,0.08)]">
+                        <template x-if="step.icon === 'calendar'">
+                            <x-heroicon-o-calendar-days class="h-[54px] w-[54px] stroke-[1.7] text-[#213259]" />
+                        </template>
+
+                        <template x-if="step.icon === 'range'">
+                            <x-heroicon-o-arrows-right-left class="h-[54px] w-[54px] stroke-[1.7] text-[#213259]" />
+                        </template>
+
+                        <template x-if="step.icon === 'warning'">
+                            <x-heroicon-o-exclamation-triangle class="h-[54px] w-[54px] stroke-[1.7] text-[#213259]" />
+                        </template>
+
+                        <template x-if="step.icon === 'pencil'">
+                            <x-heroicon-o-pencil-square class="h-[54px] w-[54px] stroke-[1.7] text-[#213259]" />
+                        </template>
+
+                        <template x-if="step.icon === 'send'">
+                            <x-heroicon-o-paper-airplane class="h-[54px] w-[54px] stroke-[1.7] text-[#213259]" />
+                        </template>
+                    </div>
+
+                    <div class="mx-auto mt-[42px] max-w-[340px] text-center">
+                        <div
+                            class="text-[32px] font-semibold leading-[1.02] tracking-[-0.05em] text-[#111111]"
+                            x-text="step.title"
+                        ></div>
+
+                        <div
+                            class="mt-[14px] text-[17px] leading-[1.45] text-black/55"
+                            x-text="step.text"
+                        ></div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <div class="px-[20px] pb-[20px]">
+            <div class="grid grid-cols-2 gap-[10px]">
+                <x-ui.button
+                    type="button"
+                    variant="secondary"
+                    @click="back()"
+                    x-bind:class="current === 0 ? 'opacity-0 pointer-events-none' : ''"
+                >
+                    Назад
+                </x-ui.button>
+
+                <x-ui.button
+                    type="button"
+                    variant="primary"
+                    progress="100"
+                    @click="next()"
+                >
+                    <span x-text="current === steps.length - 1 ? 'Понятно' : 'Далее'"></span>
+                </x-ui.button>
+            </div>
+        </div>
+    </div>
+</x-ui.guide>
     </div>
 </div>
