@@ -168,12 +168,12 @@ protected function eventsForDay(Carbon $day): Collection
 };
 ?>
 <x-slot:header>
-  <div class="flex items-center gap-[10px]">
+  <div class="flex items-center gap-[10px] p-[15px]">
     @php
         $user = auth()->user();
     @endphp
 
-    <div class="w-[80px] h-[80px] shrink-0 overflow-hidden rounded-full bg-[#E1E1E1]">
+    <div class="w-[60px] h-[60px] shrink-0 overflow-hidden rounded-full bg-[#E1E1E1]">
         @if($user?->telegram_photo_url)
             <img
                 src="{{ $user->telegram_photo_url }}"
@@ -187,13 +187,13 @@ protected function eventsForDay(Carbon $day): Collection
                 class="w-full h-full object-cover"
             >
         @else
-            <div class="flex h-full w-full items-center justify-center text-[24px] font-semibold text-[#666666]">
+            <div class="flex h-full w-full items-center justify-center text-[20px] font-medium text-[#666666]">
                 {{ mb_substr($user?->name ?? 'U', 0, 1) }}
             </div>
         @endif
     </div>
 
-    <div class="flex flex-col gap-[5px]">
+    <div class="flex flex-col">
         <span class="text-[20px] font-medium">
             {{ $user->name }}
         </span>
@@ -221,15 +221,48 @@ protected function eventsForDay(Carbon $day): Collection
 </x-slot:header>
 <div class="bg-white w-full p-[15px]">
 
+<div class="relative mb-[20px] h-[134px] overflow-hidden rounded-[35px] bg-[#F8F7F5] px-[22px] py-[18px]">
+    <div class="absolute right-[-18px] top-[-18px] h-[150px] w-[150px] rounded-full bg-white/70"></div>
+
+
+        <div class="min-w-0 flex flex-col p-[15px]">
+           
+                <p class="truncate text-[22px] font-semibold leading-none text-[#111111]">
+                    Открывайте Tris Academy в одно касание
+                </p>
+
+     
+
+            <p class="mt-[10px] max-w-[230px] text-[15px] leading-[1.25] text-[#777777]">
+                Добавьте Tris Academy на экран Домой для быстрого доступа
+            </p>
+
+        
+
+
+
+                    <x-ui.button
+                        variant="primary"
+                         onclick="window.Telegram?.WebApp?.addToHomeScreen?.()"
+                    >
+                            Добавить на экран Домой
+                    </x-ui.button>
+             
+
+        </div>
+
+ 
+</div>
+
 <!-- <div class="w-full h-[100px] bg-[#F8F7F5] rounded-[35px]"></div> -->
  <div>
         <div class="mb-[10px]">
             <span class="text-[16px] opacity-50">
-                Тут будет много блоков, я пока не знаю, что войдет в этот
+                Рабочие инструменты
             </span>
         </div>
 
-        <div class="overflow-hidden rounded-[23px] bg-[#F8F7F5]">
+        <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
             <a
              href="{{ route('page-profile.checks') }}"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
@@ -241,7 +274,7 @@ protected function eventsForDay(Carbon $day): Collection
                    
 
                     <span class="truncate text-[18px]">
-                        Мои проверки
+                        Мои контроли
                     </span>
                 </div>
 
@@ -287,11 +320,11 @@ protected function eventsForDay(Carbon $day): Collection
 
                 <div class="mb-[10px] pt-[20px]">
             <span class="text-[16px] opacity-50">
-                Еще блок
+                Календарь и события
             </span>
         </div>
 
-        <div class="overflow-hidden rounded-[23px] bg-[#F8F7F5]">
+        <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
 
 
    
@@ -327,13 +360,36 @@ protected function eventsForDay(Carbon $day): Collection
            
         </div>
 
-                        <div class="mb-[10px] pt-[20px]">
-            <span class="text-[16px] opacity-50">
-                Блок только для админа 
-            </span>
-        </div>
+  <div
+    x-data="{ open: false }"
+    class="mb-[10px] flex w-full items-center justify-between pt-[20px]"
+>
+    <span class="text-[16px] opacity-50">
+        Администрирование
+    </span>
 
-        <div class="overflow-hidden rounded-[23px] bg-[#F8F7F5]">
+    <div class="relative">
+        <button
+            type="button"
+            @click="open = !open"
+            class="flex h-[25px] w-[25px] items-center justify-center rounded-full  text-[13px] font-medium text-[#666666] active:scale-[0.96]"
+        >
+            ?
+        </button>
+
+        <div
+            x-show="open"
+            x-transition.opacity.scale
+            @click.outside="open = false"
+            class="absolute right-0 top-[35px] min-w-[200px] z-50 rounded-[35px] bg-black/45 backdrop-blur-[6px] p-[15px] text-[14px] text-white"
+            style="display: none;"
+        >
+            Этот блок виден только админам
+        </div>
+    </div>
+</div>
+
+        <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
 
   <a
  
@@ -434,11 +490,11 @@ protected function eventsForDay(Carbon $day): Collection
 
                             <div class="mb-[10px] pt-[20px]">
             <span class="text-[16px] opacity-50">
-                Блок только для админа 
+                Поддержка  
             </span>
         </div>
 
-        <div class="overflow-hidden rounded-[23px] bg-[#F8F7F5]">
+        <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
 
 
    
@@ -455,7 +511,7 @@ protected function eventsForDay(Carbon $day): Collection
                    
 
                     <span class="truncate text-[18px]">
-                        Связь с разрабом
+                        Чат с разработчиком
                     </span>
                 </div>
 

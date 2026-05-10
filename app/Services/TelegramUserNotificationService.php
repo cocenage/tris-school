@@ -60,7 +60,7 @@ class TelegramUserNotificationService
                 '<b>Telegram ID:</b> ' . $this->escape((string) $user->telegram_id),
                 '<b>Статус:</b> ожидает одобрения',
                 '',
-                'Пользователь ждёт подтверждения доступа к сайту.',
+                'Пользователь ждёт подтверждения доступа к сайту',
             ]),
 
             'reply_markup' => [
@@ -133,7 +133,7 @@ class TelegramUserNotificationService
                     '✅ <b>Доступ одобрен</b>',
                     '',
                     'Ваш аккаунт подтверждён.',
-                    'Теперь вы можете войти в приложение.',
+                    'Теперь вы можете войти в приложение!',
                 ]),
 
                 'reply_markup' => [

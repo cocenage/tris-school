@@ -67,7 +67,7 @@ new class extends Component {
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}">
-                Проверки
+                Контроли
             </span>
         </a>
 

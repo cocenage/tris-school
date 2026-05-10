@@ -32,7 +32,7 @@ new class extends Component
             <x-heroicon-o-magnifying-glass class="w-[30px] h-[30px] stroke-[2.5] opacity-50 shrink-0" />
 
             <span class="text-[#7A7A7A] text-[16px]">
-                [Найти в Tris Academy] поиск в разработке
+                Найти в Tris Academy
             </span>
         </div>
     </button>
@@ -75,7 +75,7 @@ new class extends Component
             </label>
 
             <div class="pt-[15px] text-[#7A7A7A] text-[14px]">
-                Тут потом будут результаты поиска
+                поиск в разработке
             </div>
         </div>
     </div>

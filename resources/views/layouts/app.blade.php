@@ -29,9 +29,9 @@
         <footer class="shrink-0">
             @includeIf('components.partials.⚡navbar')
         </footer>
-    </div>
+        </div>
 
-
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     @livewireScripts
 </body>
 </html>
