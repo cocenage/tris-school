@@ -51,12 +51,12 @@ class CalendarEventForm
                     ->schema([
                         DatePicker::make('start_date')
                             ->label('Дата начала')
-                            ->native(false)
+                 
                             ->required(),
 
                         DatePicker::make('end_date')
                             ->label('Дата окончания')
-                            ->native(false)
+                    
                             ->afterOrEqual('start_date')
                             ->placeholder('Один день'),
                     ])

@@ -167,7 +167,7 @@ class TelegramUserNotificationService
 
     protected function userAdminUrl(User $user): string
     {
-        return url('/admin/users/' . $user->id . '/edit');
+        return url('/admin/education/users' . $user->id . '/edit');
     }
 
     protected function escape(?string $value): string
