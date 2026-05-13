@@ -41,8 +41,11 @@ class TelegramAuthService
         $user->save();
 
         if ($user->status === 'pending') {
-            app(TelegramUserNotificationService::class)->accessRequested($user);
-        }
+    $notifications = app(TelegramUserNotificationService::class);
+
+    $notifications->accessRequested($user);
+    $notifications->accessPending($user);
+}
 
         Auth::login($user, true);
         request()->session()->regenerate();

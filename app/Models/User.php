@@ -25,7 +25,8 @@ class User extends Authenticatable implements FilamentUser
         'telegram_last_auth_at',
         'telegram_login_source',
         'telegram_access_approved_notified_at',
-
+        'telegram_access_requested_notified_at',
+        
         'role',
         'status',
 
