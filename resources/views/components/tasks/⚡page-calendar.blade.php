@@ -28,6 +28,45 @@ new class extends Component {
         $this->month = $this->month->copy()->subMonth()->startOfMonth();
     }
 
+
+    public function getSelectedDayWorkersProperty(): array
+{
+    $date = $this->selectedDay->toDateString();
+
+    $users = User::query()
+        ->where('is_active', true)
+        ->whereIn('role', ['cleaner', 'supervisor'])
+        ->orderBy('role')
+        ->orderBy('name')
+        ->get();
+
+    $dayOffUserIds = DayOffRequestDay::query()
+        ->whereDate('date', $date)
+        ->whereHas('request', fn ($q) => $q->where('status', 'approved'))
+        ->pluck('user_id')
+        ->toArray();
+
+    $vacationUserIds = VacationRequest::query()
+        ->where('status', 'approved')
+        ->whereHas('days', fn ($q) => $q->whereDate('date', $date))
+        ->pluck('user_id')
+        ->toArray();
+
+    $absentIds = collect($dayOffUserIds)
+        ->merge($vacationUserIds)
+        ->unique()
+        ->values();
+
+    return [
+        'working' => $users
+            ->whereNotIn('id', $absentIds)
+            ->values(),
+
+        'not_working' => $users
+            ->whereIn('id', $absentIds)
+            ->values(),
+    ];
+}
     public function nextMonth(): void
     {
         $this->month = $this->month->copy()->addMonth()->startOfMonth();
@@ -1307,6 +1346,69 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
         </p>
     </div>
 @endforelse
+
+<div class="mt-[16px] rounded-[32px] bg-white px-[14px] py-[14px]">
+    <div class="mb-[12px] flex items-center justify-between">
+        <div>
+            <p class="text-[17px] font-semibold leading-none text-[#111]">
+                Смена
+            </p>
+            <p class="mt-[5px] text-[13px] text-[#8A8A8A]">
+                Кто работает в этот день
+            </p>
+        </div>
+
+        <div class="rounded-full bg-[#F4F4F4] px-[11px] py-[7px] text-[13px] font-medium text-[#111]">
+            {{ $this->selectedDayWorkers['working']->count() }} работает
+        </div>
+    </div>
+
+    <div class="space-y-[6px]">
+        @foreach ($this->selectedDayWorkers['working'] as $user)
+            <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
+                <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
+                    {{ mb_substr($user->name, 0, 1) }}
+                </div>
+
+                <div class="min-w-0 flex-1">
+                    <p class="truncate text-[15px] font-medium leading-none text-[#111]">
+                        {{ $user->name }}
+                    </p>
+
+                    <p class="mt-[5px] text-[12px] leading-none text-[#8A8A8A]">
+                        {{ $user->role === 'supervisor' ? 'Супервайзер' : 'Клинер' }}
+                    </p>
+                </div>
+
+                <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[11px] font-medium text-[#3C8D57]">
+                    работает
+                </span>
+            </div>
+        @endforeach
+
+        @foreach ($this->selectedDayWorkers['not_working'] as $user)
+            <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px] opacity-70">
+                <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#999]">
+                    {{ mb_substr($user->name, 0, 1) }}
+                </div>
+
+                <div class="min-w-0 flex-1">
+                    <p class="truncate text-[15px] font-medium leading-none text-[#555]">
+                        {{ $user->name }}
+                    </p>
+
+                    <p class="mt-[5px] text-[12px] leading-none text-[#999]">
+                        {{ $user->role === 'supervisor' ? 'Супервайзер' : 'Клинер' }}
+                    </p>
+                </div>
+
+                <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[11px] font-medium text-[#777]">
+                    не работает
+                </span>
+            </div>
+        @endforeach
+    </div>
+</div>
             </div>
         </div>
     </div>
