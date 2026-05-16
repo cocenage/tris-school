@@ -22,6 +22,7 @@ class StaffFormTelegramService
             comment: $record->comment,
             attachments: $record->attachments ?? [],
             adminUrl: url('/admin/salary-questions/' . $record->id . '/edit'),
+            threadId: config('services.staff_forms.salary_thread_id'),
         );
     }
 
@@ -37,23 +38,25 @@ class StaffFormTelegramService
             comment: $record->comment,
             attachments: $record->attachments ?? [],
             adminUrl: url('/admin/schedule-questions/' . $record->id . '/edit'),
+            threadId: config('services.staff_forms.schedule_thread_id'),
         );
     }
 
-public function sendFeedbackSuggestion(FeedbackSuggestion $record): void
-{
-    $record->loadMissing('user');
+    public function sendFeedbackSuggestion(FeedbackSuggestion $record): void
+    {
+        $record->loadMissing('user');
 
-    $this->send(
-        title: '💡 Новое обращение',
-        typeLabel: 'Обратная связь',
-        userName: $record->user?->name ?? 'Неизвестный сотрудник',
-        type: $record->type,
-        comment: $record->comment,
-        attachments: $record->attachments ?? [],
-        adminUrl: url('/admin/feedback-suggestions/' . $record->id . '/edit'),
-    );
-}
+        $this->send(
+            title: '💡 Новое обращение',
+            typeLabel: 'Обратная связь',
+            userName: $record->user?->name ?? 'Неизвестный сотрудник',
+            type: $record->type,
+            comment: $record->comment,
+            attachments: $record->attachments ?? [],
+            adminUrl: url('/admin/feedback-suggestions/' . $record->id . '/edit'),
+            threadId: config('services.staff_forms.feedback_thread_id'),
+        );
+    }
 
     protected function send(
         string $title,
@@ -63,13 +66,14 @@ public function sendFeedbackSuggestion(FeedbackSuggestion $record): void
         string $comment,
         array $attachments,
         string $adminUrl,
+        mixed $threadId = null,
     ): void {
         $token = config('services.telegram.bot_token');
         $chatId = config('services.staff_forms.chat_id');
-        $threadId = config('services.staff_forms.thread_id');
 
         if (blank($token) || blank($chatId)) {
             Log::warning('Staff form telegram skipped: missing credentials');
+
             return;
         }
 
@@ -111,6 +115,7 @@ public function sendFeedbackSuggestion(FeedbackSuggestion $record): void
             Log::error('Staff form telegram send failed', [
                 'status' => $response->status(),
                 'body' => $response->body(),
+                'thread_id' => $threadId,
             ]);
 
             return;
@@ -178,6 +183,7 @@ public function sendFeedbackSuggestion(FeedbackSuggestion $record): void
                 Log::error('Staff form telegram media group failed', [
                     'status' => $response->status(),
                     'body' => $response->body(),
+                    'thread_id' => $threadId,
                     'media' => $media,
                 ]);
             }
