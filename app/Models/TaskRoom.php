@@ -30,6 +30,12 @@ class TaskRoom extends Model
             ->withTimestamps();
     }
 
+    public function boards(): HasMany
+    {
+        return $this->hasMany(TaskBoard::class)
+            ->orderBy('sort_order');
+    }
+
     public function tasks(): HasMany
     {
         return $this->hasMany(Task::class);
@@ -40,8 +46,35 @@ class TaskRoom extends Model
         return $this->status === 'active';
     }
 
-    public function boards(): HasMany
-{
-    return $this->hasMany(TaskBoard::class)->orderBy('sort_order');
-}
+    public function userRole(User $user): ?string
+    {
+        $member = $this->users()
+            ->where('users.id', $user->id)
+            ->first();
+
+        return $member?->pivot?->role;
+    }
+
+    public function hasUser(User $user): bool
+    {
+        return $this->users()
+            ->where('users.id', $user->id)
+            ->exists();
+    }
+
+    public function userCanManage(User $user): bool
+    {
+        if (method_exists($user, 'canManageTasks') && $user->canManageTasks()) {
+            return true;
+        }
+
+        if (isset($user->role) && in_array($user->role, ['admin', 'supervisor'], true)) {
+            return true;
+        }
+
+        return $this->users()
+            ->where('users.id', $user->id)
+            ->wherePivotIn('role', ['owner', 'manager'])
+            ->exists();
+    }
 }

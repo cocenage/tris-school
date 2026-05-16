@@ -14,8 +14,8 @@ new class extends Component {
     public bool $editOpen = false;
     public bool $moveOpen = false;
 
-    public string $title = '';
-    public string $description = '';
+  public ?string $title = '';
+public ?string $description = '';
     public string $priority = 'normal';
     public string $deadlineAt = '';
 

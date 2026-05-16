@@ -10,11 +10,17 @@
 
         init() {
             if (!localStorage.getItem(this.guideKey)) {
-                setTimeout(() => this.open = true, 350);
+                setTimeout(() => {
+                    this.open = true;
+                }, 350);
             }
 
             window.addEventListener('open-guide', () => {
                 this.open = true;
+            });
+
+            window.addEventListener('close-guide', (event) => {
+                this.close(event.detail?.save ?? true);
             });
 
             this.$watch('open', value => {

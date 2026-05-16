@@ -29,7 +29,10 @@ return [
 
     'staff_forms' => [
         'chat_id' => env('TELEGRAM_CHAT_ID_STAFF_FORMS'),
-        'thread_id' => env('TELEGRAM_THREAD_ID_STAFF_FORMS'),
+        
+         'salary_thread_id' => env('STAFF_FORMS_SALARY_THREAD_ID'),
+    'schedule_thread_id' => env('STAFF_FORMS_SCHEDULE_THREAD_ID'),
+    'feedback_thread_id' => env('STAFF_FORMS_FEEDBACK_THREAD_ID'),
     ],
 
     'telegram' => [

@@ -20,6 +20,7 @@ return new class extends Migration
             $table->string('slug')->nullable();
 
             $table->string('color')->nullable();
+
             $table->unsignedInteger('sort_order')->default(0);
 
             $table->boolean('is_done_column')->default(false);

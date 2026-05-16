@@ -26,6 +26,8 @@ return new class extends Migration
             $table->string('icon')->nullable();
 
             $table->timestamps();
+
+            $table->index(['status']);
         });
 
         Schema::create('task_room_user', function (Blueprint $table) {

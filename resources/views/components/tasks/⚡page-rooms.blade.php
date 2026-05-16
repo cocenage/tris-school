@@ -1,317 +1,101 @@
 <?php
 
-use App\Models\Task;
-use App\Models\TaskBoardColumn;
-use App\Models\TaskChecklistItem;
-use App\Models\TaskComment;
-use App\Services\Tasks\TaskTelegramNotificationService;
+use App\Models\TaskRoom;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
 
 new class extends Component {
-    public Task $task;
+    public bool $createRoomOpen = false;
 
-    public bool $editOpen = false;
-    public bool $moveOpen = false;
+    public ?string $title = '';
+    public ?string $description = '';
 
-    public string $title = '';
-    public string $description = '';
-    public string $priority = 'normal';
-    public string $deadlineAt = '';
-
-    public array $assigneeIds = [];
-
-    public string $newComment = '';
-    public string $newChecklistItem = '';
-
-    public function mount(Task $task): void
+    public function getRoomsProperty()
     {
-        $this->task = $task->load([
-            'room.users',
-            'board.columns',
-            'column',
-            'assignees',
-            'assignee',
-            'creator',
-            'comments.user',
-            'checklistItems',
-        ]);
+        $user = Auth::user();
 
-        abort_unless($this->canViewTask(), 403);
+        return TaskRoom::query()
+            ->where(function ($query) use ($user) {
+                if ($this->isTaskAdmin($user)) {
+                    return;
+                }
 
-        $this->fillForm();
+                $query->whereHas('users', fn ($q) => $q->where('users.id', $user->id));
+            })
+            ->withCount([
+                'users',
+                'boards',
+                'tasks as active_tasks_count' => fn ($query) => $query
+                    ->whereNotIn('status', ['done', 'cancelled']),
+
+                'tasks as overdue_tasks_count' => fn ($query) => $query
+                    ->whereNotIn('status', ['done', 'cancelled'])
+                    ->whereNotNull('deadline_at')
+                    ->where('deadline_at', '<', now()),
+            ])
+            ->orderByRaw("status = 'archived'")
+            ->orderBy('title')
+            ->get();
     }
 
-    public function fillForm(): void
+    public function openCreateRoom(): void
     {
-        $this->title = $this->task->title;
-        $this->description = $this->task->description ?? '';
-        $this->priority = $this->task->priority;
-        $this->deadlineAt = $this->task->deadline_at?->format('Y-m-d\TH:i') ?? '';
-
-        $this->assigneeIds = $this->task->assignees->pluck('id')->toArray();
-
-        if (empty($this->assigneeIds) && $this->task->assigned_to) {
-            $this->assigneeIds = [$this->task->assigned_to];
-        }
+        $this->createRoomOpen = true;
     }
 
-    public function refreshTask(): void
+public function getCanCreateRoomsProperty(): bool
+{
+    return $this->isTaskAdmin(Auth::user());
+}
+
+    public function closeCreateRoom(): void
     {
-        $this->task->refresh()->load([
-            'room.users',
-            'board.columns',
-            'column',
-            'assignees',
-            'assignee',
-            'creator',
-            'comments.user',
-            'checklistItems',
-        ]);
+        $this->createRoomOpen = false;
+
+        $this->title = '';
+        $this->description = '';
+
+        $this->resetValidation();
     }
 
-    public function getMembersProperty()
+    public function createRoom(): void
     {
-        return $this->task->room
-            ?->users()
-            ->orderBy('name')
-            ->get() ?? collect();
-    }
-
-    public function getColumnsProperty()
-    {
-        return $this->task->board
-            ?->columns()
-            ->orderBy('sort_order')
-            ->get() ?? collect();
-    }
-
-    public function assigneeNames(): string
-    {
-        if ($this->task->assignees->isNotEmpty()) {
-            return $this->task->assignees->pluck('name')->join(', ');
-        }
-
-        return $this->task->assignee?->name ?? 'Не назначены';
-    }
-
-    public function save(TaskTelegramNotificationService $telegram): void
-    {
-        abort_unless($this->canManageTask(), 403);
-
         $this->validate([
             'title' => ['required', 'string', 'max:255'],
-            'description' => ['nullable', 'string', 'max:2000'],
-            'priority' => ['required', 'in:low,normal,high,urgent'],
-            'assigneeIds' => ['array'],
-            'assigneeIds.*' => ['exists:users,id'],
-            'deadlineAt' => ['nullable', 'date'],
+            'description' => ['nullable', 'string', 'max:1000'],
+        ], [
+            'title.required' => 'Напиши название пространства.',
+            'title.max' => 'Название слишком длинное.',
+            'description.max' => 'Описание слишком длинное.',
         ]);
 
-        foreach ($this->assigneeIds as $userId) {
-            abort_unless(
-                $this->task->room->users()->where('users.id', $userId)->exists(),
-                422
-            );
-        }
-
-        $oldDeadline = $this->task->deadline_at?->format('Y-m-d H:i:s');
-        $oldAssigneeIds = $this->task->assignees()->pluck('users.id')->sort()->values()->all();
-
-        $this->task->update([
-            'title' => $this->title,
-            'description' => $this->description ?: null,
-            'priority' => $this->priority,
-            'assigned_to' => $this->assigneeIds[0] ?? null,
-            'deadline_at' => $this->deadlineAt ?: null,
+        $room = TaskRoom::create([
+            'created_by' => Auth::id(),
+            'title' => trim((string) $this->title),
+            'description' => trim((string) $this->description) !== ''
+                ? trim((string) $this->description)
+                : null,
+            'status' => 'active',
+            'color' => '#F6F6F6',
         ]);
 
-        $this->task->assignees()->sync($this->assigneeIds);
-
-        $this->refreshTask();
-
-        $newDeadline = $this->task->deadline_at?->format('Y-m-d H:i:s');
-        $newAssigneeIds = $this->task->assignees()->pluck('users.id')->sort()->values()->all();
-
-        if ($oldDeadline !== $newDeadline) {
-            $telegram->notifyDeadlineChanged($this->task);
-        }
-
-        if ($oldAssigneeIds !== $newAssigneeIds) {
-            $telegram->notifyTaskAssignees($this->task);
-        }
-
-        $this->editOpen = false;
-    }
-
-    public function moveToColumn(
-        int $columnId,
-        TaskTelegramNotificationService $telegram,
-    ): void {
-        abort_unless($this->canManageTask(), 403);
-
-        $column = TaskBoardColumn::query()
-            ->where('task_board_id', $this->task->task_board_id)
-            ->findOrFail($columnId);
-
-        $this->task->moveToColumn($column);
-
-        $this->refreshTask();
-
-        $telegram->notifyTaskMoved($this->task, $column->title);
-
-        $this->moveOpen = false;
-    }
-
-    public function addChecklistItem(): void
-    {
-        abort_unless($this->canManageTask(), 403);
-
-        $this->validate([
-            'newChecklistItem' => ['required', 'string', 'max:255'],
+        $room->users()->syncWithoutDetaching([
+            Auth::id() => ['role' => 'owner'],
         ]);
 
-        TaskChecklistItem::create([
-            'task_id' => $this->task->id,
-            'title' => $this->newChecklistItem,
-            'sort_order' => $this->task->checklistItems()->max('sort_order') + 10,
-        ]);
+        $this->title = '';
+        $this->description = '';
+        $this->createRoomOpen = false;
 
-        $this->newChecklistItem = '';
-
-        $this->refreshTask();
-    }
-
-    public function toggleChecklistItem(int $itemId): void
-    {
-        abort_unless($this->canManageTask(), 403);
-
-        $item = TaskChecklistItem::query()
-            ->where('task_id', $this->task->id)
-            ->findOrFail($itemId);
-
-        $item->toggleDone(Auth::id());
-
-        $this->refreshTask();
-    }
-
-    public function deleteChecklistItem(int $itemId): void
-    {
-        abort_unless($this->canManageTask(), 403);
-
-        TaskChecklistItem::query()
-            ->where('task_id', $this->task->id)
-            ->where('id', $itemId)
-            ->delete();
-
-        $this->refreshTask();
-    }
-
-    public function addComment(TaskTelegramNotificationService $telegram): void
-    {
-        $this->validate([
-            'newComment' => ['required', 'string', 'max:2000'],
-        ]);
-
-        $comment = $this->newComment;
-
-        TaskComment::create([
-            'task_id' => $this->task->id,
-            'user_id' => Auth::id(),
-            'body' => $comment,
-        ]);
-
-        $this->newComment = '';
-
-        $this->refreshTask();
-
-        $telegram->notifyNewComment(
-            $this->task,
-            Auth::user(),
-            $comment,
-        );
-    }
-
-    public function markDone(): void
-    {
-        abort_unless($this->canManageTask(), 403);
-
-        $this->task->markAsDone();
-
-        $this->refreshTask();
-    }
-
-    public function checklistPercent(): int
-    {
-        $total = $this->task->checklistItems->count();
-
-        if ($total === 0) {
-            return 0;
-        }
-
-        $done = $this->task->checklistItems->where('is_done', true)->count();
-
-        return (int) round(($done / $total) * 100);
-    }
-
-    public function pageColor(): string
-    {
-        if ($this->task->status === 'overdue' || $this->task->isOverdue()) {
-            return '#FFE1E1';
-        }
-
-        if ($this->task->priority === 'urgent') {
-            return '#FFE8C7';
-        }
-
-        if ($this->task->status === 'done') {
-            return '#E5F7EB';
-        }
-
-        if ($this->task->status === 'in_progress') {
-            return '#E4F0FF';
-        }
-
-        return '#F6F6F6';
-    }
-
-    protected function canViewTask(): bool
-    {
-        $user = Auth::user();
-
-        if ($this->isTaskAdmin($user)) {
-            return true;
-        }
-
-        return $this->task->assigned_to === $user->id
-            || $this->task->assignees()->where('users.id', $user->id)->exists()
-            || $this->task->room?->users()->where('users.id', $user->id)->exists();
-    }
-
-    protected function canManageTask(): bool
-    {
-        $user = Auth::user();
-
-        if ($this->isTaskAdmin($user)) {
-            return true;
-        }
-
-        if ($this->task->assigned_to === $user->id) {
-            return true;
-        }
-
-        if ($this->task->assignees()->where('users.id', $user->id)->exists()) {
-            return true;
-        }
-
-        return $this->task->room?->users()
-            ->where('users.id', $user->id)
-            ->wherePivotIn('role', ['owner', 'manager'])
-            ->exists() ?? false;
+        $this->redirectRoute('page-tasks.room', $room, navigate: true);
     }
 
     protected function isTaskAdmin($user): bool
     {
+        if (! $user) {
+            return false;
+        }
+
         if (method_exists($user, 'canManageTasks')) {
             return $user->canManageTasks();
         }
@@ -331,286 +115,237 @@ new class extends Component {
             <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2.4]" />
         </button>
 
-        <span class="text-[18px] leading-none">Задача</span>
+        <span class="text-[18px] leading-none">
+            Пространства
+        </span>
 
         <button
             type="button"
-            wire:click="$set('editOpen', true)"
+            x-data
+            @click="$dispatch('open-create-room')"
             class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full bg-[#111111] text-white"
         >
-            <x-heroicon-o-pencil class="h-[18px] w-[18px] stroke-[2.4]" />
+            <x-heroicon-o-plus class="h-[20px] w-[20px] stroke-[2.4]" />
         </button>
     </div>
 </x-slot:header>
 
-<div class="h-full w-full overflow-hidden">
+<div
+    x-data
+    x-on:open-create-room.window="$wire.call('openCreateRoom')"
+    class="h-full w-full overflow-hidden"
+>
     <div class="h-full overflow-y-auto rounded-t-[40px] bg-white px-[15px] pt-[18px] pb-[120px]">
 
-        <div class="rounded-[34px] p-[18px]" style="background: {{ $this->pageColor() }};">
-            <div class="mb-[12px] flex flex-wrap gap-[6px]">
-                <span class="rounded-full bg-white/70 px-[10px] py-[6px] text-[12px] leading-none">
-                    {{ $task->column?->title ?? $task->displayStatus() }}
-                </span>
+        <div class="mb-[14px]">
+            <p class="text-[30px] font-semibold leading-none">
+                Пространства
+            </p>
 
-                <span class="rounded-full bg-white/70 px-[10px] py-[6px] text-[12px] leading-none">
-                    {{ $task->displayPriority() }}
-                </span>
+            <p class="mt-[8px] text-[14px] leading-[1.25] text-black/45">
+                Пространство — это место, где собраны люди, рабочие доски и задачи.
+            </p>
+        </div>
 
-                @if ($task->deadline_at)
-                    <span class="rounded-full bg-white/70 px-[10px] py-[6px] text-[12px] leading-none">
-                        {{ $task->deadline_at->format('d.m H:i') }}
-                    </span>
-                @endif
-            </div>
+        <div class="mb-[14px] rounded-[30px] bg-[#F6F6F6] p-[15px]">
+            <div class="flex items-start justify-between gap-[12px]">
+                <div>
+                    <p class="text-[17px] font-semibold leading-none">
+                        Как начать
+                    </p>
 
-            <h1 class="text-[28px] font-semibold leading-[1.05]">
-                {{ $task->title }}
-            </h1>
-
-            @if ($task->description)
-                <p class="mt-[14px] text-[15px] leading-[1.35] text-black/70">
-                    {{ $task->description }}
-                </p>
-            @endif
-
-            <div class="mt-[16px] grid grid-cols-2 gap-[8px]">
-                <div class="rounded-[22px] bg-white/70 p-[12px]">
-                    <p class="text-[12px] text-black/40">Исполнители</p>
-                    <p class="mt-[5px] line-clamp-2 text-[14px] leading-[1.2]">
-                        {{ $this->assigneeNames() }}
+                    <p class="mt-[7px] text-[13px] leading-[1.25] text-black/45">
+                        Создай пространство, добавь участников, потом создай доску и выдавай задачи.
                     </p>
                 </div>
 
-                <div class="rounded-[22px] bg-white/70 p-[12px]">
-                    <p class="text-[12px] text-black/40">Доска</p>
-                    <p class="mt-[5px] truncate text-[14px] leading-none">
-                        {{ $task->board?->title ?? 'Без доски' }}
-                    </p>
+                <div class="flex h-[38px] min-w-[38px] items-center justify-center rounded-full bg-white">
+                    <x-heroicon-o-light-bulb class="h-[19px] w-[19px]" />
                 </div>
             </div>
 
-            <div class="mt-[12px] flex flex-wrap gap-[8px]">
-                <button
-                    type="button"
-                    wire:click="$set('moveOpen', true)"
-                    class="h-[42px] rounded-full bg-white px-[15px] text-[14px]"
-                >
-                    Переместить
-                </button>
+            <div class="mt-[13px] grid grid-cols-3 gap-[7px]">
+                <div class="rounded-[20px] bg-white p-[10px]">
+                    <p class="text-[17px] font-semibold leading-none">1</p>
+                    <p class="mt-[7px] text-[12px] leading-[1.15] text-black/55">
+                        Пространство
+                    </p>
+                </div>
 
-                @if ($task->status !== 'done')
-                    <button
-                        type="button"
-                        wire:click="markDone"
-                        class="h-[42px] rounded-full bg-[#111111] px-[15px] text-[14px] text-white"
-                    >
-                        Готово
-                    </button>
-                @endif
+                <div class="rounded-[20px] bg-white p-[10px]">
+                    <p class="text-[17px] font-semibold leading-none">2</p>
+                    <p class="mt-[7px] text-[12px] leading-[1.15] text-black/55">
+                        Участники
+                    </p>
+                </div>
+
+                <div class="rounded-[20px] bg-white p-[10px]">
+                    <p class="text-[17px] font-semibold leading-none">3</p>
+                    <p class="mt-[7px] text-[12px] leading-[1.15] text-black/55">
+                        Доска
+                    </p>
+                </div>
             </div>
         </div>
 
-        <section class="mt-[14px] rounded-[30px] bg-[#F6F6F6] p-[15px]">
-            <div class="mb-[12px] flex items-center justify-between">
-                <div>
-                    <p class="text-[21px] font-semibold leading-none">Чеклист</p>
-                    <p class="mt-[5px] text-[13px] text-black/40">
-                        {{ $task->checklistProgress() }}
-                    </p>
-                </div>
+        <div class="space-y-[9px]">
+            @forelse ($this->rooms as $room)
+                <a
+                    href="{{ route('page-tasks.room', $room) }}"
+                    class="block rounded-[30px] bg-[#F6F6F6] p-[15px] active:scale-[0.99] transition"
+                >
+                    <div class="flex items-start justify-between gap-[12px]">
+                        <div class="min-w-0">
+                            <div class="flex items-center gap-[7px]">
+                                <p class="truncate text-[19px] font-semibold leading-none">
+                                    {{ $room->title }}
+                                </p>
 
-                @if ($task->checklistItems->count() > 0)
-                    <span class="rounded-full bg-white px-[10px] py-[6px] text-[12px] leading-none">
-                        {{ $this->checklistPercent() }}%
-                    </span>
-                @endif
-            </div>
+                                @if ($room->status === 'archived')
+                                    <span class="shrink-0 rounded-full bg-white px-[8px] py-[4px] text-[11px] leading-none text-black/45">
+                                        архив
+                                    </span>
+                                @endif
+                            </div>
 
-            <div class="space-y-[6px]">
-                @foreach ($task->checklistItems as $item)
-                    <div class="flex items-center gap-[8px] rounded-[20px] bg-white p-[10px]">
-                        <button
-                            type="button"
-                            wire:click="toggleChecklistItem({{ $item->id }})"
-                            class="flex h-[28px] min-w-[28px] items-center justify-center rounded-full {{ $item->is_done ? 'bg-[#111111] text-white' : 'bg-[#EFEFEF]' }}"
-                        >
-                            @if ($item->is_done)
-                                ✓
+                            @if ($room->description)
+                                <p class="mt-[8px] line-clamp-2 text-[13px] leading-[1.25] text-black/45">
+                                    {{ $room->description }}
+                                </p>
+                            @else
+                                <p class="mt-[8px] text-[13px] leading-[1.25] text-black/35">
+                                    Без описания
+                                </p>
                             @endif
-                        </button>
+                        </div>
 
-                        <p class="flex-1 text-[14px] leading-[1.2] {{ $item->is_done ? 'text-black/35 line-through' : '' }}">
-                            {{ $item->title }}
-                        </p>
-
-                        <button
-                            type="button"
-                            wire:click="deleteChecklistItem({{ $item->id }})"
-                            class="text-[12px] text-black/30"
-                        >
-                            удалить
-                        </button>
+                        <div class="flex h-[36px] min-w-[36px] items-center justify-center rounded-full bg-white">
+                            <x-heroicon-o-chevron-right class="h-[18px] w-[18px] text-black/35" />
+                        </div>
                     </div>
-                @endforeach
-            </div>
 
-            <div class="mt-[10px] flex gap-[8px]">
-                <input
-                    type="text"
-                    wire:model="newChecklistItem"
-                    placeholder="Добавить пункт"
-                    class="h-[44px] min-w-0 flex-1 rounded-full bg-white px-[14px] text-[14px]"
-                >
+                    <div class="mt-[13px] flex flex-wrap gap-[6px]">
+                        <span class="rounded-full bg-white px-[9px] py-[5px] text-[12px] leading-none">
+                            {{ $room->users_count }} людей
+                        </span>
 
-                <button
-                    type="button"
-                    wire:click="addChecklistItem"
-                    class="flex h-[44px] min-w-[44px] items-center justify-center rounded-full bg-[#111111] text-white"
-                >
-                    +
-                </button>
-            </div>
-        </section>
+                        <span class="rounded-full bg-white px-[9px] py-[5px] text-[12px] leading-none">
+                            {{ $room->boards_count }} досок
+                        </span>
 
-        <section class="mt-[14px] rounded-[30px] bg-[#F6F6F6] p-[15px]">
-            <p class="mb-[7px] text-[21px] font-semibold leading-none">
-                Обсуждение
-            </p>
+                        <span class="rounded-full bg-white px-[9px] py-[5px] text-[12px] leading-none">
+                            {{ $room->active_tasks_count }} задач
+                        </span>
 
-            <p class="mb-[12px] text-[13px] leading-[1.25] text-black/40">
-                Все вопросы по задаче лучше писать здесь, чтобы история не терялась в Telegram.
-            </p>
-
-            <div class="space-y-[8px]">
-                @forelse ($task->comments as $comment)
-                    <div class="rounded-[22px] bg-white p-[12px]">
-                        <div class="mb-[7px] flex items-center justify-between gap-[10px]">
-                            <p class="truncate text-[13px] font-medium leading-none">
-                                {{ $comment->user?->name ?? 'Пользователь' }}
+                        @if ($room->overdue_tasks_count > 0)
+                            <span class="rounded-full bg-[#FFE1E1] px-[9px] py-[5px] text-[12px] leading-none">
+                                {{ $room->overdue_tasks_count }} горит
+                            </span>
+                        @endif
+                    </div>
+                </a>
+            @empty
+                <div class="rounded-[30px] bg-[#F6F6F6] p-[16px]">
+                    <div class="flex items-start justify-between gap-[12px]">
+                        <div>
+                            <p class="text-[17px] font-semibold leading-none">
+                                Пространств пока нет
                             </p>
 
-                            <p class="shrink-0 text-[11px] text-black/30">
-                                {{ $comment->created_at->format('d.m H:i') }}
+                            <p class="mt-[7px] text-[13px] leading-[1.25] text-black/45">
+                                Создай пространство для объекта, отдела или процесса. Потом добавь туда людей и доску.
                             </p>
                         </div>
 
-                        <p class="text-[14px] leading-[1.35] text-black/75">
-                            {{ $comment->body }}
-                        </p>
+                        <div class="flex h-[38px] min-w-[38px] items-center justify-center rounded-full bg-white">
+                            <x-heroicon-o-folder-plus class="h-[20px] w-[20px]" />
+                        </div>
                     </div>
-                @empty
-                    <p class="rounded-[22px] bg-white p-[12px] text-[14px] text-black/40">
-                        Комментариев пока нет
-                    </p>
-                @endforelse
-            </div>
 
-            <div class="mt-[10px] space-y-[8px]">
-                <textarea
-                    wire:model="newComment"
-                    placeholder="Написать комментарий"
-                    rows="3"
-                    class="w-full rounded-[22px] bg-white px-[14px] py-[12px] text-[14px]"
-                ></textarea>
-
-                <x-ui.button wire:click="addComment">
-                    Отправить
-                </x-ui.button>
-            </div>
-        </section>
+                    <x-ui.button
+                        type="button"
+                        wire:click="openCreateRoom"
+                        class="mt-[14px]"
+                    >
+                        Создать пространство
+                    </x-ui.button>
+                </div>
+            @endforelse
+        </div>
     </div>
 
-    <x-ui.bottom-sheet model="moveOpen">
+    <x-ui.bottom-sheet model="createRoomOpen">
         <div class="p-[20px]">
-            <p class="text-[24px] font-semibold leading-none">
-                Переместить
-            </p>
+            <div class="flex items-start justify-between gap-[14px]">
+                <div>
+                    <p class="text-[24px] font-semibold leading-none">
+                        Новое пространство
+                    </p>
 
-            <div class="mt-[16px] space-y-[8px]">
-                @foreach ($this->columns as $column)
-                    <button
-                        type="button"
-                        wire:click="moveToColumn({{ $column->id }})"
-                        class="flex h-[54px] w-full items-center justify-between rounded-[22px] bg-[#F6F6F6] px-[15px] text-left"
-                    >
-                        <span>{{ $column->title }}</span>
+                    <p class="mt-[7px] text-[14px] leading-[1.25] text-black/45">
+                        Например: объект, отдел, команда, расходники, финансы или обучение.
+                    </p>
+                </div>
 
-                        @if ($task->task_board_column_id === $column->id)
-                            <span class="text-[13px] text-black/35">сейчас</span>
-                        @endif
-                    </button>
-                @endforeach
+                <button
+                    type="button"
+                    wire:click="closeCreateRoom"
+                    class="flex h-[36px] min-w-[36px] items-center justify-center rounded-full bg-[#F6F6F6]"
+                >
+                    <x-heroicon-o-x-mark class="h-[18px] w-[18px]" />
+                </button>
             </div>
-        </div>
-    </x-ui.bottom-sheet>
-
-    <x-ui.bottom-sheet model="editOpen">
-        <div class="p-[20px]">
-            <p class="text-[24px] font-semibold leading-none">
-                Редактировать
-            </p>
 
             <div class="mt-[16px] space-y-[10px]">
-                <input
-                    type="text"
-                    wire:model="title"
-                    placeholder="Название"
-                    class="h-[50px] w-full rounded-[20px] bg-[#F6F6F6] px-[14px]"
-                >
-
-                <textarea
-                    wire:model="description"
-                    placeholder="Описание"
-                    rows="3"
-                    class="w-full rounded-[20px] bg-[#F6F6F6] px-[14px] py-[12px]"
-                ></textarea>
-
-                <div class="rounded-[22px] bg-[#F6F6F6] p-[12px]">
-                    <div class="mb-[10px]">
-                        <p class="text-[13px] font-medium leading-none">
-                            Исполнители
-                        </p>
-
-                        <p class="mt-[5px] text-[12px] leading-[1.2] text-black/40">
-                            Тут отображаются только участники пространства
-                        </p>
-                    </div>
-
-                    <div class="max-h-[190px] space-y-[6px] overflow-y-auto">
-                        @foreach ($this->members as $user)
-                            <label class="flex items-center gap-[10px] rounded-[18px] bg-white px-[12px] py-[10px]">
-                                <input
-                                    type="checkbox"
-                                    wire:model="assigneeIds"
-                                    value="{{ $user->id }}"
-                                    class="h-[17px] w-[17px]"
-                                >
-
-                                <span class="text-[14px]">
-                                    {{ $user->name }}
-                                </span>
-                            </label>
-                        @endforeach
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-[8px]">
-                    <select wire:model="priority" class="h-[50px] w-full rounded-[20px] bg-[#F6F6F6] px-[14px]">
-                        <option value="low">Низкий</option>
-                        <option value="normal">Обычный</option>
-                        <option value="high">Высокий</option>
-                        <option value="urgent">Срочный</option>
-                    </select>
-
+                <div>
                     <input
-                        type="datetime-local"
-                        wire:model="deadlineAt"
-                        class="h-[50px] w-full rounded-[20px] bg-[#F6F6F6] px-[10px] text-[13px]"
+                        type="text"
+                        wire:model.live="title"
+                        placeholder="Название пространства"
+                        class="h-[50px] w-full rounded-[20px] bg-[#F6F6F6] px-[14px] outline-none placeholder:text-black/30 focus:ring-2 focus:ring-black/10"
                     >
+
+                    @error('title')
+                        <p class="mt-[6px] px-[4px] text-[12px] text-red-500">
+                            {{ $message }}
+                        </p>
+                    @enderror
                 </div>
 
-                <x-ui.button wire:click="save">
-                    Сохранить
+                <div>
+                    <textarea
+                        wire:model.live="description"
+                        placeholder="Описание"
+                        rows="4"
+                        class="w-full resize-none rounded-[20px] bg-[#F6F6F6] px-[14px] py-[12px] outline-none placeholder:text-black/30 focus:ring-2 focus:ring-black/10"
+                    ></textarea>
+
+                    @error('description')
+                        <p class="mt-[6px] px-[4px] text-[12px] text-red-500">
+                            {{ $message }}
+                        </p>
+                    @enderror
+                </div>
+
+                <div class="rounded-[22px] bg-[#EEF5FF] p-[12px]">
+                    <p class="text-[13px] leading-[1.25] text-[#213259]">
+                        После создания ты автоматически станешь владельцем пространства. Участников добавим на следующем экране.
+                    </p>
+                </div>
+
+                <x-ui.button
+                    type="button"
+                    wire:click="createRoom"
+                    wire:loading.attr="disabled"
+                    wire:target="createRoom"
+                >
+                    <span wire:loading.remove wire:target="createRoom">
+                        Создать пространство
+                    </span>
+
+                    <span wire:loading wire:target="createRoom">
+                        Создаем...
+                    </span>
                 </x-ui.button>
             </div>
         </div>

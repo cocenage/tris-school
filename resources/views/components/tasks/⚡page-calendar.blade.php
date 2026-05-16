@@ -748,7 +748,11 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
             />
         </button>
         <span class="flex items-center justify-center text-[18px] leading-none">
-            Календарь
+    
+
+                 
+            {{ $month->translatedFormat('F') }}
+ 
         </span>
 
      <button
@@ -1086,8 +1090,7 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                                 $trackGap = 5;
                                 $trackAreaHeight = max(count($week['tracks']), 1) * $trackHeight + max(count($week['tracks']) - 1, 0) * $trackGap;
                             @endphp
-
-                            <div class="{{ $weekIndex > 0 ? 'border-t-[1px] border-black' : '' }} pt-[15px] pb-[15px] bg-[#D9D9D9]/10">
+                            <div class="{{ $weekIndex > 0 ? 'border-t-[1px] border-zinc-300' : '' }} pt-[15px] pb-[15px] bg-[#D9D9D9]/10">
                                 <div class="grid grid-cols-7 gap-0 mb-[15px]">
                                     @foreach ($week['days'] as $day)
                                         @php
@@ -1177,14 +1180,12 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                     </div>
                 @endforeach
             </div>
-            <span class="text-[32px] p-[20px]">
-            {{ $month->translatedFormat('F') }}
-        </span>
+      
         </div>
           
     </div>
 
-    <x-ui.bottom-sheet model="sheetOpen">
+<x-ui.bottom-sheet model="sheetOpen">
     <div class="h-[90vh] overflow-hidden rounded-[28px] flex flex-col">
         <div class="shrink-0 pt-[20px]">
             <div
@@ -1254,61 +1255,58 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
 
         <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain px-[14px] pb-[10px] pt-[10px]">
             <div class="space-y-[8px]">
-                @forelse ($this->selectedDayEvents as $event)
-                   @if (($event['source'] ?? null) === 'task')
-    <a
-        href="{{ $event['url'] }}"
+             @forelse ($this->selectedDayEvents as $event)
+    @php
+        $isTask = ($event['source'] ?? null) === 'task';
+        $tag = $isTask ? 'a' : 'button';
+    @endphp
+
+    <{{ $tag }}
+        @if($isTask)
+            href="{{ $event['url'] }}"
+        @else
+            type="button"
+        @endif
         class="block w-full rounded-[30px] px-[15px] py-[15px] text-left"
         style="{{ $event['style'] }}"
     >
-@else
-    <button
-        type="button"
-        class="w-full rounded-[30px] px-[15px] py-[15px] text-left"
-        style="{{ $event['style'] }}"
-    >
-@endif
-@if (($event['source'] ?? null) === 'task')
-    </a>
-@else
-    </button>
-@endif
-@if (($event['source'] ?? null) === 'task')
-    <div class="mt-[10px] flex flex-wrap gap-[6px]">
-        <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
-            {{ $event['meta']['status_label'] ?? 'Задача' }}
-        </span>
+        <p class="text-[12px] font-[500] leading-none text-black/65 mb-[6px]">
+            {{ $this->formatEventRange($event) }}
+        </p>
 
-        <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
-            до {{ $event['meta']['deadline_time'] ?? '' }}
-        </span>
+        <p class="text-[16px] leading-[1.1] mb-[4px]">
+            {{ $event['title'] }}
+        </p>
 
-        <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
-            {{ $event['meta']['priority_label'] ?? 'Обычный' }}
-        </span>
+        @if (filled($event['description']))
+            <p class="text-[14px] leading-[1.25] text-black">
+                {{ $event['description'] }}
+            </p>
+        @endif
+
+        @if ($isTask)
+            <div class="mt-[10px] flex flex-wrap gap-[6px]">
+                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
+                    {{ $event['meta']['status_label'] ?? 'Задача' }}
+                </span>
+
+                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
+                    до {{ $event['meta']['deadline_time'] ?? '' }}
+                </span>
+
+                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
+                    {{ $event['meta']['priority_label'] ?? 'Обычный' }}
+                </span>
+            </div>
+        @endif
+    </{{ $tag }}>
+@empty
+    <div class="rounded-[30px] bg-white px-[15px] py-[15px]">
+        <p class="text-[16px] text-[#6F6F6F]">
+            На эту дату событий нет
+        </p>
     </div>
-@endif
-                        <p class="text-[12px] font-[500] leading-none text-black/65 mb-[6px]">
-                            {{ $this->formatEventRange($event) }}
-                        </p>
-
-                        <p class="text-[16px] leading-[1.1] mb-[4px]">
-                            {{ $event['title'] }}
-                        </p>
-
-                        @if (filled($event['description']))
-                            <p class="text-[14px] leading-[1.25] text-black">
-                                {{ $event['description'] }}
-                            </p>
-                        @endif
-                    </button>
-                @empty
-                    <div class="rounded-[30px] bg-white px-[15px] py-[15px]">
-                        <p class="text-[16px] text-[#6F6F6F]">
-                            На эту дату событий нет
-                        </p>
-                    </div>
-                @endforelse
+@endforelse
             </div>
         </div>
     </div>

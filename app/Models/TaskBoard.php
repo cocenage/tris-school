@@ -29,7 +29,8 @@ class TaskBoard extends Model
 
     public function columns(): HasMany
     {
-        return $this->hasMany(TaskBoardColumn::class)->orderBy('sort_order');
+        return $this->hasMany(TaskBoardColumn::class)
+            ->orderBy('sort_order');
     }
 
     public function tasks(): HasMany
@@ -40,10 +41,34 @@ class TaskBoard extends Model
     public function createDefaultColumns(): void
     {
         $columns = [
-            ['title' => 'Новые', 'slug' => 'new', 'color' => '#F4F4F4', 'sort_order' => 10],
-            ['title' => 'В работе', 'slug' => 'in_progress', 'color' => '#DDEBFF', 'sort_order' => 20],
-            ['title' => 'Проверка', 'slug' => 'review', 'color' => '#FFEBC2', 'sort_order' => 30],
-            ['title' => 'Готово', 'slug' => 'done', 'color' => '#DDF3E4', 'sort_order' => 40, 'is_done_column' => true],
+            [
+                'title' => 'Новые',
+                'slug' => 'new',
+                'color' => '#F4F4F4',
+                'sort_order' => 10,
+                'is_done_column' => false,
+            ],
+            [
+                'title' => 'В работе',
+                'slug' => 'in_progress',
+                'color' => '#E4F0FF',
+                'sort_order' => 20,
+                'is_done_column' => false,
+            ],
+            [
+                'title' => 'Проверка',
+                'slug' => 'review',
+                'color' => '#FFEBC2',
+                'sort_order' => 30,
+                'is_done_column' => false,
+            ],
+            [
+                'title' => 'Готово',
+                'slug' => 'done',
+                'color' => '#E5F7EB',
+                'sort_order' => 40,
+                'is_done_column' => true,
+            ],
         ];
 
         foreach ($columns as $column) {
@@ -51,5 +76,21 @@ class TaskBoard extends Model
         }
     }
 
-    
+    public function userCanView(User $user): bool
+    {
+        if (method_exists($user, 'canManageTasks') && $user->canManageTasks()) {
+            return true;
+        }
+
+        if (isset($user->role) && in_array($user->role, ['admin', 'supervisor'], true)) {
+            return true;
+        }
+
+        return $this->room?->hasUser($user) ?? false;
+    }
+
+    public function userCanManage(User $user): bool
+    {
+        return $this->room?->userCanManage($user) ?? false;
+    }
 }

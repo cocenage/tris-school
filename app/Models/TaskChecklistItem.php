@@ -33,10 +33,12 @@ class TaskChecklistItem extends Model
 
     public function toggleDone(int $userId): void
     {
+        $nextState = ! $this->is_done;
+
         $this->update([
-            'is_done' => ! $this->is_done,
-            'done_by' => ! $this->is_done ? $userId : null,
-            'done_at' => ! $this->is_done ? now() : null,
+            'is_done' => $nextState,
+            'done_by' => $nextState ? $userId : null,
+            'done_at' => $nextState ? now() : null,
         ]);
     }
 }

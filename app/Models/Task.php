@@ -5,8 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Task extends Model
 {
@@ -59,37 +59,50 @@ class Task extends Model
         return $this->belongsTo(User::class, 'assigned_to');
     }
 
+    public function assignees(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class, 'task_assignees')
+            ->withTimestamps();
+    }
+
     public function comments(): HasMany
     {
-        return $this->hasMany(TaskComment::class)->latest();
+        return $this->hasMany(TaskComment::class)
+            ->latest();
     }
 
     public function checklistItems(): HasMany
     {
-        return $this->hasMany(TaskChecklistItem::class)->orderBy('sort_order');
+        return $this->hasMany(TaskChecklistItem::class)
+            ->orderBy('sort_order');
     }
 
-public function scopeVisibleFor(Builder $query, User $user): Builder
-{
-    if (method_exists($user, 'canManageTasks') && $user->canManageTasks()) {
-        return $query;
+    public function notifications(): HasMany
+    {
+        return $this->hasMany(TaskNotification::class);
     }
 
-    if (isset($user->role) && in_array($user->role, ['admin', 'supervisor'], true)) {
-        return $query;
-    }
+    public function scopeVisibleFor(Builder $query, User $user): Builder
+    {
+        if (method_exists($user, 'canManageTasks') && $user->canManageTasks()) {
+            return $query;
+        }
 
-    return $query->where(function (Builder $query) use ($user) {
-        $query
-            ->where('assigned_to', $user->id)
-            ->orWhereHas('assignees', function (Builder $query) use ($user) {
-                $query->where('users.id', $user->id);
-            })
-            ->orWhereHas('room.users', function (Builder $query) use ($user) {
-                $query->where('users.id', $user->id);
-            });
-    });
-}
+        if (isset($user->role) && in_array($user->role, ['admin', 'supervisor'], true)) {
+            return $query;
+        }
+
+        return $query->where(function (Builder $query) use ($user) {
+            $query
+                ->where('assigned_to', $user->id)
+                ->orWhereHas('assignees', function (Builder $query) use ($user) {
+                    $query->where('users.id', $user->id);
+                })
+                ->orWhereHas('room.users', function (Builder $query) use ($user) {
+                    $query->where('users.id', $user->id);
+                });
+        });
+    }
 
     public function scopeNotClosed(Builder $query): Builder
     {
@@ -140,13 +153,17 @@ public function scopeVisibleFor(Builder $query, User $user): Builder
 
     public function checklistProgress(): string
     {
-        $total = $this->checklistItems->count();
+        $items = $this->relationLoaded('checklistItems')
+            ? $this->checklistItems
+            : $this->checklistItems()->get();
+
+        $total = $items->count();
 
         if ($total === 0) {
             return '0/0';
         }
 
-        $done = $this->checklistItems->where('is_done', true)->count();
+        $done = $items->where('is_done', true)->count();
 
         return "{$done}/{$total}";
     }
@@ -161,6 +178,18 @@ public function scopeVisibleFor(Builder $query, User $user): Builder
             'status' => 'done',
             'task_board_column_id' => $doneColumn?->id ?? $this->task_board_column_id,
             'completed_at' => now(),
+            'cancelled_at' => null,
+        ]);
+    }
+
+    public function markAsOverdue(): void
+    {
+        if ($this->isDone() || $this->isCancelled()) {
+            return;
+        }
+
+        $this->update([
+            'status' => 'overdue',
         ]);
     }
 
@@ -178,12 +207,18 @@ public function scopeVisibleFor(Builder $query, User $user): Builder
             'task_board_column_id' => $column->id,
             'status' => $status,
             'completed_at' => $column->is_done_column ? now() : null,
+            'cancelled_at' => null,
         ]);
     }
 
-    public function assignees(): BelongsToMany
-{
-    return $this->belongsToMany(User::class, 'task_assignees')
-        ->withTimestamps();
-}
+    public function assigneeNames(): string
+    {
+        $this->loadMissing(['assignees', 'assignee']);
+
+        if ($this->assignees->isNotEmpty()) {
+            return $this->assignees->pluck('name')->join(', ');
+        }
+
+        return $this->assignee?->name ?? 'Без исполнителя';
+    }
 }

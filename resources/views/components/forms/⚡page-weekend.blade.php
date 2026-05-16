@@ -798,10 +798,10 @@ public function getFormButtonTextProperty(): string
 
 <button
     type="button"
-    @click="$dispatch('open-guide')"
-    class="group flex h-[40px] min-w-[40px] items-center justify-center rounded-full cursor-pointer bg-[#E1E1E1] text-white backdrop-blur-md transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:bg-[#7D7D7D] hover:scale-[1.04] active:scale-[0.92]"
+    onclick="window.dispatchEvent(new CustomEvent('open-guide', { detail: { reset: true } }))"
+    class="group flex h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-full bg-[#E1E1E1] text-white backdrop-blur-md transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:scale-[1.04] hover:bg-[#7D7D7D] active:scale-[0.92]"
 >
-    <x-heroicon-o-question-mark-circle class="h-[20px] w-[20px] stroke-[2.2] transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.08]" />
+    <x-heroicon-o-question-mark-circle class="h-[20px] w-[20px] stroke-[2.2]" />
 </button>
 
     </div>
@@ -941,10 +941,10 @@ scrollToNextRequired(hasRanges, hasComment) {
                                             $class .= ' cursor-not-allowed';
                                         } elseif (!empty($day['draft_start'])) {
                                             $style .= 'background:#213259;color:#FFFFFF;';
-                                            $class .= ' font-semibold shadow-[0_8px_18px_rgba(33,50,89,0.22)]';
+                                            $class .= ' font-semibold ';
                                         } elseif (!empty($day['selected'])) {
                                             $style .= 'background:#213259;color:#FFFFFF;';
-                                            $class .= ' font-semibold shadow-[0_8px_18px_rgba(33,50,89,0.22)]';
+                                            $class .= ' font-semibold ';
                                         } elseif (!empty($day['inside'])) {
                                             $style .= 'background:#DDE8F5;color:#213259;';
                                         } elseif (!empty($day['preview_inside'])) {
@@ -1145,4 +1145,137 @@ scrollToNextRequired(hasRanges, hasComment) {
         </x-ui.bottom-sheet>
 
     </div>
+
+<x-ui.guide guide-key="day-off-request-guide-v4">
+    <div
+        x-data="{
+            current: 0,
+
+            steps: [
+                {
+                    image: '/images/weekend/1.webp',
+                    title: 'Запрос выходного',
+                    text: 'Выберите даты, укажите причину и отправьте заявку на согласование.',
+                },
+                {
+                        image: '/images/weekend/2.webp',
+                    title: 'Выберите даты',
+                    text: 'Нажмите на дату. Если нужен диапазон, выберите начало и конец периода.',
+                },
+                {
+                             image: '/images/weekend/3.webp',
+                    title: 'Можно несколько периодов',
+                    text: 'Если нужны разные дни, добавьте несколько отдельных дат или диапазонов.',
+                },
+                {
+                             image: '/images/weekend/4.webp',
+                    title: 'Пн и вс выбрать нельзя',
+                    text: 'Понедельник и воскресенье — обязательные рабочие дни. Если нужен выходной, свяжитесь с администратором в пятницу для уточнения.',
+                },
+                  {
+                             image: '/images/weekend/5.webp',
+                    title: 'Добавьте причину',
+                        text: 'Коротко объясните, почему нужен выходной. Так заявку будет проще согласовать.',
+                },
+                {
+                            image: '/images/weekend/6.webp',
+                    title: 'Отправьте заявку',
+                    text: 'После отправки заявка попадёт на рассмотрение, а статус вы можете посмотреть в разделе «Мои заявки».',
+                },
+            ],
+
+            init() {
+                window.addEventListener('open-guide', () => {
+                    this.current = 0;
+                });
+            },
+
+            next() {
+                if (this.current >= this.steps.length - 1) {
+                    window.dispatchEvent(new CustomEvent('close-guide', {
+                        detail: { save: true }
+                    }));
+
+                    return;
+                }
+
+                this.current++;
+            },
+
+            back() {
+                if (this.current > 0) {
+                    this.current--;
+                }
+            },
+        }"
+        class="flex min-h-[80vh] flex-col bg-white"
+    >
+        <div class="flex items-center justify-between px-[20px] pt-[20px]">
+            <div class="flex gap-[6px]">
+                <template x-for="(_, index) in steps" :key="index">
+                    <div
+                        class="h-[5px] rounded-full transition-all duration-300"
+                        :class="index <= current ? 'w-[26px] bg-[#111111]' : 'w-[5px] bg-[#DADADA]'"
+                    ></div>
+                </template>
+            </div>
+
+            <button
+                type="button"
+                onclick="window.dispatchEvent(new CustomEvent('close-guide', { detail: { save: true } }))"
+                class="flex h-[42px] w-[42px] items-center justify-center rounded-full bg-[#F4F4F4] text-[#111111] transition-all duration-300 active:scale-[0.94]"
+            >
+                <x-heroicon-o-x-mark class="h-[20px] w-[20px] stroke-[2.4]" />
+            </button>
+        </div>
+
+        <div class="flex flex-1 flex-col px-[20px] pt-[18px] pb-[8px]">
+            <div class="flex flex-1 flex-col">
+                <div class="relative flex h-[330px] shrink-0 items-center justify-center overflow-hidden rounded-[36px] bg-gradient-to-br from-[#F4F7FB] via-[#EEF4FF] to-[#F7F2EC] p-[18px] ">
+              
+
+                    <img
+                        :src="steps[current].image"
+                        :alt="steps[current].title"
+                        class="relative z-[1] max-h-full max-w-full object-contain "
+                    >
+                </div>
+
+                <div class="min-h-[100px] pt-[18px] text-center">
+                    <h1
+                        class=" leading-[1.05] tracking-[-0.05em] text-[#111111]"
+                        x-text="steps[current].title"
+                    ></h1>
+
+                    <h2
+                        class="mx-auto mt-[8px] max-w-[330px] text-[15px] leading-[1.45] text-black/55"
+                        x-text="steps[current].text"
+                    ></р>
+                </div>
+            </div>
+        </div>
+
+        <div class="px-[20px] pb-[20px]">
+            <div class="grid grid-cols-2 gap-[10px]">
+                <x-ui.button
+                    type="button"
+                    variant="secondary"
+                    @click="back()"
+                    x-bind:class="current === 0 ? 'opacity-0 pointer-events-none' : ''"
+                >
+                    Назад
+                </x-ui.button>
+
+                <x-ui.button
+                    type="button"
+                    variant="primary"
+                    progress="100"
+                    @click="next()"
+                >
+                    <span x-text="current === steps.length - 1 ? 'Понятно' : 'Далее'"></span>
+                </x-ui.button>
+            </div>
+        </div>
+    </div>
+</x-ui.guide>
 </div>

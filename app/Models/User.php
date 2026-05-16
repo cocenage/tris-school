@@ -182,5 +182,8 @@ class User extends Authenticatable implements FilamentUser
         return $this->hasMany(\App\Models\InventoryRequest::class);
     }
 
-
+    public function canManageTasks(): bool
+    {
+        return in_array($this->role, ['admin', 'supervisor'], true);
+    }
 }

@@ -24,9 +24,7 @@ class TasksCheckDeadlinesCommand extends Command
                 foreach ($tasks as $task) {
                     if ($task->deadline_at->isPast()) {
                         if ($task->status !== 'overdue') {
-                            $task->update([
-                                'status' => 'overdue',
-                            ]);
+                            $task->markAsOverdue();
                         }
 
                         $telegram->notifyOverdue($task);
