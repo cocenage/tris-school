@@ -118,6 +118,7 @@ class User extends Authenticatable implements FilamentUser
         if ($this->role === 'admin') {
             return [
                 'workflow',
+                  'tasks',
                 'finance',
                 'holiday',
                 'peak',

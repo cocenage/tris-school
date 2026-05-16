@@ -4,6 +4,7 @@ use App\Http\Controllers\LogoutController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
 use App\Http\Controllers\TelegramWriteAccessController;
+use App\Models\Task;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
@@ -65,11 +66,32 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/applications/feedback', 'forms.page-feedback')->name('page-applications.feedback');
 
     Route::livewire('/profile', 'page-profile')->name('page-profile');
-    Route::livewire('/profile/calendar', 'profile.page-calendar')->name('page-profile.calendar');
     Route::livewire('/profile/checks', 'profile.page-checks')->name('page-profile.checks');
     Route::livewire('/profile/checks/{controlResponse}', 'profile.page-check-result')->name('page-profile.checks.result');
     Route::livewire('/profile/all-checks', 'profile.page-all-checks')->name('page-profile.all-checks');
     Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
+
+  Route::livewire('/tasks', 'tasks.page-tasks')
+        ->name('page-tasks');
+
+    Route::livewire('/tasks/calendar', 'tasks.page-calendar')
+        ->name('page-tasks.calendar');
+
+    Route::livewire('/tasks/rooms', 'tasks.page-rooms')
+        ->name('page-tasks.rooms');
+
+    Route::livewire('/tasks/rooms/{taskRoom}', 'tasks.page-room')
+        ->name('page-tasks.room');
+
+    Route::livewire('/tasks/boards/{taskBoard}', 'tasks.page-board')
+        ->name('page-tasks.board');
+
+    Route::livewire('/tasks/{task}', 'tasks.page-task')
+        ->name('page-tasks.show');
+
+    Route::get('/profile/calendar', function () {
+        return redirect()->route('page-tasks.calendar');
+    })->name('page-profile.calendar');
 });
 
 Route::fallback(function () {

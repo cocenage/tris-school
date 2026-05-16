@@ -74,21 +74,21 @@ new class extends Component {
 
 
 
-        <a href="{{ route('page-profile.calendar') }}"
+        <a href="{{ route('page-tasks') }}"
             class="group flex flex-col items-center justify-center gap-[5px]">
 
             <x-heroicon-s-calendar-days class="w-[20px] h-[20px] transition-all duration-300
-                   {{ request()->routeIs('page-profile*')
+                   {{ request()->routeIs('page-tasks*')
     ? '[&>*]:fill-[url(#nav-gradient)]'
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}" />
 
             <span class="text-[12px] font-medium transition-all duration-300
-                   {{ request()->routeIs('page-profile*')
+                   {{ request()->routeIs('page-tasks*')
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
     : 'text-[#E1E1E1] group-hover:text-[#7D7D7D]'
                 }}">
-                Календарь
+                Задачи
             </span>
         </a>
 

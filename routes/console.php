@@ -10,3 +10,5 @@ Artisan::command('inspire', function () {
 
 Schedule::command('calendar:notify-tomorrow')
     ->dailyAt('10:00');
+
+Schedule::command('tasks:check-deadlines')->everyFifteenMinutes();
