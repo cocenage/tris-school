@@ -8,6 +8,7 @@ use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class ImportOldWeekendRequests extends Command
 {
