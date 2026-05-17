@@ -107,6 +107,3 @@ Route::fallback(function () {
         default => 'landing.page',
     });
 });
-
-Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
-    ->name('telegram.work.webhook');
