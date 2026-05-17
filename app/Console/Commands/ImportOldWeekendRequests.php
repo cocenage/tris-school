@@ -97,7 +97,7 @@ class ImportOldWeekendRequests extends Command
     $freeDates = $dates->filter(function ($date) use ($newUserId) {
         return ! DayOffRequestDay::query()
             ->where('user_id', $newUserId)
-            ->where('date', $date)
+           ->whereDate('date', $date)
             ->exists();
     })->values();
 
@@ -113,29 +113,42 @@ class ImportOldWeekendRequests extends Command
     }
 
     DB::transaction(function () use ($old, $newUserId, $freeDates, &$createdRequests, &$createdDays, &$skippedDays, $dates) {
-        $request = DayOffRequest::query()->create([
-            'user_id' => $newUserId,
-            'reason' => $old->message ?: 'Перенесено со старого сайта',
-            'status' => 'pending',
-            'submitted_at' => $old->created_at,
-            'created_at' => $old->created_at,
-            'updated_at' => $old->updated_at,
-        ]);
+       $request = DayOffRequest::query()->create([
+    'user_id' => $newUserId,
+    'reason' => $old->message ?: 'Перенесено со старого сайта',
+    'status' => 'approved',
+    'submitted_at' => $old->created_at,
+    'reviewed_at' => $old->created_at,
+    'created_at' => $old->created_at,
+    'updated_at' => $old->updated_at,
+]);
 
         $createdRequests++;
 
-        foreach ($freeDates as $date) {
-            DayOffRequestDay::query()->create([
-                'day_off_request_id' => $request->id,
-                'user_id' => $newUserId,
-                'date' => $date,
-                'status' => 'pending',
-                'created_at' => $old->created_at,
-                'updated_at' => $old->updated_at,
-            ]);
+foreach ($freeDates as $date) {
+    $date = Carbon::parse($date)->format('Y-m-d');
 
-            $createdDays++;
-        }
+    $exists = DayOffRequestDay::query()
+        ->where('user_id', $newUserId)
+        ->whereDate('date', $date)
+        ->exists();
+
+    if ($exists) {
+        $skippedDays++;
+        continue;
+    }
+
+   DayOffRequestDay::query()->create([
+    'day_off_request_id' => $request->id,
+    'user_id' => $newUserId,
+    'date' => $date,
+    'status' => 'approved',
+    'created_at' => $old->created_at,
+    'updated_at' => $old->updated_at,
+]);
+
+    $createdDays++;
+}
 
         $skippedDays += $dates->count() - $freeDates->count();
     });
