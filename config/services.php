@@ -55,6 +55,7 @@ return [
         'thread_id_calendar' => env('TELEGRAM_THREAD_ID_CALENDAR'),
 
         'work_webhook_secret' => env('TELEGRAM_WORK_WEBHOOK_SECRET'),
+        'work_allowed_chat_id' => env('TELEGRAM_WORK_ALLOWED_CHAT_ID'),
     ],
 
     'postmark' => [

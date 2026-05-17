@@ -29,6 +29,15 @@ class TelegramWorkMessageService
         $messageId = $message['message_id'] ?? null;
         $chatId = $chat['id'] ?? null;
 
+$allowedChatId = config('services.telegram.work_allowed_chat_id');
+
+if (
+    $allowedChatId &&
+    (string) $chatId !== (string) $allowedChatId
+) {
+    return;
+}
+
         if (!$messageId || !$chatId) {
             return;
         }
