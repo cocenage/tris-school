@@ -15,6 +15,10 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->redirectGuestsTo(fn() => route('landing'));
 
+        $middleware->validateCsrfTokens(except: [
+            'telegram/work-webhook/*',
+        ]);
+
         $middleware->alias([
             'approved' => EnsureUserIsApproved::class,
             'role' => EnsureUserHasRole::class,
