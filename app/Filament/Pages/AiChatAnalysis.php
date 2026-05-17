@@ -4,11 +4,10 @@ namespace App\Filament\Pages;
 
 use App\Models\TelegramWorkMessage;
 use BackedEnum;
-use Carbon\Carbon;
 use Filament\Actions\Action;
+use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Support\Icons\Heroicon;
-use Illuminate\Support\Collection;
 
 class AiChatAnalysis extends Page
 {
@@ -26,6 +25,8 @@ class AiChatAnalysis extends Page
 
     public ?string $result = null;
 
+    public ?string $prompt = null;
+
     public array $messages = [];
 
     public function mount(): void
@@ -35,76 +36,126 @@ class AiChatAnalysis extends Page
         $this->loadMessages();
     }
 
-   public function loadMessages(): void
-{
-    $this->messages = TelegramWorkMessage::query()
-        ->whereDate('sent_at', $this->date)
-        ->orderBy('sent_at')
-        ->get([
-            'chat_title',
-            'thread_id',
-            'username',
-            'first_name',
-            'last_name',
-            'text',
-            'sent_at',
-        ])
-        ->map(fn (TelegramWorkMessage $message) => [
-            'time' => $message->sent_at?->format('H:i'),
-            'thread_id' => $message->thread_id,
-            'author' => $message->username
-                ?: trim(($message->first_name ?? '') . ' ' . ($message->last_name ?? '')),
-            'text' => $message->text,
-        ])
-        ->toArray();
-
-    $this->result = null;
-}
-
-    public function analyze(): void
+    public function loadMessages(): void
     {
-        $messages = collect($this->messages);
+        $chatId = (string) config(
+            'services.telegram.work_allowed_chat_id'
+        );
 
-        if ($messages->isEmpty()) {
-            $this->result = 'За выбранный день сообщений нет.';
+        $this->messages = TelegramWorkMessage::query()
+            ->where('chat_id', $chatId)
+            ->whereDate('created_at', $this->date)
+            ->orderBy('created_at')
+            ->get([
+                'thread_id',
+                'username',
+                'first_name',
+                'last_name',
+                'text',
+                'created_at',
+            ])
+            ->map(function ($message) {
+
+                return [
+
+                    'time' => $message->created_at?->format('H:i'),
+
+                    'thread' => $message->thread_id,
+
+                    'author' =>
+                        $message->username
+                        ?: trim(
+                            ($message->first_name ?? '')
+                            .' '.
+                            ($message->last_name ?? '')
+                        ),
+
+                    'text' => $message->text,
+                ];
+
+            })
+            ->toArray();
+    }
+
+    public function generatePrompt(): void
+    {
+        if (empty($this->messages)) {
+
+            $this->prompt='Сообщений нет';
+
             return;
         }
 
-        $byUsers = $messages
-            ->groupBy('author')
-            ->map(fn (Collection $items) => $items->count())
-            ->sortDesc();
+        $chat = collect($this->messages)
 
-        $byThreads = $messages
-            ->groupBy('thread_id')
-            ->map(fn (Collection $items) => $items->count())
-            ->sortDesc();
+            ->map(function ($m) {
 
-        $questions = $messages
-            ->filter(fn ($m) => str_contains($m['text'], '?'))
-            ->values();
+                return
+                    "[{$m['time']}] ".
+                    "[topic {$m['thread']}] ".
+                    "{$m['author']}:\n".
+                    "{$m['text']}";
+            })
 
-        $this->result =
-            "Черновой анализ без AI:\n\n" .
-            "Всего сообщений: {$messages->count()}\n\n" .
-            "Активность по людям:\n" .
-            $byUsers->map(fn ($count, $user) => "- {$user}: {$count}")->implode("\n") .
-            "\n\nАктивность по топикам:\n" .
-            $byThreads->map(fn ($count, $thread) => "- Топик {$thread}: {$count}")->implode("\n") .
-            "\n\nВопросы, которые нужно проверить:\n" .
-            ($questions->isEmpty()
-                ? "- Вопросов не найдено"
-                : $questions->map(fn ($m) => "- {$m['time']} {$m['author']}: {$m['text']}")->implode("\n"));
+            ->implode("\n\n");
+
+        $this->prompt =
+
+"Ты анализируешь внутренний форум Tris Service.
+
+Проанализируй работу супервайзеров, дежурных и сотрудников.
+
+Найди:
+
+1. Общую картину дня
+2. Вопросы без ответа
+3. Где долго отвечали
+4. Повторяющиеся проблемы
+5. Кто активно помогал
+6. Какие риски есть
+7. Что проверить админу
+8. Оцени работу супервайзеров
+9. Итоговая оценка дня от 1 до 10
+
+Не выдумывай.
+
+Если данных мало — скажи это.
+
+Сообщения:
+
+{$chat}";
     }
 
     protected function getHeaderActions(): array
     {
         return [
-            Action::make('analyze')
-                ->label('Проанализировать день')
-                ->icon('heroicon-o-sparkles')
+
+            Action::make('reload')
+
+                ->label('Обновить')
+
+                ->icon(Heroicon::ArrowPath)
+
+                ->action(function () {
+
+                    $this->loadMessages();
+
+                    Notification::make()
+                        ->title('Обновлено')
+                        ->success()
+                        ->send();
+
+                }),
+
+            Action::make('generate')
+
+                ->label('Сформировать AI промпт')
+
+                ->icon(Heroicon::Sparkles)
+
                 ->color('primary')
-                ->action('analyze'),
+
+                ->action('generatePrompt'),
         ];
     }
 }

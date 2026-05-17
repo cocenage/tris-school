@@ -76,6 +76,22 @@
                 @endforelse
             </div>
         </x-filament::section>
+@if($prompt)
 
+<x-filament::section>
+
+    <x-slot name="heading">
+        Промпт для ChatGPT
+    </x-slot>
+
+    <textarea
+        rows="20"
+        readonly
+        class="w-full rounded-xl border-gray-300 text-sm"
+    >{{ $prompt }}</textarea>
+
+</x-filament::section>
+
+@endif
     </div>
 </x-filament-panels::page>
