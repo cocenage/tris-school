@@ -1,155 +1,197 @@
 <?php
 
-namespace App\Services\AI;
+namespace App\Filament\Pages;
 
-use App\Models\AiChatReport;
 use App\Models\TelegramWorkMessage;
-use Carbon\Carbon;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
+use BackedEnum;
+use Filament\Actions\Action;
+use Filament\Notifications\Notification;
+use Filament\Pages\Page;
+use Filament\Support\Icons\Heroicon;
 
-class AIChatAnalysisService
+class AiChatAnalysis extends Page
 {
-    public function analyzeDate(string $date): AiChatReport
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::Sparkles;
+
+    protected static ?string $navigationLabel = 'AI анализ чатов';
+
+    protected static ?string $title = 'AI анализ чатов';
+
+    protected static string|\UnitEnum|null $navigationGroup = 'Аналитика';
+
+    protected string $view = 'filament.pages.ai-chat-analysis';
+
+    public string $date;
+
+    public ?string $prompt = null;
+
+    public array $messages = [];
+
+    public function mount(): void
     {
-        $chatId = (string) config('services.telegram.work_allowed_chat_id');
+        $this->date = now()->toDateString();
 
-        $messages = TelegramWorkMessage::query()
-            ->where('chat_id', $chatId)
-            ->whereDate('created_at', $date)
-            ->orderBy('created_at')
-            ->get();
-
-        $prompt = $this->buildPrompt($date, $messages);
-
-        if ($messages->isEmpty()) {
-            return AiChatReport::updateOrCreate(
-                [
-                    'report_date' => $date,
-                    'chat_id' => $chatId,
-                ],
-                [
-                    'messages_count' => 0,
-                    'prompt' => $prompt,
-                    'result' => 'За выбранный день сообщений нет.',
-                    'meta' => [
-                        'status' => 'empty',
-                    ],
-                ]
-            );
-        }
-
-        $result = $this->sendToOpenAI($prompt);
-
-        return AiChatReport::updateOrCreate(
-            [
-                'report_date' => $date,
-                'chat_id' => $chatId,
-            ],
-            [
-                'messages_count' => $messages->count(),
-                'prompt' => $prompt,
-                'result' => $result,
-                'meta' => [
-                    'model' => config('services.openai.model'),
-                    'chat_id' => $chatId,
-                    'generated_at' => now()->toDateTimeString(),
-                ],
-            ]
-        );
+        $this->loadMessages();
     }
 
-    protected function buildPrompt(string $date, $messages): string
+    public function loadMessages(): void
     {
-        $lines = $messages->map(function (TelegramWorkMessage $message) {
-            $time = $message->created_at?->format('H:i');
-            $author = $message->username
-                ?: trim(($message->first_name ?? '') . ' ' . ($message->last_name ?? ''));
+        $chatId = (string) config(
+            'services.telegram.work_allowed_chat_id'
+        );
 
-            $thread = $message->thread_id ? "topic {$message->thread_id}" : 'без топика';
+        $this->messages = TelegramWorkMessage::query()
 
-            return "[{$time}] [{$thread}] {$author}: {$message->text}";
-        })->implode("\n");
+            ->where('chat_id', $chatId)
 
-        return <<<PROMPT
-Ты анализируешь рабочий Telegram-форум клининговой компании Tris Service.
+            ->whereDate(
+                'created_at',
+                $this->date
+            )
 
-Дата анализа: {$date}
+            ->orderBy('created_at')
 
-Твоя задача — дать управленческий отчет по работе супервайзеров, дежурного и клинеров.
+            ->get([
+                'username',
+                'first_name',
+                'last_name',
+                'text',
+                'created_at',
+            ])
 
-Проанализируй сообщения и выдай отчет строго на русском языке.
+            ->map(function ($message) {
 
-Нужно найти:
+                return [
 
-1. Общая картина дня
-2. Вопросы, которые остались без ответа
-3. Где была задержка реакции
-4. Какие проблемы повторялись
-5. Кто активно решал вопросы
-6. Кто писал проблему, но не получил нормального ответа
-7. Риски для работы
-8. Что администратору нужно проверить
-9. Краткая оценка работы дежурного/супервайзеров
-10. Итоговая оценка дня от 1 до 10
+                    'time' => $message
+                        ->created_at
+                        ?->format('H:i'),
+
+                    'author' =>
+
+                        $message->username
+
+                        ?:
+
+                        trim(
+                            ($message->first_name ?? '')
+                            .' '.
+                            ($message->last_name ?? '')
+                        ),
+
+                    'text' => $message->text,
+                ];
+            })
+
+            ->toArray();
+    }
+
+    public function generatePrompt(): void
+    {
+        if (empty($this->messages)) {
+
+            $this->prompt =
+                'За выбранный день сообщений нет';
+
+            return;
+        }
+
+        $chat = collect($this->messages)
+
+            ->map(function ($m) {
+
+                return
+
+                    "[{$m['time']}]\n"
+
+                    ."{$m['author']}:\n"
+
+                    ."{$m['text']}";
+            })
+
+            ->implode("\n\n");
+
+        $this->prompt =
+
+"Ты анализируешь внутренний рабочий форум Tris Service.
+
+Проанализируй переписку супервайзеров, дежурных и сотрудников.
+
+Найди:
+
+1. Общую картину дня
+
+2. Какие вопросы остались без ответа
+
+3. Где сотрудники долго ждали ответ
+
+4. Повторяющиеся проблемы
+
+5. Кто активно помогал
+
+6. Где возможны проблемы
+
+7. Что проверить админу
+
+8. Оценку работы супервайзеров
+
+9. Оценку дня от 1 до 10
 
 Важно:
-- Не выдумывай факты.
-- Если данных мало, прямо так и напиши.
-- Не обвиняй людей жестко, формулируй как "стоит проверить", "возможно", "нужно уточнить".
-- Отделяй факты от предположений.
-- Используй короткие пункты.
+
+— не выдумывай
+— если информации мало, так и скажи
+— разделяй факты и предположения
+— не обвиняй сотрудников
 
 Сообщения:
 
-{$lines}
-PROMPT;
+{$chat}";
     }
 
-    protected function sendToOpenAI(string $prompt): string
+    protected function getHeaderActions(): array
     {
-        $apiKey = config('services.openai.api_key');
-        $model = config('services.openai.model', 'gpt-4o-mini');
+        return [
 
-        if (! $apiKey) {
-            return 'OPENAI_API_KEY не указан в .env';
-        }
+            Action::make('reload')
 
-        try {
-            $response = Http::timeout(60)
-                ->withToken($apiKey)
-                ->post('https://api.openai.com/v1/chat/completions', [
-                    'model' => $model,
-                    'messages' => [
-                        [
-                            'role' => 'system',
-                            'content' => 'Ты строгий, но аккуратный аналитик работы клининговой компании.',
-                        ],
-                        [
-                            'role' => 'user',
-                            'content' => $prompt,
-                        ],
-                    ],
-                    'temperature' => 0.2,
-                ]);
+                ->label('Обновить')
 
-            if (! $response->successful()) {
-                Log::error('OpenAI chat analysis failed', [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
+                ->icon(Heroicon::ArrowPath)
 
-                return 'Ошибка OpenAI: ' . $response->body();
-            }
+                ->color('gray')
 
-            return $response->json('choices.0.message.content')
-                ?? 'OpenAI не вернул текст анализа.';
-        } catch (\Throwable $e) {
-            Log::error('OpenAI chat analysis exception', [
-                'error' => $e->getMessage(),
-            ]);
+                ->action(function () {
 
-            return 'Ошибка AI-анализа: ' . $e->getMessage();
-        }
+                    $this->loadMessages();
+
+                    Notification::make()
+
+                        ->title('Обновлено')
+
+                        ->success()
+
+                        ->send();
+
+                }),
+
+            Action::make('generate')
+
+                ->label('Сформировать AI промпт')
+
+                ->icon(Heroicon::Sparkles)
+
+                ->color('primary')
+
+                ->action('generatePrompt'),
+
+        ];
+    }
+
+    public function getSubheading(): ?string
+    {
+        return 'Сообщений: '.count(
+            $this->messages
+        );
     }
 }
