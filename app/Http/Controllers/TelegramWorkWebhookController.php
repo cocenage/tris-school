@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\Telegram\TelegramWorkMessageService;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -19,6 +20,10 @@ class TelegramWorkWebhookController extends Controller
         );
 
         $workMessageService->handleUpdate($request->all());
+
+Log::info('Telegram work webhook hit', [
+    'payload' => $request->all(),
+]);
 
         return response()->json(['ok' => true]);
     }
