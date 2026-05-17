@@ -518,22 +518,38 @@ if ($this->canViewCalendarType('vacation')) {
         })
         ->get();
 
-    foreach ($dayOffDays as $dayOffDay) {
-        $user = $dayOffDay->user;
-        $date = Carbon::parse($dayOffDay->date)->startOfDay();
+$dayOffGroups = $dayOffDays
+    ->groupBy('day_off_request_id');
 
-        $expanded->push([
-            'id' => 'day_off_' . $dayOffDay->id,
-            'title' => "{$user?->name}{$this->formatUserDip($user)} — Выходной",
-            'description' => $dayOffDay->request?->reason,
-            'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 12, '...'),
-            'type' => 'vacation',
-            'priority' => 85,
-            'start' => $date->copy(),
-            'end' => $date->copy(),
-            'style' => $this->eventStyle('vacation'),
-        ]);
+foreach ($dayOffGroups as $requestId => $days) {
+    $days = $days
+        ->sortBy('date')
+        ->values();
+
+    $firstDay = $days->first();
+    $lastDay = $days->last();
+
+    if (! $firstDay || ! $lastDay) {
+        continue;
     }
+
+    $user = $firstDay->user;
+
+    $start = Carbon::parse($firstDay->date)->startOfDay();
+    $end = Carbon::parse($lastDay->date)->startOfDay();
+
+    $expanded->push([
+        'id' => 'day_off_request_' . $requestId,
+        'title' => "{$user?->name}{$this->formatUserDip($user)} — Выходной",
+        'description' => $firstDay->request?->reason,
+        'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 12, '...'),
+        'type' => 'vacation',
+        'priority' => 85,
+        'start' => $start,
+        'end' => $end,
+        'style' => $this->eventStyle('vacation'),
+    ]);
+}
 
     $vacationRequests = VacationRequest::query()
         ->with(['user', 'days'])

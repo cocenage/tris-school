@@ -72,7 +72,7 @@ class ImportOldWeekendRequests extends Command
                     'role' => $oldUser->role ?? 'cleaner',
                     'status' => 'approved',
                     'approved_at' => now(),
-                    'is_active' => $oldUser->is_active ?? 1,
+                    'is_active' => 1,
                     'dip' => $oldUser->dip ?? 0,
                     'birthday' => $oldUser->birthday ?? null,
                     'work_started_at' => $oldUser->work_started_at ?? null,
