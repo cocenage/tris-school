@@ -3,6 +3,7 @@
 use App\Http\Controllers\LogoutController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
+use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
 use App\Models\Task;
 use Illuminate\Support\Facades\Auth;
@@ -106,3 +107,6 @@ Route::fallback(function () {
         default => 'landing.page',
     });
 });
+
+Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
+    ->name('telegram.work.webhook');

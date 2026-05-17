@@ -306,12 +306,51 @@ new class extends Component
         </p>
 
         <div class="mt-[16px]">
-            <x-ui.button
-                variant="primary"
-                onclick="window.Telegram?.WebApp?.addToHomeScreen?.()"
-            >
-                Добавить на экран Домой
-            </x-ui.button>
+   <x-ui.button
+    variant="primary"
+    x-data
+    @click="
+        const tg = window.Telegram?.WebApp;
+
+        try {
+            if (
+                tg &&
+                tg.isVersionAtLeast &&
+                tg.isVersionAtLeast('8.0') &&
+                typeof tg.addToHomeScreen === 'function'
+            ) {
+                tg.addToHomeScreen();
+            } else {
+                if (tg?.showAlert) {
+                    tg.showAlert(
+                        'Добавление на главный экран доступно только в Telegram на телефоне 📱'
+                    );
+                } else {
+                    alert(
+                        'Добавление на главный экран доступно только в Telegram на телефоне'
+                    );
+                }
+            }
+        } catch (e) {
+            console.log(e);
+
+            if (tg?.showAlert) {
+                tg.showAlert(
+                    'Ваш Telegram не поддерживает добавление на главный экран'
+                );
+            } else {
+                alert(
+                    'Ваш Telegram не поддерживает добавление на главный экран'
+                );
+            }
+        }
+    "
+>
+    <div class="flex items-center gap-2">
+        <x-heroicon-o-device-phone-mobile class="w-5 h-5"/>
+        <span>Добавить на экран домой</span>
+    </div>
+</x-ui.button>
         </div>
     </div>
 
