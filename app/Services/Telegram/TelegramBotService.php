@@ -27,6 +27,8 @@ class TelegramBotService
             $payload['message_thread_id'] = $threadId;
         }
 
-        Http::timeout(10)->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
+        Http::timeout(5)
+    ->connectTimeout(3)
+    ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
     }
 }
