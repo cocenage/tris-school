@@ -11,7 +11,7 @@ class TelegramBotService
     {
         $token = config('services.telegram.bot_token');
 
-        if (! $token) {
+        if (!$token) {
             Log::warning('Telegram bot token is not configured.');
             return;
         }
@@ -27,8 +27,14 @@ class TelegramBotService
             $payload['message_thread_id'] = $threadId;
         }
 
-        Http::timeout(5)
-    ->connectTimeout(3)
-    ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
+        $response = Http::timeout(5)
+            ->connectTimeout(3)
+            ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
+
+        Log::info('Telegram sendMessage response', [
+            'status' => $response->status(),
+            'body' => $response->body(),
+            'payload' => $payload,
+        ]);
     }
 }

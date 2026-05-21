@@ -85,6 +85,7 @@ new class extends Component {
         </button>
     </div>
 </x-slot:header>
+<x-ui.protected-content>
 <section
     x-data="{ imageOpen: false, imageSrc: '', imageAlt: '' }"
     class="min-h-screen bg-white px-[17px] py-[22px]"
@@ -351,7 +352,7 @@ new class extends Component {
     >
         <button
             type="button"
-            class="absolute right-4 top-4 z-10 rounded-full bg-white px-4 py-2 text-[14px] font-semibold text-[#061126]"
+            class="absolute right-4 top-4 z-10 rounded-full bg-white px-4 py-2 text-[14px]  text-[#061126]"
             @click="imageOpen = false"
         >
             Закрыть
@@ -364,7 +365,7 @@ new class extends Component {
         >
     </div>
 </section>
-
+</x-ui.protected-content>
 <style>
     [x-cloak] {
         display: none !important;

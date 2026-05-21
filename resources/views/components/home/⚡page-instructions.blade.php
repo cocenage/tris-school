@@ -62,7 +62,7 @@ new class extends Component {
         @if ($this->uncategorizedInstructions->isNotEmpty())
             <div>
            
-                  <h1 class="]">Инструкции</h1>
+                  <h1 class="">Инструкции</h1>
 
 <div class="grid grid-cols-3 gap-[10px] pt-[20px]">
     @foreach ($this->uncategorizedInstructions as $instruction)

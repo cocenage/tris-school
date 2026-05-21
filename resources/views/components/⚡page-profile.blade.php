@@ -305,53 +305,84 @@ new class extends Component
             Добавьте Tris Academy на экран Домой для быстрого доступа
         </p>
 
-        <div class="mt-[16px]">
-   <x-ui.button
-    variant="primary"
-    x-data
-    @click="
-        const tg = window.Telegram?.WebApp;
+       <div
+    x-data="{
+        async add() {
+            const tg = window.Telegram?.WebApp;
 
-        try {
-            if (
-                tg &&
-                tg.isVersionAtLeast &&
-                tg.isVersionAtLeast('8.0') &&
-                typeof tg.addToHomeScreen === 'function'
-            ) {
-                tg.addToHomeScreen();
-            } else {
-                if (tg?.showAlert) {
-                    tg.showAlert(
-                        'Добавление на главный экран доступно только в Telegram на телефоне 📱'
-                    );
-                } else {
-                    alert(
-                        'Добавление на главный экран доступно только в Telegram на телефоне'
-                    );
-                }
+            if (!tg) {
+                alert('Приложение открыто не внутри Telegram');
+                return;
             }
-        } catch (e) {
-            console.log(e);
 
-            if (tg?.showAlert) {
+            if (!tg.isVersionAtLeast?.('8.0')) {
                 tg.showAlert(
-                    'Ваш Telegram не поддерживает добавление на главный экран'
+                    'Ваш Telegram слишком старый или функция не поддерживается'
                 );
-            } else {
-                alert(
-                    'Ваш Telegram не поддерживает добавление на главный экран'
+                return;
+            }
+
+            if (!tg.addToHomeScreen) {
+                tg.showAlert(
+                    'Добавление на главный экран недоступно на этом устройстве'
                 );
+                return;
+            }
+
+            try {
+                tg.checkHomeScreenStatus((status) => {
+
+                    console.log(status);
+
+                    switch (status) {
+
+                        case 'unsupported':
+                            tg.showAlert(
+                                'Ваше устройство не поддерживает эту функцию'
+                            );
+                            return;
+
+                        case 'added':
+                            tg.showAlert(
+                                'Приложение уже добавлено на главный экран'
+                            );
+                            return;
+
+                        case 'missed':
+                            tg.showAlert(
+                                'Вы ранее закрыли предложение добавить приложение'
+                            );
+                            return;
+
+                        case 'unknown':
+                            tg.showAlert(
+                                'Telegram не смог определить статус'
+                            );
+                            return;
+                    }
+
+                    tg.addToHomeScreen();
+                });
+
+            } catch (e) {
+
+                tg.showAlert(
+                    'Ошибка: ' + e.message
+                );
+
+                console.log(e);
             }
         }
-    "
+    }"
 >
-    <div class="flex items-center gap-2">
-        <x-heroicon-o-device-phone-mobile class="w-5 h-5"/>
-        <span>Добавить на экран домой</span>
-    </div>
-</x-ui.button>
-        </div>
+    <x-ui.button @click="add()">
+        Добавить на экран Домой
+    </x-ui.button>
+
+    <p class="mt-2 text-[12px] text-[#999]">
+        Работает только в Telegram на телефоне
+    </p>
+</div>
     </div>
 
     <div class="mb-[10px]">
