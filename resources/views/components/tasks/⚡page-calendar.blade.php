@@ -15,6 +15,8 @@ new class extends Component {
     public bool $sheetOpen = false;
     public string $activeFilter = 'all';
 
+
+    protected array $shiftSummaryCache = [];
     public function mount(): void
     {
         Carbon::setLocale('ru');
@@ -29,42 +31,183 @@ new class extends Component {
     }
 
 
-    public function getSelectedDayWorkersProperty(): array
+public function getSelectedDayWorkersProperty(): array
 {
     $date = $this->selectedDay->toDateString();
 
     $users = User::query()
         ->where('is_active', true)
-        ->whereIn('role', ['cleaner', 'supervisor'])
-        ->orderBy('role')
+        ->where('role', 'cleaner')
         ->orderBy('name')
         ->get();
 
-    $dayOffUserIds = DayOffRequestDay::query()
+    $dayOffDays = DayOffRequestDay::query()
+        ->with(['request'])
         ->whereDate('date', $date)
+        ->whereIn('user_id', $users->pluck('id'))
         ->whereHas('request', fn ($q) => $q->where('status', 'approved'))
-        ->pluck('user_id')
-        ->toArray();
+        ->get()
+        ->keyBy('user_id');
 
-    $vacationUserIds = VacationRequest::query()
+    $vacationRequests = VacationRequest::query()
+        ->with(['days'])
         ->where('status', 'approved')
+        ->whereIn('user_id', $users->pluck('id'))
         ->whereHas('days', fn ($q) => $q->whereDate('date', $date))
-        ->pluck('user_id')
-        ->toArray();
+        ->get()
+        ->keyBy('user_id');
 
-    $absentIds = collect($dayOffUserIds)
-        ->merge($vacationUserIds)
-        ->unique()
+    $notWorking = $users->filter(function ($user) use ($dayOffDays, $vacationRequests) {
+        return $dayOffDays->has($user->id) || $vacationRequests->has($user->id);
+    })->map(function ($user) use ($dayOffDays, $vacationRequests) {
+        if ($vacationRequests->has($user->id)) {
+            $request = $vacationRequests->get($user->id);
+
+            $lastDay = $request->days
+                ->sortBy('date')
+                ->last();
+
+            $until = $lastDay
+                ? ' до ' . Carbon::parse($lastDay->date)->translatedFormat('j F')
+                : '';
+
+            $user->not_working_reason = filled($request?->reason)
+                ? 'Отпуск' . $until . ': ' . $request->reason
+                : 'Отпуск' . $until;
+        } elseif ($dayOffDays->has($user->id)) {
+            $day = $dayOffDays->get($user->id);
+
+            $user->not_working_reason = filled($day?->request?->reason)
+                ? 'Выходной: ' . $day->request->reason
+                : 'Выходной';
+        }
+
+        return $user;
+    })->values();
+
+    $working = $users
+        ->whereNotIn('id', $notWorking->pluck('id'))
         ->values();
 
     return [
-        'working' => $users
-            ->whereNotIn('id', $absentIds)
-            ->values(),
+        'total' => $users->count(),
+        'working_count' => $working->count(),
+        'not_working_count' => $notWorking->count(),
+        'working_percent' => $users->count() > 0
+            ? (int) round(($working->count() / $users->count()) * 100)
+            : 0,
+        'working' => $working,
+        'not_working' => $notWorking,
+    ];
+}
 
-        'not_working' => $users
-            ->whereIn('id', $absentIds)
-            ->values(),
+public function getSelectedDayShiftSummaryProperty(): array
+{
+    return $this->getDayShiftSummary($this->selectedDay);
+}
+
+public function getProblemShiftDaysProperty(): array
+{
+    $days = [];
+    $cursor = $this->month->copy()->startOfMonth();
+    $end = $this->month->copy()->endOfMonth();
+
+    while ($cursor->lte($end)) {
+        $summary = $this->getDayShiftSummary($cursor);
+
+        if ($summary['level'] !== 'good' && $summary['total'] > 0) {
+            $days[] = [
+                'date' => $cursor->copy(),
+                'summary' => $summary,
+            ];
+        }
+
+        $cursor->addDay();
+    }
+
+    return collect($days)
+        ->sortBy(fn ($day) => $day['summary']['working_percent'])
+        ->take(5)
+        ->values()
+        ->all();
+}
+
+protected function getDayShiftSummary(Carbon $date): array
+{
+    $key = $date->toDateString();
+
+    if (isset($this->shiftSummaryCache[$key])) {
+        return $this->shiftSummaryCache[$key];
+    }
+
+    $cleanerIds = User::query()
+        ->where('is_active', true)
+        ->where('role', 'cleaner')
+        ->pluck('id');
+
+    $total = $cleanerIds->count();
+
+    $dayOffUserIds = DayOffRequestDay::query()
+        ->whereDate('date', $key)
+        ->whereIn('user_id', $cleanerIds)
+        ->whereHas('request', fn ($q) => $q->where('status', 'approved'))
+        ->distinct()
+        ->pluck('user_id');
+
+    $vacationUserIds = VacationRequest::query()
+        ->where('status', 'approved')
+        ->whereIn('user_id', $cleanerIds)
+        ->whereHas('days', fn ($q) => $q->whereDate('date', $key))
+        ->distinct()
+        ->pluck('user_id');
+
+    $notWorking = $dayOffUserIds
+        ->merge($vacationUserIds)
+        ->unique()
+        ->count();
+
+    $working = max($total - $notWorking, 0);
+
+    $percent = $total > 0
+        ? (int) round(($working / $total) * 100)
+        : 0;
+
+    $level = match (true) {
+        $percent < 60 => 'critical',
+        $percent < 80 => 'warning',
+        default => 'good',
+    };
+
+    $label = match ($level) {
+        'critical' => 'Критическая смена',
+        'warning' => 'Средняя нагрузка',
+        default => 'Нормальная смена',
+    };
+
+    $colors = match ($level) {
+        'critical' => [
+            'bg' => '#FFE1E1',
+            'text' => '#9F1D1D',
+        ],
+        'warning' => [
+            'bg' => '#FFF1C7',
+            'text' => '#8A6500',
+        ],
+        default => [
+            'bg' => '#E7F6EC',
+            'text' => '#2F7D4A',
+        ],
+    };
+
+    return $this->shiftSummaryCache[$key] = [
+        'total' => $total,
+        'working' => $working,
+        'not_working' => $notWorking,
+        'working_percent' => $percent,
+        'level' => $level,
+        'label' => $label,
+        'bg' => $colors['bg'],
+        'text' => $colors['text'],
     ];
 }
     public function nextMonth(): void
@@ -489,6 +632,10 @@ $baseEvents = CalendarEvent::query()
                 if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
                     $years = Carbon::parse($user->work_started_at)->diffInYears($date);
 
+                    if ($years < 1) {
+    continue;
+}
+
                     $expanded->push([
                         'id' => 'work_' . $user->id . '_' . $year,
                         'title' => "{$user->name}{$this->formatUserDip($user)} — {$years} лет в компании",
@@ -519,36 +666,63 @@ if ($this->canViewCalendarType('vacation')) {
         ->get();
 
 $dayOffGroups = $dayOffDays
-    ->groupBy('day_off_request_id');
+    ->sortBy('date')
+    ->groupBy('user_id');
 
-foreach ($dayOffGroups as $requestId => $days) {
-    $days = $days
+foreach ($dayOffGroups as $userId => $userDays) {
+    $userDays = $userDays
         ->sortBy('date')
         ->values();
 
-    $firstDay = $days->first();
-    $lastDay = $days->last();
+    $ranges = [];
+    $currentRange = [];
 
-    if (! $firstDay || ! $lastDay) {
-        continue;
+    foreach ($userDays as $day) {
+        if (empty($currentRange)) {
+            $currentRange[] = $day;
+            continue;
+        }
+
+        $prevDate = Carbon::parse(end($currentRange)->date)->startOfDay();
+        $currentDate = Carbon::parse($day->date)->startOfDay();
+
+        if ($prevDate->copy()->addDay()->isSameDay($currentDate)) {
+            $currentRange[] = $day;
+        } else {
+            $ranges[] = $currentRange;
+            $currentRange = [$day];
+        }
     }
 
-    $user = $firstDay->user;
+    if (! empty($currentRange)) {
+        $ranges[] = $currentRange;
+    }
 
-    $start = Carbon::parse($firstDay->date)->startOfDay();
-    $end = Carbon::parse($lastDay->date)->startOfDay();
+    foreach ($ranges as $rangeIndex => $rangeDays) {
+        $firstDay = collect($rangeDays)->first();
+        $lastDay = collect($rangeDays)->last();
 
-    $expanded->push([
-        'id' => 'day_off_request_' . $requestId,
-        'title' => "{$user?->name}{$this->formatUserDip($user)} — Выходной",
-        'description' => $firstDay->request?->reason,
-        'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 12, '...'),
-        'type' => 'vacation',
-        'priority' => 85,
-        'start' => $start,
-        'end' => $end,
-        'style' => $this->eventStyle('vacation'),
-    ]);
+        if (! $firstDay || ! $lastDay) {
+            continue;
+        }
+
+        $user = $firstDay->user;
+
+        $start = Carbon::parse($firstDay->date)->startOfDay();
+        $end = Carbon::parse($lastDay->date)->startOfDay();
+
+        $expanded->push([
+            'id' => 'day_off_user_' . $userId . '_' . $start->format('Ymd') . '_' . $rangeIndex,
+            'title' => "{$user?->name}{$this->formatUserDip($user)} — Выходной",
+            'description' => $firstDay->request?->reason,
+            'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 18, '...'),
+            'type' => 'vacation',
+            'priority' => 85,
+            'start' => $start,
+            'end' => $end,
+            'style' => $this->eventStyle('vacation'),
+        ]);
+    }
 }
 
     $vacationRequests = VacationRequest::query()
@@ -1159,14 +1333,27 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                                             wire:click="openDay('{{ $day['date']->toDateString() }}')"
                                             class="flex justify-center"
                                         >
-                                            <div class="flex flex-col items-center gap-[5px]">
-                                                <div
-                                                    class="px-[5px] py-[5px] items-center rounded-full flex items-center justify-center text-[16px] leading-none transition duration-200"
-                                                    style="background: {{ $background }}; color: {{ $color }}; font-weight: {{ ($isToday || $day['inMonth']) ? '600' : '400' }};"
-                                                >
-                                                    {{ $day['date']->day }}
-                                                </div>
-                                            </div>
+                                           @php
+    $shift = $this->getDayShiftSummary($day['date']);
+@endphp
+
+<div class="flex flex-col items-center gap-[4px]">
+    <div
+        class="px-[5px] py-[5px] items-center rounded-full flex items-center justify-center text-[16px] leading-none transition duration-200"
+        style="background: {{ $background }}; color: {{ $color }}; font-weight: {{ ($isToday || $day['inMonth']) ? '600' : '400' }};"
+    >
+        {{ $day['date']->day }}
+    </div>
+
+    @if ($day['inMonth'] && $shift['total'] > 0)
+        <span
+            class="rounded-full px-[6px] py-[3px] text-[10px] font-semibold leading-none"
+            style="background: {{ $shift['bg'] }}; color: {{ $shift['text'] }};"
+        >
+            {{ $shift['working'] }}/{{ $shift['total'] }}
+        </span>
+    @endif
+</div>
                                         </button>
                                     @endforeach
                                 </div>
@@ -1363,66 +1550,126 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
     </div>
 @endforelse
 
+@php
+    $shift = $this->selectedDayShiftSummary;
+@endphp
+
 <div class="mt-[16px] rounded-[32px] bg-white px-[14px] py-[14px]">
-    <div class="mb-[12px] flex items-center justify-between">
-        <div>
-            <p class="text-[17px] font-semibold leading-none text-[#111]">
-                Смена
-            </p>
-            <p class="mt-[5px] text-[13px] text-[#8A8A8A]">
-                Кто работает в этот день
-            </p>
+    <div class="mb-[12px] rounded-[26px] px-[14px] py-[13px]" style="background: {{ $shift['bg'] }};">
+        <div class="flex items-start justify-between gap-[12px]">
+            <div>
+                <p class="text-[18px] font-semibold leading-none text-[#111]">
+                    {{ $this->selectedDay->translatedFormat('j F · l') }}
+                </p>
+
+                <p class="mt-[8px] text-[14px] font-medium leading-none" style="color: {{ $shift['text'] }};">
+                    {{ $shift['label'] }}
+                </p>
+            </div>
+
+            <div class="shrink-0 rounded-full bg-white/70 px-[11px] py-[7px] text-[13px] font-semibold" style="color: {{ $shift['text'] }};">
+                {{ $shift['working'] }}/{{ $shift['total'] }}
+            </div>
         </div>
 
-        <div class="rounded-full bg-[#F4F4F4] px-[11px] py-[7px] text-[13px] font-medium text-[#111]">
-            {{ $this->selectedDayWorkers['working']->count() }} работает
+        <div class="mt-[12px] grid grid-cols-3 gap-[6px]">
+            <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+                <p class="text-[11px] leading-none text-[#777]">Всего</p>
+                <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+                    {{ $this->selectedDayWorkers['total'] }}
+                </p>
+            </div>
+
+            <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+                <p class="text-[11px] leading-none text-[#777]">Работает</p>
+                <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+                    {{ $this->selectedDayWorkers['working_count'] }}
+                </p>
+            </div>
+
+            <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+                <p class="text-[11px] leading-none text-[#777]">Нет</p>
+                <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+                    {{ $this->selectedDayWorkers['not_working_count'] }}
+                </p>
+            </div>
         </div>
     </div>
 
-    <div class="space-y-[6px]">
-        @foreach ($this->selectedDayWorkers['working'] as $user)
-            <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
-                <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
-                    {{ mb_substr($user->name, 0, 1) }}
-                </div>
+    @if ($this->selectedDayWorkers['not_working']->count())
+        <div class="mb-[14px]">
+            <div class="mb-[8px] flex items-center justify-between">
+                <p class="text-[16px] font-semibold leading-none text-[#111]">
+                    Кто не работает
+                </p>
 
-                <div class="min-w-0 flex-1">
-                    <p class="truncate text-[15px] font-medium leading-none text-[#111]">
-                        {{ $user->name }}
-                    </p>
-
-                    <p class="mt-[5px] text-[12px] leading-none text-[#8A8A8A]">
-                        {{ $user->role === 'supervisor' ? 'Супервайзер' : 'Клинер' }}
-                    </p>
-                </div>
-
-                <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[11px] font-medium text-[#3C8D57]">
-                    работает
+                <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
+                    {{ $this->selectedDayWorkers['not_working_count'] }}
                 </span>
             </div>
-        @endforeach
 
-        @foreach ($this->selectedDayWorkers['not_working'] as $user)
-            <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px] opacity-70">
-                <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#999]">
-                    {{ mb_substr($user->name, 0, 1) }}
-                </div>
+            <div class="space-y-[6px]">
+                @foreach ($this->selectedDayWorkers['not_working'] as $user)
+                    <div class="flex items-center gap-[10px] rounded-[22px] bg-[#FFF6F6] px-[10px] py-[9px]">
+                        <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#9F1D1D]">
+                            {{ mb_substr($user->name, 0, 1) }}
+                        </div>
 
-                <div class="min-w-0 flex-1">
-                    <p class="truncate text-[15px] font-medium leading-none text-[#555]">
-                        {{ $user->name }}
-                    </p>
+                        <div class="min-w-0 flex-1">
+                            <p class="truncate text-[15px] font-medium leading-none text-[#111]">
+                                {{ $user->name }}
+                            </p>
 
-                    <p class="mt-[5px] text-[12px] leading-none text-[#999]">
-                        {{ $user->role === 'supervisor' ? 'Супервайзер' : 'Клинер' }}
-                    </p>
-                </div>
-
-                <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[11px] font-medium text-[#777]">
-                    не работает
-                </span>
+                            <p class="mt-[6px] text-[12px] leading-[1.2] text-[#9F1D1D]">
+                                {{ $user->not_working_reason ?? 'Не работает' }}
+                            </p>
+                        </div>
+                    </div>
+                @endforeach
             </div>
-        @endforeach
+        </div>
+    @endif
+
+    <div>
+        <div class="mb-[8px] flex items-center justify-between">
+            <p class="text-[16px] font-semibold leading-none text-[#111]">
+                Работают
+            </p>
+
+            <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[12px] text-[#3C8D57]">
+                {{ $this->selectedDayWorkers['working_count'] }}
+            </span>
+        </div>
+
+        <div class="space-y-[6px]">
+            @forelse ($this->selectedDayWorkers['working'] as $user)
+                <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
+                    <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
+                        {{ mb_substr($user->name, 0, 1) }}
+                    </div>
+
+                    <div class="min-w-0 flex-1">
+                        <p class="truncate text-[15px] font-medium leading-none text-[#111]">
+                            {{ $user->name }}
+                        </p>
+
+                        <p class="mt-[5px] text-[12px] leading-none text-[#8A8A8A]">
+                            Клинер
+                        </p>
+                    </div>
+
+                    <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[11px] font-medium text-[#3C8D57]">
+                        работает
+                    </span>
+                </div>
+            @empty
+                <div class="rounded-[22px] bg-[#FFF1C7] px-[12px] py-[12px]">
+                    <p class="text-[14px] text-[#8A6500]">
+                        На эту дату нет работающих клинеров.
+                    </p>
+                </div>
+            @endforelse
+        </div>
     </div>
 </div>
             </div>
