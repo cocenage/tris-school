@@ -95,6 +95,12 @@ Route::middleware(['auth', 'approved'])->group(function () {
     })->name('page-profile.calendar');
 });
 
+Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
+    ->withoutMiddleware([
+        \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
+    ])
+    ->name('telegram.work-webhook');
+
 Route::fallback(function () {
     if (! Auth::check()) {
         return redirect()->route('landing.page');
@@ -108,5 +114,3 @@ Route::fallback(function () {
     });
 });
 
-Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
-    ->name('telegram.work-webhook');
