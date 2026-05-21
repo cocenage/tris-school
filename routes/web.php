@@ -109,4 +109,4 @@ Route::fallback(function () {
 });
 
 Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
-    ->name('telegram.work.webhook');
+    ->name('telegram.work-webhook');

@@ -70,14 +70,14 @@ class UserForm
                             ->displayFormat('d.m.Y')
                             ->format('Y-m-d')
                             ->placeholder('дд.мм.гггг')
-                            ->native(false),
+                            ->native(true),
 
                         DatePicker::make('work_started_at')
                             ->label('Начало работы')
                             ->displayFormat('d.m.Y')
                             ->format('Y-m-d')
                             ->placeholder('дд.мм.гггг')
-                            ->native(false)
+                            ->native(true)
                             ->default(fn () => now()->toDateString())
                             ->afterStateHydrated(function ($component, $state, $record) {
                                 if (filled($state)) {
