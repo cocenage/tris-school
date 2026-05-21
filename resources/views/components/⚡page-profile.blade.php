@@ -296,94 +296,102 @@ new class extends Component
     x-on:open-profile-edit.window="$wire.openProfileEdit()"
     class="w-full bg-white p-[15px]"
 >
-    <div class="mb-[20px] min-h-[134px] rounded-[35px] bg-[#F8F7F5] p-[20px]">
-        <span class="truncate text-[18px]">
-            Открывайте Tris Academy в одно касание
-        </span>
+<div class="mb-[20px] min-h-[134px] rounded-[35px] bg-[#F8F7F5] p-[20px]">
+    <span class="truncate text-[18px]">
+        Открывайте Tris Academy в одно касание
+    </span>
 
-        <p class="mt-[10px] text-[15px] leading-[1.25] text-[#777777]">
-            Добавьте Tris Academy на экран Домой для быстрого доступа
-        </p>
-
-       <div
-    x-data="{
-        async add() {
-            const tg = window.Telegram?.WebApp;
-
-            if (!tg) {
-                alert('Приложение открыто не внутри Telegram');
-                return;
-            }
-
-            if (!tg.isVersionAtLeast?.('8.0')) {
-                tg.showAlert(
-                    'Ваш Telegram слишком старый или функция не поддерживается'
-                );
-                return;
-            }
-
-            if (!tg.addToHomeScreen) {
-                tg.showAlert(
-                    'Добавление на главный экран недоступно на этом устройстве'
-                );
-                return;
-            }
-
-            try {
-                tg.checkHomeScreenStatus((status) => {
-
-                    console.log(status);
-
-                    switch (status) {
-
-                        case 'unsupported':
-                            tg.showAlert(
-                                'Ваше устройство не поддерживает эту функцию'
-                            );
-                            return;
-
-                        case 'added':
-                            tg.showAlert(
-                                'Приложение уже добавлено на главный экран'
-                            );
-                            return;
-
-                        case 'missed':
-                            tg.showAlert(
-                                'Вы ранее закрыли предложение добавить приложение'
-                            );
-                            return;
-
-                        case 'unknown':
-                            tg.showAlert(
-                                'Telegram не смог определить статус'
-                            );
-                            return;
-                    }
-
-                    tg.addToHomeScreen();
-                });
-
-            } catch (e) {
-
-                tg.showAlert(
-                    'Ошибка: ' + e.message
-                );
-
-                console.log(e);
-            }
-        }
-    }"
->
-    <x-ui.button @click="add()">
-        Добавить на экран Домой
-    </x-ui.button>
-
-    <p class="mt-2 text-[12px] text-[#999]">
-        Работает только в Telegram на телефоне
+    <p class="mt-[10px] text-[15px] leading-[1.25] text-[#777777]">
+        Добавьте Tris Academy на экран Домой для быстрого доступа
     </p>
-</div>
+
+    <div
+        x-data="{
+            async add() {
+                const tg = window.Telegram?.WebApp;
+
+                if (!tg) {
+                    alert('Ошибка: приложение открыто не внутри Telegram');
+                    return;
+                }
+
+                console.log('Platform:', tg.platform);
+                console.log('Version:', tg.version);
+
+                if (!tg.isVersionAtLeast?.('8.0')) {
+                    tg.showAlert(
+                        'Ваш Telegram слишком старый.\n\n' +
+                        'Версия: ' + tg.version +
+                        '\n\nОбновите Telegram и попробуйте снова.'
+                    );
+                    return;
+                }
+
+                if (typeof tg.addToHomeScreen !== 'function') {
+                    tg.showAlert(
+                        'На вашем устройстве функция недоступна.\n\n' +
+                        'Платформа: ' + tg.platform +
+                        '\nВерсия Telegram: ' + tg.version
+                    );
+                    return;
+                }
+
+                try {
+                    tg.checkHomeScreenStatus((status) => {
+
+                        console.log('Home status:', status);
+
+                        switch (status) {
+
+                            case 'unsupported':
+                                tg.showAlert(
+                                    'Ваш телефон или Telegram не поддерживает добавление на главный экран.\n\n' +
+                                    'Платформа: ' + tg.platform
+                                );
+                                return;
+
+                            case 'added':
+                                tg.showAlert(
+                                    'Tris Academy уже добавлен на главный экран 🎉'
+                                );
+                                return;
+
+                            case 'missed':
+                                tg.showAlert(
+                                    'Telegram сейчас не может показать окно добавления.\n\n' +
+                                    'Попробуйте позже.'
+                                );
+                                return;
+
+                            case 'unknown':
+                                tg.showAlert(
+                                    'Telegram не смог определить состояние.\n\n' +
+                                    'Платформа: ' + tg.platform +
+                                    '\nВерсия: ' + tg.version
+                                );
+                                return;
+                        }
+
+                        tg.addToHomeScreen();
+                    });
+
+                } catch (e) {
+
+                    console.log(e);
+
+                    tg.showAlert(
+                        'Ошибка:\n\n' + e.message
+                    );
+                }
+            }
+        }"
+    >
+        <x-ui.button @click="add()">
+            Добавить на экран Домой
+        </x-ui.button>
+
     </div>
+</div>
 
     <div class="mb-[10px]">
         <span class="text-[16px] opacity-50">
