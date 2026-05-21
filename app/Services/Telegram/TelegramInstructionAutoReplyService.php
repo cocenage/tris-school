@@ -3,7 +3,7 @@
 namespace App\Services\Telegram;
 
 use App\Models\TelegramMessage;
-use App\Services\Knowledge\InstructionTelegramSearchService;
+use App\Services\Telegram\Knowledge\InstructionTelegramSearchService;
 use Illuminate\Support\Facades\Cache;
 
 class TelegramInstructionAutoReplyService

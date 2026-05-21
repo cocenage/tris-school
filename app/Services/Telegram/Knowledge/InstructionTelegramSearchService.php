@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Knowledge;
+namespace App\Services\Telegram\Knowledge;
 
 use App\Models\Instruction;
 use Illuminate\Support\Str;
@@ -11,7 +11,7 @@ class InstructionTelegramSearchService
     {
         $text = Str::of($text ?? '')
             ->lower()
-            ->replace(['?', '!', '.', ',', ':', ';'], ' ')
+            ->replace(['?', '!', '.', ',', ':', ';', "\n", "\r"], ' ')
             ->squish()
             ->toString();
 
@@ -29,7 +29,7 @@ class InstructionTelegramSearchService
                     ->filter();
 
                 foreach ($keywords as $keyword) {
-                    if ($keyword !== '' && str_contains($text, $keyword)) {
+                    if (str_contains($text, $keyword)) {
                         return true;
                     }
                 }
