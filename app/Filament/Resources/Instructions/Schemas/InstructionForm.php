@@ -44,6 +44,11 @@ class InstructionForm
                                             ->unique(ignoreRecord: true),
                                     ]),
 
+          Textarea::make('telegram_keywords')
+                                        ->label('Ключевые слова')
+                                        ->rows(3)
+                                        ->columnSpanFull(),
+
                                     Textarea::make('short_description')
                                         ->label('Краткое описание')
                                         ->rows(3)

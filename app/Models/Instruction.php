@@ -27,6 +27,8 @@ class Instruction extends Model
         'views_count',
         'sort_order',
         'published_at',
+
+        'telegram_keywords',
     ];
 
     protected $casts = [

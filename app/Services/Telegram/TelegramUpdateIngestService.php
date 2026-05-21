@@ -103,7 +103,11 @@ class TelegramUpdateIngestService
 
         $this->syncAttachments($messageModel, $message);
 
-        return $messageModel;
+app(\App\Services\Telegram\TelegramInstructionAutoReplyService::class)
+    ->handle($messageModel->fresh(['chat', 'topic', 'telegramUser', 'attachments']));
+
+return $messageModel;
+        
     }
 
     protected function detectType(array $message): string

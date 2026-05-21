@@ -16,16 +16,11 @@ class InstructionsTable
     {
         return $table
             ->columns([
-                TextColumn::make('emoji')
-                    ->label('')
-                    ->width('50px'),
-
                 TextColumn::make('title')
                     ->label('Название')
                     ->searchable()
-                    ->sortable()
-                    ->description(fn ($record) => $record->short_description),
-
+                    ->sortable(),
+                  
                 TextColumn::make('category.title')
                     ->label('Категория')
                     ->sortable(),
