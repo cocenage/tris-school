@@ -14,6 +14,7 @@ new class extends Component {
     public ?string $selectedDate = null;
     public bool $sheetOpen = false;
     public string $activeFilter = 'all';
+    public string $calendarMode = 'calendar';
 
     protected array $shiftSummaryCache = [];
     protected array $shiftSummaryRangeCache = [];
@@ -34,7 +35,7 @@ new class extends Component {
 
 public function getSelectedDayWorkersProperty(): array
 {
-    $date = $this->selectedDay->copy()->startOfDay()->toDateString();
+    $date = $this->selectedDay->toDateString();
 
     $users = User::query()
         ->where('is_active', true)
@@ -42,51 +43,49 @@ public function getSelectedDayWorkersProperty(): array
         ->orderBy('name')
         ->get();
 
-    $userIds = $users->pluck('id');
-
     $dayOffDays = DayOffRequestDay::query()
         ->with(['request'])
         ->whereDate('date', $date)
-        ->whereIn('user_id', $userIds)
+        ->whereIn('user_id', $users->pluck('id'))
         ->whereHas('request', fn ($q) => $q->where('status', 'approved'))
         ->get()
         ->keyBy('user_id');
 
     $vacationRequests = VacationRequest::query()
-        ->with(['days' => fn ($query) => $query->orderBy('date')])
+        ->with(['days'])
         ->where('status', 'approved')
-        ->whereIn('user_id', $userIds)
+        ->whereIn('user_id', $users->pluck('id'))
         ->whereHas('days', fn ($q) => $q->whereDate('date', $date))
         ->get()
         ->keyBy('user_id');
 
-    $notWorking = $users
-        ->filter(fn ($user) => $dayOffDays->has($user->id) || $vacationRequests->has($user->id))
-        ->map(function ($user) use ($dayOffDays, $vacationRequests) {
-            if ($vacationRequests->has($user->id)) {
-                $request = $vacationRequests->get($user->id);
-                $lastDay = $request->days->sortBy('date')->last();
+    $notWorking = $users->filter(function ($user) use ($dayOffDays, $vacationRequests) {
+        return $dayOffDays->has($user->id) || $vacationRequests->has($user->id);
+    })->map(function ($user) use ($dayOffDays, $vacationRequests) {
+        if ($vacationRequests->has($user->id)) {
+            $request = $vacationRequests->get($user->id);
 
-                $until = $lastDay
-                    ? ' до ' . Carbon::parse($lastDay->date)->translatedFormat('j F')
-                    : '';
+            $lastDay = $request->days
+                ->sortBy('date')
+                ->last();
 
-                $user->not_working_reason = filled($request?->reason)
-                    ? 'Отпуск' . $until . ': ' . $request->reason
-                    : 'Отпуск' . $until;
+            $until = $lastDay
+                ? ' до ' . Carbon::parse($lastDay->date)->translatedFormat('j F')
+                : '';
 
-                return $user;
-            }
-
+            $user->not_working_reason = filled($request?->reason)
+                ? 'Отпуск' . $until . ': ' . $request->reason
+                : 'Отпуск' . $until;
+        } elseif ($dayOffDays->has($user->id)) {
             $day = $dayOffDays->get($user->id);
 
             $user->not_working_reason = filled($day?->request?->reason)
                 ? 'Выходной: ' . $day->request->reason
                 : 'Выходной';
+        }
 
-            return $user;
-        })
-        ->values();
+        return $user;
+    })->values();
 
     $working = $users
         ->whereNotIn('id', $notWorking->pluck('id'))
@@ -137,7 +136,7 @@ public function getProblemShiftDaysProperty(): array
 
 protected function getDayShiftSummary(Carbon $date): array
 {
-    $key = $date->copy()->startOfDay()->toDateString();
+    $key = $date->toDateString();
 
     if (isset($this->shiftSummaryCache[$key])) {
         return $this->shiftSummaryCache[$key];
@@ -177,17 +176,6 @@ protected function buildShiftSummaryCacheForRange(Carbon $rangeStart, Carbon $ra
     $total = $cleanerIds->count();
     $notWorkingByDate = [];
 
-    if ($total === 0) {
-        $cursor = $rangeStart->copy();
-
-        while ($cursor->lte($rangeEnd)) {
-            $this->shiftSummaryCache[$cursor->toDateString()] = $this->makeShiftSummary(0, 0);
-            $cursor->addDay();
-        }
-
-        return;
-    }
-
     $dayOffDays = DayOffRequestDay::query()
         ->select(['date', 'user_id'])
         ->whereBetween('date', [$rangeStart->toDateString(), $rangeEnd->toDateString()])
@@ -209,9 +197,7 @@ protected function buildShiftSummaryCacheForRange(Carbon $rangeStart, Carbon $ra
         }])
         ->where('status', 'approved')
         ->whereIn('user_id', $cleanerIds)
-        ->whereHas('days', function ($query) use ($rangeStart, $rangeEnd) {
-            $query->whereBetween('date', [$rangeStart->toDateString(), $rangeEnd->toDateString()]);
-        })
+        ->whereHas('days', fn ($query) => $query->whereBetween('date', [$rangeStart->toDateString(), $rangeEnd->toDateString()]))
         ->get();
 
     foreach ($vacationRequests as $request) {
@@ -225,10 +211,7 @@ protected function buildShiftSummaryCacheForRange(Carbon $rangeStart, Carbon $ra
 
     while ($cursor->lte($rangeEnd)) {
         $key = $cursor->toDateString();
-
-        $notWorking = isset($notWorkingByDate[$key])
-            ? count($notWorkingByDate[$key])
-            : 0;
+        $notWorking = isset($notWorkingByDate[$key]) ? count($notWorkingByDate[$key]) : 0;
 
         $this->shiftSummaryCache[$key] = $this->makeShiftSummary($total, $notWorking);
 
@@ -287,6 +270,15 @@ public function setFilter(string $filter): void
     }
 
     $this->activeFilter = $filter;
+}
+
+public function setCalendarMode(string $mode): void
+{
+    if (! in_array($mode, ['calendar', 'shift', 'people'], true)) {
+        return;
+    }
+
+    $this->calendarMode = $mode;
 }
 
     public function openDay(string $date): void
@@ -393,41 +385,7 @@ protected function canViewCalendarType(string $type): bool
                 ])
                 ->values();
 
-            $tracks = [];
-
-            foreach ($weekEvents as $event) {
-                $visibleStart = $event['start']->lt($weekStart) ? $weekStart : $event['start'];
-                $visibleEnd = $event['end']->gt($weekEnd) ? $weekEnd : $event['end'];
-
-                $colStart = $weekStart->diffInDays($visibleStart) + 1;
-                $colEnd = $weekStart->diffInDays($visibleEnd) + 2;
-
-                $placed = false;
-
-                foreach ($tracks as $trackIndex => $trackItems) {
-                    $hasCollision = collect($trackItems)->contains(function ($item) use ($colStart, $colEnd) {
-                        return ! ($colEnd <= $item['colStart'] || $colStart >= $item['colEnd']);
-                    });
-
-                    if (! $hasCollision) {
-                        $tracks[$trackIndex][] = [
-                            ...$event,
-                            'colStart' => $colStart,
-                            'colEnd' => $colEnd,
-                        ];
-                        $placed = true;
-                        break;
-                    }
-                }
-
-                if (! $placed) {
-                    $tracks[] = [[
-                        ...$event,
-                        'colStart' => $colStart,
-                        'colEnd' => $colEnd,
-                    ]];
-                }
-            }
+            $tracks = $this->buildWeekTracks($weekEvents, $weekStart, $weekEnd);
 
             $weeks[] = [
                 'days' => $days,
@@ -438,6 +396,128 @@ protected function canViewCalendarType(string $type): bool
         }
 
         return $weeks;
+    }
+
+
+    protected function buildWeekTracks(Collection $weekEvents, Carbon $weekStart, Carbon $weekEnd): array
+    {
+        $tracks = [];
+        $laneIndexes = [];
+
+        $weekEvents = $weekEvents
+            ->sortBy([
+                ['lane_title', 'asc'],
+                ['priority', 'desc'],
+                ['start', 'asc'],
+            ])
+            ->values();
+
+        foreach ($weekEvents as $event) {
+            $visibleStart = $event['start']->lt($weekStart) ? $weekStart : $event['start'];
+            $visibleEnd = $event['end']->gt($weekEnd) ? $weekEnd : $event['end'];
+
+            $colStart = $weekStart->diffInDays($visibleStart) + 1;
+            $colEnd = $weekStart->diffInDays($visibleEnd) + 2;
+            $laneKey = (string) ($event['lane_key'] ?? $event['id']);
+
+            $trackIndex = $laneIndexes[$laneKey] ?? null;
+
+            if ($trackIndex === null) {
+                $trackIndex = count($tracks);
+                $laneIndexes[$laneKey] = $trackIndex;
+                $tracks[$trackIndex] = [];
+            }
+
+            $item = [
+                ...$event,
+                'colStart' => $colStart,
+                'colEnd' => $colEnd,
+            ];
+
+            $hasCollision = collect($tracks[$trackIndex])->contains(function ($existing) use ($colStart, $colEnd) {
+                return ! ($colEnd <= $existing['colStart'] || $colStart >= $existing['colEnd']);
+            });
+
+            if (! $hasCollision) {
+                $tracks[$trackIndex][] = $item;
+                continue;
+            }
+
+            $placed = false;
+
+            foreach ($tracks as $fallbackIndex => $trackItems) {
+                $hasFallbackCollision = collect($trackItems)->contains(function ($existing) use ($colStart, $colEnd) {
+                    return ! ($colEnd <= $existing['colStart'] || $colStart >= $existing['colEnd']);
+                });
+
+                if (! $hasFallbackCollision) {
+                    $tracks[$fallbackIndex][] = $item;
+                    $placed = true;
+                    break;
+                }
+            }
+
+            if (! $placed) {
+                $tracks[] = [$item];
+            }
+        }
+
+        return array_values($tracks);
+    }
+
+    public function getPeopleDaysForMonth(Carbon $month): array
+    {
+        $days = [];
+        $cursor = $month->copy()->startOfMonth();
+        $end = $month->copy()->endOfMonth();
+
+        while ($cursor->lte($end)) {
+            $days[] = $cursor->copy();
+            $cursor->addDay();
+        }
+
+        return $days;
+    }
+
+    public function getPeopleRowsForMonth(Carbon $month): array
+    {
+        $start = $month->copy()->startOfMonth();
+        $end = $month->copy()->endOfMonth();
+        $dayWidth = 42;
+
+        $users = User::query()
+            ->where('is_active', true)
+            ->where('role', 'cleaner')
+            ->orderBy('name')
+            ->get();
+
+        $events = $this->getExpandedEvents($start->copy(), $end->copy())
+            ->filter(fn (array $event) => ($event['type'] ?? null) === 'vacation' && filled($event['user_id'] ?? null))
+            ->values();
+
+        return $users->map(function ($user) use ($events, $start, $end, $dayWidth) {
+            $bars = $events
+                ->filter(fn (array $event) => (int) ($event['user_id'] ?? 0) === (int) $user->id)
+                ->map(function (array $event) use ($start, $end, $dayWidth) {
+                    $visibleStart = $event['start']->lt($start) ? $start : $event['start'];
+                    $visibleEnd = $event['end']->gt($end) ? $end : $event['end'];
+
+                    $startIndex = $start->diffInDays($visibleStart);
+                    $span = $visibleStart->diffInDays($visibleEnd) + 1;
+
+                    return [
+                        ...$event,
+                        'left' => $startIndex * $dayWidth + 3,
+                        'width' => max($span * $dayWidth - 6, 20),
+                    ];
+                })
+                ->values();
+
+            return [
+                'user' => $user,
+                'bars' => $bars,
+            ];
+        })->values()->all();
     }
 
     public function getCarouselMonthsProperty(): array
@@ -557,41 +637,7 @@ protected function canViewCalendarType(string $type): bool
                 ])
                 ->values();
 
-            $tracks = [];
-
-            foreach ($weekEvents as $event) {
-                $visibleStart = $event['start']->lt($weekStart) ? $weekStart : $event['start'];
-                $visibleEnd = $event['end']->gt($weekEnd) ? $weekEnd : $event['end'];
-
-                $colStart = $weekStart->diffInDays($visibleStart) + 1;
-                $colEnd = $weekStart->diffInDays($visibleEnd) + 2;
-
-                $placed = false;
-
-                foreach ($tracks as $trackIndex => $trackItems) {
-                    $hasCollision = collect($trackItems)->contains(function ($item) use ($colStart, $colEnd) {
-                        return ! ($colEnd <= $item['colStart'] || $colStart >= $item['colEnd']);
-                    });
-
-                    if (! $hasCollision) {
-                        $tracks[$trackIndex][] = [
-                            ...$event,
-                            'colStart' => $colStart,
-                            'colEnd' => $colEnd,
-                        ];
-                        $placed = true;
-                        break;
-                    }
-                }
-
-                if (! $placed) {
-                    $tracks[] = [[
-                        ...$event,
-                        'colStart' => $colStart,
-                        'colEnd' => $colEnd,
-                    ]];
-                }
-            }
+            $tracks = $this->buildWeekTracks($weekEvents, $weekStart, $weekEnd);
 
             $weeks[] = [
                 'days' => $days,
@@ -608,7 +654,7 @@ protected function canViewCalendarType(string $type): bool
     {
         $day = $this->selectedDay->copy()->startOfDay();
 
-        return $this->getExpandedEvents($day->copy(), $day->copy())
+        return $this->visibleEvents
             ->filter(function (array $event) use ($day) {
                 return $day->betweenIncluded(
                     $event['start']->copy()->startOfDay(),
@@ -634,9 +680,6 @@ protected function canViewCalendarType(string $type): bool
 
     protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Collection
     {
-        $rangeStart = $rangeStart->copy()->startOfDay();
-        $rangeEnd = $rangeEnd->copy()->endOfDay();
-
         $allowedTypes = $this->allowedCalendarTypes();
 
 if (empty($allowedTypes)) {
@@ -679,6 +722,9 @@ $baseEvents = CalendarEvent::query()
                     $expanded->push([
                         'id' => 'birthday_' . $user->id . '_' . $year,
                         'title' => "{$user->name}{$this->formatUserDip($user)} — День рождения",
+                        'user_id' => $user->id,
+                        'lane_key' => 'user_' . $user->id,
+                        'lane_title' => $user->name,
                         'description' => null,
                         'short' => mb_strimwidth("🎂 {$user->name}", 0, 12, '...'),
                         'type' => 'holiday',
@@ -707,6 +753,9 @@ $baseEvents = CalendarEvent::query()
                     $expanded->push([
                         'id' => 'work_' . $user->id . '_' . $year,
                         'title' => "{$user->name}{$this->formatUserDip($user)} — {$years} лет в компании",
+                        'user_id' => $user->id,
+                        'lane_key' => 'user_' . $user->id,
+                        'lane_title' => $user->name,
                         'description' => null,
                         'short' => mb_strimwidth("🏢 {$user->name}", 0, 12, '...'),
                         'type' => 'holiday',
@@ -735,7 +784,7 @@ if ($this->canViewCalendarType('vacation')) {
 
 $dayOffGroups = $dayOffDays
     ->sortBy('date')
-    ->groupBy(fn ($day) => $day->user_id . '_' . $day->day_off_request_id);
+    ->groupBy('user_id');
 
 foreach ($dayOffGroups as $userId => $userDays) {
     $userDays = $userDays
@@ -782,6 +831,9 @@ foreach ($dayOffGroups as $userId => $userDays) {
         $expanded->push([
             'id' => 'day_off_user_' . $userId . '_' . $start->format('Ymd') . '_' . $rangeIndex,
             'title' => "{$user?->name}{$this->formatUserDip($user)} — Выходной",
+            'user_id' => $user?->id,
+            'lane_key' => $user ? 'user_' . $user->id : 'day_off_' . $userId,
+            'lane_title' => $user?->name ?? 'Выходной',
             'description' => $firstDay->request?->reason,
             'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 18, '...'),
             'type' => 'vacation',
@@ -822,6 +874,9 @@ foreach ($dayOffGroups as $userId => $userDays) {
         $expanded->push([
             'id' => 'vacation_' . $vacationRequest->id . '_' . $start->format('Ymd'),
             'title' => "{$user?->name}{$this->formatUserDip($user)} — Отпуск",
+            'user_id' => $user?->id,
+            'lane_key' => $user ? 'user_' . $user->id : 'vacation_' . $vacationRequest->id,
+            'lane_title' => $user?->name ?? 'Отпуск',
             'description' => $vacationRequest->reason,
             'short' => mb_strimwidth("🏖 " . ($user?->name ?? 'Отпуск'), 0, 12, '...'),
             'type' => 'vacation',
@@ -983,6 +1038,9 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
         return [
             'id' => $event->id . '_' . $start->format('Ymd'),
             'title' => $title,
+            'user_id' => $user?->id,
+            'lane_key' => $user ? 'user_' . $user->id : 'event_' . $event->id,
+            'lane_title' => $user?->name ?? $title,
             'description' => $event->description,
             'short' => mb_strimwidth($title, 0, 12, '...'),
             'type' => $event->type,
@@ -1348,28 +1406,24 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
             </div>
         </div>
 
-        @if (count($this->problemShiftDays))
-            <div class="px-[20px] pb-[12px]">
-                <div class="rounded-[28px] bg-[#FFF1C7] px-[14px] py-[12px]">
-                    <p class="mb-[8px] text-[14px] font-semibold leading-none text-[#111]">
-                        ⚠️ Дни с нагрузкой
-                    </p>
+        <div class="px-[20px] pb-[12px] flex gap-[6px] overflow-x-auto no-scrollbar">
+            @foreach ([
+                'calendar' => 'Календарь',
+                'shift' => 'Смена',
+                'people' => 'Люди',
+            ] as $modeKey => $modeLabel)
+                <button
+                    type="button"
+                    wire:click="setCalendarMode('{{ $modeKey }}')"
+                    class="shrink-0 rounded-full px-[12px] py-[7px] text-[14px] font-medium"
+                    style="background: {{ $calendarMode === $modeKey ? '#111111' : '#F1F1F1' }}; color: {{ $calendarMode === $modeKey ? '#FFFFFF' : '#111111' }};"
+                >
+                    {{ $modeLabel }}
+                </button>
+            @endforeach
+        </div>
 
-                    <div class="flex gap-[6px] overflow-x-auto no-scrollbar">
-                        @foreach ($this->problemShiftDays as $problemDay)
-                            <button
-                                type="button"
-                                wire:click="openDay('{{ $problemDay['date']->toDateString() }}')"
-                                class="shrink-0 rounded-full bg-white/70 px-[10px] py-[7px] text-[12px] font-medium text-[#111]"
-                            >
-                                {{ $problemDay['date']->translatedFormat('j M') }}
-                                · {{ $problemDay['summary']['working'] }}/{{ $problemDay['summary']['total'] }}
-                            </button>
-                        @endforeach
-                    </div>
-                </div>
-            </div>
-        @endif
+        @if ($calendarMode === 'calendar')
 
         <div class="grid grid-cols-7 gap-0 mb-[8px] px-[2px]">
             @foreach ($this->dayLetters as $letter)
@@ -1427,9 +1481,15 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
 @endphp
 
 <div class="flex flex-col items-center gap-[4px]">
+    @if ($isToday)
+        <span class="rounded-full bg-[#111111] px-[7px] py-[3px] text-[9px] font-semibold uppercase leading-none tracking-[.06em] text-white">
+            Сегодня
+        </span>
+    @endif
+
     <div
         class="px-[5px] py-[5px] items-center rounded-full flex items-center justify-center text-[16px] leading-none transition duration-200"
-        style="background: {{ $background }}; color: {{ $color }}; font-weight: {{ ($isToday || $day['inMonth']) ? '600' : '400' }};"
+        style="background: {{ $background }}; color: {{ $color }}; font-weight: {{ ($isToday || $day['inMonth']) ? '600' : '400' }}; box-shadow: {{ $isToday ? '0 0 0 4px rgba(0,0,0,.08)' : 'none' }};"
     >
         {{ $day['date']->day }}
     </div>
@@ -1513,6 +1573,115 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
             </div>
       
         </div>
+
+        @elseif ($calendarMode === 'shift')
+            <div class="px-[14px] pb-[20px] space-y-[8px]">
+                @foreach ($this->getPeopleDaysForMonth($month) as $shiftDay)
+                    @php
+                        $shift = $this->getDayShiftSummary($shiftDay);
+                        $isToday = $shiftDay->isToday();
+                    @endphp
+
+                    <button
+                        type="button"
+                        wire:click="openDay('{{ $shiftDay->toDateString() }}')"
+                        class="w-full rounded-[28px] px-[14px] py-[13px] text-left transition active:scale-[0.99]"
+                        style="background: {{ $isToday ? '#111111' : $shift['bg'] }}; color: {{ $isToday ? '#FFFFFF' : '#111111' }};"
+                    >
+                        <div class="flex items-center justify-between gap-[12px]">
+                            <div>
+                                @if ($isToday)
+                                    <p class="mb-[5px] text-[11px] font-semibold uppercase tracking-[.08em] text-white/70">Сегодня</p>
+                                @endif
+
+                                <p class="text-[17px] font-semibold leading-none">
+                                    {{ $shiftDay->translatedFormat('j F · l') }}
+                                </p>
+
+                                <p class="mt-[7px] text-[13px] leading-none" style="color: {{ $isToday ? 'rgba(255,255,255,.75)' : $shift['text'] }};">
+                                    {{ $shift['label'] }}
+                                </p>
+                            </div>
+
+                            <div class="shrink-0 rounded-full px-[11px] py-[7px] text-[14px] font-bold" style="background: {{ $isToday ? 'rgba(255,255,255,.16)' : 'rgba(255,255,255,.72)' }}; color: {{ $isToday ? '#FFFFFF' : $shift['text'] }};">
+                                {{ $shift['working'] }}/{{ $shift['total'] }}
+                            </div>
+                        </div>
+                    </button>
+                @endforeach
+            </div>
+        @elseif ($calendarMode === 'people')
+            @php
+                $peopleDays = $this->getPeopleDaysForMonth($month);
+                $peopleRows = $this->getPeopleRowsForMonth($month);
+            @endphp
+
+            <div class="px-[10px] pb-[24px] overflow-x-auto no-scrollbar">
+                <div class="min-w-[1450px] rounded-[30px] bg-[#F7F7F7] p-[8px]">
+                    <div class="flex items-center border-b border-black/10 pb-[8px]">
+                        <div class="sticky left-0 z-20 w-[128px] shrink-0 rounded-[20px] bg-[#F7F7F7] px-[10px] py-[8px] text-[13px] font-semibold text-[#111]">
+                            Клинер
+                        </div>
+
+                        <div class="flex">
+                            @foreach ($peopleDays as $peopleDay)
+                                @php $isToday = $peopleDay->isToday(); @endphp
+                                <button
+                                    type="button"
+                                    wire:click="openDay('{{ $peopleDay->toDateString() }}')"
+                                    class="mx-[2px] flex h-[42px] w-[38px] shrink-0 flex-col items-center justify-center rounded-[16px] text-[12px] font-semibold"
+                                    style="background: {{ $isToday ? '#111111' : '#FFFFFF' }}; color: {{ $isToday ? '#FFFFFF' : '#111111' }};"
+                                >
+                                    @if ($isToday)
+                                        <span class="text-[8px] uppercase leading-none text-white/70">сег</span>
+                                    @endif
+                                    <span class="leading-none">{{ $peopleDay->day }}</span>
+                                </button>
+                            @endforeach
+                        </div>
+                    </div>
+
+                    <div class="divide-y divide-black/5">
+                        @foreach ($peopleRows as $row)
+                            <div class="relative flex min-h-[42px] items-center">
+                                <button
+                                    type="button"
+                                    class="sticky left-0 z-20 flex h-[42px] w-[128px] shrink-0 items-center rounded-[18px] bg-[#F7F7F7] px-[10px] text-left"
+                                >
+                                    <span class="truncate text-[13px] font-medium text-[#111]">
+                                        {{ $row['user']->name }}
+                                    </span>
+                                </button>
+
+                                <div class="relative h-[42px]" style="width: {{ count($peopleDays) * 42 }}px;">
+                                    <div class="absolute inset-0 flex">
+                                        @foreach ($peopleDays as $peopleDay)
+                                            <button
+                                                type="button"
+                                                wire:click="openDay('{{ $peopleDay->toDateString() }}')"
+                                                class="mx-[2px] h-[42px] w-[38px] shrink-0 rounded-[14px] {{ $peopleDay->isToday() ? 'bg-black/[.06]' : 'bg-white' }}"
+                                            ></button>
+                                        @endforeach
+                                    </div>
+
+                                    @foreach ($row['bars'] as $bar)
+                                        <button
+                                            type="button"
+                                            wire:click="openDay('{{ $bar['start']->toDateString() }}')"
+                                            class="absolute top-[9px] z-10 h-[24px] overflow-hidden px-[8px] text-left text-[12px] font-medium leading-none"
+                                            style="left: {{ $bar['left'] }}px; width: {{ $bar['width'] }}px; {{ $bar['style'] }} border-radius:9999px;"
+                                            title="{{ $bar['title'] }}"
+                                        >
+                                            <span class="block truncate leading-[24px]">{{ $bar['short'] }}</span>
+                                        </button>
+                                    @endforeach
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
+                </div>
+            </div>
+        @endif
           
     </div>
 
@@ -1641,7 +1810,6 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
 
 @php
     $shift = $this->selectedDayShiftSummary;
-    $workers = $this->selectedDayWorkers;
 @endphp
 
 <div class="mt-[16px] rounded-[32px] bg-white px-[14px] py-[14px]">
@@ -1666,27 +1834,27 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
             <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
                 <p class="text-[11px] leading-none text-[#777]">Всего</p>
                 <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                    {{ $workers['total'] }}
+                    {{ $this->selectedDayWorkers['total'] }}
                 </p>
             </div>
 
             <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
                 <p class="text-[11px] leading-none text-[#777]">Работает</p>
                 <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                    {{ $workers['working_count'] }}
+                    {{ $this->selectedDayWorkers['working_count'] }}
                 </p>
             </div>
 
             <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
                 <p class="text-[11px] leading-none text-[#777]">Нет</p>
                 <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                    {{ $workers['not_working_count'] }}
+                    {{ $this->selectedDayWorkers['not_working_count'] }}
                 </p>
             </div>
         </div>
     </div>
 
-    @if ($workers['not_working']->count())
+    @if ($this->selectedDayWorkers['not_working']->count())
         <div class="mb-[14px]">
             <div class="mb-[8px] flex items-center justify-between">
                 <p class="text-[16px] font-semibold leading-none text-[#111]">
@@ -1694,12 +1862,12 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                 </p>
 
                 <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
-                    {{ $workers['not_working_count'] }}
+                    {{ $this->selectedDayWorkers['not_working_count'] }}
                 </span>
             </div>
 
             <div class="space-y-[6px]">
-                @foreach ($workers['not_working'] as $user)
+                @foreach ($this->selectedDayWorkers['not_working'] as $user)
                     <div class="flex items-center gap-[10px] rounded-[22px] bg-[#FFF6F6] px-[10px] py-[9px]">
                         <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#9F1D1D]">
                             {{ mb_substr($user->name, 0, 1) }}
@@ -1727,12 +1895,12 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
             </p>
 
             <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[12px] text-[#3C8D57]">
-                {{ $workers['working_count'] }}
+                {{ $this->selectedDayWorkers['working_count'] }}
             </span>
         </div>
 
         <div class="space-y-[6px]">
-            @forelse ($workers['working'] as $user)
+            @forelse ($this->selectedDayWorkers['working'] as $user)
                 <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
                     <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
                         {{ mb_substr($user->name, 0, 1) }}
