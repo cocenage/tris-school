@@ -103,7 +103,7 @@ class TelegramUpdateIngestService
 
         $this->syncAttachments($messageModel, $message);
 
-
+\App\Jobs\ProcessTelegramInstructionAutoReply::dispatch($messageModel->id);
 
 return $messageModel;
         
