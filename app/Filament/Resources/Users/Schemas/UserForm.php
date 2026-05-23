@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Users\Schemas;
 
+use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
@@ -94,6 +95,26 @@ class UserForm
                     ])
                     ->columns(2),
 
+
+ Section::make('Настройки')
+                    ->description('Выходные дни, зарплаты и тд')
+                    ->schema([
+CheckboxList::make('weekend_days')
+    ->label('Выходные дни')
+    ->options([
+        1 => 'Понедельник',
+        2 => 'Вторник',
+        3 => 'Среда',
+        4 => 'Четверг',
+        5 => 'Пятница',
+        6 => 'Суббота',
+        7 => 'Воскресенье',
+    ])
+    ->columns(2)
+    ->helperText('Эти дни будут считаться регулярными выходными сотрудника'),
+
+        ])
+                    ->columns(2),
                 Section::make('Telegram')
                     ->description('Данные, которые пришли из Telegram Mini App')
                     ->schema([
@@ -145,8 +166,11 @@ class UserForm
                             ->maxLength(255)
                             ->disabled()
                             ->dehydrated(true),
+                            
                     ])
                     ->columns(2),
+
+
 
                 Section::make('Доступ к типам календаря')
                     ->description('Какие типы событий пользователь будет видеть в календаре')

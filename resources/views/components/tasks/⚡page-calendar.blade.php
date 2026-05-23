@@ -15,6 +15,7 @@ new class extends Component {
     public bool $sheetOpen = false;
     public string $activeFilter = 'all';
     public string $calendarMode = 'calendar';
+    public string $daySheetTab = 'summary';
 
     protected array $shiftSummaryCache = [];
     protected array $shiftSummaryRangeCache = [];
@@ -33,9 +34,38 @@ new class extends Component {
     }
 
 
+protected function normalizeWeekendDays(mixed $value): Collection
+{
+    if ($value instanceof Collection) {
+        return $value->map(fn ($day) => (int) $day)->filter()->values();
+    }
+
+    if (is_array($value)) {
+        return collect($value)->map(fn ($day) => (int) $day)->filter()->values();
+    }
+
+    if (is_string($value) && filled($value)) {
+        $decoded = json_decode($value, true);
+
+        if (is_array($decoded)) {
+            return collect($decoded)->map(fn ($day) => (int) $day)->filter()->values();
+        }
+
+        return collect(explode(',', $value))->map(fn ($day) => (int) trim($day))->filter()->values();
+    }
+
+    return collect();
+}
+
+protected function isRegularWeekend(User $user, Carbon $date): bool
+{
+    return $this->normalizeWeekendDays($user->weekend_days ?? [])->contains($date->dayOfWeekIso);
+}
+
 public function getSelectedDayWorkersProperty(): array
 {
-    $date = $this->selectedDay->toDateString();
+    $selectedDay = $this->selectedDay->copy()->startOfDay();
+    $date = $selectedDay->toDateString();
 
     $users = User::query()
         ->where('is_active', true)
@@ -59,9 +89,11 @@ public function getSelectedDayWorkersProperty(): array
         ->get()
         ->keyBy('user_id');
 
-    $notWorking = $users->filter(function ($user) use ($dayOffDays, $vacationRequests) {
-        return $dayOffDays->has($user->id) || $vacationRequests->has($user->id);
-    })->map(function ($user) use ($dayOffDays, $vacationRequests) {
+    $notWorking = $users->filter(function ($user) use ($selectedDay, $dayOffDays, $vacationRequests) {
+        return $this->isRegularWeekend($user, $selectedDay)
+            || $dayOffDays->has($user->id)
+            || $vacationRequests->has($user->id);
+    })->map(function ($user) use ($selectedDay, $dayOffDays, $vacationRequests) {
         if ($vacationRequests->has($user->id)) {
             $request = $vacationRequests->get($user->id);
 
@@ -82,6 +114,8 @@ public function getSelectedDayWorkersProperty(): array
             $user->not_working_reason = filled($day?->request?->reason)
                 ? 'Выходной: ' . $day->request->reason
                 : 'Выходной';
+        } elseif ($this->isRegularWeekend($user, $selectedDay)) {
+            $user->not_working_reason = 'Регулярный выходной';
         }
 
         return $user;
@@ -172,7 +206,12 @@ protected function buildShiftSummaryCacheForRange(Carbon $rangeStart, Carbon $ra
 
     $this->shiftSummaryRangeCache[$rangeKey] = true;
 
-    $cleanerIds = $this->getCleanerIds();
+    $cleaners = User::query()
+        ->where('is_active', true)
+        ->where('role', 'cleaner')
+        ->get(['id', 'weekend_days']);
+
+    $cleanerIds = $cleaners->pluck('id');
     $total = $cleanerIds->count();
     $notWorkingByDate = [];
 
@@ -211,6 +250,13 @@ protected function buildShiftSummaryCacheForRange(Carbon $rangeStart, Carbon $ra
 
     while ($cursor->lte($rangeEnd)) {
         $key = $cursor->toDateString();
+
+        foreach ($cleaners as $cleaner) {
+            if ($this->normalizeWeekendDays($cleaner->weekend_days ?? [])->contains($cursor->dayOfWeekIso)) {
+                $notWorkingByDate[$key][$cleaner->id] = true;
+            }
+        }
+
         $notWorking = isset($notWorkingByDate[$key]) ? count($notWorkingByDate[$key]) : 0;
 
         $this->shiftSummaryCache[$key] = $this->makeShiftSummary($total, $notWorking);
@@ -264,6 +310,16 @@ protected function makeShiftSummary(int $total, int $notWorking): array
 
 public function setFilter(string $filter): void
 {
+    if ($filter === 'day_off') {
+        if (! $this->canViewCalendarType('vacation')) {
+            $this->activeFilter = 'all';
+            return;
+        }
+
+        $this->activeFilter = $filter;
+        return;
+    }
+
     if ($filter !== 'all' && ! $this->canViewCalendarType($filter)) {
         $this->activeFilter = 'all';
         return;
@@ -281,9 +337,20 @@ public function setCalendarMode(string $mode): void
     $this->calendarMode = $mode;
 }
 
+public function setDaySheetTab(string $tab): void
+{
+    if (! in_array($tab, ['summary', 'events', 'people'], true)) {
+        return;
+    }
+
+    $this->daySheetTab = $tab;
+}
+
+
     public function openDay(string $date): void
     {
         $this->selectedDate = $date;
+        $this->daySheetTab = 'summary';
         $this->sheetOpen = true;
     }
 
@@ -312,7 +379,6 @@ public function getFiltersProperty(): array
         'finance' => 'Финансы',
         'holiday' => 'Праздники',
         'peak' => 'Пики загрузки',
-        'vacation' => 'Выходные и отпуска',
         'strike' => 'Забастовки',
     ];
 
@@ -321,6 +387,11 @@ public function getFiltersProperty(): array
     $filters = collect($all)
         ->only($allowed)
         ->toArray();
+
+    if (in_array('vacation', $allowed, true)) {
+        $filters['day_off'] = 'Выходные';
+        $filters['vacation'] = 'Отпуска';
+    }
 
     return [
         'all' => 'Все',
@@ -335,6 +406,10 @@ protected function allowedCalendarTypes(): array
 
 protected function canViewCalendarType(string $type): bool
 {
+    if ($type === 'day_off') {
+        return in_array('vacation', $this->allowedCalendarTypes(), true);
+    }
+
     return in_array($type, $this->allowedCalendarTypes(), true);
 }
 
@@ -492,7 +567,7 @@ protected function canViewCalendarType(string $type): bool
             ->get();
 
         $events = $this->getExpandedEvents($start->copy(), $end->copy())
-            ->filter(fn (array $event) => ($event['type'] ?? null) === 'vacation' && filled($event['user_id'] ?? null))
+            ->filter(fn (array $event) => in_array(($event['type'] ?? null), ['vacation', 'day_off'], true) && filled($event['user_id'] ?? null))
             ->values();
 
         return $users->map(function ($user) use ($events, $start, $end, $dayWidth) {
@@ -669,6 +744,68 @@ protected function canViewCalendarType(string $type): bool
             ->values();
     }
 
+    public function getSelectedDayEventGroupsProperty(): array
+    {
+        $groups = [
+            'tasks' => ['title' => 'Задачи', 'emoji' => '⚡️', 'events' => collect()],
+            'day_off' => ['title' => 'Выходные', 'emoji' => '🌿', 'events' => collect()],
+            'vacation' => ['title' => 'Отпуска', 'emoji' => '🏖️', 'events' => collect()],
+            'holiday' => ['title' => 'Праздники', 'emoji' => '🎉', 'events' => collect()],
+            'workflow' => ['title' => 'Рабочие процессы', 'emoji' => '🛠️', 'events' => collect()],
+            'finance' => ['title' => 'Финансы', 'emoji' => '💶', 'events' => collect()],
+            'peak' => ['title' => 'Пики загрузки', 'emoji' => '📈', 'events' => collect()],
+            'strike' => ['title' => 'Забастовки', 'emoji' => '🚧', 'events' => collect()],
+            'other' => ['title' => 'Другое', 'emoji' => '📌', 'events' => collect()],
+        ];
+
+        foreach ($this->selectedDayEvents as $event) {
+            $type = $event['type'] ?? 'other';
+            $key = array_key_exists($type, $groups) ? $type : 'other';
+
+            $groups[$key]['events']->push($event);
+        }
+
+        return collect($groups)
+            ->filter(fn ($group) => $group['events']->count() > 0)
+            ->toArray();
+    }
+
+    public function getDayEventBadges(Carbon $day): array
+    {
+        $events = $this->visibleEvents
+            ->filter(fn (array $event) => $day->betweenIncluded(
+                $event['start']->copy()->startOfDay(),
+                $event['end']->copy()->startOfDay()
+            ));
+
+        $counts = [
+            'tasks' => $events->where('type', 'tasks')->count(),
+            'day_off' => $events->where('type', 'day_off')->count(),
+            'vacation' => $events->where('type', 'vacation')->count(),
+            'holiday' => $events->where('type', 'holiday')->count(),
+            'workflow' => $events->where('type', 'workflow')->count(),
+            'finance' => $events->where('type', 'finance')->count(),
+            'peak' => $events->where('type', 'peak')->count(),
+            'strike' => $events->where('type', 'strike')->count(),
+        ];
+
+        return collect([
+            ['emoji' => '⚡️', 'count' => $counts['tasks'], 'bg' => '#FFE8B5', 'text' => '#8A5800'],
+            ['emoji' => '🌿', 'count' => $counts['day_off'], 'bg' => '#DDF3E4', 'text' => '#2F7D4A'],
+            ['emoji' => '🏖️', 'count' => $counts['vacation'], 'bg' => '#ECE3FF', 'text' => '#5B45A0'],
+            ['emoji' => '🎉', 'count' => $counts['holiday'], 'bg' => '#FFE1E1', 'text' => '#9F1D1D'],
+            ['emoji' => '🛠️', 'count' => $counts['workflow'], 'bg' => '#DDEEFF', 'text' => '#245C9A'],
+            ['emoji' => '💶', 'count' => $counts['finance'], 'bg' => '#DDF3E4', 'text' => '#2F7D4A'],
+            ['emoji' => '📈', 'count' => $counts['peak'], 'bg' => '#FFF1C7', 'text' => '#8A6500'],
+            ['emoji' => '🚧', 'count' => $counts['strike'], 'bg' => '#FCE9DD', 'text' => '#9A4D20'],
+        ])
+            ->filter(fn ($badge) => $badge['count'] > 0)
+            ->values()
+            ->take(4)
+            ->all();
+    }
+
+
     protected function formatUserDip(?User $user): string
     {
         if (! $user) {
@@ -836,11 +973,11 @@ foreach ($dayOffGroups as $userId => $userDays) {
             'lane_title' => $user?->name ?? 'Выходной',
             'description' => $firstDay->request?->reason,
             'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 18, '...'),
-            'type' => 'vacation',
+            'type' => 'day_off',
             'priority' => 85,
             'start' => $start,
             'end' => $end,
-            'style' => $this->eventStyle('vacation'),
+            'style' => $this->eventStyle('day_off'),
         ]);
     }
 }
@@ -1079,6 +1216,7 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
             'finance' => 'background:#CBEED9;color:#111111;',
             'holiday' => 'background:#F3B8B8;color:#111111;',
             'peak' => 'background:#F3E69C;color:#111111;',
+            'day_off' => 'background:#DDF3E4;color:#111111;',
             'vacation' => 'background:#CDBEFF;color:#111111;',
             'strike' => 'background:#F4C9A8;color:#111111;',
             default => 'background:#E9E9E9;color:#111111;',
@@ -1089,39 +1227,23 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
 
 <x-slot:header>
     <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
-     <button
+        <button
             type="button"
             onclick="history.back()"
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
-                   bg-[#E1E1E1] backdrop-blur-md
-                   text-white
-                   transition-all duration-300
-                   hover:bg-[#7D7D7D]"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-arrow-left
-                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
-            />
+            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
         </button>
-        <span class="flex items-center justify-center text-[18px] leading-none">
-    
 
-                 
-            {{ $month->translatedFormat('F') }}
- 
+        <span class="flex items-center justify-center text-[18px] font-semibold leading-none">
+            Календарь
         </span>
 
-     <button
+        <button
             type="button"
-     
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
-                   bg-[#E1E1E1] backdrop-blur-md
-                   text-white
-                   transition-all duration-300
-                   hover:bg-[#7D7D7D]"
+            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
         >
-            <x-heroicon-o-magnifying-glass
-                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
-            />
+            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
         </button>
     </div>
 </x-slot:header>
@@ -1327,6 +1449,30 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
     class="h-full w-full flex flex-col overflow-hidden overflow-x-hidden"
 >
     <div class="flex-1 overflow-y-auto overflow-x-hidden bg-white rounded-t-[40px] overscroll-y-contain">
+        <div class="px-[20px] pt-[18px] pb-[8px] flex items-center justify-between">
+            <button
+                type="button"
+                wire:click="prevMonth"
+                class="flex h-[38px] w-[38px] items-center justify-center rounded-full bg-[#F1F1F1] text-[22px] text-[#111]"
+            >
+                ‹
+            </button>
+
+            <div
+                class="text-center text-[22px] font-semibold leading-none text-[#111]"
+                wire:key="month-title-{{ $month->format('Y-m') }}"
+            >
+                {{ $month->translatedFormat('F Y') }}
+            </div>
+
+            <button
+                type="button"
+                wire:click="nextMonth"
+                class="flex h-[38px] w-[38px] items-center justify-center rounded-full bg-[#F1F1F1] text-[22px] text-[#111]"
+            >
+                ›
+            </button>
+        </div>
         <div class="sticky top-0 z-20 bg-white pt-[20px] pb-[15px] overflow-x-hidden">
             <div class="px-[20px] flex gap-[5px] overflow-x-auto overflow-y-hidden no-scrollbar bg-white w-full max-w-full">
                 @foreach ($this->filters as $key => $label)
@@ -1368,6 +1514,12 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                                 'activeBg' => '#F3E69C',
                                 'activeText' => '#111111',
                             ],
+                            'day_off' => [
+                                'bg' => '#DDF3E4',
+                                'text' => '#2A1F1A',
+                                'activeBg' => '#8FDCAB',
+                                'activeText' => '#111111',
+                            ],
                             'vacation' => [
                                 'bg' => '#ECE3FF',
                                 'text' => '#2A1F1A',
@@ -1406,22 +1558,41 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
             </div>
         </div>
 
-        <div class="px-[20px] pb-[12px] flex gap-[6px] overflow-x-auto no-scrollbar">
-            @foreach ([
-                'calendar' => 'Календарь',
-                'shift' => 'Смена',
-                'people' => 'Люди',
-            ] as $modeKey => $modeLabel)
-                <button
-                    type="button"
-                    wire:click="setCalendarMode('{{ $modeKey }}')"
-                    class="shrink-0 rounded-full px-[12px] py-[7px] text-[14px] font-medium"
-                    style="background: {{ $calendarMode === $modeKey ? '#111111' : '#F1F1F1' }}; color: {{ $calendarMode === $modeKey ? '#FFFFFF' : '#111111' }};"
-                >
-                    {{ $modeLabel }}
-                </button>
-            @endforeach
-        </div>
+
+
+        @if ($calendarMode === 'calendar' && count($this->problemShiftDays))
+            <div class="px-[14px] pb-[12px]">
+                <div class="rounded-[28px] bg-[#FFF6D8] px-[14px] py-[12px]">
+                    <div class="mb-[9px] flex items-center justify-between">
+                        <p class="text-[15px] font-semibold leading-none text-[#111]">
+                            ⚠️ Проблемные дни
+                        </p>
+
+                        <span class="text-[12px] text-[#8A6500]">
+                            {{ count($this->problemShiftDays) }}
+                        </span>
+                    </div>
+
+                    <div class="flex gap-[6px] overflow-x-auto no-scrollbar">
+                        @foreach ($this->problemShiftDays as $problemDay)
+                            <button
+                                type="button"
+                                wire:click="openDay('{{ $problemDay['date']->toDateString() }}')"
+                                class="shrink-0 rounded-full bg-white/75 px-[10px] py-[7px] text-left"
+                            >
+                                <span class="block text-[12px] font-semibold leading-none text-[#111]">
+                                    {{ $problemDay['date']->translatedFormat('j M') }}
+                                </span>
+
+                                <span class="mt-[4px] block text-[11px] leading-none text-[#8A6500]">
+                                    {{ $problemDay['summary']['working'] }}/{{ $problemDay['summary']['total'] }}
+                                </span>
+                            </button>
+                        @endforeach
+                    </div>
+                </div>
+            </div>
+        @endif
 
         @if ($calendarMode === 'calendar')
 
@@ -1474,7 +1645,7 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                                         <button
                                             type="button"
                                             wire:click="openDay('{{ $day['date']->toDateString() }}')"
-                                            class="flex justify-center"
+                                            class="flex min-h-[82px] justify-center rounded-[18px] px-[1px] py-[4px] active:scale-[0.98] md:min-h-0 md:rounded-none md:py-0"
                                         >
                                            @php
     $shift = $this->getDayShiftSummary($day['date']);
@@ -1502,12 +1673,29 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
             {{ $shift['working'] }}/{{ $shift['total'] }}
         </span>
     @endif
+
+    @php
+        $badges = $this->getDayEventBadges($day['date']);
+    @endphp
+
+    @if ($day['inMonth'] && count($badges))
+        <div class="mt-[3px] flex max-w-[44px] flex-wrap justify-center gap-[2px] md:hidden">
+            @foreach ($badges as $badge)
+                <span
+                    class="flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-[4px] text-[10px] font-semibold leading-none"
+                    style="background: {{ $badge['bg'] }}; color: {{ $badge['text'] }};"
+                >
+                    {{ $badge['emoji'] }}{{ $badge['count'] > 1 ? $badge['count'] : '' }}
+                </span>
+            @endforeach
+        </div>
+    @endif
 </div>
                                         </button>
                                     @endforeach
                                 </div>
 
-                                <div class="relative overflow-hidden" style="height: {{ $trackAreaHeight }}px;">
+                                <div class="relative hidden overflow-hidden md:block" style="height: {{ $trackAreaHeight }}px;">
                                     <div class="space-y-[5px] pointer-events-none">
                                         @forelse ($week['tracks'] as $track)
                                             <div class="relative h-[20px]">
@@ -1616,7 +1804,38 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                 $peopleRows = $this->getPeopleRowsForMonth($month);
             @endphp
 
-            <div class="px-[10px] pb-[24px] overflow-x-auto no-scrollbar">
+            <div class="px-[14px] pb-[20px] space-y-[8px] md:hidden">
+                @foreach ($peopleRows as $row)
+                    @if ($row['bars']->count())
+                        <div class="rounded-[26px] bg-[#F7F7F7] px-[14px] py-[12px]">
+                            <p class="mb-[9px] text-[16px] font-semibold leading-none text-[#111]">
+                                {{ $row['user']->name }}
+                            </p>
+
+                            <div class="space-y-[6px]">
+                                @foreach ($row['bars'] as $bar)
+                                    <button
+                                        type="button"
+                                        wire:click="openDay('{{ $bar['start']->toDateString() }}')"
+                                        class="w-full rounded-[20px] px-[12px] py-[10px] text-left"
+                                        style="{{ $bar['style'] }}"
+                                    >
+                                        <p class="text-[14px] font-semibold leading-none text-[#111]">
+                                            {{ $bar['type'] === 'day_off' ? '🌿 Выходной' : '🏖️ Отпуск' }}
+                                        </p>
+
+                                        <p class="mt-[6px] text-[12px] leading-none text-black/60">
+                                            {{ $this->formatEventRange($bar) }}
+                                        </p>
+                                    </button>
+                                @endforeach
+                            </div>
+                        </div>
+                    @endif
+                @endforeach
+            </div>
+
+            <div class="hidden px-[10px] pb-[24px] overflow-x-auto no-scrollbar md:block">
                 <div class="min-w-[1450px] rounded-[30px] bg-[#F7F7F7] p-[8px]">
                     <div class="flex items-center border-b border-black/10 pb-[8px]">
                         <div class="sticky left-0 z-20 w-[128px] shrink-0 rounded-[20px] bg-[#F7F7F7] px-[10px] py-[8px] text-[13px] font-semibold text-[#111]">
@@ -1754,182 +1973,303 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
         </div>
 
         <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain px-[14px] pb-[10px] pt-[10px]">
-            <div class="space-y-[8px]">
-             @forelse ($this->selectedDayEvents as $event)
-    @php
-        $isTask = ($event['source'] ?? null) === 'task';
-        $tag = $isTask ? 'a' : 'button';
-    @endphp
+            @php
+                $shift = $this->selectedDayShiftSummary;
+            @endphp
 
-    <{{ $tag }}
-        @if($isTask)
-            href="{{ $event['url'] }}"
-        @else
-            type="button"
-        @endif
-        class="block w-full rounded-[30px] px-[15px] py-[15px] text-left"
-        style="{{ $event['style'] }}"
-    >
-        <p class="text-[12px] font-[500] leading-none text-black/65 mb-[6px]">
-            {{ $this->formatEventRange($event) }}
-        </p>
+            <div class="space-y-[10px]">
+                <div class="rounded-[32px] px-[14px] py-[14px]" style="background: {{ $shift['bg'] }};">
+                    <div class="flex items-start justify-between gap-[12px]">
+                        <div>
+                            @if ($this->selectedDay->isToday())
+                                <p class="mb-[7px] text-[11px] font-semibold uppercase tracking-[.08em]" style="color: {{ $shift['text'] }};">
+                                    Сегодня
+                                </p>
+                            @endif
 
-        <p class="text-[16px] leading-[1.1] mb-[4px]">
-            {{ $event['title'] }}
-        </p>
-
-        @if (filled($event['description']))
-            <p class="text-[14px] leading-[1.25] text-black">
-                {{ $event['description'] }}
-            </p>
-        @endif
-
-        @if ($isTask)
-            <div class="mt-[10px] flex flex-wrap gap-[6px]">
-                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
-                    {{ $event['meta']['status_label'] ?? 'Задача' }}
-                </span>
-
-                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
-                    до {{ $event['meta']['deadline_time'] ?? '' }}
-                </span>
-
-                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
-                    {{ $event['meta']['priority_label'] ?? 'Обычный' }}
-                </span>
-            </div>
-        @endif
-    </{{ $tag }}>
-@empty
-    <div class="rounded-[30px] bg-white px-[15px] py-[15px]">
-        <p class="text-[16px] text-[#6F6F6F]">
-            На эту дату событий нет
-        </p>
-    </div>
-@endforelse
-
-@php
-    $shift = $this->selectedDayShiftSummary;
-@endphp
-
-<div class="mt-[16px] rounded-[32px] bg-white px-[14px] py-[14px]">
-    <div class="mb-[12px] rounded-[26px] px-[14px] py-[13px]" style="background: {{ $shift['bg'] }};">
-        <div class="flex items-start justify-between gap-[12px]">
-            <div>
-                <p class="text-[18px] font-semibold leading-none text-[#111]">
-                    {{ $this->selectedDay->translatedFormat('j F · l') }}
-                </p>
-
-                <p class="mt-[8px] text-[14px] font-medium leading-none" style="color: {{ $shift['text'] }};">
-                    {{ $shift['label'] }}
-                </p>
-            </div>
-
-            <div class="shrink-0 rounded-full bg-white/70 px-[11px] py-[7px] text-[13px] font-semibold" style="color: {{ $shift['text'] }};">
-                {{ $shift['working'] }}/{{ $shift['total'] }}
-            </div>
-        </div>
-
-        <div class="mt-[12px] grid grid-cols-3 gap-[6px]">
-            <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
-                <p class="text-[11px] leading-none text-[#777]">Всего</p>
-                <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                    {{ $this->selectedDayWorkers['total'] }}
-                </p>
-            </div>
-
-            <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
-                <p class="text-[11px] leading-none text-[#777]">Работает</p>
-                <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                    {{ $this->selectedDayWorkers['working_count'] }}
-                </p>
-            </div>
-
-            <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
-                <p class="text-[11px] leading-none text-[#777]">Нет</p>
-                <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                    {{ $this->selectedDayWorkers['not_working_count'] }}
-                </p>
-            </div>
-        </div>
-    </div>
-
-    @if ($this->selectedDayWorkers['not_working']->count())
-        <div class="mb-[14px]">
-            <div class="mb-[8px] flex items-center justify-between">
-                <p class="text-[16px] font-semibold leading-none text-[#111]">
-                    Кто не работает
-                </p>
-
-                <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
-                    {{ $this->selectedDayWorkers['not_working_count'] }}
-                </span>
-            </div>
-
-            <div class="space-y-[6px]">
-                @foreach ($this->selectedDayWorkers['not_working'] as $user)
-                    <div class="flex items-center gap-[10px] rounded-[22px] bg-[#FFF6F6] px-[10px] py-[9px]">
-                        <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#9F1D1D]">
-                            {{ mb_substr($user->name, 0, 1) }}
-                        </div>
-
-                        <div class="min-w-0 flex-1">
-                            <p class="truncate text-[15px] font-medium leading-none text-[#111]">
-                                {{ $user->name }}
+                            <p class="text-[20px] font-semibold leading-none text-[#111]">
+                                {{ $this->selectedDay->translatedFormat('j F · l') }}
                             </p>
 
-                            <p class="mt-[6px] text-[12px] leading-[1.2] text-[#9F1D1D]">
-                                {{ $user->not_working_reason ?? 'Не работает' }}
+                            <p class="mt-[8px] text-[14px] font-medium leading-none" style="color: {{ $shift['text'] }};">
+                                {{ $shift['label'] }}
+                            </p>
+                        </div>
+
+                        <div class="shrink-0 rounded-full bg-white/70 px-[12px] py-[8px] text-[14px] font-bold" style="color: {{ $shift['text'] }};">
+                            {{ $shift['working'] }}/{{ $shift['total'] }}
+                        </div>
+                    </div>
+
+                    <div class="mt-[12px] grid grid-cols-3 gap-[6px]">
+                        <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+                            <p class="text-[11px] leading-none text-[#777]">Всего</p>
+                            <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+                                {{ $this->selectedDayWorkers['total'] }}
+                            </p>
+                        </div>
+
+                        <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+                            <p class="text-[11px] leading-none text-[#777]">Работает</p>
+                            <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+                                {{ $this->selectedDayWorkers['working_count'] }}
+                            </p>
+                        </div>
+
+                        <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+                            <p class="text-[11px] leading-none text-[#777]">Нет</p>
+                            <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+                                {{ $this->selectedDayWorkers['not_working_count'] }}
                             </p>
                         </div>
                     </div>
-                @endforeach
-            </div>
-        </div>
-    @endif
-
-    <div>
-        <div class="mb-[8px] flex items-center justify-between">
-            <p class="text-[16px] font-semibold leading-none text-[#111]">
-                Работают
-            </p>
-
-            <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[12px] text-[#3C8D57]">
-                {{ $this->selectedDayWorkers['working_count'] }}
-            </span>
-        </div>
-
-        <div class="space-y-[6px]">
-            @forelse ($this->selectedDayWorkers['working'] as $user)
-                <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
-                    <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
-                        {{ mb_substr($user->name, 0, 1) }}
-                    </div>
-
-                    <div class="min-w-0 flex-1">
-                        <p class="truncate text-[15px] font-medium leading-none text-[#111]">
-                            {{ $user->name }}
-                        </p>
-
-                        <p class="mt-[5px] text-[12px] leading-none text-[#8A8A8A]">
-                            Клинер
-                        </p>
-                    </div>
-
-                    <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[11px] font-medium text-[#3C8D57]">
-                        работает
-                    </span>
                 </div>
-            @empty
-                <div class="rounded-[22px] bg-[#FFF1C7] px-[12px] py-[12px]">
-                    <p class="text-[14px] text-[#8A6500]">
-                        На эту дату нет работающих клинеров.
-                    </p>
+
+                <div class="flex gap-[6px] rounded-full bg-[#F1F1F1] p-[4px]">
+                    @foreach ([
+                        'summary' => 'Сводка',
+                        'events' => 'События',
+                        'people' => 'Люди',
+                    ] as $tabKey => $tabLabel)
+                        <button
+                            type="button"
+                            wire:click="setDaySheetTab('{{ $tabKey }}')"
+                            class="flex-1 rounded-full px-[10px] py-[8px] text-[13px] font-semibold"
+                            style="background: {{ $daySheetTab === $tabKey ? '#111111' : 'transparent' }}; color: {{ $daySheetTab === $tabKey ? '#FFFFFF' : '#111111' }};"
+                        >
+                            {{ $tabLabel }}
+                        </button>
+                    @endforeach
                 </div>
-            @endforelse
-        </div>
-    </div>
-</div>
+
+                @if ($daySheetTab === 'summary')
+                    <div class="rounded-[30px] bg-white px-[14px] py-[14px]">
+                        <div class="mb-[10px] flex items-center justify-between">
+                            <p class="text-[17px] font-semibold leading-none text-[#111]">
+                                Быстрая сводка
+                            </p>
+
+                            <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
+                                {{ $this->selectedDayEvents->count() }} событий
+                            </span>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-[7px]">
+                            @foreach ($this->selectedDayEventGroups as $group)
+                                <button
+                                    type="button"
+                                    wire:click="setDaySheetTab('events')"
+                                    class="rounded-[22px] bg-[#F7F7F7] px-[12px] py-[11px] text-left"
+                                >
+                                    <p class="text-[14px] font-semibold leading-none text-[#111]">
+                                        {{ $group['emoji'] }} {{ $group['title'] }}
+                                    </p>
+
+                                    <p class="mt-[7px] text-[12px] leading-none text-[#777]">
+                                        {{ $group['events']->count() }}
+                                    </p>
+                                </button>
+                            @endforeach
+
+                            @if (! count($this->selectedDayEventGroups))
+                                <div class="col-span-2 rounded-[22px] bg-[#F7F7F7] px-[12px] py-[12px]">
+                                    <p class="text-[14px] text-[#777]">
+                                        На эту дату событий нет.
+                                    </p>
+                                </div>
+                            @endif
+                        </div>
+
+                        @if ($this->selectedDayWorkers['not_working']->count())
+                            <div class="mt-[14px]">
+                                <div class="mb-[8px] flex items-center justify-between">
+                                    <p class="text-[16px] font-semibold leading-none text-[#111]">
+                                        Кто не работает
+                                    </p>
+
+                                    <button
+                                        type="button"
+                                        wire:click="setDaySheetTab('people')"
+                                        class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]"
+                                    >
+                                        все
+                                    </button>
+                                </div>
+
+                                <div class="space-y-[6px]">
+                                    @foreach ($this->selectedDayWorkers['not_working']->take(3) as $user)
+                                        <div class="flex items-center gap-[10px] rounded-[22px] bg-[#FFF6F6] px-[10px] py-[9px]">
+                                            <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#9F1D1D]">
+                                                {{ mb_substr($user->name, 0, 1) }}
+                                            </div>
+
+                                            <div class="min-w-0 flex-1">
+                                                <p class="truncate text-[15px] font-medium leading-none text-[#111]">
+                                                    {{ $user->name }}
+                                                </p>
+
+                                                <p class="mt-[6px] text-[12px] leading-[1.2] text-[#9F1D1D]">
+                                                    {{ $user->not_working_reason ?? 'Не работает' }}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                </div>
+                            </div>
+                        @endif
+                    </div>
+                @endif
+
+                @if ($daySheetTab === 'events')
+                    @forelse ($this->selectedDayEventGroups as $group)
+                        <div class="rounded-[30px] bg-white px-[14px] py-[14px]">
+                            <div class="mb-[10px] flex items-center justify-between">
+                                <p class="text-[17px] font-semibold leading-none text-[#111]">
+                                    {{ $group['emoji'] }} {{ $group['title'] }}
+                                </p>
+
+                                <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
+                                    {{ $group['events']->count() }}
+                                </span>
+                            </div>
+
+                            <div class="space-y-[7px]">
+                                @foreach ($group['events'] as $event)
+                                    @php
+                                        $isTask = ($event['source'] ?? null) === 'task';
+                                        $tag = $isTask ? 'a' : 'button';
+                                    @endphp
+
+                                    <{{ $tag }}
+                                        @if($isTask)
+                                            href="{{ $event['url'] }}"
+                                        @else
+                                            type="button"
+                                        @endif
+                                        class="block w-full rounded-[24px] px-[13px] py-[12px] text-left"
+                                        style="{{ $event['style'] }}"
+                                    >
+                                        <p class="text-[12px] font-[600] leading-none text-black/65 mb-[6px]">
+                                            {{ $this->formatEventRange($event) }}
+                                        </p>
+
+                                        <p class="text-[16px] leading-[1.15]">
+                                            {{ $event['title'] }}
+                                        </p>
+
+                                        @if (filled($event['description']))
+                                            <p class="mt-[6px] text-[14px] leading-[1.25] text-black/75">
+                                                {{ $event['description'] }}
+                                            </p>
+                                        @endif
+
+                                        @if ($isTask)
+                                            <div class="mt-[10px] flex flex-wrap gap-[6px]">
+                                                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
+                                                    {{ $event['meta']['status_label'] ?? 'Задача' }}
+                                                </span>
+
+                                                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
+                                                    до {{ $event['meta']['deadline_time'] ?? '' }}
+                                                </span>
+
+                                                <span class="rounded-full bg-white/55 px-[9px] py-[5px] text-[12px] leading-none">
+                                                    {{ $event['meta']['priority_label'] ?? 'Обычный' }}
+                                                </span>
+                                            </div>
+                                        @endif
+                                    </{{ $tag }}>
+                                @endforeach
+                            </div>
+                        </div>
+                    @empty
+                        <div class="rounded-[30px] bg-white px-[15px] py-[15px]">
+                            <p class="text-[16px] text-[#6F6F6F]">
+                                На эту дату событий нет.
+                            </p>
+                        </div>
+                    @endforelse
+                @endif
+
+                @if ($daySheetTab === 'people')
+                    <div class="rounded-[32px] bg-white px-[14px] py-[14px]">
+                        @if ($this->selectedDayWorkers['not_working']->count())
+                            <div class="mb-[14px]">
+                                <div class="mb-[8px] flex items-center justify-between">
+                                    <p class="text-[16px] font-semibold leading-none text-[#111]">
+                                        Кто не работает
+                                    </p>
+
+                                    <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
+                                        {{ $this->selectedDayWorkers['not_working_count'] }}
+                                    </span>
+                                </div>
+
+                                <div class="space-y-[6px]">
+                                    @foreach ($this->selectedDayWorkers['not_working'] as $user)
+                                        <div class="flex items-center gap-[10px] rounded-[22px] bg-[#FFF6F6] px-[10px] py-[9px]">
+                                            <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#9F1D1D]">
+                                                {{ mb_substr($user->name, 0, 1) }}
+                                            </div>
+
+                                            <div class="min-w-0 flex-1">
+                                                <p class="truncate text-[15px] font-medium leading-none text-[#111]">
+                                                    {{ $user->name }}
+                                                </p>
+
+                                                <p class="mt-[6px] text-[12px] leading-[1.2] text-[#9F1D1D]">
+                                                    {{ $user->not_working_reason ?? 'Не работает' }}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                </div>
+                            </div>
+                        @endif
+
+                        <div>
+                            <div class="mb-[8px] flex items-center justify-between">
+                                <p class="text-[16px] font-semibold leading-none text-[#111]">
+                                    Работают
+                                </p>
+
+                                <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[12px] text-[#3C8D57]">
+                                    {{ $this->selectedDayWorkers['working_count'] }}
+                                </span>
+                            </div>
+
+                            <div class="space-y-[6px]">
+                                @forelse ($this->selectedDayWorkers['working'] as $user)
+                                    <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
+                                        <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
+                                            {{ mb_substr($user->name, 0, 1) }}
+                                        </div>
+
+                                        <div class="min-w-0 flex-1">
+                                            <p class="truncate text-[15px] font-medium leading-none text-[#111]">
+                                                {{ $user->name }}
+                                            </p>
+
+                                            <p class="mt-[5px] text-[12px] leading-none text-[#8A8A8A]">
+                                                Клинер
+                                            </p>
+                                        </div>
+
+                                        <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[11px] font-medium text-[#3C8D57]">
+                                            работает
+                                        </span>
+                                    </div>
+                                @empty
+                                    <div class="rounded-[22px] bg-[#FFF1C7] px-[12px] py-[12px]">
+                                        <p class="text-[14px] text-[#8A6500]">
+                                            На эту дату нет работающих клинеров.
+                                        </p>
+                                    </div>
+                                @endforelse
+                            </div>
+                        </div>
+                    </div>
+                @endif
             </div>
         </div>
     </div>

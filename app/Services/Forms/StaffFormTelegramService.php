@@ -78,28 +78,52 @@ class StaffFormTelegramService
         }
 
         $message = [];
+
         $message[] = "<b>{$title}</b>";
         $message[] = '';
+
         $message[] = '👤 <b>Сотрудник:</b> ' . e($userName);
-        $message[] = '🧾 <b>Форма:</b> ' . e($typeLabel);
-        $message[] = '🏷️ <b>Тема:</b> ' . e($type);
+        $message[] = '🏷️ <b>Категория:</b> ' . e($typeLabel);
+        $message[] = '📌 <b>Тема:</b> ' . e($type);
+
         $message[] = '';
         $message[] = '💬 <b>Комментарий:</b>';
         $message[] = '<blockquote>' . e(trim($comment)) . '</blockquote>';
 
-        if (! empty($attachments)) {
+        if (!empty($attachments)) {
             $message[] = '';
-            $message[] = '📎 <b>Файлы:</b> ' . count($attachments);
+            $message[] = '📎 <b>Прикреплено файлов:</b> ' . count($attachments);
         }
-
-        $message[] = '';
-        $message[] = '⛓️ <a href="' . e($adminUrl) . '"><b>Открыть в админке</b></a>';
 
         $payload = [
             'chat_id' => $chatId,
             'text' => implode("\n", $message),
             'parse_mode' => 'HTML',
             'disable_web_page_preview' => true,
+
+            'reply_markup' => [
+                'inline_keyboard' => [
+
+                    [
+                        [
+                            'text' => '⚡ Открыть заявку',
+                            'url' => $adminUrl,
+                        ]
+                    ],
+
+                    [
+                        [
+                            'text' => '👤 Сотрудники',
+                            'url' => url('/admin/users'),
+                        ],
+                        [
+                            'text' => '📊 Панель',
+                            'url' => url('/admin'),
+                        ]
+                    ],
+
+                ],
+            ],
         ];
 
         if (filled($threadId)) {
