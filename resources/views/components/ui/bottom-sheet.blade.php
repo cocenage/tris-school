@@ -129,9 +129,9 @@
                 x-transition:leave-start="opacity-100 translate-y-0"
                 x-transition:leave-end="opacity-0 translate-y-full"
                 @click.stop
-                @touchstart.passive.stop="begin($event)"
-                @touchmove.stop="move($event)"
-                @touchend.stop="end($event)"
+      
+         
+        
                 @touchcancel.stop="end($event)"
                 :style="`transform: translateY(${translateY}px)`"
                 class="pointer-events-auto relative w-full max-w-[768px] rounded-[28px] bg-white shadow-[0_20px_60px_rgba(0,0,0,0.22)] overscroll-contain"

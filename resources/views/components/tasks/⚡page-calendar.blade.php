@@ -540,6 +540,26 @@ protected function canViewCalendarType(string $type): bool
         return array_values($tracks);
     }
 
+public function getSelectedDayStaffSummaryProperty(): array
+{
+    $supervisors = User::query()
+        ->where('is_active', true)
+        ->where('role', 'supervisor')
+        ->count();
+
+    $cleaners = User::query()
+        ->where('is_active', true)
+        ->where('role', 'cleaner')
+        ->count();
+
+    return [
+        'total' => $supervisors + $cleaners,
+        'supervisors' => $supervisors,
+        'cleaners' => $cleaners,
+        'cleaners_not_working' => $this->selectedDayWorkers['not_working_count'],
+    ];
+}
+
     public function getPeopleDaysForMonth(Carbon $month): array
     {
         $days = [];
@@ -1973,9 +1993,10 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
         </div>
 
         <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain px-[14px] pb-[10px] pt-[10px]">
-            @php
-                $shift = $this->selectedDayShiftSummary;
-            @endphp
+          @php
+    $shift = $this->selectedDayShiftSummary;
+    $staff = $this->selectedDayStaffSummary;
+@endphp
 
             <div class="space-y-[10px]">
                 <div class="rounded-[32px] px-[14px] py-[14px]" style="background: {{ $shift['bg'] }};">
@@ -2001,28 +2022,43 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                         </div>
                     </div>
 
-                    <div class="mt-[12px] grid grid-cols-3 gap-[6px]">
-                        <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
-                            <p class="text-[11px] leading-none text-[#777]">Всего</p>
-                            <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                                {{ $this->selectedDayWorkers['total'] }}
-                            </p>
-                        </div>
+            <div class="mt-[12px] grid grid-cols-3 gap-[6px]">
+    <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+        <p class="text-[11px] leading-none text-[#777]">
+            Всего
+        </p>
 
-                        <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
-                            <p class="text-[11px] leading-none text-[#777]">Работает</p>
-                            <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                                {{ $this->selectedDayWorkers['working_count'] }}
-                            </p>
-                        </div>
+        <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+            {{ $staff['total'] }}
+        </p>
+    </div>
 
-                        <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
-                            <p class="text-[11px] leading-none text-[#777]">Нет</p>
-                            <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
-                                {{ $this->selectedDayWorkers['not_working_count'] }}
-                            </p>
-                        </div>
-                    </div>
+    <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+        <p class="text-[11px] leading-none text-[#777]">
+            Супервайзеров
+        </p>
+
+        <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+            {{ $staff['supervisors'] }}
+        </p>
+    </div>
+
+    <div class="rounded-[18px] bg-white/65 px-[10px] py-[9px]">
+        <p class="text-[11px] leading-none text-[#777]">
+            Клинеров
+        </p>
+
+        <p class="mt-[6px] text-[17px] font-semibold leading-none text-[#111]">
+            {{ $staff['cleaners'] }}
+        </p>
+
+        @if($staff['cleaners_not_working'] > 0)
+            <p class="mt-[6px] text-[11px] leading-none text-[#9F1D1D]">
+                сегодня нет {{ $staff['cleaners_not_working'] }}
+            </p>
+        @endif
+    </div>
+</div>
                 </div>
 
                 <div class="flex gap-[6px] rounded-full bg-[#F1F1F1] p-[4px]">
