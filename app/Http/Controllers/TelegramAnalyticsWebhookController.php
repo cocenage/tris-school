@@ -95,31 +95,31 @@ class TelegramAnalyticsWebhookController extends Controller
         return response()->json(['ok' => true]);
     }
 
-    private function resolveTopic(TelegramChat $chat, array $message): ?TelegramTopic
-    {
-        $threadId = $message['message_thread_id'] ?? null;
+private function resolveTopic(TelegramChat $chat, array $message): ?TelegramTopic
+{
+    $threadId = $message['message_thread_id'] ?? null;
 
-        if (! $threadId) {
-            return null;
-        }
-
-        $title = null;
-
-        if (isset($message['forum_topic_created']['name'])) {
-            $title = $message['forum_topic_created']['name'];
-        }
-
-        return TelegramTopic::updateOrCreate(
-            [
-                'telegram_chat_id' => $chat->id,
-                'thread_id' => (string) $threadId,
-            ],
-            [
-                'title' => $title ?: 'Тема #' . $threadId,
-                'is_enabled' => true,
-            ]
-        );
+    if (! $threadId) {
+        return null;
     }
+
+    $title = null;
+
+    if (isset($message['forum_topic_created']['name'])) {
+        $title = $message['forum_topic_created']['name'];
+    }
+
+    return TelegramTopic::updateOrCreate(
+        [
+            'telegram_chat_id' => $chat->id,
+            'telegram_thread_id' => (string) $threadId,
+        ],
+        [
+            'title' => $title ?: 'Тема #' . $threadId,
+            'is_enabled' => true,
+        ]
+    );
+}
 
     private function resolveUser(array $message): ?TelegramUser
     {
