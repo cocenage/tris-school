@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class TelegramTopic extends Model
 {
+    protected $connection = 'analytics';
+    
     protected $fillable = [
         'telegram_chat_id',
         'telegram_thread_id',

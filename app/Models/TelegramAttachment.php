@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class TelegramAttachment extends Model
 {
+    protected $connection = 'analytics';
+    
     protected $fillable = [
         'telegram_message_id',
         'type',

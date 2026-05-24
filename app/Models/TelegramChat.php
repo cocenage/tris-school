@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class TelegramChat extends Model
 {
+    protected $connection = 'analytics';
     protected $fillable = [
         'telegram_chat_id',
         'title',

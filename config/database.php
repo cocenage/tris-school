@@ -119,6 +119,16 @@ return [
             'prefix' => '',
             'foreign_key_constraints' => false,
         ],
+
+        'analytics' => [
+            'driver' => 'sqlite',
+            'database' => env(
+                'DB_ANALYTICS_DATABASE',
+                database_path('telegram_analytics.sqlite')
+            ),
+            'prefix' => '',
+            'foreign_key_constraints' => false,
+        ],
     ],
 
     /*

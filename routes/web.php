@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\LogoutController;
+use App\Http\Controllers\TelegramAnalyticsWebhookController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
 use App\Http\Controllers\TelegramWorkWebhookController;
@@ -10,7 +11,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    if (! auth()->check()) {
+    if (!auth()->check()) {
         return redirect()->route('landing.page');
     }
 
@@ -72,7 +73,7 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/profile/all-checks', 'profile.page-all-checks')->name('page-profile.all-checks');
     Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
 
-  Route::livewire('/tasks', 'tasks.page-tasks')
+    Route::livewire('/tasks', 'tasks.page-tasks')
         ->name('page-tasks');
 
     Route::livewire('/tasks/calendar', 'tasks.page-calendar')
@@ -95,14 +96,16 @@ Route::middleware(['auth', 'approved'])->group(function () {
     })->name('page-profile.calendar');
 });
 
-Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
+Route::post(
+    '/telegram/analytics-webhook/{secret}',
+    TelegramAnalyticsWebhookController::class
+)
     ->withoutMiddleware([
         \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
-    ])
-    ->name('telegram.work-webhook');
+    ]);
 
 Route::fallback(function () {
-    if (! Auth::check()) {
+    if (!Auth::check()) {
         return redirect()->route('landing.page');
     }
 

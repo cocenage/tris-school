@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class TelegramUser extends Model
 {
+    protected $connection = 'analytics';
+    
     protected $fillable = [
         'telegram_user_id',
         'username',
