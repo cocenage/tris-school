@@ -99,20 +99,24 @@ private function resolveTopic(TelegramChat $chat, array $message): ?TelegramTopi
 {
     $threadId = $message['message_thread_id'] ?? null;
 
-    if (! $threadId) {
+    // сообщение не из темы форума
+    if (empty($threadId)) {
         return null;
     }
 
     $title = null;
 
-    if (isset($message['forum_topic_created']['name'])) {
+    if (
+        isset($message['forum_topic_created']) &&
+        isset($message['forum_topic_created']['name'])
+    ) {
         $title = $message['forum_topic_created']['name'];
     }
 
     return TelegramTopic::updateOrCreate(
         [
             'telegram_chat_id' => $chat->id,
-            'telegram_thread_id' => (string) $threadId,
+            'telegram_thread_id' => (string)$threadId,
         ],
         [
             'title' => $title ?: 'Тема #' . $threadId,
