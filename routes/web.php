@@ -96,13 +96,11 @@ Route::middleware(['auth', 'approved'])->group(function () {
     })->name('page-profile.calendar');
 });
 
-Route::post(
-    '/telegram/analytics-webhook/{secret}',
-    TelegramAnalyticsWebhookController::class
-)
+Route::post('/telegram/analytics-webhook/{secret}', TelegramAnalyticsWebhookController::class)
     ->withoutMiddleware([
         \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
-    ]);
+    ])
+    ->name('telegram.analytics-webhook');
 
 Route::fallback(function () {
     if (!Auth::check()) {
