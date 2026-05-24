@@ -8,12 +8,12 @@ use Illuminate\Support\Facades\Log;
 
 class TelegramAnalyticsWebhookController extends Controller
 {
- public function __invoke(
+    public function __invoke(
         Request $request,
         string $secret,
         TelegramUpdateIngestService $ingestService
     ) {
-        if ($secret !== config('services.telegram.work_webhook_secret')) {
+        if ($secret !== config('services.telegram.analytics_webhook_secret')) {
             abort(403);
         }
 

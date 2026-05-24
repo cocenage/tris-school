@@ -59,7 +59,16 @@ return [
     'work_allowed_chat_ids' => array_filter(array_map(
         'trim',
         explode(',', env('TELEGRAM_WORK_ALLOWED_CHAT_IDS', ''))
+
+
+
+        
     )),
+ 
+ 
+
+    'analytics_bot_token' => env('TELEGRAM_ANALYTICS_BOT_TOKEN'),
+    'analytics_webhook_secret' => env('TELEGRAM_ANALYTICS_WEBHOOK_SECRET'),
     ],
 
     'postmark' => [
