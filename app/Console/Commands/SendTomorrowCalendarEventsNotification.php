@@ -3,7 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\Calendar\CalendarEventsService;
-use App\Services\Telegram\CalendarSummaryService;
+use App\Services\Calendar\CalendarSummaryService;
 use App\Services\Telegram\TelegramBotService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;

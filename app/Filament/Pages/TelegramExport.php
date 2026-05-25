@@ -33,7 +33,7 @@ class TelegramExport extends Page
 
     public ?string $purpose = null;
 
-    public string $exportMode = 'full';
+    public string $exportMode = 'compact';
 
     public string $exportText = '';
 
@@ -50,16 +50,19 @@ class TelegramExport extends Page
                 ->required(),
 
             Forms\Components\Select::make('telegram_chat_id')
-                ->label('Чат')
+                ->label('Рабочая зона / улица')
                 ->options(fn () => TelegramChat::query()
                     ->orderBy('title')
                     ->pluck('title', 'id')
                     ->toArray())
                 ->searchable()
-                ->live(),
+                ->live()
+                ->afterStateUpdated(function () {
+                    $this->telegram_topic_id = null;
+                }),
 
             Forms\Components\Select::make('telegram_topic_id')
-                ->label('Топик')
+                ->label('Квартира / ветка')
                 ->options(function () {
                     return TelegramTopic::query()
                         ->when(
@@ -69,14 +72,14 @@ class TelegramExport extends Page
                         ->orderBy('telegram_thread_id')
                         ->get()
                         ->mapWithKeys(fn (TelegramTopic $topic) => [
-                            $topic->id => trim(($topic->title ?: 'Топик') . ' #' . $topic->telegram_thread_id),
+                            $topic->id => trim(($topic->title ?: 'Квартира') . ' #' . $topic->telegram_thread_id),
                         ])
                         ->toArray();
                 })
                 ->searchable(),
 
             Forms\Components\Select::make('purpose')
-                ->label('Назначение топика')
+                ->label('Назначение / тип ветки')
                 ->options([
                     'cleaning' => 'Уборки',
                     'complaints' => 'Жалобы',
@@ -89,19 +92,22 @@ class TelegramExport extends Page
                     'day_off' => 'Выходные',
                     'other' => 'Другое',
                 ])
+                ->placeholder('Не фильтровать')
                 ->searchable(),
 
             Forms\Components\Select::make('exportMode')
                 ->label('Режим выгрузки')
                 ->options([
+                    'compact' => 'Сжатая выгрузка без пустых сообщений',
                     'full' => 'Полная выгрузка дня',
                     'manager_summary' => 'Краткий отчет руководителю',
+                    'apartment_history' => 'История по квартире',
                     'complaints' => 'Анализ жалоб',
                     'quality' => 'Качество уборок',
                     'staff_signals' => 'Сотрудники / сигналы внимания',
                     'photos' => 'Фотоотчеты',
                 ])
-                ->default('full')
+                ->default('compact')
                 ->required(),
         ]);
     }
@@ -125,31 +131,48 @@ class TelegramExport extends Page
             ->get()
             ->values();
 
-Notification::make()
-    ->title('Найдено: '.$messages->count())
-    ->success()
-    ->send();
+        $totalBeforeFilter = $messages->count();
+
+        if ($this->exportMode === 'compact') {
+            $messages = $messages
+                ->filter(fn (TelegramMessage $message) =>
+                    filled($message->text)
+                    || filled($message->caption)
+                )
+                ->values();
+        }
+
+        if ($this->exportMode === 'photos') {
+            $messages = $messages
+                ->filter(fn (TelegramMessage $message) =>
+                    $message->attachments->isNotEmpty()
+                    || filled($message->caption)
+                )
+                ->values();
+        }
 
         if ($messages->isEmpty()) {
             $this->exportText = '';
 
             Notification::make()
                 ->title('Сообщений не найдено')
+                ->body('Всего по фильтрам найдено: ' . $totalBeforeFilter . '. После режима выгрузки осталось 0.')
                 ->warning()
                 ->send();
 
             return;
         }
 
-        $this->exportText = $this->buildExportText($messages, $date);
+        $this->exportText = $this->buildExportText($messages, $date, $totalBeforeFilter);
 
         Notification::make()
             ->title('Выгрузка готова')
+            ->body('Сообщений в выгрузке: ' . $messages->count() . ' из ' . $totalBeforeFilter)
             ->success()
             ->send();
     }
 
-    protected function buildExportText($messages, Carbon $date): string
+    protected function buildExportText($messages, Carbon $date, int $totalBeforeFilter): string
     {
         $lines = [];
 
@@ -157,9 +180,16 @@ Notification::make()
         $lines[] = '';
         $lines[] = 'Дата: ' . $date->format('d.m.Y');
         $lines[] = 'Режим: ' . $this->modeLabel($this->exportMode);
-        $lines[] = 'Сообщений: ' . $messages->count();
+        $lines[] = 'Сообщений в выгрузке: ' . $messages->count();
+        $lines[] = 'Всего сообщений по фильтрам до очистки: ' . $totalBeforeFilter;
         $lines[] = 'Участников: ' . $messages->pluck('telegram_user_id')->filter()->unique()->count();
         $lines[] = 'Вложений: ' . $messages->sum(fn (TelegramMessage $message) => $message->attachments->count());
+        $lines[] = '';
+
+        $lines[] = '## Как читать эту выгрузку';
+        $lines[] = 'Форум Telegram = рабочая зона или улица.';
+        $lines[] = 'Ветка Telegram = конкретная квартира или объект.';
+        $lines[] = 'Сообщения внутри ветки = история событий по этой квартире.';
         $lines[] = '';
 
         $lines[] = '## Задача для анализа';
@@ -167,6 +197,7 @@ Notification::make()
         $lines[] = '';
 
         $lines[] = '## Статистика по участникам';
+
         $authorStats = $messages
             ->groupBy(fn (TelegramMessage $message) => $this->authorName($message))
             ->map(fn ($items) => $items->count())
@@ -186,9 +217,9 @@ Notification::make()
             /** @var TelegramMessage $first */
             $first = $topicMessages->first();
 
-            $lines[] = '## Чат: ' . ($first->chat?->title ?: 'Без названия');
-            $lines[] = '## Топик: ' . $this->topicLabel($first);
-            $lines[] = 'Сообщений в топике: ' . $topicMessages->count();
+            $lines[] = '## Рабочая зона / улица: ' . ($first->chat?->title ?: 'Без названия');
+            $lines[] = '## Квартира / ветка: ' . $this->topicLabel($first);
+            $lines[] = 'Сообщений в ветке: ' . $topicMessages->count();
             $lines[] = '';
 
             foreach ($topicMessages as $message) {
@@ -238,10 +269,10 @@ Notification::make()
         $topic = $message->topic;
 
         if (!$topic) {
-            return 'Без топика';
+            return 'Без ветки';
         }
 
-        $label = ($topic->title ?: 'Топик') . ' (#' . $topic->telegram_thread_id . ')';
+        $label = ($topic->title ?: 'Квартира') . ' (#' . $topic->telegram_thread_id . ')';
 
         if ($topic->purpose) {
             $label .= ' — ' . $this->purposeLabel($topic->purpose);
@@ -270,7 +301,9 @@ Notification::make()
     protected function modeLabel(string $mode): string
     {
         return match ($mode) {
+            'compact' => 'Сжатая выгрузка без пустых сообщений',
             'manager_summary' => 'Краткий отчет руководителю',
+            'apartment_history' => 'История по квартире',
             'complaints' => 'Анализ жалоб',
             'quality' => 'Качество уборок',
             'staff_signals' => 'Сотрудники / сигналы внимания',
@@ -283,22 +316,25 @@ Notification::make()
     {
         return match ($mode) {
             'manager_summary' =>
-                'Сделай краткий отчет для руководителя: что произошло за день, какие были проблемы, что решено, что требует внимания завтра, кого стоит похвалить.',
+                'Сделай краткий отчет для руководителя по рабочим сообщениям за день. Учитывай, что форум Telegram — это рабочая зона или улица, а ветка — конкретная квартира. Выдели: что произошло, какие квартиры требуют внимания, какие проблемы решены, что перенести на завтра, кого стоит похвалить, где есть риски.',
+
+            'apartment_history' =>
+                'Проанализируй историю по квартире. Учитывай, что выбранная ветка Telegram — это конкретная квартира. Составь понятную хронологию: что произошло, какие были жалобы, уборки, фотоотчеты, вопросы по ключам/локерам/белью, что решено, что осталось открытым, какие действия нужны дальше.',
 
             'complaints' =>
-                'Проанализируй жалобы и негативные ситуации. Выдели причины, квартиры/объекты, повторяющиеся проблемы, ответственных, срочные действия. Не преувеличивай и не делай выводов без сообщений.',
+                'Проанализируй жалобы и негативные ситуации по рабочим сообщениям. Учитывай, что ветки — это квартиры. Выдели квартиры/объекты, причины жалоб, повторяющиеся проблемы, срочные действия и сообщения, на которые нужно обратить внимание. Не преувеличивай и не делай выводов без сообщений.',
 
             'quality' =>
-                'Проанализируй качество уборок и рабочих процессов. Найди просрочки, проблемы с фотоотчетами, чек-листами, коммуникацией и стандартами уборки. Дай список улучшений.',
+                'Проанализируй качество уборок и рабочих процессов. Учитывай, что ветки — это квартиры. Найди проблемы с уборкой, бельем, полотенцами, ключами, локерами, фотоотчетами, коммуникацией и стандартами. Дай список улучшений.',
 
             'staff_signals' =>
-                'Проанализируй коммуникацию сотрудников. Найди конфликты, перегруз, усталость, резкое недовольство, просьбы о помощи и людей, которых стоит поддержать. Не ставь диагнозы, только мягкие сигналы внимания.',
+                'Проанализируй коммуникацию сотрудников. Найди конфликты, перегруз, усталость, резкое недовольство, просьбы о помощи и людей, которых стоит поддержать. Не ставь диагнозы, не делай кадровых выводов, только мягкие сигналы внимания.',
 
             'photos' =>
-                'Проанализируй сообщения с фотоотчетами и вложениями. Выдели, где фото есть, где не хватает контекста, где возможны проблемы с качеством контроля.',
+                'Проанализируй сообщения с фотоотчетами и вложениями. Учитывай, что ветки — это квартиры. Выдели, где фото есть, где не хватает контекста, где возможны проблемы с контролем качества.',
 
             default =>
-                'Проанализируй рабочие сообщения. Найди проблемы, жалобы, просрочки, конфликты, полезные решения, сотрудников, которых стоит похвалить, и возможные сигналы внимания. Не ставь диагнозы, только мягкие наблюдения.',
+                'Проанализируй рабочие сообщения. Учитывай, что форум Telegram — это рабочая зона или улица, а ветка — конкретная квартира. Найди проблемы, жалобы, просрочки, конфликты, полезные решения, квартиры, требующие внимания, сотрудников, которых стоит похвалить, и мягкие сигналы внимания. Не ставь диагнозы и не делай выводов без сообщений.',
         };
     }
 }
