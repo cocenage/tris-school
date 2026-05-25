@@ -3,89 +3,97 @@
 namespace App\Console\Commands;
 
 use App\Services\Calendar\CalendarEventsService;
+use App\Services\Telegram\CalendarSummaryService;
+use App\Services\Telegram\TelegramBotService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 
 class SendTomorrowCalendarEventsNotification extends Command
 {
-    protected $signature = 'calendar:notify-tomorrow';
-    protected $description = 'Send Telegram notification with all tomorrow calendar events';
+    protected $signature = 'calendar:notify-tomorrow {--dry-run}';
 
-    public function handle(CalendarEventsService $calendarEventsService): int
-    {
+    protected $description = 'Send Telegram notification with tomorrow calendar summary';
+
+    public function handle(
+        CalendarEventsService $calendarEventsService,
+        CalendarSummaryService $calendarSummaryService,
+        TelegramBotService $telegramBotService,
+    ): int {
         $timezone = config('app.timezone', 'Europe/Stockholm');
         $tomorrow = now($timezone)->addDay()->startOfDay();
 
         $events = $calendarEventsService->getEventsForDay($tomorrow);
+        $summary = $calendarSummaryService->build($tomorrow);
 
-        if ($events->isEmpty()) {
-            $this->info('На завтра событий нет.');
+        $message = $this->buildMessage($tomorrow, $events, $summary);
+
+        if ($this->option('dry-run')) {
+            $this->line($message);
+
             return self::SUCCESS;
         }
 
-        $message = $this->buildMessage($tomorrow, $events);
-
-        $botToken = config('services.telegram.bot_token');
         $chatId = config('services.telegram.chat_id_calendar');
         $threadId = config('services.telegram.thread_id_calendar');
 
-        if (! $botToken || ! $chatId) {
-            $this->error('Не настроены services.telegram.bot_token или services.telegram.chat_id_calendar');
-            return self::FAILURE;
-        }
-
-        $payload = [
-            'chat_id' => $chatId,
-            'text' => $message,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-        ];
-
-        if ($threadId) {
-            $payload['message_thread_id'] = $threadId;
-        }
-
-        try {
-            $response = Http::timeout(15)
-                ->asForm()
-                ->post("https://api.telegram.org/bot{$botToken}/sendMessage", $payload);
-        } catch (\Illuminate\Http\Client\ConnectionException $e) {
-            $this->error('Нет соединения с Telegram API: ' . $e->getMessage());
-
-            Log::error('Calendar tomorrow notification connection failed', [
-                'message' => $e->getMessage(),
-            ]);
+        if (! $chatId) {
+            $this->error('Не настроен services.telegram.chat_id_calendar');
 
             return self::FAILURE;
         }
 
-        if (! $response->successful()) {
-            Log::error('Calendar tomorrow notification failed', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-                'payload' => $payload,
-            ]);
-
-            $this->error('Не удалось отправить сообщение в Telegram.');
-            $this->line('HTTP: ' . $response->status());
-            $this->line('Response: ' . $response->body());
-
-            return self::FAILURE;
-        }
+        $telegramBotService->sendMessage(
+            chatId: $chatId,
+            text: $message,
+            threadId: $threadId,
+        );
 
         $this->info('Уведомление отправлено.');
+
         return self::SUCCESS;
     }
 
-    protected function buildMessage(Carbon $date, $events): string
+    protected function buildMessage(Carbon $date, $events, array $summary): string
     {
         $grouped = collect($events)->groupBy('type');
 
         $lines = [];
-        $lines[] = '📅 <b>События на завтра</b>';
+
+        $lines[] = '📅 <b>Сводка на завтра</b>';
         $lines[] = '<b>' . e(mb_convert_case($date->translatedFormat('l, j F Y'), MB_CASE_TITLE, 'UTF-8')) . '</b>';
+        $lines[] = '';
+
+        $shift = $summary['shift'] ?? null;
+
+        if ($shift) {
+            $lines[] = '👥 <b>Смена</b>';
+            $lines[] = 'Работают: <b>' . ($shift['working'] ?? 0) . '/' . ($shift['total'] ?? 0) . '</b>';
+            $lines[] = 'Не работают: <b>' . ($shift['not_working'] ?? 0) . '</b>';
+            $lines[] = 'Статус: <b>' . e($shift['label'] ?? 'Без статуса') . '</b>';
+            $lines[] = '';
+        }
+
+        $notWorking = collect(data_get($summary, 'workers.not_working', []));
+
+        if ($notWorking->isNotEmpty()) {
+            $lines[] = '🚫 <b>Кто не работает</b>';
+
+            foreach ($notWorking as $user) {
+                $reason = $user->not_working_reason ?? 'Не работает';
+                $lines[] = '• ' . e($user->name) . ' — ' . e($reason);
+            }
+
+            $lines[] = '';
+        }
+
+        if ($events->isEmpty()) {
+            $lines[] = '📌 <b>События</b>';
+            $lines[] = 'На завтра событий нет.';
+
+            return trim(implode("\n", $lines));
+        }
+
+        $lines[] = '📌 <b>События</b>';
         $lines[] = 'Всего событий: <b>' . $events->count() . '</b>';
         $lines[] = '';
 
@@ -115,13 +123,14 @@ class SendTomorrowCalendarEventsNotification extends Command
         $lines[] = '• <b>' . e($event['title']) . '</b>';
 
         $range = $this->formatTelegramEventRange($event);
+
         if ($range) {
-            $lines[] = '' . e($range) . '';
+            $lines[] = e($range);
         }
 
         if (! empty($event['description'])) {
             $description = mb_strimwidth(trim($event['description']), 0, 180, '...');
-            $lines[] = '  <blockquote>' . e($description) . '</blockquote>';
+            $lines[] = '<blockquote>' . e($description) . '</blockquote>';
         }
 
         return implode("\n", $lines);
@@ -151,35 +160,42 @@ class SendTomorrowCalendarEventsNotification extends Command
     {
         return [
             'holiday',
+            'day_off',
             'vacation',
+            'tasks',
             'workflow',
             'finance',
             'peak',
             'strike',
+            'other',
         ];
     }
 
     protected function typeIcon(string $type): string
     {
         return match ($type) {
+            'tasks' => '⚡️',
             'workflow' => '🏢',
             'finance' => '💸',
             'holiday' => '🎉',
             'peak' => '🔥',
-            'vacation' => '🌿',
+            'day_off' => '🌿',
+            'vacation' => '🏖',
             'strike' => '⚠️',
-            default => '•',
+            default => '📎',
         };
     }
 
     protected function typeLabel(string $type): string
     {
         return match ($type) {
+            'tasks' => 'Задачи',
             'workflow' => 'Рабочие процессы',
             'finance' => 'Финансы',
             'holiday' => 'Праздники',
             'peak' => 'Пики загрузки',
-            'vacation' => 'Выходные и отпуска',
+            'day_off' => 'Выходные',
+            'vacation' => 'Отпуска',
             'strike' => 'Забастовки',
             default => 'Другое',
         };

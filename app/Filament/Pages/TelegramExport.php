@@ -123,12 +123,12 @@ class TelegramExport extends Page
             })
             ->orderBy('sent_at')
             ->get()
-            ->filter(function (TelegramMessage $message) {
-                return filled($message->text)
-                    || filled($message->caption)
-                    || $message->attachments->isNotEmpty();
-            })
             ->values();
+
+Notification::make()
+    ->title('Найдено: '.$messages->count())
+    ->success()
+    ->send();
 
         if ($messages->isEmpty()) {
             $this->exportText = '';
