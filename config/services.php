@@ -29,10 +29,10 @@ return [
 
     'staff_forms' => [
         'chat_id' => env('TELEGRAM_CHAT_ID_STAFF_FORMS'),
-        
-         'salary_thread_id' => env('STAFF_FORMS_SALARY_THREAD_ID'),
-    'schedule_thread_id' => env('STAFF_FORMS_SCHEDULE_THREAD_ID'),
-    'feedback_thread_id' => env('STAFF_FORMS_FEEDBACK_THREAD_ID'),
+
+        'salary_thread_id' => env('STAFF_FORMS_SALARY_THREAD_ID'),
+        'schedule_thread_id' => env('STAFF_FORMS_SCHEDULE_THREAD_ID'),
+        'feedback_thread_id' => env('STAFF_FORMS_FEEDBACK_THREAD_ID'),
     ],
 
     'telegram' => [
@@ -54,21 +54,23 @@ return [
         'chat_id_calendar' => env('TELEGRAM_CHAT_ID_CALENDAR'),
         'thread_id_calendar' => env('TELEGRAM_THREAD_ID_CALENDAR'),
 
-      'work_webhook_secret' => env('TELEGRAM_WORK_WEBHOOK_SECRET'),
+        'work_webhook_secret' => env('TELEGRAM_WORK_WEBHOOK_SECRET'),
 
-    'work_allowed_chat_ids' => array_filter(array_map(
-        'trim',
-        explode(',', env('TELEGRAM_WORK_ALLOWED_CHAT_IDS', ''))
+        'work_allowed_chat_ids' => array_filter(array_map(
+            'trim',
+            explode(',', env('TELEGRAM_WORK_ALLOWED_CHAT_IDS', ''))
 
 
 
-        
-    )),
- 
- 
 
-    'analytics_bot_token' => env('TELEGRAM_ANALYTICS_BOT_TOKEN'),
-    'analytics_webhook_secret' => env('TELEGRAM_ANALYTICS_WEBHOOK_SECRET'),
+        )),
+
+
+
+        'analytics_bot_token' => env('TELEGRAM_ANALYTICS_BOT_TOKEN'),
+        'analytics_webhook_secret' => env('TELEGRAM_ANALYTICS_WEBHOOK_SECRET'),
+
+        'mobility_chat_id' => env('TELEGRAM_MOBILITY_CHAT_ID'),
     ],
 
     'postmark' => [

@@ -12,7 +12,7 @@ use Illuminate\Support\Collection;
 new class extends Component
 {
     public bool $profileEditOpen = false;
-
+public bool $profileRequired = false;
     public ?string $profileName = null;
     public ?string $profileBirthday = null;
     public ?string $profileWorkStartedAt = null;
@@ -43,7 +43,22 @@ new class extends Component
         $this->calendarBadge = $this->buildCalendarBadge();
 
         $this->fillProfileForm();
+
+        $this->profileRequired = ! $this->isProfileComplete();
+
+if ($this->profileRequired) {
+    $this->profileEditOpen = true;
+}
     }
+
+protected function isProfileComplete(): bool
+{
+    $user = auth()->user();
+
+    return filled($user->name)
+        && filled($user->birthday)
+        && filled($user->work_started_at);
+}
 
     public function openProfileEdit(): void
     {
@@ -65,8 +80,8 @@ new class extends Component
     {
         $this->validate([
             'profileName' => ['required', 'string', 'max:255'],
-            'profileBirthday' => ['nullable', 'date'],
-            'profileWorkStartedAt' => ['nullable', 'date'],
+            'profileBirthday' => ['required', 'date'],
+            'profileWorkStartedAt' => ['required', 'date'],
         ], [
             'profileName.required' => 'Введите имя.',
             'profileName.max' => 'Имя слишком длинное.',
@@ -79,7 +94,7 @@ new class extends Component
             'birthday' => $this->profileBirthday ?: null,
             'work_started_at' => $this->profileWorkStartedAt ?: null,
         ])->save();
-
+$this->profileRequired = false;
         $this->profileEditOpen = false;
 
         $this->toast(
@@ -580,7 +595,7 @@ new class extends Component
             </h2>
 
             <p class="mt-[8px] text-[14px] leading-[1.4] text-black/50">
-                Измените имя, дату рождения и дату начала работы.
+                Измените имя, дату рождения и дату начала работы
             </p>
         </div>
 
@@ -641,14 +656,16 @@ new class extends Component
             </div>
         </div>
 
-        <div class="mt-[20px] grid grid-cols-2 gap-[10px]">
-            <x-ui.button
-                type="button"
-                variant="secondary"
-                @click="profileSheetOpen = false"
-            >
-                Отмена
-            </x-ui.button>
+        <div class="mt-[20px] grid {{ $profileRequired ? 'grid-cols-1' : 'grid-cols-2' }} gap-[10px]">
+           @if(! $profileRequired)
+    <x-ui.button
+        type="button"
+        variant="secondary"
+        @click="profileSheetOpen = false"
+    >
+        Отмена
+    </x-ui.button>
+@endif
 
             <x-ui.button
                 type="submit"
