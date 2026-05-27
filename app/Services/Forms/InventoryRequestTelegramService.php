@@ -15,6 +15,14 @@ class InventoryRequestTelegramService
         $chatId = $request->user?->telegram_id;
         $token = config('services.telegram.bot_token');
 
+        Log::info('Inventory telegram send started', [
+            'request_id' => $request->id,
+            'user_id' => $request->user?->id,
+            'chat_id' => $chatId,
+            'token_exists' => filled($token),
+            'status' => $request->status,
+        ]);
+
         if (! $chatId || ! $token) {
             Log::warning('Inventory telegram notification skipped: missing credentials', [
                 'request_id' => $request->id,
@@ -74,10 +82,10 @@ class InventoryRequestTelegramService
             $message[] = e($request->admin_comment);
         }
 
+        $keyboardButtons = [];
+
         $applicationsUrl = config('services.inventory.applications_url');
         $adminChatUrl = config('services.inventory.admin_chat_url');
-
-        $keyboardButtons = [];
 
         if (filled($applicationsUrl)) {
             $keyboardButtons[] = [
@@ -108,16 +116,28 @@ class InventoryRequestTelegramService
             ];
         }
 
-        $response = Http::timeout(10)->post(
-            "https://api.telegram.org/bot{$token}/sendMessage",
-            $payload
-        );
+        try {
+            $response = Http::timeout(10)
+                ->asJson()
+                ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
 
-        if ($response->failed()) {
-            Log::error('Inventory telegram send failed', [
+            Log::info('Inventory telegram response received', [
                 'request_id' => $request->id,
                 'status' => $response->status(),
                 'body' => $response->body(),
+            ]);
+
+            if ($response->failed()) {
+                Log::error('Inventory telegram send failed', [
+                    'request_id' => $request->id,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::error('Inventory telegram send exception', [
+                'request_id' => $request->id,
+                'message' => $e->getMessage(),
             ]);
         }
     }
