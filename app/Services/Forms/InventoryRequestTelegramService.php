@@ -121,6 +121,24 @@ class InventoryRequestTelegramService
                 ->asJson()
                 ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
 
+$forumChatId = config('services.staff_forms.chat_id');
+$threadId = config('services.staff_forms.inventory_thread_id');
+
+if ($forumChatId && $threadId) {
+    Http::timeout(10)
+        ->asJson()
+        ->post(
+            "https://api.telegram.org/bot{$token}/sendMessage",
+            [
+                'chat_id' => $forumChatId,
+                'message_thread_id' => (int) $threadId,
+                'text' => implode("\n", $message),
+                'parse_mode' => 'HTML',
+                'disable_web_page_preview' => true,
+            ]
+        );
+}
+
             Log::info('Inventory telegram response received', [
                 'request_id' => $request->id,
                 'status' => $response->status(),
@@ -140,5 +158,7 @@ class InventoryRequestTelegramService
                 'message' => $e->getMessage(),
             ]);
         }
+
+        
     }
 }
