@@ -98,38 +98,20 @@ protected function sendTelegram(string $message): void
     $token = config('services.telegram.bot_token');
     $chatId = config('services.telegram.mobility_chat_id');
 
-    if (! $token || ! $chatId) {
-        Log::warning('Mobility digest skipped: missing Telegram config', [
-            'token_exists' => filled($token),
+    $this->line('TOKEN: ' . ($token ? 'OK' : 'EMPTY'));
+    $this->line('CHAT: ' . $chatId);
+
+    $response = Http::timeout(20)
+        ->withoutVerifying()
+        ->post("https://api.telegram.org/bot{$token}/sendMessage", [
             'chat_id' => $chatId,
+            'text' => $message,
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => true,
         ]);
 
-        return;
-    }
-
-    try {
-        $response = Http::timeout(20)
-            ->retry(2, 1000)
-            ->withoutVerifying()
-            ->post("https://api.telegram.org/bot{$token}/sendMessage", [
-                'chat_id' => $chatId,
-                'text' => $message,
-                'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
-            ]);
-    } catch (\Throwable $e) {
-        Log::warning('Mobility digest telegram connection failed', [
-            'error' => $e->getMessage(),
-        ]);
-
-        return;
-    }
-
-    if (! $response->successful()) {
-        Log::warning('Mobility digest telegram failed', [
-            'status' => $response->status(),
-            'body' => $response->body(),
-        ]);
-    }
+    $this->line('STATUS: ' . $response->status());
+    $this->line('BODY:');
+    $this->line($response->body());
 }
 }
