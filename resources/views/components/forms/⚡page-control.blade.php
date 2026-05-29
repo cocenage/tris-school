@@ -1072,27 +1072,30 @@ new class extends Component {
 
                                                         @if($type === 'options' || $type === 'both')
                                                             <div class="grid gap-[8px]">
-                                                                @foreach($opts as $optIndex => $opt)
-                                                                    @php
-                                                                        $value = (string) ($opt['value'] ?? ('option_' . $optIndex));
-                                                                        $active = $selected === $value;
-                                                                    @endphp
+                                                       @foreach($opts as $optIndex => $opt)
+    @php
+        $value = (string) ($opt['value'] ?? $opt['label'] ?? ('option_' . $optIndex));
 
-                                                                    <button
-                                                                        type="button"
-                                                                        wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
-                                                                        class="flex min-h-[50px] w-full items-center justify-between rounded-[20px] px-[15px] text-left text-[14px] font-semibold transition
-                                                                            {{ $active ? 'bg-[#213259] text-white shadow-[0_10px_24px_rgba(33,50,89,0.18)]' : 'bg-[#F1F5F9] text-[#111827]' }}"
-                                                                    >
-                                                                        <span>{{ $opt['label'] ?? 'Вариант' }}</span>
+        $legacyValue = 'option_' . $optIndex;
 
-                                                                        @if($active)
-                                                                            <span class="rounded-full bg-white/15 px-[8px] py-[4px] text-[11px] text-white/75">
-                                                                                выбрано
-                                                                            </span>
-                                                                        @endif
-                                                                    </button>
-                                                                @endforeach
+        $active = $selected === $value || $selected === $legacyValue;
+    @endphp
+
+    <button
+        type="button"
+        wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
+        class="flex min-h-[50px] w-full items-center justify-between rounded-[20px] px-[15px] text-left text-[14px] font-semibold transition
+            {{ $active ? 'bg-[#213259] text-white shadow-[0_10px_24px_rgba(33,50,89,0.18)]' : 'bg-[#F1F5F9] text-[#111827]' }}"
+    >
+        <span>{{ $opt['label'] ?? 'Вариант' }}</span>
+
+        @if($active)
+            <span class="rounded-full bg-white/15 px-[8px] py-[4px] text-[11px] text-white/75">
+                выбрано
+            </span>
+        @endif
+    </button>
+@endforeach
                                                             </div>
                                                         @endif
 

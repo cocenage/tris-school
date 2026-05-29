@@ -105,16 +105,23 @@ class ControlResponse extends Model
                     $maxForQuestion = 0;
                     $selectedOption = null;
 
-                    foreach ($options as $option) {
-                        $points = (int) ($option['points'] ?? 0);
-                        if ($points > $maxForQuestion) {
-                            $maxForQuestion = $points;
-                        }
+                    foreach ($options as $optionIndex => $option) {
+    $points = (int) ($option['points'] ?? 0);
 
-                        if ((string) ($option['value'] ?? '') === (string) $selected) {
-                            $selectedOption = $option;
-                        }
-                    }
+    if ($points > $maxForQuestion) {
+        $maxForQuestion = $points;
+    }
+
+    $optionValue = (string) ($option['value'] ?? $option['label'] ?? '');
+    $legacyValue = 'option_' . $optionIndex;
+
+    if (
+        $optionValue === (string) $selected ||
+        $legacyValue === (string) $selected
+    ) {
+        $selectedOption = $option;
+    }
+}
 
                     $maxPoints += $maxForQuestion;
 
