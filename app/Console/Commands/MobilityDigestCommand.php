@@ -157,9 +157,9 @@ class MobilityDigestCommand extends Command
             ->all();
     }
 
-    protected function sendTelegram(string $message): void
+protected function sendTelegram(string $message): void
 {
-$token = config('services.telegram.analytics_bot_token');
+    $token = config('services.telegram.analytics_bot_token');
     $targets = $this->telegramTargets();
 
     $this->line('TOKEN: ' . ($token ? 'OK' : 'EMPTY'));
@@ -189,9 +189,22 @@ $token = config('services.telegram.analytics_bot_token');
         $this->line('SEND TO CHAT: ' . $payload['chat_id']);
         $this->line('THREAD: ' . ($payload['message_thread_id'] ?? 'none'));
 
-        $response = Http::timeout(20)
-            ->withoutVerifying()
-            ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
+        try {
+            $response = Http::timeout(30)
+                ->retry(3, 2000)
+                ->withoutVerifying()
+                ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
+        } catch (\Throwable $e) {
+            $this->error('TELEGRAM ERROR: ' . $e->getMessage());
+
+            Log::warning('Mobility digest telegram connection failed', [
+                'chat_id' => $target['chat_id'],
+                'thread_id' => $target['thread_id'] ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            continue;
+        }
 
         $this->line('STATUS: ' . $response->status());
         $this->line('BODY: ' . $response->body());
@@ -204,6 +217,8 @@ $token = config('services.telegram.analytics_bot_token');
                 'body' => $response->body(),
             ]);
         }
+
+        usleep(500000);
     }
 }
 }

@@ -169,73 +169,153 @@ class MobilityAlertSyncService
         return rtrim($baseUrl, '/') . '/' . ltrim($href, '/');
     }
 
-    protected function looksUseful(string $title, string $source): bool
-    {
-        $text = mb_strtolower($title);
+protected function looksUseful(string $title, string $source): bool
+{
+    $text = mb_strtolower($title);
 
-        if ($source === 'mit') {
-            return str_contains($text, 'lombardia')
-                || str_contains($text, 'milano')
-                || str_contains($text, 'trasporto')
-                || str_contains($text, 'ferroviario')
-                || str_contains($text, 'pubblico')
-                || str_contains($text, 'atm')
-                || str_contains($text, 'trenord');
+    /*
+    |--------------------------------------------------------------------------
+    | Жестко выкидываем мусор
+    |--------------------------------------------------------------------------
+    */
+
+    $trashKeywords = [
+        'manifestazione di interesse',
+        'manifestazioni di interesse',
+        'imprese e fornitori',
+        'impreseefornitori',
+        'fornitori',
+        'vendita immobili',
+        'vendita',
+        'affitto',
+        'fibre ottiche',
+        'mappa metro',
+        'mappa',
+        'biglietti',
+        'abbonamenti',
+        'lavora con noi',
+        'atm lavora',
+        'gare',
+        'bandi',
+        'appalti',
+        'privacy',
+        'cookie',
+        'contatti',
+        'newsletter',
+    ];
+
+    foreach ($trashKeywords as $keyword) {
+        if (str_contains($text, $keyword)) {
+            return false;
         }
-
-        $ignorePatterns = [
-            '/^bus\s\d+/u',
-            '/^tram\s\d+/u',
-            '/fermata/u',
-            '/fermate/u',
-            '/deviazione/u',
-            '/deviano/u',
-            '/spostata/u',
-        ];
-
-        foreach ($ignorePatterns as $pattern) {
-            if (preg_match($pattern, $text)) {
-                return false;
-            }
-        }
-
-        $importantKeywords = [
-            'sciopero',
-            'manifestazione',
-            'manifestazioni',
-            'evento',
-            'eventi',
-            'concerto',
-            'concerti',
-            'san siro',
-            'fashion week',
-            'salone del mobile',
-            'marathon',
-            'maratona',
-            'chiude',
-            'chiusura',
-            'metro',
-            'm1',
-            'm2',
-            'm3',
-            'm4',
-            'trenord',
-            'stazione',
-            'circolazione',
-            'viabilità',
-            'traffico',
-            'lavori',
-            'cambiamenti programmati',
-        ];
-
-        foreach ($importantKeywords as $keyword) {
-            if (str_contains($text, $keyword)) {
-                return true;
-            }
-        }
-
-        return false;
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | MIT — только забастовки транспорта по Милану / Ломбардии
+    |--------------------------------------------------------------------------
+    */
+
+    if ($source === 'mit') {
+        return str_contains($text, 'lombardia')
+            || str_contains($text, 'milano')
+            || str_contains($text, 'trasporto pubblico')
+            || str_contains($text, 'trasporto ferroviario')
+            || str_contains($text, 'ferroviario')
+            || str_contains($text, 'atm')
+            || str_contains($text, 'trenord');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Отсекаем мелкие остановки и автобусную локалку
+    |--------------------------------------------------------------------------
+    */
+
+    $ignorePatterns = [
+        '/^bus\s\d+/u',
+        '/^tram\s\d+/u',
+        '/^filobus\s\d+/u',
+        '/fermata/u',
+        '/fermate/u',
+        '/deviazione/u',
+        '/deviazioni/u',
+        '/deviano/u',
+        '/spostata/u',
+        '/sospesa/u',
+        '/sospese/u',
+    ];
+
+    foreach ($ignorePatterns as $pattern) {
+        if (preg_match($pattern, $text)) {
+            return false;
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Оставляем только реально полезное
+    |--------------------------------------------------------------------------
+    */
+
+    $importantKeywords = [
+        'sciopero',
+        'scioperi',
+
+        'manifestazione',
+        'manifestazioni',
+
+        'evento',
+        'eventi',
+
+        'concerto',
+        'concerti',
+
+        'partite a san siro',
+        'san siro',
+
+        'fashion week',
+        'salone del mobile',
+
+        'marathon',
+        'maratona',
+
+        'chiude',
+        'chiusura',
+
+        'metro',
+        'metropolitana',
+
+        'm1',
+        'm2',
+        'm3',
+        'm4',
+        'm5',
+
+        'trenord',
+
+        'stazione',
+
+        'circolazione',
+
+        'viabilità',
+
+        'traffico',
+
+        'lavori',
+        'cantieri',
+
+        'cambiamenti programmati',
+    ];
+
+    foreach ($importantKeywords as $keyword) {
+        if (str_contains($text, $keyword)) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
     protected function detectType(string $title): string
     {
