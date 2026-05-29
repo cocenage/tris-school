@@ -5,107 +5,130 @@ namespace App\Services\Mobility;
 use App\Models\MobilityAlert;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class MobilityAlertSyncService
 {
     public function sync(): int
     {
+        return $this->syncMitStrikes()
+            + $this->syncAtm()
+            + $this->syncTrenord();
+    }
+
+    protected function syncMitStrikes(): int
+    {
+        return $this->syncGenericPage(
+            source: 'mit',
+            url: 'https://scioperi.mit.gov.it/mit2/public/scioperi',
+            forcedType: 'strike',
+            forcedRisk: 'high'
+        );
+    }
+
+    protected function syncAtm(): int
+    {
+        return $this->syncGenericPage(
+            source: 'atm',
+            url: 'https://www.atm.it/it/Pagine/default.aspx'
+        );
+    }
+
+    protected function syncTrenord(): int
+    {
+        return $this->syncGenericPage(
+            source: 'trenord',
+            url: 'https://www.trenord.it'
+        );
+    }
+
+    protected function syncGenericPage(
+        string $source,
+        string $url,
+        ?string $forcedType = null,
+        ?string $forcedRisk = null
+    ): int {
+        try {
+            $response = Http::timeout(20)
+                ->retry(2, 1000)
+                ->withoutVerifying()
+                ->withHeaders([
+                    'User-Agent' => 'TRIS Mobility Alert Bot',
+                    'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                ])
+                ->get($url);
+        } catch (\Throwable $e) {
+            Log::warning('Mobility source request failed', [
+                'source' => $source,
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+
+            return 0;
+        }
+
+        if (! $response->successful()) {
+            Log::warning('Mobility source returned bad status', [
+                'source' => $source,
+                'url' => $url,
+                'status' => $response->status(),
+            ]);
+
+            return 0;
+        }
+
+        $items = $this->extractLinks($url, $response->body());
+
         $created = 0;
 
-        foreach ($this->sources() as $source => $url) {
-            $created += $this->syncSource($source, $url);
+        foreach ($items as $item) {
+            if (! $this->looksUseful($item['title'], $source)) {
+                continue;
+            }
+
+            $title = $this->cleanTitle($item['title']);
+            $eventDate = $this->extractDate($title) ?? now()->addDay()->startOfDay();
+
+            $hash = sha1($source . '|' . $title . '|' . $item['url']);
+
+            $alert = MobilityAlert::firstOrCreate(
+                ['external_hash' => $hash],
+                [
+                    'source' => $source,
+                    'title' => $title,
+                    'description' => null,
+                    'url' => $item['url'],
+                    'type' => $forcedType ?? $this->detectType($title),
+                    'risk' => $forcedRisk ?? $this->detectRisk($title),
+                    'district' => $this->detectDistrict($title),
+                    'starts_at' => $eventDate,
+                    'ends_at' => null,
+                ]
+            );
+
+            if ($alert->wasRecentlyCreated) {
+                $created++;
+            }
         }
 
         return $created;
     }
 
-    protected function sources(): array
-    {
-        return [
-            'atm' => 'https://www.atm.it/it/ViaggiaConNoi/InfoTraffico/',
-            'comune' => 'https://www.comune.milano.it/home/infomobilita',
-            'luceverde' => 'https://milano.luceverde.it/news',
-            'trenord' => 'https://www.trenord.it/news/trenord-informa/avvisi/',
-        ];
-    }
-
-protected function syncSource(string $source, string $url): int
-{
-    try {
-        $response = Http::timeout(20)
-            ->retry(2, 1000)
-            ->withoutVerifying()
-            ->withHeaders([
-                'User-Agent' => 'TRIS Mobility Alert Bot',
-                'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            ])
-            ->get($url);
-    } catch (\Throwable $e) {
-        logger()->warning('Mobility source request failed', [
-            'source' => $source,
-            'url' => $url,
-            'error' => $e->getMessage(),
-        ]);
-
-        return 0;
-    }
-
-    if (! $response->successful()) {
-        logger()->warning('Mobility source returned bad status', [
-            'source' => $source,
-            'url' => $url,
-            'status' => $response->status(),
-        ]);
-
-        return 0;
-    }
-
-    $items = $this->extractLinks($url, $response->body());
-
-    $created = 0;
-
-    foreach ($items as $item) {
-        if (! $this->looksUseful($item['title'])) {
-            continue;
-        }
-
-        $hash = sha1($source . '|' . $item['title'] . '|' . $item['url']);
-
-        $alert = MobilityAlert::firstOrCreate(
-            ['external_hash' => $hash],
-            [
-                'source' => $source,
-                'title' => $item['title'],
-                'description' => $item['description'] ?? null,
-                'url' => $item['url'],
-                'type' => $this->detectType($item['title']),
-                'risk' => $this->detectRisk($item['title']),
-                'district' => $this->detectDistrict($item['title']),
-                'starts_at' => $this->extractDate($item['title']) ?? now()->addDay()->startOfDay(),
-'ends_at' => null,
-        
-            ]
-        );
-
-        if ($alert->wasRecentlyCreated) {
-            $created++;
-        }
-    }
-
-    return $created;
-}
-
     protected function extractLinks(string $baseUrl, string $html): array
     {
-        preg_match_all('/<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)<\/a>/is', $html, $matches, PREG_SET_ORDER);
+        preg_match_all(
+            '/<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)<\/a>/is',
+            $html,
+            $matches,
+            PREG_SET_ORDER
+        );
 
         $items = [];
 
         foreach ($matches as $match) {
             $href = html_entity_decode($match[1]);
-            $title = trim(strip_tags($match[2]));
-            $title = preg_replace('/\s+/', ' ', $title);
+            $title = $this->cleanTitle(strip_tags($match[2]));
 
             if (mb_strlen($title) < 8) {
                 continue;
@@ -113,12 +136,19 @@ protected function syncSource(string $source, string $url): int
 
             $items[] = [
                 'title' => $title,
-                'description' => null,
                 'url' => $this->absoluteUrl($baseUrl, $href),
             ];
         }
 
-        return array_slice($items, 0, 60);
+        return array_slice($items, 0, 80);
+    }
+
+    protected function cleanTitle(string $title): string
+    {
+        $title = html_entity_decode($title);
+        $title = preg_replace('/\s+/', ' ', $title);
+
+        return trim($title);
     }
 
     protected function absoluteUrl(string $baseUrl, string $href): string
@@ -139,91 +169,73 @@ protected function syncSource(string $source, string $url): int
         return rtrim($baseUrl, '/') . '/' . ltrim($href, '/');
     }
 
-protected function looksUseful(string $title): bool
-{
-    $text = mb_strtolower($title);
+    protected function looksUseful(string $title, string $source): bool
+    {
+        $text = mb_strtolower($title);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Игнорируем локальный мусор
-    |--------------------------------------------------------------------------
-    */
-
-    $ignorePatterns = [
-        '/^bus\s\d+/u',
-        '/^tram\s\d+/u',
-        '/fermata/u',
-        '/fermate/u',
-        '/deviazione/u',
-        '/deviano/u',
-        '/spostata/u',
-    ];
-
-    foreach ($ignorePatterns as $pattern) {
-        if (preg_match($pattern, $text)) {
-            return false;
+        if ($source === 'mit') {
+            return str_contains($text, 'lombardia')
+                || str_contains($text, 'milano')
+                || str_contains($text, 'trasporto')
+                || str_contains($text, 'ferroviario')
+                || str_contains($text, 'pubblico')
+                || str_contains($text, 'atm')
+                || str_contains($text, 'trenord');
         }
-    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Важные события
-    |--------------------------------------------------------------------------
-    */
+        $ignorePatterns = [
+            '/^bus\s\d+/u',
+            '/^tram\s\d+/u',
+            '/fermata/u',
+            '/fermate/u',
+            '/deviazione/u',
+            '/deviano/u',
+            '/spostata/u',
+        ];
 
-    $importantKeywords = [
-        'sciopero',
-
-        'manifestazione',
-        'manifestazioni',
-
-        'evento',
-        'eventi',
-
-        'concerto',
-        'concerti',
-
-        'san siro',
-
-        'fashion week',
-        'salone del mobile',
-
-        'marathon',
-        'maratona',
-
-        'chiude',
-        'chiusura',
-
-        'metro',
-
-        'm1',
-        'm2',
-        'm3',
-        'm4',
-
-        'trenord',
-
-        'stazione',
-
-        'circolazione',
-
-        'viabilità',
-
-        'traffico',
-
-        'lavori',
-
-        'cambiamenti programmati',
-    ];
-
-    foreach ($importantKeywords as $keyword) {
-        if (str_contains($text, $keyword)) {
-            return true;
+        foreach ($ignorePatterns as $pattern) {
+            if (preg_match($pattern, $text)) {
+                return false;
+            }
         }
-    }
 
-    return false;
-}
+        $importantKeywords = [
+            'sciopero',
+            'manifestazione',
+            'manifestazioni',
+            'evento',
+            'eventi',
+            'concerto',
+            'concerti',
+            'san siro',
+            'fashion week',
+            'salone del mobile',
+            'marathon',
+            'maratona',
+            'chiude',
+            'chiusura',
+            'metro',
+            'm1',
+            'm2',
+            'm3',
+            'm4',
+            'trenord',
+            'stazione',
+            'circolazione',
+            'viabilità',
+            'traffico',
+            'lavori',
+            'cambiamenti programmati',
+        ];
+
+        foreach ($importantKeywords as $keyword) {
+            if (str_contains($text, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     protected function detectType(string $title): string
     {
@@ -235,6 +247,7 @@ protected function looksUseful(string $title): bool
             str_contains($text, 'san siro') => 'event',
             str_contains($text, 'lavori') => 'roadwork',
             str_contains($text, 'chiusura') => 'roadwork',
+            str_contains($text, 'chiude') => 'roadwork',
             default => 'transport',
         };
     }
@@ -247,7 +260,8 @@ protected function looksUseful(string $title): bool
             str_contains($text, 'sciopero') ||
             str_contains($text, 'san siro') ||
             str_contains($text, 'manifestazione') ||
-            str_contains($text, 'chiusura')
+            str_contains($text, 'chiusura') ||
+            str_contains($text, 'chiude')
         ) {
             return 'high';
         }
@@ -255,7 +269,9 @@ protected function looksUseful(string $title): bool
         if (
             str_contains($text, 'modifiche') ||
             str_contains($text, 'cambiamenti') ||
-            str_contains($text, 'lavori')
+            str_contains($text, 'lavori') ||
+            str_contains($text, 'metro') ||
+            str_contains($text, 'trenord')
         ) {
             return 'medium';
         }
@@ -279,6 +295,9 @@ protected function looksUseful(string $title): bool
             'porta venezia' => 'Porta Venezia',
             'porta romana' => 'Porta Romana',
             'lambrate' => 'Lambrate',
+            'crescenzago' => 'Crescenzago',
+            'gobba' => 'Cascina Gobba',
+            'gessate' => 'Gessate',
         ];
 
         foreach ($districts as $needle => $district) {

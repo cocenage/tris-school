@@ -71,7 +71,7 @@ return [
         'analytics_bot_token' => env('TELEGRAM_ANALYTICS_BOT_TOKEN'),
         'analytics_webhook_secret' => env('TELEGRAM_ANALYTICS_WEBHOOK_SECRET'),
 
-        'mobility_chat_id' => env('TELEGRAM_MOBILITY_CHAT_ID'),
+    'mobility_targets' => env('TELEGRAM_MOBILITY_TARGETS'),
     ],
 
     'postmark' => [

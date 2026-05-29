@@ -586,7 +586,7 @@ public function getFormButtonTextProperty(): string
         if ($userTelegramUrl) {
             $text .= "👤 <b>Сотрудник:</b> <a href='{$userTelegramUrl}'>" . e($name) . "</a>\n";
         } else {
-            $text .= "👤 <b>Сотрудник:</b> " . e($name) . "\n";
+            $text .= "👤 <b>Сотрудник:</b> " . e($name) . "\n"ф;
         }
 
         $text .= "🏷️ <b>Dip:</b> {$dipText}\n";
