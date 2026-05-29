@@ -159,7 +159,7 @@ class MobilityDigestCommand extends Command
 
     protected function sendTelegram(string $message): void
 {
-    $token = config('services.telegram.bot_token');
+$token = config('services.telegram.analytics_bot_token');
     $targets = $this->telegramTargets();
 
     $this->line('TOKEN: ' . ($token ? 'OK' : 'EMPTY'));
