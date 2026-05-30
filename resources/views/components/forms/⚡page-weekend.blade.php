@@ -539,90 +539,111 @@ public function getFormButtonTextProperty(): string
         return url('/admin/day-off-requests/' . $request->id . '/edit');
     }
 
-    protected function sendTelegramNotification(DayOffRequest $request): void
-    {
-        $request->loadMissing(['user', 'days']);
+protected function sendTelegramNotification(DayOffRequest $request): void
+{
+    $request->loadMissing(['user', 'days']);
 
-        $token = config('services.telegram.bot_token');
-        $chatId = config('services.telegram.chat_id_formweekend');
-        $threadId = config('services.telegram.thread_id_formweekend');
+    $token = config('services.telegram.bot_token');
+    $chatId = config('services.telegram.chat_id_formweekend');
+    $threadId = config('services.telegram.thread_id_formweekend');
 
-        if (blank($token) || blank($chatId)) {
-            Log::warning('Telegram notification skipped: missing credentials');
-            return;
-        }
-
-        $user = $request->user;
-
-        Carbon::setLocale('ru');
-
-        $formattedDates = $request->days
-            ->pluck('date')
-            ->map(fn ($date) => Carbon::parse($date)->translatedFormat('d.m.Y (l)'))
-            ->implode("\n• ");
-
-        $name = $user?->name ?: 'Неизвестный пользователь';
-
-        $tgRaw = $user?->tg
-            ? ltrim(trim($user->tg), '@')
-            : null;
-
-        $tgUsername = ($tgRaw && preg_match('/^[A-Za-z0-9_]{5,32}$/', $tgRaw))
-            ? $tgRaw
-            : null;
-
-        $userTelegramUrl = $tgUsername
-            ? "https://t.me/{$tgUsername}"
-            : null;
-
-        $dipText = isset($user?->dip)
-            ? ($user->dip ? 'dip' : 'no dip')
-            : '—';
-
-        $adminUrl = $this->adminRecordUrl($request);
-
-        $text = "📌 <b>Новый запрос на выходной!</b>\n\n";
-
-        if ($userTelegramUrl) {
-            $text .= "👤 <b>Сотрудник:</b> <a href='{$userTelegramUrl}'>" . e($name) . "</a>\n";
-        } else {
-            $text .= "👤 <b>Сотрудник:</b> " . e($name) . "\n"ф;
-        }
-
-        $text .= "🏷️ <b>Dip:</b> {$dipText}\n";
-        $text .= "📅 <b>Даты:</b>\n• {$formattedDates}\n\n";
-        $text .= "💬 <b>Причина:</b>\n<blockquote>" . e(trim((string) $request->reason)) . "</blockquote>\n\n";
-
-        if ($userTelegramUrl) {
-            $text .= "🔗 <b>Telegram:</b> <a href='{$userTelegramUrl}'>открыть профиль</a>\n";
-        }
-
-        $text .= "⛓️ <a href='{$adminUrl}'><b>Ссылка на запрос в админке</b></a>\n";
-
-        $payload = [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-        ];
-
-        if (filled($threadId)) {
-            $payload['message_thread_id'] = (int) $threadId;
-        }
-
-        $response = Http::timeout(10)->post(
-            "https://api.telegram.org/bot{$token}/sendMessage",
-            $payload
-        );
-
-        if ($response->failed()) {
-            Log::error('Telegram send failed', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-                'request_id' => $request->id,
-            ]);
-        }
+    if (blank($token) || blank($chatId)) {
+        Log::warning('Telegram notification skipped: missing credentials');
+        return;
     }
+
+    $user = $request->user;
+
+    Carbon::setLocale('ru');
+
+    $formattedDates = $request->days
+        ->pluck('date')
+        ->map(fn ($date) => Carbon::parse($date)->translatedFormat('d.m.Y (l)'))
+        ->implode("\n• ");
+
+    $name = $user?->name ?: 'Неизвестный пользователь';
+
+    $tgRaw = $user?->telegram_username
+        ? ltrim(trim($user->telegram_username), '@')
+        : null;
+
+    $tgUsername = ($tgRaw && preg_match('/^[A-Za-z0-9_]{5,32}$/', $tgRaw))
+        ? $tgRaw
+        : null;
+
+    $userTelegramUrl = $tgUsername
+        ? "https://t.me/{$tgUsername}"
+        : null;
+
+    $dipText = isset($user?->dip)
+        ? ($user->dip ? 'dip' : 'no dip')
+        : '—';
+
+    $adminUrl = $this->adminRecordUrl($request);
+
+    $text = "📌 <b>Новый запрос на выходной!</b>\n\n";
+
+    if ($userTelegramUrl) {
+        $text .= "👤 <b>Сотрудник:</b> <a href='{$userTelegramUrl}'>" . e($name) . "</a>\n";
+    } else {
+        $text .= "👤 <b>Сотрудник:</b> " . e($name) . "\n";
+    }
+
+    $text .= "🏷️ <b>Dip:</b> {$dipText}\n";
+    $text .= "📅 <b>Даты:</b>\n• {$formattedDates}\n\n";
+    $text .= "💬 <b>Причина:</b>\n<blockquote>" . e(trim((string) $request->reason)) . "</blockquote>\n\n";
+
+    if ($userTelegramUrl) {
+        $text .= "🔗 <b>Telegram:</b> <a href='{$userTelegramUrl}'>открыть профиль</a>\n";
+    }
+
+    $text .= "⏳ <b>Статус:</b> ожидает решения\n";
+    $text .= "⛓️ <a href='{$adminUrl}'><b>Ссылка на запрос в админке</b></a>\n";
+
+    $payload = [
+        'chat_id' => $chatId,
+        'text' => $text,
+        'parse_mode' => 'HTML',
+        'disable_web_page_preview' => true,
+        'reply_markup' => [
+            'inline_keyboard' => [
+                [
+                    [
+                        'text' => '✅ Одобрить',
+                        'callback_data' => 'dayoff:approve:' . $request->id,
+                    ],
+                    [
+                        'text' => '❌ Отклонить',
+                        'callback_data' => 'dayoff:reject:' . $request->id,
+                    ],
+                ],
+                [
+                    [
+                        'text' => 'Открыть в админке',
+                        'url' => $adminUrl,
+                    ],
+                ],
+            ],
+        ],
+    ];
+
+    if (filled($threadId)) {
+        $payload['message_thread_id'] = (int) $threadId;
+    }
+
+    $response = Http::timeout(10)->post(
+        "https://api.telegram.org/bot{$token}/sendMessage",
+        $payload
+    );
+
+    if ($response->failed()) {
+        Log::error('Telegram send failed', [
+            'status' => $response->status(),
+            'body' => $response->body(),
+            'request_id' => $request->id,
+        ]);
+    }
+}
 
     public function submit(): void
     {

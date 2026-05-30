@@ -45,6 +45,16 @@ class TelegramUserNotificationService
                 'inline_keyboard' => [
                     [
                         [
+                            'text' => '✅ Одобрить',
+                            'callback_data' => 'access:approve:' . $user->id,
+                        ],
+                        [
+                            'text' => '❌ Отказать',
+                            'callback_data' => 'access:reject:' . $user->id,
+                        ],
+                    ],
+                    [
+                        [
                             'text' => 'Открыть пользователя',
                             'url' => $this->userAdminUrl($user),
                         ],
