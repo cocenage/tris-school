@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Livewire\Component;
+use App\Services\Forms\InventoryRequestTelegramService;
 
 new class extends Component
 {
@@ -320,98 +321,99 @@ new class extends Component
         $this->successMessage = null;
     }
 
-    public function submit(): void
-    {
-        $lines = $this->selectedLines();
+   public function submit(): void
+{
+    $lines = $this->selectedLines();
 
-        if (empty($lines)) {
-            $this->toast(
-                'warning',
-                'Ничего не выбрано',
-                'Добавьте хотя бы одну позицию'
-            );
-            return;
-        }
+    if (empty($lines)) {
+        $this->toast(
+            'warning',
+            'Ничего не выбрано',
+            'Добавьте хотя бы одну позицию'
+        );
+        return;
+    }
 
     try {
-    DB::transaction(function () use ($lines) {
-        $request = InventoryRequest::create([
+        $request = DB::transaction(function () use ($lines) {
+            $request = InventoryRequest::create([
+                'user_id' => Auth::id(),
+                'status' => 'pending',
+                'submitted_at' => now(),
+            ]);
+
+            foreach ($lines as $line) {
+                InventoryRequestLine::create([
+                    'inventory_request_id' => $request->id,
+                    'inventory_item_id' => $line['inventory_item_id'],
+                    'user_id' => Auth::id(),
+                    'item_name' => $line['item_name'],
+                    'type_name' => $line['type_name'],
+                    'size_name' => $line['size_name'],
+                    'variant_label' => $line['variant_label'],
+                    'requested_qty' => (int) $line['requested_qty'],
+                    'issued_qty' => 0,
+                    'status' => 'pending',
+                ]);
+            }
+
+            activity()
+                ->causedBy(Auth::user())
+                ->performedOn($request)
+                ->event('inventory_request_created')
+                ->withProperties([
+                    'lines_count' => count($lines),
+                    'total_qty' => collect($lines)->sum('requested_qty'),
+                    'items' => collect($lines)
+                        ->map(fn (array $line): array => [
+                            'name' => $line['item_name'],
+                            'variant' => $line['variant_label'],
+                            'qty' => (int) $line['requested_qty'],
+                        ])
+                        ->values()
+                        ->all(),
+                ])
+                ->log('Пользователь отправил заявку на инвентарь');
+
+            return $request;
+        });
+
+        try {
+            app(InventoryRequestTelegramService::class)
+                ->sendNewRequest($request->fresh(['user', 'lines']));
+        } catch (\Throwable $e) {
+            Log::error('Inventory request telegram send error', [
+                'request_id' => $request->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        $this->selected = [];
+        $this->search = '';
+
+        $this->resetErrorBag();
+        $this->resetValidation();
+        $this->clearDraft();
+
+        $this->successMessage = $this->buildSuccessMessage();
+        $this->successSheetOpen = true;
+    } catch (\Throwable $e) {
+        Log::error('Inventory request submit error', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString(),
             'user_id' => Auth::id(),
-            'status' => 'pending',
-            'submitted_at' => now(),
         ]);
 
-        foreach ($lines as $line) {
-            InventoryRequestLine::create([
-                'inventory_request_id' => $request->id,
-                'inventory_item_id' => $line['inventory_item_id'],
-                'user_id' => Auth::id(),
-                'item_name' => $line['item_name'],
-                'type_name' => $line['type_name'],
-                'size_name' => $line['size_name'],
-                'variant_label' => $line['variant_label'],
-                'requested_qty' => (int) $line['requested_qty'],
-                'issued_qty' => 0,
-                'status' => 'pending',
-            ]);
-        }
+        $this->addError('form', 'Произошла ошибка при отправке. Пожалуйста, попробуйте позже.');
 
-        activity()
-            ->causedBy(Auth::user())
-            ->performedOn($request)
-            ->event('inventory_request_created')
-            ->withProperties([
-                'lines_count' => count($lines),
-                'total_qty' => collect($lines)->sum('requested_qty'),
-                'items' => collect($lines)
-                    ->map(fn (array $line): array => [
-                        'name' => $line['item_name'],
-                        'variant' => $line['variant_label'],
-                        'qty' => (int) $line['requested_qty'],
-                    ])
-                    ->values()
-                    ->all(),
-            ])
-            ->log('Пользователь отправил заявку на инвентарь');
-    });
-
-    $this->selected = [];
-    $this->search = '';
-
-    $this->resetErrorBag();
-    $this->resetValidation();
-    $this->clearDraft();
-
-    $this->successMessage = $this->buildSuccessMessage();
-    $this->successSheetOpen = true;
-} catch (\Throwable $e) {
-
-            $this->selected = [];
-            $this->search = '';
-
-            $this->resetErrorBag();
-            $this->resetValidation();
-            $this->clearDraft();
-
-            $this->successMessage = $this->buildSuccessMessage();
-            $this->successSheetOpen = true;
-        } catch (\Throwable $e) {
-            Log::error('Inventory request submit error', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-                'user_id' => Auth::id(),
-            ]);
-
-            $this->addError('form', 'Произошла ошибка при отправке. Пожалуйста, попробуйте позже.');
-
-            $this->toast(
-                'error',
-                'Не получилось отправить',
-                'Попробуйте ещё раз через пару минут',
-                5000
-            );
-        }
+        $this->toast(
+            'error',
+            'Не получилось отправить',
+            'Попробуйте ещё раз через пару минут',
+            5000
+        );
     }
+}
 };
 
 ?>

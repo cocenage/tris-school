@@ -8,6 +8,88 @@ use Illuminate\Support\Facades\Log;
 
 class InventoryRequestTelegramService
 {
+    public function sendNewRequest(InventoryRequest $request): void
+    {
+        $request->loadMissing(['user', 'lines']);
+
+        $token = config('services.telegram.bot_token');
+        $forumChatId = config('services.staff_forms.chat_id');
+        $threadId = config('services.staff_forms.inventory_thread_id');
+
+        Log::info('Inventory new request telegram started', [
+            'request_id' => $request->id,
+            'forum_chat_id' => $forumChatId,
+            'thread_id' => $threadId,
+            'token_exists' => filled($token),
+        ]);
+
+        if (! $token || ! $forumChatId || ! $threadId) {
+            Log::warning('Inventory new request telegram skipped: missing credentials', [
+                'request_id' => $request->id,
+                'token_exists' => filled($token),
+                'forum_chat_id' => $forumChatId,
+                'thread_id' => $threadId,
+            ]);
+
+            return;
+        }
+
+        $message = [];
+        $message[] = '📦 <b>Новая заявка на инвентарь</b>';
+        $message[] = '';
+        $message[] = '👤 <b>Сотрудник:</b> ' . e($request->user?->name ?? '—');
+        $message[] = '🆔 <b>Заявка:</b> #' . $request->id;
+        $message[] = '';
+        $message[] = '📋 <b>Позиции:</b>';
+
+        foreach ($request->lines->sortBy('id') as $line) {
+            $name = e($line->item_name);
+
+            if ($line->variant_label) {
+                $name .= ' <i>(' . e($line->variant_label) . ')</i>';
+            }
+
+            $message[] = "— {$name}: {$line->requested_qty}";
+        }
+
+        if ($request->comment) {
+            $message[] = '';
+            $message[] = '💬 <b>Комментарий:</b>';
+            $message[] = e($request->comment);
+        }
+
+        try {
+            $response = Http::timeout(10)
+                ->asJson()
+                ->post("https://api.telegram.org/bot{$token}/sendMessage", [
+                    'chat_id' => $forumChatId,
+                    'message_thread_id' => (int) $threadId,
+                    'text' => implode("\n", $message),
+                    'parse_mode' => 'HTML',
+                    'disable_web_page_preview' => true,
+                ]);
+
+            Log::info('Inventory new request telegram response received', [
+                'request_id' => $request->id,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            if ($response->failed()) {
+                Log::error('Inventory new request telegram failed', [
+                    'request_id' => $request->id,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::error('Inventory new request telegram exception', [
+                'request_id' => $request->id,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
     public function sendResult(InventoryRequest $request): void
     {
         $request->loadMissing(['user', 'lines']);
@@ -121,24 +203,6 @@ class InventoryRequestTelegramService
                 ->asJson()
                 ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
 
-$forumChatId = config('services.staff_forms.chat_id');
-$threadId = config('services.staff_forms.inventory_thread_id');
-
-if ($forumChatId && $threadId) {
-    Http::timeout(10)
-        ->asJson()
-        ->post(
-            "https://api.telegram.org/bot{$token}/sendMessage",
-            [
-                'chat_id' => $forumChatId,
-                'message_thread_id' => (int) $threadId,
-                'text' => implode("\n", $message),
-                'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
-            ]
-        );
-}
-
             Log::info('Inventory telegram response received', [
                 'request_id' => $request->id,
                 'status' => $response->status(),
@@ -158,7 +222,5 @@ if ($forumChatId && $threadId) {
                 'message' => $e->getMessage(),
             ]);
         }
-
-        
     }
 }
