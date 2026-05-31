@@ -113,5 +113,9 @@ Route::fallback(function () {
         'rejected' => 'access.rejected',
         default => 'landing.page',
     });
+
+
 });
 
+Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
+    ->name('telegram.work-webhook');
