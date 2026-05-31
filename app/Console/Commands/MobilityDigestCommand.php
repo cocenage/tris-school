@@ -219,19 +219,30 @@ protected function humanAlertText(MobilityAlert $alert): string
 
 protected function telegramTargets(): array
 {
-    return TelegramTopic::query()
-        ->where('purpose', 'mobility')
-        ->where('is_enabled', true)
-        ->with('chat')
-        ->get()
-        ->map(function (TelegramTopic $topic) {
+    $raw = config('services.telegram.mobility_targets');
+
+    if (! $raw) {
+        return [];
+    }
+
+    return collect(explode(',', $raw))
+        ->map(fn ($item) => trim($item))
+        ->filter()
+        ->map(function ($item) {
+            [$chatId, $threadId] = array_pad(
+                explode(':', $item, 2),
+                2,
+                null
+            );
+
             return [
-                'chat_id' => $topic->chat?->telegram_chat_id,
-                'thread_id' => $topic->telegram_thread_id,
+                'chat_id' => trim($chatId),
+                'thread_id' => $threadId
+                    ? trim($threadId)
+                    : null,
             ];
         })
-        ->filter(fn ($target) => filled($target['chat_id']) && filled($target['thread_id']))
-        ->unique(fn ($target) => $target['chat_id'] . ':' . $target['thread_id'])
+        ->filter(fn ($target) => filled($target['chat_id']))
         ->values()
         ->all();
 }
