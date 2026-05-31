@@ -14,9 +14,9 @@ Schedule::command('calendar:notify-tomorrow')
 Schedule::command('tasks:check-deadlines')->everyFifteenMinutes();
 
 Schedule::command('mobility:sync')
-    ->everySixHours()
+    ->dailyAt('07:30')
     ->withoutOverlapping();
 
 Schedule::command('mobility:digest')
-    ->dailyAt('16:00')
+    ->dailyAt('08:00')
     ->withoutOverlapping();

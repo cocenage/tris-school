@@ -9,14 +9,14 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class TelegramTopic extends Model
 {
     protected $connection = 'analytics';
-    
-protected $fillable = [
-    'telegram_chat_id',
-    'telegram_thread_id',
-    'title',
-    'purpose',
-    'is_enabled',
-];
+
+    protected $fillable = [
+        'telegram_chat_id',
+        'telegram_thread_id',
+        'title',
+        'purpose',
+        'is_enabled',
+    ];
 
     protected $casts = [
         'is_enabled' => 'boolean',
