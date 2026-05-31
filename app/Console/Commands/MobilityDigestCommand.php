@@ -57,7 +57,7 @@ protected function buildMessage(Carbon $date, $alerts): string
         }
     }
 
-    $text .= "\nХорошей смены.";
+    $text .= "\nХорошей смены!";
 
     return trim($text);
 }

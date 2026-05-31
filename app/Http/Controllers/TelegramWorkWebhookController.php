@@ -24,6 +24,12 @@ class TelegramWorkWebhookController extends Controller
 
         $update = $request->all();
 
+Log::info('Telegram update received', [
+    'keys' => array_keys($update),
+    'callback_data' => data_get($update, 'callback_query.data'),
+    'chat_id' => data_get($update, 'callback_query.message.chat.id'),
+]);
+
         if (isset($update['callback_query'])) {
             return $this->handleCallbackQuery($update['callback_query']);
         }
