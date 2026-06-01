@@ -15,7 +15,7 @@ new class extends Component {
     public bool $sheetOpen = false;
     public string $activeFilter = 'all';
     public string $calendarMode = 'calendar';
-    public string $daySheetTab = 'summary';
+public string $daySheetTab = 'events';
 
     protected array $shiftSummaryCache = [];
     protected array $shiftSummaryRangeCache = [];
@@ -136,7 +136,14 @@ public function getSelectedDayWorkersProperty(): array
         'not_working' => $notWorking,
     ];
 }
-
+public function getSelectedDaySupervisorsProperty(): Collection
+{
+    return User::query()
+        ->where('is_active', true)
+        ->where('role', 'supervisor')
+        ->orderBy('name')
+        ->get();
+}
 public function getSelectedDayShiftSummaryProperty(): array
 {
     return $this->getDayShiftSummary($this->selectedDay);
@@ -339,7 +346,7 @@ public function setCalendarMode(string $mode): void
 
 public function setDaySheetTab(string $tab): void
 {
-    if (! in_array($tab, ['summary', 'events', 'people'], true)) {
+    if (! in_array($tab, ['events', 'people'], true)) {
         return;
     }
 
@@ -350,7 +357,7 @@ public function setDaySheetTab(string $tab): void
     public function openDay(string $date): void
     {
         $this->selectedDate = $date;
-        $this->daySheetTab = 'summary';
+      $this->daySheetTab = 'events';
         $this->sheetOpen = true;
     }
 
@@ -835,236 +842,274 @@ public function getSelectedDayStaffSummaryProperty(): array
         return $user->dip ? ' • DIP' : ' • NO DIP';
     }
 
-    protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Collection
-    {
-        $allowedTypes = $this->allowedCalendarTypes();
+  
+protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Collection
+{
+    $allowedTypes = $this->allowedCalendarTypes();
 
-if (empty($allowedTypes)) {
-    return collect();
-}
+    if (empty($allowedTypes)) {
+        return collect();
+    }
 
-$baseEvents = CalendarEvent::query()
-    ->with('user')
-    ->where('is_active', true)
-    ->whereIn('type', $allowedTypes)
-    ->orderByDesc('priority')
-    ->orderBy('start_date')
-    ->get();
-
-        $expanded = collect();
-
-        foreach ($baseEvents as $event) {
-            $expanded = $expanded->merge(
-                $this->expandEventOccurrences($event, $rangeStart->copy(), $rangeEnd->copy())
-            );
-        }
-
-        if ($this->canViewCalendarType('holiday')) {
-    $users = User::query()
+    $baseEvents = CalendarEvent::query()
+        ->with('user')
         ->where('is_active', true)
-        ->where(function ($q) {
-            $q->whereNotNull('birthday')
-                ->orWhereNotNull('work_started_at');
-        })
+        ->whereIn('type', $allowedTypes)
+        ->orderByDesc('priority')
+        ->orderBy('start_date')
         ->get();
 
-    foreach ($users as $user) {
-        if ($user->birthday) {
-            $birthday = Carbon::parse($user->birthday);
+    $expanded = collect();
 
-            for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
-                $date = $this->safeDateForYear($birthday, $year);
+    foreach ($baseEvents as $event) {
+        $expanded = $expanded->merge(
+            $this->expandEventOccurrences($event, $rangeStart->copy(), $rangeEnd->copy())
+        );
+    }
 
-                if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
-                    $expanded->push([
-                        'id' => 'birthday_' . $user->id . '_' . $year,
-                        'title' => "{$user->name}{$this->formatUserDip($user)} — День рождения",
-                        'user_id' => $user->id,
-                        'lane_key' => 'user_' . $user->id,
-                        'lane_title' => $user->name,
-                        'description' => null,
-                        'short' => mb_strimwidth("🎂 {$user->name}", 0, 12, '...'),
-                        'type' => 'holiday',
-                        'priority' => 100,
-                        'start' => $date->copy()->startOfDay(),
-                        'end' => $date->copy()->startOfDay(),
-                        'style' => $this->eventStyle('holiday'),
-                    ]);
+    if ($this->canViewCalendarType('holiday')) {
+        $users = User::query()
+            ->where('is_active', true)
+            ->where(function ($q) {
+                $q->whereNotNull('birthday')
+                    ->orWhereNotNull('work_started_at');
+            })
+            ->get();
+
+        foreach ($users as $user) {
+            if ($user->birthday) {
+                $birthday = Carbon::parse($user->birthday);
+
+                for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
+                    $date = $this->safeDateForYear($birthday, $year);
+
+                    if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
+                        $expanded->push([
+                            'id' => 'birthday_' . $user->id . '_' . $year,
+                            'title' => "{$user->name}{$this->formatUserDip($user)} — День рождения",
+                            'user_id' => $user->id,
+                            'lane_key' => 'user_' . $user->id,
+                            'lane_title' => $user->name,
+                            'description' => null,
+                            'short' => mb_strimwidth("🎂 {$user->name}", 0, 12, '...'),
+                            'type' => 'holiday',
+                            'priority' => 100,
+                            'start' => $date->copy()->startOfDay(),
+                            'end' => $date->copy()->startOfDay(),
+                            'style' => $this->eventStyle('holiday'),
+                        ]);
+                    }
+                }
+            }
+
+            if ($user->work_started_at) {
+                $workStarted = Carbon::parse($user->work_started_at);
+
+                for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
+                    $date = $this->safeDateForYear($workStarted, $year);
+
+                    if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
+                        $years = Carbon::parse($user->work_started_at)->diffInYears($date);
+
+                        if ($years < 1) {
+                            continue;
+                        }
+
+                        $expanded->push([
+                            'id' => 'work_' . $user->id . '_' . $year,
+                            'title' => "{$user->name}{$this->formatUserDip($user)} — {$years} лет в компании",
+                            'user_id' => $user->id,
+                            'lane_key' => 'user_' . $user->id,
+                            'lane_title' => $user->name,
+                            'description' => null,
+                            'short' => mb_strimwidth("🏢 {$user->name}", 0, 12, '...'),
+                            'type' => 'holiday',
+                            'priority' => 90,
+                            'start' => $date->copy()->startOfDay(),
+                            'end' => $date->copy()->startOfDay(),
+                            'style' => $this->eventStyle('holiday'),
+                        ]);
+                    }
                 }
             }
         }
+    }
 
-        if ($user->work_started_at) {
-            $workStarted = Carbon::parse($user->work_started_at);
+    if ($this->canViewCalendarType('vacation')) {
+        $regularWeekendUsers = User::query()
+            ->where('is_active', true)
+            ->where('role', 'cleaner')
+            ->whereNotNull('weekend_days')
+            ->orderBy('name')
+            ->get();
 
-            for ($year = $rangeStart->year - 1; $year <= $rangeEnd->year + 1; $year++) {
-                $date = $this->safeDateForYear($workStarted, $year);
+        $cursor = $rangeStart->copy()->startOfDay();
 
-                if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
-                    $years = Carbon::parse($user->work_started_at)->diffInYears($date);
-
-                    if ($years < 1) {
-    continue;
-}
-
-                    $expanded->push([
-                        'id' => 'work_' . $user->id . '_' . $year,
-                        'title' => "{$user->name}{$this->formatUserDip($user)} — {$years} лет в компании",
-                        'user_id' => $user->id,
-                        'lane_key' => 'user_' . $user->id,
-                        'lane_title' => $user->name,
-                        'description' => null,
-                        'short' => mb_strimwidth("🏢 {$user->name}", 0, 12, '...'),
-                        'type' => 'holiday',
-                        'priority' => 90,
-                        'start' => $date->copy()->startOfDay(),
-                        'end' => $date->copy()->startOfDay(),
-                        'style' => $this->eventStyle('holiday'),
-                    ]);
+        while ($cursor->lte($rangeEnd)) {
+            foreach ($regularWeekendUsers as $user) {
+                if (! $this->isRegularWeekend($user, $cursor)) {
+                    continue;
                 }
+
+                $expanded->push([
+                    'id' => 'regular_day_off_user_' . $user->id . '_' . $cursor->format('Ymd'),
+                    'title' => "{$user->name}{$this->formatUserDip($user)} — Регулярный выходной",
+                    'user_id' => $user->id,
+                    'lane_key' => 'user_' . $user->id,
+                    'lane_title' => $user->name,
+                    'description' => 'Регулярный выходной по графику',
+                    'short' => mb_strimwidth("🌿 {$user->name}", 0, 18, '...'),
+                    'type' => 'day_off',
+                    'priority' => 70,
+                    'start' => $cursor->copy()->startOfDay(),
+                    'end' => $cursor->copy()->startOfDay(),
+                    'style' => $this->eventStyle('day_off'),
+                ]);
             }
-        }
-    }
-}
 
-if ($this->canViewCalendarType('vacation')) {
-    $dayOffDays = DayOffRequestDay::query()
-        ->with(['user', 'request'])
-        ->whereBetween('date', [
-            $rangeStart->copy()->toDateString(),
-            $rangeEnd->copy()->toDateString(),
-        ])
-        ->whereHas('request', function ($query) {
-            $query->where('status', 'approved');
-        })
-        ->get();
-
-$dayOffGroups = $dayOffDays
-    ->sortBy('date')
-    ->groupBy('user_id');
-
-foreach ($dayOffGroups as $userId => $userDays) {
-    $userDays = $userDays
-        ->sortBy('date')
-        ->values();
-
-    $ranges = [];
-    $currentRange = [];
-
-    foreach ($userDays as $day) {
-        if (empty($currentRange)) {
-            $currentRange[] = $day;
-            continue;
+            $cursor->addDay();
         }
 
-        $prevDate = Carbon::parse(end($currentRange)->date)->startOfDay();
-        $currentDate = Carbon::parse($day->date)->startOfDay();
-
-        if ($prevDate->copy()->addDay()->isSameDay($currentDate)) {
-            $currentRange[] = $day;
-        } else {
-            $ranges[] = $currentRange;
-            $currentRange = [$day];
-        }
-    }
-
-    if (! empty($currentRange)) {
-        $ranges[] = $currentRange;
-    }
-
-    foreach ($ranges as $rangeIndex => $rangeDays) {
-        $firstDay = collect($rangeDays)->first();
-        $lastDay = collect($rangeDays)->last();
-
-        if (! $firstDay || ! $lastDay) {
-            continue;
-        }
-
-        $user = $firstDay->user;
-
-        $start = Carbon::parse($firstDay->date)->startOfDay();
-        $end = Carbon::parse($lastDay->date)->startOfDay();
-
-        $expanded->push([
-            'id' => 'day_off_user_' . $userId . '_' . $start->format('Ymd') . '_' . $rangeIndex,
-            'title' => "{$user?->name}{$this->formatUserDip($user)} — Выходной",
-            'user_id' => $user?->id,
-            'lane_key' => $user ? 'user_' . $user->id : 'day_off_' . $userId,
-            'lane_title' => $user?->name ?? 'Выходной',
-            'description' => $firstDay->request?->reason,
-            'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 18, '...'),
-            'type' => 'day_off',
-            'priority' => 85,
-            'start' => $start,
-            'end' => $end,
-            'style' => $this->eventStyle('day_off'),
-        ]);
-    }
-}
-
-    $vacationRequests = VacationRequest::query()
-        ->with(['user', 'days'])
-        ->where('status', 'approved')
-        ->whereHas('days', function ($query) use ($rangeStart, $rangeEnd) {
-            $query->whereBetween('date', [
+        $dayOffDays = DayOffRequestDay::query()
+            ->with(['user', 'request'])
+            ->whereBetween('date', [
                 $rangeStart->copy()->toDateString(),
                 $rangeEnd->copy()->toDateString(),
-            ]);
-        })
-        ->get();
+            ])
+            ->whereHas('request', function ($query) {
+                $query->where('status', 'approved');
+            })
+            ->get();
 
-    foreach ($vacationRequests as $vacationRequest) {
-        $user = $vacationRequest->user;
-
-        $vacationDays = $vacationRequest->days
-            ->filter(fn ($day) => Carbon::parse($day->date)->betweenIncluded($rangeStart, $rangeEnd))
+        $dayOffGroups = $dayOffDays
             ->sortBy('date')
-            ->values();
+            ->groupBy('user_id');
 
-        if ($vacationDays->isEmpty()) {
-            continue;
-        }
-
-        $start = Carbon::parse($vacationDays->first()->date)->startOfDay();
-        $end = Carbon::parse($vacationDays->last()->date)->startOfDay();
-
-        $expanded->push([
-            'id' => 'vacation_' . $vacationRequest->id . '_' . $start->format('Ymd'),
-            'title' => "{$user?->name}{$this->formatUserDip($user)} — Отпуск",
-            'user_id' => $user?->id,
-            'lane_key' => $user ? 'user_' . $user->id : 'vacation_' . $vacationRequest->id,
-            'lane_title' => $user?->name ?? 'Отпуск',
-            'description' => $vacationRequest->reason,
-            'short' => mb_strimwidth("🏖 " . ($user?->name ?? 'Отпуск'), 0, 12, '...'),
-            'type' => 'vacation',
-            'priority' => 80,
-            'start' => $start,
-            'end' => $end,
-            'style' => $this->eventStyle('vacation'),
-        ]);
-    }
-}
-
-if ($this->canViewCalendarType('tasks') && auth()->user()) {
-    $expanded = $expanded->merge(
-        app(TaskCalendarEventService::class)->getEvents(
-            auth()->user(),
-            $rangeStart->copy(),
-            $rangeEnd->copy(),
-        )
-    );
-}
-
-        if ($this->activeFilter !== 'all') {
-            $expanded = $expanded
-                ->filter(fn(array $event) => $event['type'] === $this->activeFilter)
+        foreach ($dayOffGroups as $userId => $userDays) {
+            $userDays = $userDays
+                ->sortBy('date')
                 ->values();
+
+            $ranges = [];
+            $currentRange = [];
+
+            foreach ($userDays as $day) {
+                if (empty($currentRange)) {
+                    $currentRange[] = $day;
+                    continue;
+                }
+
+                $prevDate = Carbon::parse(end($currentRange)->date)->startOfDay();
+                $currentDate = Carbon::parse($day->date)->startOfDay();
+
+                if ($prevDate->copy()->addDay()->isSameDay($currentDate)) {
+                    $currentRange[] = $day;
+                } else {
+                    $ranges[] = $currentRange;
+                    $currentRange = [$day];
+                }
+            }
+
+            if (! empty($currentRange)) {
+                $ranges[] = $currentRange;
+            }
+
+            foreach ($ranges as $rangeIndex => $rangeDays) {
+                $firstDay = collect($rangeDays)->first();
+                $lastDay = collect($rangeDays)->last();
+
+                if (! $firstDay || ! $lastDay) {
+                    continue;
+                }
+
+                $user = $firstDay->user;
+
+                $start = Carbon::parse($firstDay->date)->startOfDay();
+                $end = Carbon::parse($lastDay->date)->startOfDay();
+
+                $expanded->push([
+                    'id' => 'day_off_user_' . $userId . '_' . $start->format('Ymd') . '_' . $rangeIndex,
+                    'title' => "{$user?->name}{$this->formatUserDip($user)} — Выходной",
+                    'user_id' => $user?->id,
+                    'lane_key' => $user ? 'user_' . $user->id : 'day_off_' . $userId,
+                    'lane_title' => $user?->name ?? 'Выходной',
+                    'description' => $firstDay->request?->reason,
+                    'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 18, '...'),
+                    'type' => 'day_off',
+                    'priority' => 85,
+                    'start' => $start,
+                    'end' => $end,
+                    'style' => $this->eventStyle('day_off'),
+                ]);
+            }
         }
 
-        return $expanded
-            ->sortByDesc('priority')
+        $vacationRequests = VacationRequest::query()
+            ->with(['user', 'days'])
+            ->where('status', 'approved')
+            ->whereHas('days', function ($query) use ($rangeStart, $rangeEnd) {
+                $query->whereBetween('date', [
+                    $rangeStart->copy()->toDateString(),
+                    $rangeEnd->copy()->toDateString(),
+                ]);
+            })
+            ->get();
+
+        foreach ($vacationRequests as $vacationRequest) {
+            $user = $vacationRequest->user;
+
+            $vacationDays = $vacationRequest->days
+                ->filter(fn ($day) => Carbon::parse($day->date)->betweenIncluded($rangeStart, $rangeEnd))
+                ->sortBy('date')
+                ->values();
+
+            if ($vacationDays->isEmpty()) {
+                continue;
+            }
+
+            $start = Carbon::parse($vacationDays->first()->date)->startOfDay();
+            $end = Carbon::parse($vacationDays->last()->date)->startOfDay();
+
+            $expanded->push([
+                'id' => 'vacation_' . $vacationRequest->id . '_' . $start->format('Ymd'),
+                'title' => "{$user?->name}{$this->formatUserDip($user)} — Отпуск",
+                'user_id' => $user?->id,
+                'lane_key' => $user ? 'user_' . $user->id : 'vacation_' . $vacationRequest->id,
+                'lane_title' => $user?->name ?? 'Отпуск',
+                'description' => $vacationRequest->reason,
+                'short' => mb_strimwidth("🏖 " . ($user?->name ?? 'Отпуск'), 0, 12, '...'),
+                'type' => 'vacation',
+                'priority' => 80,
+                'start' => $start,
+                'end' => $end,
+                'style' => $this->eventStyle('vacation'),
+            ]);
+        }
+    }
+
+    if ($this->canViewCalendarType('tasks') && auth()->user()) {
+        $expanded = $expanded->merge(
+            app(TaskCalendarEventService::class)->getEvents(
+                auth()->user(),
+                $rangeStart->copy(),
+                $rangeEnd->copy(),
+            )
+        );
+    }
+
+    if ($this->activeFilter !== 'all') {
+        $expanded = $expanded
+            ->filter(fn (array $event) => $event['type'] === $this->activeFilter)
             ->values();
     }
+
+    return $expanded
+        ->sortByDesc('priority')
+        ->values();
+}
+ 
+
+
 
     protected function expandEventOccurrences(CalendarEvent $event, Carbon $rangeStart, Carbon $rangeEnd): Collection
     {
@@ -2062,11 +2107,10 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                 </div>
 
                 <div class="flex gap-[6px] rounded-full bg-[#F1F1F1] p-[4px]">
-                    @foreach ([
-                        'summary' => 'Сводка',
-                        'events' => 'События',
-                        'people' => 'Люди',
-                    ] as $tabKey => $tabLabel)
+                @foreach ([
+    'events' => 'События',
+    'people' => 'Люди',
+] as $tabKey => $tabLabel)
                         <button
                             type="button"
                             wire:click="setDaySheetTab('{{ $tabKey }}')"
@@ -2078,83 +2122,7 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
                     @endforeach
                 </div>
 
-                @if ($daySheetTab === 'summary')
-                    <div class="rounded-[30px] bg-white px-[14px] py-[14px]">
-                        <div class="mb-[10px] flex items-center justify-between">
-                            <p class="text-[17px] font-semibold leading-none text-[#111]">
-                                Быстрая сводка
-                            </p>
-
-                            <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
-                                {{ $this->selectedDayEvents->count() }} событий
-                            </span>
-                        </div>
-
-                        <div class="grid grid-cols-2 gap-[7px]">
-                            @foreach ($this->selectedDayEventGroups as $group)
-                                <button
-                                    type="button"
-                                    wire:click="setDaySheetTab('events')"
-                                    class="rounded-[22px] bg-[#F7F7F7] px-[12px] py-[11px] text-left"
-                                >
-                                    <p class="text-[14px] font-semibold leading-none text-[#111]">
-                                        {{ $group['emoji'] }} {{ $group['title'] }}
-                                    </p>
-
-                                    <p class="mt-[7px] text-[12px] leading-none text-[#777]">
-                                        {{ $group['events']->count() }}
-                                    </p>
-                                </button>
-                            @endforeach
-
-                            @if (! count($this->selectedDayEventGroups))
-                                <div class="col-span-2 rounded-[22px] bg-[#F7F7F7] px-[12px] py-[12px]">
-                                    <p class="text-[14px] text-[#777]">
-                                        На эту дату событий нет.
-                                    </p>
-                                </div>
-                            @endif
-                        </div>
-
-                        @if ($this->selectedDayWorkers['not_working']->count())
-                            <div class="mt-[14px]">
-                                <div class="mb-[8px] flex items-center justify-between">
-                                    <p class="text-[16px] font-semibold leading-none text-[#111]">
-                                        Кто не работает
-                                    </p>
-
-                                    <button
-                                        type="button"
-                                        wire:click="setDaySheetTab('people')"
-                                        class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]"
-                                    >
-                                        все
-                                    </button>
-                                </div>
-
-                                <div class="space-y-[6px]">
-                                    @foreach ($this->selectedDayWorkers['not_working']->take(3) as $user)
-                                        <div class="flex items-center gap-[10px] rounded-[22px] bg-[#FFF6F6] px-[10px] py-[9px]">
-                                            <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#9F1D1D]">
-                                                {{ mb_substr($user->name, 0, 1) }}
-                                            </div>
-
-                                            <div class="min-w-0 flex-1">
-                                                <p class="truncate text-[15px] font-medium leading-none text-[#111]">
-                                                    {{ $user->name }}
-                                                </p>
-
-                                                <p class="mt-[6px] text-[12px] leading-[1.2] text-[#9F1D1D]">
-                                                    {{ $user->not_working_reason ?? 'Не работает' }}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    @endforeach
-                                </div>
-                            </div>
-                        @endif
-                    </div>
-                @endif
+               
 
                 @if ($daySheetTab === 'events')
                     @forelse ($this->selectedDayEventGroups as $group)
@@ -2229,6 +2197,39 @@ if ($this->canViewCalendarType('tasks') && auth()->user()) {
 
                 @if ($daySheetTab === 'people')
                     <div class="rounded-[32px] bg-white px-[14px] py-[14px]">
+                        @if ($this->selectedDaySupervisors->count())
+    <div class="mb-[14px]">
+        <div class="mb-[8px] flex items-center justify-between">
+            <p class="text-[16px] font-semibold leading-none text-[#111]">
+                Супервайзеры
+            </p>
+
+            <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
+                {{ $this->selectedDaySupervisors->count() }}
+            </span>
+        </div>
+
+        <div class="space-y-[6px]">
+            @foreach ($this->selectedDaySupervisors as $user)
+                <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
+                    <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
+                        {{ mb_substr($user->name, 0, 1) }}
+                    </div>
+
+                    <div class="min-w-0 flex-1">
+                        <p class="truncate text-[15px] font-medium leading-none text-[#111]">
+                            {{ $user->name }}
+                        </p>
+
+                        <p class="mt-[5px] text-[12px] leading-none text-[#8A8A8A]">
+                            Супервайзер
+                        </p>
+                    </div>
+                </div>
+            @endforeach
+        </div>
+    </div>
+@endif
                         @if ($this->selectedDayWorkers['not_working']->count())
                             <div class="mb-[14px]">
                                 <div class="mb-[8px] flex items-center justify-between">

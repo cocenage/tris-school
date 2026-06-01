@@ -22,16 +22,21 @@
 
         <main class="min-h-0 flex-1 overflow-y-auto rounded-[50px] bg-white">
             {{ $slot }}
-        </main>
+                </main>
+
+            @auth
+                <x-access.⚡-required />
+            @endauth
 
         <x-ui.toast />
 
         <footer class="shrink-0">
-            @includeIf('components.partials.⚡navbar')
+        @includeIf('components.partials.⚡navbar')
         </footer>
         </div>
 
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <sc
+ript src="https://telegram.org/js/telegram-web-app.js"></sc>
     @livewireScripts
 </body>
 </html>
