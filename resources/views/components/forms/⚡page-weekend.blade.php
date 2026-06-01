@@ -523,10 +523,6 @@ protected function sendTelegramNotification(DayOffRequest $request): void
     $text .= "📅 <b>Даты:</b>\n• {$formattedDates}\n\n";
     $text .= "💬 <b>Причина:</b>\n<blockquote>" . e(trim((string) $request->reason)) . "</blockquote>\n\n";
 
-    if ($userTelegramUrl) {
-        $text .= "🔗 <b>Telegram:</b> <a href='{$userTelegramUrl}'>открыть профиль</a>\n";
-    }
-
     $text .= "⏳ <b>Статус:</b> ожидает решения\n";
 
     $keyboard = [];

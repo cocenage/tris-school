@@ -2157,9 +2157,15 @@ protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Coll
                                             {{ $this->formatEventRange($event) }}
                                         </p>
 
-                                        <p class="text-[16px] leading-[1.15]">
-                                            {{ $event['title'] }}
-                                        </p>
+                                   @if (filled($event['lane_title'] ?? null))
+    <p class="mb-[6px] text-[13px] font-semibold leading-none text-black/70">
+        👤 {{ $event['lane_title'] }}
+    </p>
+@endif
+
+<p class="text-[16px] leading-[1.15]">
+    {{ $event['title'] }}
+</p>
 
                                         @if (filled($event['description']))
                                             <p class="mt-[6px] text-[14px] leading-[1.25] text-black/75">
@@ -2197,39 +2203,7 @@ protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Coll
 
                 @if ($daySheetTab === 'people')
                     <div class="rounded-[32px] bg-white px-[14px] py-[14px]">
-                        @if ($this->selectedDaySupervisors->count())
-    <div class="mb-[14px]">
-        <div class="mb-[8px] flex items-center justify-between">
-            <p class="text-[16px] font-semibold leading-none text-[#111]">
-                Супервайзеры
-            </p>
 
-            <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
-                {{ $this->selectedDaySupervisors->count() }}
-            </span>
-        </div>
-
-        <div class="space-y-[6px]">
-            @foreach ($this->selectedDaySupervisors as $user)
-                <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
-                    <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
-                        {{ mb_substr($user->name, 0, 1) }}
-                    </div>
-
-                    <div class="min-w-0 flex-1">
-                        <p class="truncate text-[15px] font-medium leading-none text-[#111]">
-                            {{ $user->name }}
-                        </p>
-
-                        <p class="mt-[5px] text-[12px] leading-none text-[#8A8A8A]">
-                            Супервайзер
-                        </p>
-                    </div>
-                </div>
-            @endforeach
-        </div>
-    </div>
-@endif
                         @if ($this->selectedDayWorkers['not_working']->count())
                             <div class="mb-[14px]">
                                 <div class="mb-[8px] flex items-center justify-between">
@@ -2271,11 +2245,32 @@ protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Coll
                                 </p>
 
                                 <span class="rounded-full bg-[#E7F6EC] px-[9px] py-[5px] text-[12px] text-[#3C8D57]">
-                                    {{ $this->selectedDayWorkers['working_count'] }}
+                                   {{ $this->selectedDayWorkers['working_count'] + $this->selectedDaySupervisors->count() }}
                                 </span>
                             </div>
 
                             <div class="space-y-[6px]">
+                                @foreach ($this->selectedDaySupervisors as $user)
+    <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
+        <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">
+            {{ mb_substr($user->name, 0, 1) }}
+        </div>
+
+        <div class="min-w-0 flex-1">
+            <p class="truncate text-[15px] font-medium leading-none text-[#111]">
+                {{ $user->name }}
+            </p>
+
+            <p class="mt-[5px] text-[12px] leading-none text-[#8A8A8A]">
+                Супервайзер
+            </p>
+        </div>
+
+        <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[11px] font-medium text-[#555]">
+            супер
+        </span>
+    </div>
+@endforeach
                                 @forelse ($this->selectedDayWorkers['working'] as $user)
                                     <div class="flex items-center gap-[10px] rounded-[22px] bg-[#F8F8F8] px-[10px] py-[9px]">
                                         <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#111]">

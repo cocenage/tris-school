@@ -25,7 +25,8 @@
                 </main>
 
             @auth
-                <x-access.⚡-required />
+
+                    <livewire:access.required />
             @endauth
 
         <x-ui.toast />
