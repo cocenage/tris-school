@@ -25,7 +25,7 @@ class TelegramWorkWebhookController extends Controller
        Log::info('WEBHOOK HIT', [
         'all' => $request->all(),
     ]);
-    
+
         if ($secret !== config('services.telegram.work_webhook_secret')) {
             abort(403);
         }
@@ -255,7 +255,6 @@ Log::info('Telegram update received', [
                 '',
                 '<b>Имя:</b> ' . e($user->name ?: 'Без имени'),
                 '<b>Telegram:</b> ' . e($user->telegram_username ? '@' . $user->telegram_username : '—'),
-                '<b>Telegram ID:</b> ' . e((string) $user->telegram_id),
                 '',
                 $statusText,
                 '<b>Решение принял:</b> ' . e($moderatorText),

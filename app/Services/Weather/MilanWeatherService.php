@@ -4,9 +4,40 @@ namespace App\Services\Weather;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-
+use Illuminate\Support\Arr;
 class MilanWeatherService
 {
+    protected array $rainAdvice = [
+    '☂️ Не забудьте зонтик',
+    '🌧 Сегодня пригодится зонт',
+    '☔ Лучше взять что-нибудь непромокаемое',
+    '🚶 На улице мокро, будьте осторожны',
+];
+
+protected array $heavyRainAdvice = [
+    '☂️ Возьмите зонтик и заложите немного больше времени на дорогу',
+    '🌧 Возможны задержки из-за погоды',
+    '🚦 Из-за дождя движение может быть медленнее обычного',
+];
+
+protected array $hotAdvice = [
+    '💧 Не забывайте пить воду',
+    '🥤 Сегодня будет жарко',
+    '☀️ Старайтесь не оставаться долго на солнце',
+    '🌡 Жаркий день впереди',
+];
+
+protected array $coldAdvice = [
+    '🧥 Утром может быть прохладно',
+    '🌬 Возьмите что-нибудь потеплее',
+];
+
+protected array $goodWeatherAdvice = [
+    '😎 Сегодня отличная погода',
+    '🌤 Погода радует',
+    '☀️ Приятный день впереди',
+    '🙂 С погодой сегодня повезло',
+];
     public function today(): array
     {
         try {
@@ -64,46 +95,58 @@ class MilanWeatherService
         return $this->formatWeather($currentTemp, $currentCode, $shiftRain, $maxProbability);
     }
 
-    protected function formatWeather(int $temp, ?int $code, bool $shiftRain, int $rainProbability): array
-    {
-        if ($shiftRain) {
-            return [
-                'emoji' => '🌧',
-                'summary' => "+{$temp}°C, возможен дождь",
-                'advice' => '☂️ Не забудьте зонтик.',
-            ];
-        }
-
-        if ($temp >= 30) {
-            return [
-                'emoji' => '☀️',
-                'summary' => "+{$temp}°C, жарко",
-                'advice' => '💧 Не забывайте пить воду.',
-            ];
-        }
-
-        if (in_array($code, [0, 1], true)) {
-            return [
-                'emoji' => '☀️',
-                'summary' => "+{$temp}°C, солнечно",
-                'advice' => null,
-            ];
-        }
-
-        if (in_array($code, [2, 3], true)) {
-            return [
-                'emoji' => '🌤',
-                'summary' => "+{$temp}°C, облачно",
-                'advice' => null,
-            ];
-        }
-
+protected function formatWeather(
+    int $temp,
+    ?int $code,
+    bool $shiftRain,
+    int $rainProbability
+): array {
+    if ($shiftRain && $rainProbability >= 70) {
         return [
-            'emoji' => '🌤',
-            'summary' => "+{$temp}°C",
-            'advice' => null,
+            'emoji' => '⛈',
+            'summary' => "+{$temp}°C, сильный дождь",
+            'advice' => Arr::random($this->heavyRainAdvice),
         ];
     }
+
+    if ($shiftRain) {
+        return [
+            'emoji' => '🌧',
+            'summary' => "+{$temp}°C, дождь",
+            'advice' => Arr::random($this->rainAdvice),
+        ];
+    }
+
+    if ($temp >= 30) {
+        return [
+            'emoji' => '☀️',
+            'summary' => "+{$temp}°C, жарко",
+            'advice' => Arr::random($this->hotAdvice),
+        ];
+    }
+
+    if ($temp <= 8) {
+        return [
+            'emoji' => '🥶',
+            'summary' => "+{$temp}°C, прохладно",
+            'advice' => Arr::random($this->coldAdvice),
+        ];
+    }
+
+    return [
+        'emoji' => match (true) {
+            in_array($code, [0, 1], true) => '☀️',
+            in_array($code, [2, 3], true) => '🌤',
+            default => '🌤',
+        },
+        'summary' => match (true) {
+            in_array($code, [0, 1], true) => "+{$temp}°C, солнечно",
+            in_array($code, [2, 3], true) => "+{$temp}°C, облачно",
+            default => "+{$temp}°C",
+        },
+        'advice' => Arr::random($this->goodWeatherAdvice),
+    ];
+}
 
     protected function fallback(): array
     {

@@ -9,9 +9,28 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use App\Services\Weather\MilanWeatherService;
 use App\Models\TelegramTopic;
+use Illuminate\Support\Arr;
 
 class MobilityDigestCommand extends Command
 {
+    protected array $greetings = [
+    '☀️ Доброе утро',
+    '🌤 Хорошего дня',
+    '☕ Утренний дайджест',
+    '👋 Всем привет',
+    '🌞 Новый день начинается',
+    '🚀 Поехали работать',
+    '✨ Хорошего начала дня',
+    '🌅 Утренние новости',
+];
+
+protected array $endings = [
+    'Хорошей смены ☀️',
+    'Удачного дня ✨',
+    'Отличной смены 🚀',
+    'Легкого рабочего дня 🌤',
+    'Пусть день пройдет спокойно 🤝',
+];
     protected $signature = 'mobility:digest {--date=}';
 
     protected $description = 'Send daily shift assistant digest to Telegram forum topics';
@@ -42,7 +61,7 @@ protected function buildMessage(Carbon $date, $alerts): string
 {
     $weather = app(MilanWeatherService::class)->today();
 
-    $text = "{$weather['emoji']} <b>Доброе утро</b>\n\n";
+$text = '<b>'.Arr::random($this->greetings)."</b>\n\n";
     $text .= "Сегодня: {$weather['summary']}\n";
 
     if ($weather['advice']) {
@@ -57,7 +76,7 @@ protected function buildMessage(Carbon $date, $alerts): string
         }
     }
 
-    $text .= "\nХорошей смены!";
+$text .= "\n".Arr::random($this->endings);
 
     return trim($text);
 }
