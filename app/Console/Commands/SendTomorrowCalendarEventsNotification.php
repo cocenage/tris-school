@@ -55,7 +55,7 @@ class SendTomorrowCalendarEventsNotification extends Command
 
     protected function buildMessage(Carbon $date, $events, array $summary): string
     {
-        $grouped = collect($events)->groupBy('type');
+        $grouped = collect($events)->groupBy(fn (array $event) => $event['type'] ?? 'other');
 
         $lines = [];
 
@@ -86,18 +86,32 @@ class SendTomorrowCalendarEventsNotification extends Command
             $lines[] = '';
         }
 
+        $lines[] = '📌 <b>События</b>';
+
         if ($events->isEmpty()) {
-            $lines[] = '📌 <b>События</b>';
             $lines[] = 'На завтра событий нет.';
 
             return trim(implode("\n", $lines));
         }
 
-        $lines[] = '📌 <b>События</b>';
         $lines[] = 'Всего событий: <b>' . $events->count() . '</b>';
         $lines[] = '';
 
-        foreach ($this->eventTypeOrder() as $type) {
+        $knownTypes = $this->eventTypeOrder();
+
+        $unknownTypes = $grouped
+            ->keys()
+            ->reject(fn ($type) => in_array($type, $knownTypes, true))
+            ->sort()
+            ->values()
+            ->all();
+
+        $typesToRender = [
+            ...$knownTypes,
+            ...$unknownTypes,
+        ];
+
+        foreach ($typesToRender as $type) {
             $items = $grouped->get($type);
 
             if (! $items || $items->isEmpty()) {
@@ -120,7 +134,7 @@ class SendTomorrowCalendarEventsNotification extends Command
     {
         $lines = [];
 
-        $lines[] = '• <b>' . e($event['title']) . '</b>';
+        $lines[] = '• <b>' . e($event['title'] ?? 'Без названия') . '</b>';
 
         $range = $this->formatTelegramEventRange($event);
 
@@ -138,6 +152,10 @@ class SendTomorrowCalendarEventsNotification extends Command
 
     protected function formatTelegramEventRange(array $event): ?string
     {
+        if (empty($event['start']) || empty($event['end'])) {
+            return null;
+        }
+
         $start = $event['start']->copy()->startOfDay();
         $end = $event['end']->copy()->startOfDay();
 
@@ -160,6 +178,9 @@ class SendTomorrowCalendarEventsNotification extends Command
     {
         return [
             'holiday',
+            'birthday',
+            'anniversary',
+            'work_anniversary',
             'day_off',
             'vacation',
             'tasks',
@@ -178,6 +199,8 @@ class SendTomorrowCalendarEventsNotification extends Command
             'workflow' => '🏢',
             'finance' => '💸',
             'holiday' => '🎉',
+            'birthday' => '🎂',
+            'anniversary', 'work_anniversary' => '🏆',
             'peak' => '🔥',
             'day_off' => '🌿',
             'vacation' => '🏖',
@@ -193,11 +216,14 @@ class SendTomorrowCalendarEventsNotification extends Command
             'workflow' => 'Рабочие процессы',
             'finance' => 'Финансы',
             'holiday' => 'Праздники',
+            'birthday' => 'Дни рождения',
+            'anniversary', 'work_anniversary' => 'Годовщины',
             'peak' => 'Пики загрузки',
             'day_off' => 'Выходные',
             'vacation' => 'Отпуска',
             'strike' => 'Забастовки',
-            default => 'Другое',
+            'other' => 'Другое',
+            default => str($type)->replace('_', ' ')->ucfirst()->toString(),
         };
     }
 }

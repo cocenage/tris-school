@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\DayOffRequest;
+use App\Models\DayOffRequestDay;
 use App\Models\User;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use App\Services\TelegramUserNotificationService;
@@ -14,29 +15,15 @@ use Illuminate\Support\Facades\Log;
 class TelegramWorkWebhookController extends Controller
 {
     public function __invoke(
-
-
-    
         Request $request,
         string $secret,
         TelegramUpdateIngestService $ingestService
     ) {
-
-       Log::info('WEBHOOK HIT', [
-        'all' => $request->all(),
-    ]);
-
         if ($secret !== config('services.telegram.work_webhook_secret')) {
             abort(403);
         }
 
         $update = $request->all();
-
-Log::info('Telegram update received', [
-    'keys' => array_keys($update),
-    'callback_data' => data_get($update, 'callback_query.data'),
-    'chat_id' => data_get($update, 'callback_query.message.chat.id'),
-]);
 
         if (isset($update['callback_query'])) {
             return $this->handleCallbackQuery($update['callback_query']);
@@ -88,13 +75,14 @@ Log::info('Telegram update received', [
             return $this->handleAccessCallback($callbackQuery);
         }
 
-        if (str_starts_with($data, 'dayoff:')) {
-            return $this->handleDayOffCallback($callbackQuery);
+        if (str_starts_with($data, 'dayoffday:')) {
+            return $this->handleDayOffDayCallback($callbackQuery);
         }
 
         return response()->json([
             'ok' => true,
             'skipped' => 'unknown_callback',
+            'data' => $data,
         ]);
     }
 
@@ -169,29 +157,40 @@ Log::info('Telegram update received', [
         return response()->json(['ok' => true]);
     }
 
-    private function handleDayOffCallback(array $callbackQuery)
+    private function handleDayOffDayCallback(array $callbackQuery)
     {
         $data = $callbackQuery['data'] ?? '';
         $parts = explode(':', $data);
 
         if (count($parts) !== 3) {
-            return response()->json(['ok' => true, 'skipped' => 'bad_dayoff_callback']);
+            return response()->json(['ok' => true, 'skipped' => 'bad_dayoffday_callback']);
         }
 
-        [, $action, $requestId] = $parts;
-
-        $dayOffRequest = DayOffRequest::with(['user', 'days'])->find($requestId);
-
-        if (! $dayOffRequest) {
-            $this->answerCallback($callbackQuery, 'Заявка не найдена');
-
-            return response()->json(['ok' => true, 'skipped' => 'dayoff_not_found']);
-        }
+        [, $action, $dayId] = $parts;
 
         if (! in_array($action, ['approve', 'reject'], true)) {
             $this->answerCallback($callbackQuery, 'Неизвестное действие');
 
-            return response()->json(['ok' => true, 'skipped' => 'unknown_dayoff_action']);
+            return response()->json(['ok' => true, 'skipped' => 'unknown_dayoffday_action']);
+        }
+
+        $day = DayOffRequestDay::with([
+            'request.user',
+            'request.days',
+        ])->find($dayId);
+
+        if (! $day) {
+            $this->answerCallback($callbackQuery, 'Дата не найдена');
+
+            return response()->json(['ok' => true, 'skipped' => 'dayoffday_not_found']);
+        }
+
+        $dayOffRequest = $day->request;
+
+        if (! $dayOffRequest) {
+            $this->answerCallback($callbackQuery, 'Заявка не найдена');
+
+            return response()->json(['ok' => true, 'skipped' => 'dayoff_request_not_found']);
         }
 
         $fromTelegramId = data_get($callbackQuery, 'from.id');
@@ -202,14 +201,14 @@ Log::info('Telegram update received', [
 
         $status = $action === 'approve' ? 'approved' : 'rejected';
 
+        $day->forceFill([
+            'status' => $status,
+        ])->save();
+
         $dayOffRequest->forceFill([
             'reviewed_at' => now(),
             'reviewed_by' => $reviewer?->id,
         ])->save();
-
-        $dayOffRequest->days()->update([
-            'status' => $status,
-        ]);
 
         $dayOffRequest->syncStatusAndNotify();
 
@@ -218,15 +217,17 @@ Log::info('Telegram update received', [
 
         $moderatorText = $this->telegramUserText($callbackQuery['from'] ?? []);
 
-        $statusText = $status === 'approved'
-            ? '✅ <b>Заявка одобрена</b>'
-            : '❌ <b>Заявка отклонена</b>';
-
-        $this->editDayOffMessage($callbackQuery, $dayOffRequest, $statusText, $moderatorText);
+        $this->editDayOffRequestMessage(
+            callbackQuery: $callbackQuery,
+            dayOffRequest: $dayOffRequest,
+            moderatorText: $moderatorText,
+        );
 
         $this->answerCallback(
             $callbackQuery,
-            $status === 'approved' ? 'Заявка одобрена' : 'Заявка отклонена'
+            $status === 'approved'
+                ? 'Дата одобрена'
+                : 'Дата отклонена'
         );
 
         return response()->json(['ok' => true]);
@@ -265,7 +266,7 @@ Log::info('Telegram update received', [
                     [
                         [
                             'text' => 'Открыть пользователя',
-                            'url' => url('/admin/users/' . $user->id . '/edit'),
+                            'url' => url('/admin/education/users/' . $user->id . '/edit'),
                         ],
                     ],
                 ],
@@ -273,10 +274,9 @@ Log::info('Telegram update received', [
         ]);
     }
 
-    private function editDayOffMessage(
+    private function editDayOffRequestMessage(
         array $callbackQuery,
         DayOffRequest $dayOffRequest,
-        string $statusText,
         string $moderatorText
     ): void {
         $chatId = data_get($callbackQuery, 'message.chat.id');
@@ -290,50 +290,75 @@ Log::info('Telegram update received', [
 
         Carbon::setLocale('ru');
 
-        $formattedDates = $dayOffRequest->days
-            ->pluck('date')
-            ->map(fn ($date) => Carbon::parse($date)->translatedFormat('d.m.Y (l)'))
-            ->implode("\n• ");
-
         $name = $user?->name ?: 'Неизвестный пользователь';
 
         $dipText = isset($user?->dip)
             ? ($user->dip ? 'dip' : 'no dip')
             : '—';
 
-        $adminUrl = url('/admin/day-off-requests/' . $dayOffRequest->id . '/edit');
+        $message = [];
+        $message[] = '📌 <b>Запрос на выходной</b>';
+        $message[] = '';
+        $message[] = '👤 <b>Сотрудник:</b> ' . e($name);
+        $message[] = '🏷️ <b>Dip:</b> ' . e($dipText);
+        $message[] = '';
+        $message[] = '📅 <b>Даты:</b>';
+
+        foreach ($dayOffRequest->days->sortBy('date') as $day) {
+            $icon = match ($day->status) {
+                'approved' => '✅',
+                'rejected' => '❌',
+                default => '⏳',
+            };
+
+            $date = Carbon::parse($day->date)->translatedFormat('d.m.Y (l)');
+
+            $message[] = "{$icon} <b>{$date}</b>";
+        }
+
+        $message[] = '';
+        $message[] = '💬 <b>Причина:</b>';
+        $message[] = '<blockquote>' . e(trim((string) $dayOffRequest->reason)) . '</blockquote>';
+        $message[] = '';
+        $message[] = '<b>Последнее решение:</b> ' . e($moderatorText);
+        $message[] = '<b>Время:</b> ' . now()->format('d.m.Y H:i');
+
+        $keyboard = [];
+
+        foreach ($dayOffRequest->days->sortBy('date') as $day) {
+            if ($day->status !== 'pending') {
+                continue;
+            }
+
+            $date = Carbon::parse($day->date)->format('d.m');
+
+            $keyboard[] = [
+                [
+                    'text' => "✅ {$date}",
+                 'callback_data' => 'dayoffday:approve:' . $day->id
+                ],
+                [
+                    'text' => "❌ {$date}",
+                    'callback_data' => 'dayoffday:reject:' . $day->id,
+                ],
+            ];
+        }
+
+        $keyboard[] = [
+            [
+                'text' => 'Открыть сотрудника',
+                'url' => 'https://t.me/TrisAcademyBot?start=user_' . $dayOffRequest->user_id,
+            ],
+        ];
 
         Http::post($this->telegramApiUrl('editMessageText'), [
             'chat_id' => $chatId,
             'message_id' => $messageId,
             'parse_mode' => 'HTML',
             'disable_web_page_preview' => true,
-            'text' => implode("\n", [
-                '📌 <b>Запрос на выходной</b>',
-                '',
-                '👤 <b>Сотрудник:</b> ' . e($name),
-                '🏷️ <b>Dip:</b> ' . e($dipText),
-                '📅 <b>Даты:</b>',
-                '• ' . $formattedDates,
-                '',
-                '💬 <b>Причина:</b>',
-                '<blockquote>' . e(trim((string) $dayOffRequest->reason)) . '</blockquote>',
-                '',
-                $statusText,
-                '<b>Решение принял:</b> ' . e($moderatorText),
-                '<b>Время:</b> ' . now()->format('d.m.Y H:i'),
-                '',
-                "⛓️ <a href='{$adminUrl}'><b>Открыть в админке</b></a>",
-            ]),
+            'text' => implode("\n", $message),
             'reply_markup' => [
-                'inline_keyboard' => [
-                    [
-                        [
-                            'text' => 'Открыть в админке',
-                            'url' => $adminUrl,
-                        ],
-                    ],
-                ],
+                'inline_keyboard' => $keyboard,
             ],
         ]);
     }

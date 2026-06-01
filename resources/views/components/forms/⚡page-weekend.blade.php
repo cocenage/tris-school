@@ -364,84 +364,37 @@ public function getFormButtonTextProperty(): string
 
         $this->resetErrorBag('ranges');
 
+        if ($this->isAlreadyRequested($date)) {
+            $this->toast(
+                'warning',
+                'Дата занята',
+                'На ' . Carbon::parse($date)->format('d.m') . ' уже есть заявка'
+            );
+
+            return;
+        }
+
+        if ($this->isSundayOrMonday($date)) {
+            $this->openPolicyModal($date);
+
+            return;
+        }
+
         $existingRangeIndex = $this->findRangeIndexByDate($date);
 
         if ($existingRangeIndex !== null) {
             $this->removeRange($existingRangeIndex);
-            return;
-        }
 
-        if ($this->draftStartDate === null) {
-            if ($this->isAlreadyRequested($date)) {
-                $this->toast(
-                    'warning',
-                    'Дата занята',
-                    'На ' . Carbon::parse($date)->format('d.m') . ' уже есть заявка'
-                );
-                return;
-            }
-
-            if ($this->isSundayOrMonday($date)) {
-                $this->openPolicyModal($date);
-                return;
-            }
-
-            $this->draftStartDate = $date;
-            $this->persistDraft();
-            return;
-        }
-
-        $start = Carbon::parse($this->draftStartDate)->startOfDay();
-
-        if ($picked->equalTo($start)) {
-            $this->ranges[] = [
-                'start' => $date,
-                'end' => $date,
-            ];
-
-            $this->draftStartDate = null;
-            $this->persistDraft();
-            return;
-        }
-
-        if ($picked->lt($start)) {
-            if ($this->isAlreadyRequested($date)) {
-                $this->toast(
-                    'warning',
-                    'Дата занята',
-                    'На ' . Carbon::parse($date)->format('d.m') . ' уже есть заявка'
-                );
-                return;
-            }
-
-            if ($this->isSundayOrMonday($date)) {
-                $this->openPolicyModal($date);
-                return;
-            }
-
-            $this->draftStartDate = $date;
-            $this->persistDraft();
-            return;
-        }
-
-        $reason = $this->rangeConflictReason($this->draftStartDate, $date);
-
-        if ($reason !== null) {
-            $this->toast(
-                'warning',
-                $reason['title'],
-                $reason['message'],
-                4200
-            );
             return;
         }
 
         $this->ranges[] = [
-            'start' => $this->draftStartDate,
+            'start' => $date,
             'end' => $date,
         ];
 
         $this->draftStartDate = null;
+
         $this->persistDraft();
     }
 
@@ -457,57 +410,30 @@ public function getFormButtonTextProperty(): string
             $cursor = $start->copy();
             $date = $cursor->toDateString();
 
-            $selected = false;
-            $inside = false;
-            $rangeStart = false;
-            $rangeEnd = false;
-
-            foreach ($this->ranges as $range) {
-                $startDate = Carbon::parse($range['start'])->startOfDay();
-                $endDate = Carbon::parse($range['end'])->startOfDay();
-
-                if ($cursor->equalTo($startDate) && $cursor->equalTo($endDate)) {
-                    $selected = true;
-                    $rangeStart = true;
-                    $rangeEnd = true;
-                    continue;
-                }
-
-                if ($cursor->equalTo($startDate)) {
-                    $selected = true;
-                    $rangeStart = true;
-                    continue;
-                }
-
-                if ($cursor->equalTo($endDate)) {
-                    $selected = true;
-                    $rangeEnd = true;
-                    continue;
-                }
-
-                if ($cursor->gt($startDate) && $cursor->lt($endDate)) {
-                    $inside = true;
-                }
-            }
-
+            $selected = $this->findRangeIndexByDate($date) !== null;
             $status = $requestStatuses[$date] ?? null;
-            $preview = $this->previewRangeForDate($date);
 
             $days[] = [
                 'date' => $date,
                 'day' => $cursor->day,
                 'current' => $cursor->month === $this->month->month,
                 'past' => $cursor->lt(now()->startOfDay()),
+
                 'selected' => $selected,
-                'inside' => $inside,
-                'start' => $rangeStart,
-                'end' => $rangeEnd,
-                'draft_start' => $this->draftStartDate === $date,
+                'inside' => false,
+                'start' => $selected,
+                'end' => $selected,
+                'draft_start' => false,
+
                 'requested' => $status === 'pending',
                 'approved' => $status === 'approved',
                 'rejected' => $status === 'rejected',
                 'policy' => $status === null && $this->isSundayOrMonday($date),
-                ...$preview,
+
+                'preview_start' => false,
+                'preview_inside' => false,
+                'preview_end' => false,
+                'preview_invalid' => false,
             ];
 
             $start->addDay();
@@ -548,18 +474,18 @@ protected function sendTelegramNotification(DayOffRequest $request): void
     $threadId = config('services.telegram.thread_id_formweekend');
 
     if (blank($token) || blank($chatId)) {
-        Log::warning('Telegram notification skipped: missing credentials');
+        Log::warning('Telegram notification skipped: missing credentials', [
+            'request_id' => $request->id,
+            'token_exists' => filled($token),
+            'chat_id' => $chatId,
+        ]);
+
         return;
     }
 
     $user = $request->user;
 
     Carbon::setLocale('ru');
-
-    $formattedDates = $request->days
-        ->pluck('date')
-        ->map(fn ($date) => Carbon::parse($date)->translatedFormat('d.m.Y (l)'))
-        ->implode("\n• ");
 
     $name = $user?->name ?: 'Неизвестный пользователь';
 
@@ -579,7 +505,11 @@ protected function sendTelegramNotification(DayOffRequest $request): void
         ? ($user->dip ? 'dip' : 'no dip')
         : '—';
 
-    $adminUrl = $this->adminRecordUrl($request);
+    $formattedDates = $request->days
+        ->sortBy('date')
+        ->pluck('date')
+        ->map(fn ($date) => Carbon::parse($date)->translatedFormat('d.m.Y (l)'))
+        ->implode("\n• ");
 
     $text = "📌 <b>Новый запрос на выходной!</b>\n\n";
 
@@ -598,7 +528,30 @@ protected function sendTelegramNotification(DayOffRequest $request): void
     }
 
     $text .= "⏳ <b>Статус:</b> ожидает решения\n";
-    $text .= "⛓️ <a href='{$adminUrl}'><b>Ссылка на запрос в админке</b></a>\n";
+
+    $keyboard = [];
+
+    foreach ($request->days->sortBy('date') as $day) {
+        $date = Carbon::parse($day->date)->format('d.m');
+
+        $keyboard[] = [
+            [
+                'text' => "✅ {$date}",
+                'callback_data' => 'dayoffday:approve:' . $day->id,
+            ],
+            [
+                'text' => "❌ {$date}",
+                'callback_data' => 'dayoffday:reject:' . $day->id,
+            ],
+        ];
+    }
+
+    $keyboard[] = [
+        [
+            'text' => 'Открыть сотрудника',
+            'url' => 'https://t.me/TrisAcademyBot?start=user_' . $request->user_id,
+        ],
+    ];
 
     $payload = [
         'chat_id' => $chatId,
@@ -606,24 +559,7 @@ protected function sendTelegramNotification(DayOffRequest $request): void
         'parse_mode' => 'HTML',
         'disable_web_page_preview' => true,
         'reply_markup' => [
-            'inline_keyboard' => [
-                [
-                    [
-                        'text' => '✅ Одобрить',
-                        'callback_data' => 'dayoff:approve:' . $request->id,
-                    ],
-                    [
-                        'text' => '❌ Отклонить',
-                        'callback_data' => 'dayoff:reject:' . $request->id,
-                    ],
-                ],
-                [
-                    [
-                        'text' => 'Открыть в админке',
-                        'url' => $adminUrl,
-                    ],
-                ],
-            ],
+            'inline_keyboard' => $keyboard,
         ],
     ];
 
@@ -1181,12 +1117,12 @@ scrollToNextRequired(hasRanges, hasComment) {
                 {
                         image: '/images/weekend/2.webp',
                     title: 'Выберите даты',
-                    text: 'Нажмите на дату. Если нужен диапазон, выберите начало и конец периода.',
+                    text: 'Нажимайте на нужные даты по одной. Повторное нажатие убирает дату из выбора.',
                 },
                 {
                              image: '/images/weekend/3.webp',
-                    title: 'Можно несколько периодов',
-                    text: 'Если нужны разные дни, добавьте несколько отдельных дат или диапазонов.',
+                    title: 'Можно выбрать несколько дней',
+                    text: 'Выберите все нужные даты. Они добавятся в одну заявку отдельными днями.',
                 },
                 {
                              image: '/images/weekend/4.webp',
@@ -1271,7 +1207,7 @@ scrollToNextRequired(hasRanges, hasComment) {
                     <h2
                         class="mx-auto mt-[8px] max-w-[330px] text-[15px] leading-[1.45] text-black/55"
                         x-text="steps[current].text"
-                    ></р>
+                    ></h2>
                 </div>
             </div>
         </div>
