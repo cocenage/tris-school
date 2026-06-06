@@ -24,10 +24,9 @@
             {{ $slot }}
                 </main>
 
-            @auth
-
-                    <livewire:access.required />
-            @endauth
+   @auth
+    <livewire:access.required />
+@endauth
 
         <x-ui.toast />
 
@@ -36,8 +35,7 @@
         </footer>
         </div>
 
-    <sc
-ript src="https://telegram.org/js/telegram-web-app.js"></sc>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
     @livewireScripts
 </body>
 </html>

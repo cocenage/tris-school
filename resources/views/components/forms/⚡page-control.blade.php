@@ -7,12 +7,19 @@ use App\Models\ControlResponseDraft;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
+use Livewire\WithFileUploads;
 
 new class extends Component {
+    use WithFileUploads;
+
     public ?Control $control = null;
 
     public array $rooms = [];
     public array $answers = [];
+    public array $photoUploads = [];
+    public array $queuedPhotos = [];
+    public int $photoLimit = 12;
 
     public ?int $openRoomIndex = 0;
     public bool $attemptedSubmit = false;
@@ -92,6 +99,11 @@ new class extends Component {
 
     public function updated(string $name): void
     {
+        if (str_starts_with($name, 'photoUploads.')) {
+            $this->queueUploadedPhotos($name);
+            return;
+        }
+
         if (! $this->autoSaveEnabled) {
             return;
         }
@@ -127,20 +139,20 @@ new class extends Component {
         }
     }
 
-    protected function getDraftPayload(): array
-    {
-        return [
-            'cleaner_id' => $this->cleaner_id,
-            'apartment_id' => $this->apartment_id,
-            'is_assigned' => $this->is_assigned,
-            'previous_cleaner' => $this->previous_cleaner,
-            'cleaning_date' => $this->cleaning_date,
-            'inspection_date' => $this->inspection_date,
-            'comment' => $this->comment,
-            'responses' => $this->answers,
-            'schema_snapshot' => $this->rooms,
-        ];
-    }
+protected function getDraftPayload(): array
+{
+    return [
+        'cleaner_id' => $this->cleaner_id,
+        'apartment_id' => $this->apartment_id,
+        'is_assigned' => $this->is_assigned,
+        'previous_cleaner' => $this->previous_cleaner,
+        'cleaning_date' => $this->cleaning_date,
+        'inspection_date' => $this->inspection_date,
+        'comment' => $this->comment,
+        'responses' => $this->answers,
+        'schema_snapshot' => $this->rooms,
+    ];
+}
 
     protected function getDraftHash(): string
     {
@@ -306,6 +318,8 @@ new class extends Component {
         $this->attemptedSubmit = false;
 
         $this->buildEmptyAnswers();
+        $this->photoUploads = [];
+        $this->queuedPhotos = [];
 
         $this->resetErrorBag();
         $this->resetValidation();
@@ -478,6 +492,106 @@ new class extends Component {
         $this->touchAutosave();
     }
 
+    protected function queueUploadedPhotos(string $name): void
+    {
+        $parts = explode('.', $name);
+
+        if (count($parts) < 3) {
+            return;
+        }
+
+        $roomIndex = (int) $parts[1];
+        $questionIndex = (int) $parts[2];
+
+        $incoming = $this->photoUploads[$roomIndex][$questionIndex] ?? [];
+
+        if ($incoming instanceof TemporaryUploadedFile) {
+            $incoming = [$incoming];
+        }
+
+        if (! is_array($incoming)) {
+            $incoming = [];
+        }
+
+        $existing = $this->queuedPhotos[$roomIndex][$questionIndex] ?? [];
+        $merged = array_values(array_filter(array_merge($existing, $incoming)));
+
+        $valid = [];
+
+        foreach ($merged as $file) {
+            if (! $file instanceof TemporaryUploadedFile) {
+                continue;
+            }
+
+            if (! str_starts_with((string) $file->getMimeType(), 'image/')) {
+                $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Можно загружать только изображения');
+                continue;
+            }
+
+            if ($file->getSize() > 10 * 1024 * 1024) {
+                $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Одно фото не должно быть больше 10 МБ');
+                continue;
+            }
+
+            $valid[] = $file;
+        }
+
+        if (count($valid) > $this->photoLimit) {
+            $valid = array_slice($valid, 0, $this->photoLimit);
+            $this->addError("queuedPhotos.$roomIndex.$questionIndex", "Максимум {$this->photoLimit} фото на один вопрос");
+        }
+
+        $this->queuedPhotos[$roomIndex][$questionIndex] = $valid;
+        $this->photoUploads[$roomIndex][$questionIndex] = [];
+
+        $this->touchAutosave();
+    }
+
+    public function removeQueuedPhoto(int $roomIndex, int $questionIndex, int $photoIndex): void
+    {
+        if (! isset($this->queuedPhotos[$roomIndex][$questionIndex][$photoIndex])) {
+            return;
+        }
+
+        unset($this->queuedPhotos[$roomIndex][$questionIndex][$photoIndex]);
+        $this->queuedPhotos[$roomIndex][$questionIndex] = array_values($this->queuedPhotos[$roomIndex][$questionIndex]);
+
+        $this->resetErrorBag("queuedPhotos.$roomIndex.$questionIndex");
+        $this->touchAutosave();
+    }
+
+    protected function storeQueuedPhotos(): array
+    {
+        $answers = $this->answers;
+
+        foreach ($this->queuedPhotos as $roomIndex => $questions) {
+            foreach (($questions ?? []) as $questionIndex => $files) {
+                foreach (($files ?? []) as $file) {
+                    if (! $file instanceof TemporaryUploadedFile) {
+                        continue;
+                    }
+
+                    $path = $file->store(
+                        'controls/' . $this->control->id . '/' . now()->format('Y/m'),
+                        'public'
+                    );
+
+                    $answers[$roomIndex][$questionIndex]['media'][] = [
+                        'disk' => 'public',
+                        'path' => $path,
+                        'url' => asset('storage/' . $path),
+                        'original_name' => $file->getClientOriginalName(),
+                        'mime' => $file->getMimeType(),
+                        'size' => $file->getSize(),
+                        'uploaded_at' => now()->toDateTimeString(),
+                    ];
+                }
+            }
+        }
+
+        return $answers;
+    }
+
     public function continueForm(): void
     {
         $this->resetErrorBag();
@@ -616,7 +730,8 @@ new class extends Component {
             return;
         }
 
-        $score = ControlResponse::calculateScores($this->rooms, $this->answers);
+        $answersForSave = $this->storeQueuedPhotos();
+        $score = ControlResponse::calculateScores($this->rooms, $answersForSave);
 
         $response = ControlResponse::create([
             'control_id' => $this->control->id,
@@ -630,7 +745,7 @@ new class extends Component {
             'inspection_date' => $this->inspection_date,
 
             'comment' => $this->comment,
-            'responses' => $this->answers,
+            'responses' => $answersForSave,
             'schema_snapshot' => $this->rooms,
 
             'total_points' => $score['total_points'],
@@ -1107,6 +1222,71 @@ new class extends Component {
                                                                 class="mt-[10px] h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[15px] text-[14px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
                                                             >
                                                         @endif
+
+                                                        <div class="mt-[12px] rounded-[20px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] p-[12px]">
+                                                            <div class="flex items-center justify-between gap-[10px]">
+                                                                <div class="min-w-0">
+                                                                    <div class="text-[13px] font-semibold text-[#111827]">
+                                                                        Фото к вопросу
+                                                                    </div>
+                                                                    <div class="mt-[2px] text-[12px] font-medium text-[#64748B]">
+                                                                        До {{ $photoLimit }} фото, максимум 10 МБ за файл
+                                                                    </div>
+                                                                </div>
+
+                                                                <label class="shrink-0 cursor-pointer rounded-full bg-[#213259] px-[12px] py-[8px] text-[12px] font-semibold text-white">
+                                                                    Добавить
+                                                                    <input
+                                                                        type="file"
+                                                                        multiple
+                                                                        accept="image/*"
+                                                                        capture="environment"
+                                                                        wire:model="photoUploads.{{ $roomIndex }}.{{ $questionIndex }}"
+                                                                        class="hidden"
+                                                                    >
+                                                                </label>
+                                                            </div>
+
+                                                            <div
+                                                                class="mt-[10px] text-[12px] font-semibold text-[#64748B]"
+                                                                wire:loading
+                                                                wire:target="photoUploads.{{ $roomIndex }}.{{ $questionIndex }}"
+                                                            >
+                                                                Загружаем фото...
+                                                            </div>
+
+                                                            @error("queuedPhotos.$roomIndex.$questionIndex")
+                                                                <div class="mt-[10px] rounded-[16px] bg-[#FEE4E2] px-[12px] py-[9px] text-[13px] font-semibold text-[#B42318]">
+                                                                    {{ $message }}
+                                                                </div>
+                                                            @enderror
+
+                                                            @php
+                                                                $questionPhotos = $queuedPhotos[$roomIndex][$questionIndex] ?? [];
+                                                            @endphp
+
+                                                            @if(!empty($questionPhotos))
+                                                                <div class="mt-[10px] grid grid-cols-3 gap-[8px]">
+                                                                    @foreach($questionPhotos as $photoIndex => $photo)
+                                                                        <div class="relative overflow-hidden rounded-[16px] bg-white">
+                                                                            <img
+                                                                                src="{{ $photo->temporaryUrl() }}"
+                                                                                alt="Фото контроля"
+                                                                                class="h-[88px] w-full object-cover"
+                                                                            >
+
+                                                                            <button
+                                                                                type="button"
+                                                                                wire:click="removeQueuedPhoto({{ $roomIndex }}, {{ $questionIndex }}, {{ $photoIndex }})"
+                                                                                class="absolute right-[6px] top-[6px] flex h-[26px] w-[26px] items-center justify-center rounded-full bg-black/65 text-[14px] font-semibold text-white"
+                                                                            >
+                                                                                ×
+                                                                            </button>
+                                                                        </div>
+                                                                    @endforeach
+                                                                </div>
+                                                            @endif
+                                                        </div>
                                                     </div>
                                                 @endforeach
                                             </div>

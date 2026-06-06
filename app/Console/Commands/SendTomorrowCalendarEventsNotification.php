@@ -7,6 +7,7 @@ use App\Services\Calendar\CalendarSummaryService;
 use App\Services\Telegram\TelegramBotService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
 
 class SendTomorrowCalendarEventsNotification extends Command
 {
@@ -20,10 +21,15 @@ class SendTomorrowCalendarEventsNotification extends Command
         TelegramBotService $telegramBotService,
     ): int {
         $timezone = config('app.timezone', 'Europe/Stockholm');
+
+        Carbon::setLocale('ru');
+
         $tomorrow = now($timezone)->addDay()->startOfDay();
 
-        $events = $calendarEventsService->getEventsForDay($tomorrow);
+        $events = collect($calendarEventsService->getEventsForDay($tomorrow));
         $summary = $calendarSummaryService->build($tomorrow);
+
+        $events = $this->appendNotWorkingEvents($events, $summary);
 
         $message = $this->buildMessage($tomorrow, $events, $summary);
 
@@ -53,47 +59,92 @@ class SendTomorrowCalendarEventsNotification extends Command
         return self::SUCCESS;
     }
 
-    protected function buildMessage(Carbon $date, $events, array $summary): string
+    protected function buildMessage(Carbon $date, Collection $events, array $summary): string
     {
-        $grouped = collect($events)->groupBy(fn (array $event) => $event['type'] ?? 'other');
-
         $lines = [];
 
         $lines[] = '📅 <b>Сводка на завтра</b>';
         $lines[] = '<b>' . e(mb_convert_case($date->translatedFormat('l, j F Y'), MB_CASE_TITLE, 'UTF-8')) . '</b>';
         $lines[] = '';
 
+        $this->appendShiftBlock($lines, $summary);
+        $this->appendNotWorkingBlock($lines, $summary);
+
+        $events = $this->removeDuplicatedNotWorkingEvents($events, $summary);
+        $grouped = $events->groupBy(fn (array $event) => $event['type'] ?? 'other');
+
+        if ($events->isNotEmpty()) {
+            $this->appendEventsBlock($lines, $events, $grouped);
+        }
+
+        return trim(implode("\n", $lines));
+    }
+
+    protected function appendShiftBlock(array &$lines, array $summary): void
+    {
         $shift = $summary['shift'] ?? null;
 
-        if ($shift) {
-            $lines[] = '👥 <b>Смена</b>';
-            $lines[] = 'Работают: <b>' . ($shift['working'] ?? 0) . '/' . ($shift['total'] ?? 0) . '</b>';
-            $lines[] = 'Не работают: <b>' . ($shift['not_working'] ?? 0) . '</b>';
-            $lines[] = 'Статус: <b>' . e($shift['label'] ?? 'Без статуса') . '</b>';
-            $lines[] = '';
+        if (! $shift) {
+            return;
         }
 
-        $notWorking = collect(data_get($summary, 'workers.not_working', []));
+        $lines[] = '👥 <b>Смена</b>';
+        $lines[] = 'Работают: <b>' . ($shift['working'] ?? 0) . '/' . ($shift['total'] ?? 0) . '</b>';
+        $lines[] = 'Не работают: <b>' . ($shift['not_working'] ?? 0) . '</b>';
+        $lines[] = 'Статус: <b>' . e($shift['label'] ?? 'Без статуса') . '</b>';
+        $lines[] = '';
+    }
 
-        if ($notWorking->isNotEmpty()) {
-            $lines[] = '🚫 <b>Кто не работает</b>';
+    protected function appendNotWorkingBlock(array &$lines, array $summary): void
+    {
+        $notWorking = collect(data_get($summary, 'workers.not_working', []))
+            ->map(function ($user) {
+                data_set($user, 'normalized_reason', $this->normalizeNotWorkingReason(
+                    data_get($user, 'not_working_reason', 'Не работает')
+                ));
 
-            foreach ($notWorking as $user) {
-                $reason = $user->not_working_reason ?? 'Не работает';
-                $lines[] = '• ' . e($user->name) . ' — ' . e($reason);
+                return $user;
+            })
+            ->sortBy(fn ($user) => mb_strtolower((string) data_get($user, 'name', '')))
+            ->values();
+
+        if ($notWorking->isEmpty()) {
+            return;
+        }
+
+        $grouped = $notWorking->groupBy(fn ($user) => $this->detectUserRoleGroup($user));
+
+        $groups = [
+            'supervisor' => '👔 <b>Супервайзеры</b>',
+            'cleaner' => '🧹 <b>Клинеры</b>',
+            'other' => '👤 <b>Остальные</b>',
+        ];
+
+        $lines[] = '🚫 <b>Кто не работает</b>';
+
+        foreach ($groups as $group => $title) {
+            $users = $grouped->get($group, collect());
+
+            if ($users->isEmpty()) {
+                continue;
             }
 
-            $lines[] = '';
+            $lines[] = $title . ' — <b>' . $users->count() . '</b>';
+
+            foreach ($users as $user) {
+                $name = data_get($user, 'name', 'Без имени');
+                $reason = data_get($user, 'normalized_reason', 'Не работает');
+
+                $lines[] = '• ' . e($name) . ' — ' . e($reason);
+            }
         }
 
+        $lines[] = '';
+    }
+
+    protected function appendEventsBlock(array &$lines, Collection $events, Collection $grouped): void
+    {
         $lines[] = '📌 <b>События</b>';
-
-        if ($events->isEmpty()) {
-            $lines[] = 'На завтра событий нет.';
-
-            return trim(implode("\n", $lines));
-        }
-
         $lines[] = 'Всего событий: <b>' . $events->count() . '</b>';
         $lines[] = '';
 
@@ -112,9 +163,9 @@ class SendTomorrowCalendarEventsNotification extends Command
         ];
 
         foreach ($typesToRender as $type) {
-            $items = $grouped->get($type);
+            $items = $grouped->get($type, collect());
 
-            if (! $items || $items->isEmpty()) {
+            if ($items->isEmpty()) {
                 continue;
             }
 
@@ -126,8 +177,150 @@ class SendTomorrowCalendarEventsNotification extends Command
 
             $lines[] = '';
         }
+    }
 
-        return trim(implode("\n", $lines));
+    protected function appendNotWorkingEvents(Collection $events, array $summary): Collection
+    {
+        $notWorking = collect(data_get($summary, 'workers.not_working', []));
+
+        if ($notWorking->isEmpty()) {
+            return $events->values();
+        }
+
+        $extraEvents = $notWorking->map(function ($user) {
+            $name = data_get($user, 'name', 'Без имени');
+            $rawReason = data_get($user, 'not_working_reason', 'Не работает');
+            $reason = $this->normalizeNotWorkingReason($rawReason);
+
+            return [
+                'type' => $this->detectNotWorkingType($rawReason),
+                'title' => $name . ' — ' . $reason,
+                'description' => null,
+                'start' => null,
+                'end' => null,
+                'source' => 'summary_not_working',
+            ];
+        });
+
+        return $events
+            ->concat($extraEvents)
+            ->unique(fn (array $event) => implode('|', [
+                $event['type'] ?? 'other',
+                $event['title'] ?? '',
+                optional($event['start'] ?? null)->toDateString(),
+                optional($event['end'] ?? null)->toDateString(),
+            ]))
+            ->values();
+    }
+
+    protected function removeDuplicatedNotWorkingEvents(Collection $events, array $summary): Collection
+    {
+        $notWorkingNames = collect(data_get($summary, 'workers.not_working', []))
+            ->map(fn ($user) => mb_strtolower((string) data_get($user, 'name')))
+            ->filter()
+            ->values();
+
+        if ($notWorkingNames->isEmpty()) {
+            return $events->values();
+        }
+
+        return $events
+            ->reject(function (array $event) use ($notWorkingNames) {
+                $type = $event['type'] ?? 'other';
+                $title = mb_strtolower((string) ($event['title'] ?? ''));
+
+                if (! in_array($type, ['day_off', 'vacation', 'sick'], true)) {
+                    return false;
+                }
+
+                return $notWorkingNames->contains(
+                    fn (string $name) => $name !== '' && str_contains($title, $name)
+                );
+            })
+            ->values();
+    }
+
+    protected function detectUserRoleGroup($user): string
+    {
+        $role = mb_strtolower((string) (
+            data_get($user, 'role')
+            ?? data_get($user, 'role_name')
+            ?? data_get($user, 'position')
+            ?? data_get($user, 'type')
+            ?? ''
+        ));
+
+        if (
+            str_contains($role, 'supervisor') ||
+            str_contains($role, 'супер') ||
+            str_contains($role, 'супервайзер')
+        ) {
+            return 'supervisor';
+        }
+
+        if (
+            str_contains($role, 'cleaner') ||
+            str_contains($role, 'клинер') ||
+            str_contains($role, 'убор')
+        ) {
+            return 'cleaner';
+        }
+
+        return 'other';
+    }
+
+    protected function detectNotWorkingType(string $reason): string
+    {
+        $reason = mb_strtolower($reason);
+
+        if (
+            str_contains($reason, 'отпуск') ||
+            str_contains($reason, 'vacation') ||
+            str_contains($reason, 'ferie')
+        ) {
+            return 'vacation';
+        }
+
+        if (
+            str_contains($reason, 'больн') ||
+            str_contains($reason, 'sick') ||
+            str_contains($reason, 'malatt')
+        ) {
+            return 'sick';
+        }
+
+        return 'day_off';
+    }
+
+    protected function normalizeNotWorkingReason(string $reason): string
+    {
+        $lower = mb_strtolower(trim($reason));
+
+        if (
+            str_contains($lower, 'отпуск') ||
+            str_contains($lower, 'vacation') ||
+            str_contains($lower, 'ferie')
+        ) {
+            return 'Отпуск';
+        }
+
+        if (
+            str_contains($lower, 'выход') ||
+            str_contains($lower, 'day off') ||
+            str_contains($lower, 'riposo')
+        ) {
+            return 'Выходной';
+        }
+
+        if (
+            str_contains($lower, 'больн') ||
+            str_contains($lower, 'sick') ||
+            str_contains($lower, 'malatt')
+        ) {
+            return 'Больничный';
+        }
+
+        return 'Не работает';
     }
 
     protected function formatTelegramEventLine(array $event): string
@@ -183,6 +376,7 @@ class SendTomorrowCalendarEventsNotification extends Command
             'work_anniversary',
             'day_off',
             'vacation',
+            'sick',
             'tasks',
             'workflow',
             'finance',
@@ -204,6 +398,7 @@ class SendTomorrowCalendarEventsNotification extends Command
             'peak' => '🔥',
             'day_off' => '🌿',
             'vacation' => '🏖',
+            'sick' => '🤒',
             'strike' => '⚠️',
             default => '📎',
         };
@@ -221,6 +416,7 @@ class SendTomorrowCalendarEventsNotification extends Command
             'peak' => 'Пики загрузки',
             'day_off' => 'Выходные',
             'vacation' => 'Отпуска',
+            'sick' => 'Больничные',
             'strike' => 'Забастовки',
             'other' => 'Другое',
             default => str($type)->replace('_', ' ')->ucfirst()->toString(),
