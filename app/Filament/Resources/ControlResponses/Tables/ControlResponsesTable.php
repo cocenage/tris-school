@@ -13,17 +13,23 @@ class ControlResponsesTable
     {
         return $table
             ->columns([
-                TextColumn::make('id')
-                    ->label('ID')
-                    ->sortable(),
-
-                TextColumn::make('control.name')
-                    ->label('Форма')
+                TextColumn::make('cleaner.name')
+                    ->label('Имя')
                     ->searchable()
                     ->sortable(),
 
-                TextColumn::make('cleaner.name')
-                    ->label('Кого проверили')
+                TextColumn::make('result_zone_label')
+                    ->label('Цвет')
+                    ->badge()
+                    ->color(fn (ControlResponse $record): string => $record->result_zone_color),
+
+                TextColumn::make('inspection_date')
+                    ->label('Дата контроля')
+                    ->date('d.m.Y')
+                    ->sortable(),
+
+                TextColumn::make('apartment.name')
+                    ->label('Квартира')
                     ->searchable()
                     ->sortable(),
 
@@ -32,37 +38,16 @@ class ControlResponsesTable
                     ->searchable()
                     ->sortable(),
 
-                TextColumn::make('apartment.name')
-                    ->label('Квартира')
+                TextColumn::make('control.name')
+                    ->label('Форма')
                     ->searchable()
                     ->sortable(),
-
-                TextColumn::make('cleaning_date')
-                    ->label('Дата уборки')
-                    ->date('d.m.Y')
-                    ->sortable(),
-
-                TextColumn::make('inspection_date')
-                    ->label('Дата проверки')
-                    ->date('d.m.Y')
-                    ->sortable(),
-
-                TextColumn::make('points')
-                    ->label('Баллы')
-                    ->state(fn (ControlResponse $record) => "{$record->total_points}/{$record->max_points}"),
-
-                TextColumn::make('score_percent')
-                    ->label('%')
-                    ->suffix('%')
-                    ->sortable(),
-
-                TextColumn::make('result_zone_label')
-                    ->label('Зона'),
 
                 TextColumn::make('sent_at')
                     ->label('Отправлено')
                     ->dateTime('d.m.Y H:i')
-                    ->sortable(),
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->defaultSort('sent_at', 'desc')
             ->recordUrl(fn (ControlResponse $record) => route(

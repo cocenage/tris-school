@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Str;
 
 class ControlResponse extends Model
 {
@@ -65,6 +66,11 @@ class ControlResponse extends Model
         return $this->belongsTo(User::class, 'supervisor_id');
     }
 
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
     public function getResultZoneLabelAttribute(): string
     {
         return match ($this->result_zone) {
@@ -75,17 +81,50 @@ class ControlResponse extends Model
         };
     }
 
+    public function getResultZoneColorAttribute(): string
+    {
+        return match ($this->result_zone) {
+            'green' => 'success',
+            'yellow' => 'warning',
+            'red' => 'danger',
+            default => 'gray',
+        };
+    }
+
     public static function calculateScores(array $schema, array $responses): array
+    {
+        $analysis = self::analyzeAnswers($schema, $responses);
+
+        $scorePercent = $analysis['max_points'] > 0
+            ? (int) round(($analysis['total_points'] / $analysis['max_points']) * 100)
+            : 0;
+
+        return [
+            'total_points' => $analysis['total_points'],
+            'max_points' => $analysis['max_points'],
+            'score_percent' => $scorePercent,
+            'has_critical_failure' => $analysis['has_critical_failure'],
+            'result_zone' => self::resolveResultZone(
+                $analysis['penalty_points'],
+                $analysis['has_critical_failure']
+            ),
+        ];
+    }
+
+    public static function analyzeAnswers(array $schema, array $responses): array
     {
         $totalPoints = 0;
         $maxPoints = 0;
+        $penaltyPoints = 0;
         $hasCriticalFailure = false;
+        $errors = [];
 
         foreach ($schema as $roomIndex => $room) {
+            $roomTitle = (string) ($room['title'] ?? ('Комната ' . ((int) $roomIndex + 1)));
             $roomOptional = (bool) ($room['is_optional'] ?? false);
             $items = Arr::get($room, 'items', []);
 
-            if (!is_array($items)) {
+            if (! is_array($items)) {
                 continue;
             }
 
@@ -93,88 +132,163 @@ class ControlResponse extends Model
                 $questionOptional = (bool) ($question['is_optional'] ?? false);
 
                 if ($roomOptional || $questionOptional) {
-                    // необязательные не влияют на обязательный максимум
+                    continue;
                 }
 
                 $answerType = (string) ($question['answer_type'] ?? 'options');
-                $selected = data_get($responses, "{$roomIndex}.{$questionIndex}.selected");
-                $options = $question['answer_options_scored'] ?? [];
-                $options = is_array($options) ? $options : [];
 
-                if (in_array($answerType, ['options', 'both'], true) && count($options)) {
-                    $maxForQuestion = 0;
-                    $selectedOption = null;
-
-                    foreach ($options as $optionIndex => $option) {
-    $points = (int) ($option['points'] ?? 0);
-
-    if ($points > $maxForQuestion) {
-        $maxForQuestion = $points;
-    }
-
-    $optionValue = (string) ($option['value'] ?? $option['label'] ?? '');
-    $legacyValue = 'option_' . $optionIndex;
-
-    if (
-        $optionValue === (string) $selected ||
-        $legacyValue === (string) $selected
-    ) {
-        $selectedOption = $option;
-    }
-}
-
-                    $maxPoints += $maxForQuestion;
-
-                    if ($selectedOption) {
-                        $selectedPoints = (int) ($selectedOption['points'] ?? 0);
-                        $totalPoints += $selectedPoints;
-
-                        $isCritical = (bool) ($question['is_critical'] ?? false);
-                        $isPositive = (bool) ($selectedOption['is_positive'] ?? false);
-
-                        if ($isCritical && !$isPositive) {
-                            $hasCriticalFailure = true;
-                        }
-                    }
+                if (! in_array($answerType, ['options', 'both'], true)) {
+                    continue;
                 }
+
+                $options = $question['answer_options_scored'] ?? [];
+
+                if (! is_array($options) || empty($options)) {
+                    continue;
+                }
+
+                $answer = data_get($responses, "{$roomIndex}.{$questionIndex}", []);
+                $selected = trim((string) ($answer['selected'] ?? ''));
+                $custom = trim((string) ($answer['custom'] ?? ''));
+
+                [$maxForQuestion, $selectedOption, $selectedPoints] = self::resolveSelectedOption(
+                    $options,
+                    $selected
+                );
+
+                if ($maxForQuestion <= 0) {
+                    continue;
+                }
+
+                $maxPoints += $maxForQuestion;
+                $totalPoints += $selectedPoints;
+
+                $questionPenalty = max(0, $maxForQuestion - $selectedPoints);
+
+                if ($questionPenalty <= 0) {
+                    continue;
+                }
+
+                $penaltyPoints += $questionPenalty;
+
+                $isSleepingCritical = self::isSleepingPlacesCriticalQuestion(
+                    $roomTitle,
+                    (int) $questionIndex
+                );
+
+                if ($isSleepingCritical) {
+                    $hasCriticalFailure = true;
+                }
+
+                $errors[] = [
+                    'room_index' => (int) $roomIndex,
+                    'question_index' => (int) $questionIndex,
+                    'room_title' => $roomTitle,
+                    'question' => (string) ($question['question'] ?? 'Вопрос'),
+                    'selected' => $selected,
+                    'selected_label' => self::resolveAnswerText($question, $selected, $custom),
+                    'custom' => $custom,
+                    'points' => $selectedPoints,
+                    'max_points' => $maxForQuestion,
+                    'penalty_points' => $questionPenalty,
+                    'is_critical' => $isSleepingCritical,
+                    'media' => is_array($answer['media'] ?? null) ? $answer['media'] : [],
+                ];
             }
         }
-
-        $scorePercent = $maxPoints > 0
-            ? (int) round(($totalPoints / $maxPoints) * 100)
-            : 0;
-
-        $resultZone = self::resolveResultZone($scorePercent, $hasCriticalFailure);
 
         return [
             'total_points' => $totalPoints,
             'max_points' => $maxPoints,
-            'score_percent' => $scorePercent,
+            'penalty_points' => $penaltyPoints,
             'has_critical_failure' => $hasCriticalFailure,
-            'result_zone' => $resultZone,
+            'errors' => $errors,
         ];
     }
 
-    public static function resolveResultZone(int $scorePercent, bool $hasCriticalFailure): string
+    public static function resolveResultZone(int $penaltyPoints, bool $hasCriticalFailure): string
     {
-        if ($scorePercent < 70) {
-            return 'red';
-        }
-
-        if ($hasCriticalFailure) {
-            return 'yellow';
-        }
-
-        if ($scorePercent >= 90) {
+        if ($penaltyPoints <= 0) {
             return 'green';
+        }
+
+        if ($hasCriticalFailure || $penaltyPoints >= 8) {
+            return 'red';
         }
 
         return 'yellow';
     }
-    public function user()
+
+    protected static function resolveSelectedOption(array $options, string $selected): array
     {
-        return $this->belongsTo(User::class);
+        $maxForQuestion = 0;
+        $selectedOption = null;
+        $selectedPoints = 0;
+
+        foreach ($options as $optionIndex => $option) {
+            $points = (int) ($option['points'] ?? 0);
+
+            if ($points > $maxForQuestion) {
+                $maxForQuestion = $points;
+            }
+
+            $optionValue = trim((string) ($option['value'] ?? $option['label'] ?? ''));
+            $optionLabel = trim((string) ($option['label'] ?? ''));
+            $legacyValue = 'option_' . $optionIndex;
+
+            if (
+                $selected !== ''
+                && (
+                    $selected === $optionValue
+                    || $selected === $optionLabel
+                    || $selected === $legacyValue
+                )
+            ) {
+                $selectedOption = $option;
+                $selectedPoints = $points;
+            }
+        }
+
+        return [$maxForQuestion, $selectedOption, $selectedPoints];
     }
 
+    protected static function isSleepingPlacesCriticalQuestion(string $roomTitle, int $questionIndex): bool
+    {
+        $normalizedTitle = Str::of($roomTitle)
+            ->lower()
+            ->replace(['ё'], ['е'])
+            ->toString();
 
+        return str_contains($normalizedTitle, 'спальные места')
+            && in_array($questionIndex, [0, 1], true);
+    }
+
+    public static function resolveAnswerText(array $question, string $selected, string $custom): string
+    {
+        $label = $selected;
+
+        foreach (($question['answer_options_scored'] ?? []) as $optIndex => $opt) {
+            $value = trim((string) ($opt['value'] ?? ($opt['label'] ?? ('option_' . $optIndex))));
+            $optionLabel = trim((string) ($opt['label'] ?? ''));
+
+            if ($selected !== '' && ($selected === $value || $selected === $optionLabel || $selected === 'option_' . $optIndex)) {
+                $label = $optionLabel;
+                break;
+            }
+        }
+
+        if ($label !== '' && $custom !== '') {
+            return $label . ' / ' . $custom;
+        }
+
+        if ($label !== '') {
+            return $label;
+        }
+
+        if ($custom !== '') {
+            return $custom;
+        }
+
+        return '—';
+    }
 }

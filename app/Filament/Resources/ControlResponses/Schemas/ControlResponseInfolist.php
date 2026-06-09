@@ -14,46 +14,28 @@ class ControlResponseInfolist
         return $schema
             ->components([
                 Section::make('Основная информация')
-                    ->columns(2)
+                    ->columns(3)
                     ->schema([
-                        TextEntry::make('control.name')
-                            ->label('Форма контроля'),
-
                         TextEntry::make('cleaner.name')
-                            ->label('Кого проверили'),
+                            ->label('Имя'),
 
-                        TextEntry::make('supervisor.name')
-                            ->label('Кто проверил'),
+                        TextEntry::make('result_zone_label')
+                            ->label('Цвет')
+                            ->badge()
+                            ->color(fn (ControlResponse $record): string => $record->result_zone_color),
+
+                        TextEntry::make('inspection_date')
+                            ->label('Дата контроля')
+                            ->date('d.m.Y'),
 
                         TextEntry::make('apartment.name')
                             ->label('Квартира'),
 
-                        TextEntry::make('cleaning_date')
-                            ->label('Дата уборки')
-                            ->date('d.m.Y'),
+                        TextEntry::make('supervisor.name')
+                            ->label('Кто проверил'),
 
-                        TextEntry::make('inspection_date')
-                            ->label('Дата проверки')
-                            ->date('d.m.Y'),
-
-                        TextEntry::make('sent_at')
-                            ->label('Отправлено')
-                            ->dateTime('d.m.Y H:i'),
-
-                        TextEntry::make('points')
-                            ->label('Баллы')
-                            ->state(fn (ControlResponse $record) => "{$record->total_points}/{$record->max_points}"),
-
-                        TextEntry::make('score_percent')
-                            ->label('Процент')
-                            ->suffix('%'),
-
-                        TextEntry::make('result_zone_label')
-                            ->label('Зона'),
-
-                        TextEntry::make('has_critical_failure')
-                            ->label('Критическая ошибка')
-                            ->formatStateUsing(fn ($state) => $state ? 'Да' : 'Нет'),
+                        TextEntry::make('control.name')
+                            ->label('Форма'),
 
                         TextEntry::make('comment')
                             ->label('Комментарий')
@@ -61,18 +43,18 @@ class ControlResponseInfolist
                             ->columnSpanFull(),
                     ]),
 
-                Section::make('Ответы')
+                Section::make('Ошибки')
                     ->schema([
-                        TextEntry::make('answers_rendered')
+                        TextEntry::make('errors_rendered')
                             ->label('')
-                            ->state(fn (ControlResponse $record) => self::renderAnswers($record))
+                            ->state(fn (ControlResponse $record) => self::renderErrors($record))
                             ->html()
                             ->columnSpanFull(),
                     ]),
             ]);
     }
 
-    protected static function renderAnswers(ControlResponse $record): string
+    protected static function renderErrors(ControlResponse $record): string
     {
         $schema = is_array($record->schema_snapshot) ? $record->schema_snapshot : [];
         $responses = is_array($record->responses) ? $record->responses : [];
@@ -81,64 +63,142 @@ class ControlResponseInfolist
             return '<div style="color:#777;">Нет данных</div>';
         }
 
-        $html = '<div style="display:flex;flex-direction:column;gap:16px;">';
+        $analysis = ControlResponse::analyzeAnswers($schema, $responses);
+        $errors = $analysis['errors'] ?? [];
 
-        foreach ($schema as $roomIndex => $room) {
-            $roomTitle = e($room['title'] ?? ('Комната ' . ((int) $roomIndex + 1)));
+        if (empty($errors)) {
+            return '
+                <div style="
+                    border:1px solid #bbf7d0;
+                    background:#f0fdf4;
+                    color:#166534;
+                    border-radius:18px;
+                    padding:16px;
+                    font-weight:700;
+                ">
+                    Ошибок нет. Контроль в зелёной зоне.
+                </div>
+            ';
+        }
 
-            $html .= '<div style="border:1px solid #e5e7eb;border-radius:18px;overflow:hidden;background:#fff;">';
-            $html .= '<div style="background:#f3f4f6;padding:14px 16px;font-weight:700;">' . $roomTitle . '</div>';
-            $html .= '<div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px;">';
+        $html = '<div style="display:flex;flex-direction:column;gap:14px;">';
 
-            foreach (($room['items'] ?? []) as $questionIndex => $question) {
-                $questionText = e($question['question'] ?? 'Вопрос');
-                $answer = $responses[$roomIndex][$questionIndex] ?? [];
+        $html .= '
+            <div style="
+                border:1px solid #fecaca;
+                background:#fff1f2;
+                color:#991b1b;
+                border-radius:18px;
+                padding:14px 16px;
+                font-weight:700;
+            ">
+                Найдено ошибок: ' . count($errors) . ' · Штрафных баллов: ' . (int) $analysis['penalty_points'] . '
+            </div>
+        ';
 
-                $selected = trim((string) ($answer['selected'] ?? ''));
-                $custom = trim((string) ($answer['custom'] ?? ''));
+        foreach ($errors as $error) {
+            $roomTitle = e($error['room_title'] ?? 'Комната');
+            $question = e($error['question'] ?? 'Вопрос');
+            $answer = e($error['selected_label'] ?? '—');
+            $penalty = (int) ($error['penalty_points'] ?? 0);
+            $max = (int) ($error['max_points'] ?? 0);
+            $isCritical = (bool) ($error['is_critical'] ?? false);
+            $media = is_array($error['media'] ?? null) ? $error['media'] : [];
 
-                $answerText = self::resolveAnswerText($question, $selected, $custom);
+            $html .= '
+                <div style="
+                    border:1px solid #fecaca;
+                    background:#fff;
+                    border-radius:20px;
+                    overflow:hidden;
+                    box-shadow:0 10px 30px rgba(153,27,27,0.06);
+                ">
+                    <div style="
+                        background:#fee2e2;
+                        color:#991b1b;
+                        padding:12px 16px;
+                        font-weight:800;
+                        display:flex;
+                        justify-content:space-between;
+                        gap:12px;
+                    ">
+                        <span>' . $roomTitle . '</span>
+                        <span>−' . $penalty . ' / ' . $max . '</span>
+                    </div>
 
-                $html .= '<div style="border-bottom:1px solid #f1f1f1;padding-bottom:10px;">';
-                $html .= '<div style="font-size:13px;color:#6b7280;margin-bottom:4px;">' . $questionText . '</div>';
-                $html .= '<div style="font-size:15px;font-weight:600;color:#111827;">' . e($answerText) . '</div>';
+                    <div style="padding:14px 16px;">
+                        ' . ($isCritical ? '
+                            <div style="
+                                display:inline-flex;
+                                margin-bottom:10px;
+                                border-radius:999px;
+                                background:#dc2626;
+                                color:white;
+                                padding:5px 10px;
+                                font-size:12px;
+                                font-weight:800;
+                            ">
+                                Критическая ошибка
+                            </div>
+                        ' : '') . '
+
+                        <div style="
+                            color:#6b7280;
+                            font-size:13px;
+                            margin-bottom:6px;
+                            line-height:1.35;
+                        ">
+                            ' . $question . '
+                        </div>
+
+                        <div style="
+                            color:#111827;
+                            font-size:15px;
+                            font-weight:800;
+                            line-height:1.4;
+                        ">
+                            ' . $answer . '
+                        </div>
+                    ';
+
+            if (! empty($media)) {
+                $html .= '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;">';
+
+                foreach ($media as $photo) {
+                    $url = e((string) ($photo['url'] ?? ''));
+
+                    if ($url === '') {
+                        continue;
+                    }
+
+                    $html .= '
+                        <a href="' . $url . '" target="_blank" style="display:block;">
+                            <img
+                                src="' . $url . '"
+                                alt=""
+                                style="
+                                    width:120px;
+                                    height:120px;
+                                    object-fit:cover;
+                                    border-radius:16px;
+                                    border:1px solid #fecaca;
+                                "
+                            >
+                        </a>
+                    ';
+                }
+
                 $html .= '</div>';
             }
 
-            $html .= '</div></div>';
+            $html .= '
+                    </div>
+                </div>
+            ';
         }
 
         $html .= '</div>';
 
         return $html;
-    }
-
-    protected static function resolveAnswerText(array $question, string $selected, string $custom): string
-    {
-        $label = $selected;
-
-        foreach (($question['answer_options_scored'] ?? []) as $optIndex => $opt) {
-            $value = trim((string) ($opt['value'] ?? ('option_' . $optIndex)));
-            $optionLabel = trim((string) ($opt['label'] ?? ''));
-
-            if ($selected !== '' && ($selected === $value || $selected === $optionLabel)) {
-                $label = $optionLabel;
-                break;
-            }
-        }
-
-        if ($label !== '' && $custom !== '') {
-            return $label . ' / ' . $custom;
-        }
-
-        if ($label !== '') {
-            return $label;
-        }
-
-        if ($custom !== '') {
-            return $custom;
-        }
-
-        return '—';
     }
 }
