@@ -3,17 +3,28 @@
 namespace App\Filament\Resources\ControlResponses\Pages;
 
 use App\Filament\Resources\ControlResponses\ControlResponseResource;
-use Filament\Actions\EditAction;
 use Filament\Resources\Pages\ViewRecord;
 
 class ViewControlResponse extends ViewRecord
 {
     protected static string $resource = ControlResponseResource::class;
 
-    protected function getHeaderActions(): array
+    public function getTitle(): string
     {
-        return [
-            EditAction::make(),
-        ];
+        return 'Просмотр контроля';
+    }
+
+    public function getBreadcrumb(): string
+    {
+        return 'Просмотр';
+    }
+
+    public function getSubheading(): ?string
+    {
+        $cleaner = $this->record->cleaner?->name ?? '—';
+        $apartment = $this->record->apartment?->name ?? '—';
+        $date = $this->record->inspection_date?->format('d.m.Y') ?? '—';
+
+        return "{$cleaner} · {$apartment} · {$date}";
     }
 }
