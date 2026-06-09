@@ -13,33 +13,12 @@ class ControlResponseInfolist
     {
         return $schema
             ->components([
-                Section::make('Основная информация')
-                    ->columns(3)
+                Section::make('')
                     ->schema([
-                        TextEntry::make('cleaner.name')
-                            ->label('Имя'),
-
-                        TextEntry::make('result_zone_label')
-                            ->label('Цвет')
-                            ->badge()
-                            ->color(fn (ControlResponse $record): string => $record->result_zone_color),
-
-                        TextEntry::make('inspection_date')
-                            ->label('Дата контроля')
-                            ->date('d.m.Y'),
-
-                        TextEntry::make('apartment.name')
-                            ->label('Квартира'),
-
-                        TextEntry::make('supervisor.name')
-                            ->label('Кто проверил'),
-
-                        TextEntry::make('control.name')
-                            ->label('Форма'),
-
-                        TextEntry::make('comment')
-                            ->label('Комментарий')
-                            ->placeholder('—')
+                        TextEntry::make('summary_rendered')
+                            ->label('')
+                            ->state(fn (ControlResponse $record) => self::renderSummary($record))
+                            ->html()
                             ->columnSpanFull(),
                     ]),
 
@@ -52,6 +31,180 @@ class ControlResponseInfolist
                             ->columnSpanFull(),
                     ]),
             ]);
+    }
+
+    protected static function renderSummary(ControlResponse $record): string
+    {
+        $zoneColor = match ($record->result_zone) {
+            'green' => ['bg' => '#f0fdf4', 'border' => '#bbf7d0', 'text' => '#166534'],
+            'yellow' => ['bg' => '#fffbeb', 'border' => '#fde68a', 'text' => '#92400e'],
+            'red' => ['bg' => '#fff1f2', 'border' => '#fecaca', 'text' => '#991b1b'],
+            default => ['bg' => '#f9fafb', 'border' => '#e5e7eb', 'text' => '#374151'],
+        };
+
+        $name = e($record->cleaner?->name ?? '—');
+        $apartment = e($record->apartment?->name ?? '—');
+        $supervisor = e($record->supervisor?->name ?? '—');
+        $control = e($record->control?->name ?? '—');
+        $date = e($record->inspection_date?->format('d.m.Y') ?? '—');
+        $zone = e($record->result_zone_label ?? 'Без оценки');
+        $reason = e($record->result_zone_reason ?? '—');
+        $errors = (int) ($record->errors_count ?? 0);
+        $penalty = (int) ($record->penalty_points ?? 0);
+        $comment = trim((string) ($record->comment ?? ''));
+
+        $html = '
+            <div style="
+                border:1px solid ' . $zoneColor['border'] . ';
+                background:' . $zoneColor['bg'] . ';
+                border-radius:24px;
+                padding:18px;
+                display:flex;
+                flex-direction:column;
+                gap:16px;
+            ">
+                <div style="
+                    display:flex;
+                    justify-content:space-between;
+                    align-items:flex-start;
+                    gap:16px;
+                    flex-wrap:wrap;
+                ">
+                    <div>
+                        <div style="
+                            color:#6b7280;
+                            font-size:13px;
+                            font-weight:700;
+                            margin-bottom:4px;
+                        ">
+                            Контроль
+                        </div>
+
+                        <div style="
+                            color:#111827;
+                            font-size:24px;
+                            font-weight:900;
+                            line-height:1.15;
+                        ">
+                            ' . $name . '
+                        </div>
+
+                        <div style="
+                            color:#6b7280;
+                            font-size:14px;
+                            margin-top:6px;
+                        ">
+                            ' . $apartment . ' · ' . $date . '
+                        </div>
+                    </div>
+
+                    <div style="
+                        background:' . $zoneColor['text'] . ';
+                        color:white;
+                        border-radius:999px;
+                        padding:8px 12px;
+                        font-size:13px;
+                        font-weight:900;
+                        white-space:nowrap;
+                    ">
+                        ' . $zone . '
+                    </div>
+                </div>
+
+                <div style="
+                    display:grid;
+                    grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+                    gap:10px;
+                ">
+                    ' . self::summaryItem('Ошибок', (string) $errors) . '
+                    ' . self::summaryItem('Штраф', (string) $penalty) . '
+                    ' . self::summaryItem('Проверил', $supervisor) . '
+                    ' . self::summaryItem('Форма', $control) . '
+                </div>
+
+                <div style="
+                    border-top:1px solid ' . $zoneColor['border'] . ';
+                    padding-top:14px;
+                ">
+                    <div style="
+                        color:' . $zoneColor['text'] . ';
+                        font-size:13px;
+                        font-weight:800;
+                        margin-bottom:4px;
+                    ">
+                        Причина зоны
+                    </div>
+
+                    <div style="
+                        color:#111827;
+                        font-size:15px;
+                        font-weight:700;
+                        line-height:1.4;
+                    ">
+                        ' . $reason . '
+                    </div>
+                </div>
+        ';
+
+        if ($comment !== '') {
+            $html .= '
+                <div style="
+                    border-top:1px solid ' . $zoneColor['border'] . ';
+                    padding-top:14px;
+                ">
+                    <div style="
+                        color:#6b7280;
+                        font-size:13px;
+                        font-weight:800;
+                        margin-bottom:4px;
+                    ">
+                        Комментарий
+                    </div>
+
+                    <div style="
+                        color:#111827;
+                        font-size:15px;
+                        line-height:1.45;
+                    ">
+                        ' . nl2br(e($comment)) . '
+                    </div>
+                </div>
+            ';
+        }
+
+        $html .= '</div>';
+
+        return $html;
+    }
+
+    protected static function summaryItem(string $label, string $value): string
+    {
+        return '
+            <div style="
+                background:rgba(255,255,255,0.75);
+                border:1px solid rgba(229,231,235,0.8);
+                border-radius:16px;
+                padding:12px;
+            ">
+                <div style="
+                    color:#6b7280;
+                    font-size:12px;
+                    font-weight:800;
+                    margin-bottom:4px;
+                ">
+                    ' . e($label) . '
+                </div>
+
+                <div style="
+                    color:#111827;
+                    font-size:15px;
+                    font-weight:800;
+                    line-height:1.3;
+                ">
+                    ' . e($value) . '
+                </div>
+            </div>
+        ';
     }
 
     protected static function renderErrors(ControlResponse $record): string
@@ -159,7 +312,7 @@ class ControlResponseInfolist
                         ">
                             ' . $answer . '
                         </div>
-                    ';
+            ';
 
             if (! empty($media)) {
                 $html .= '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;">';
