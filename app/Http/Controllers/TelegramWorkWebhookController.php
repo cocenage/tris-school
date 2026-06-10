@@ -274,94 +274,105 @@ class TelegramWorkWebhookController extends Controller
         ]);
     }
 
-    private function editDayOffRequestMessage(
-        array $callbackQuery,
-        DayOffRequest $dayOffRequest,
-        string $moderatorText
-    ): void {
-        $chatId = data_get($callbackQuery, 'message.chat.id');
-        $messageId = data_get($callbackQuery, 'message.message_id');
+private function editDayOffRequestMessage(
+    array $callbackQuery,
+    DayOffRequest $dayOffRequest,
+    string $moderatorText
+): void {
+    $chatId = data_get($callbackQuery, 'message.chat.id');
+    $messageId = data_get($callbackQuery, 'message.message_id');
 
-        if (! $chatId || ! $messageId) {
-            return;
-        }
+    if (! $chatId || ! $messageId) {
+        return;
+    }
 
-        $user = $dayOffRequest->user;
+    $user = $dayOffRequest->user;
 
-        Carbon::setLocale('ru');
+    Carbon::setLocale('ru');
 
-        $name = $user?->name ?: 'Неизвестный пользователь';
+    $name = $user?->name ?: 'Неизвестный пользователь';
 
-        $dipText = isset($user?->dip)
-            ? ($user->dip ? 'dip' : 'no dip')
-            : '—';
+    $employeeText = $user?->telegram_id
+        ? '<a href="tg://user?id=' . e((string) $user->telegram_id) . '">' . e($name) . '</a>'
+        : e($name);
 
-        $message = [];
-        $message[] = '📌 <b>Запрос на выходной</b>';
-        $message[] = '';
-        $message[] = '👤 <b>Сотрудник:</b> ' . e($name);
-        $message[] = '🏷️ <b>Dip:</b> ' . e($dipText);
-        $message[] = '';
-        $message[] = '📅 <b>Даты:</b>';
+    $dipText = isset($user?->dip)
+        ? ($user->dip ? 'dip' : 'no dip')
+        : '—';
 
-        foreach ($dayOffRequest->days->sortBy('date') as $day) {
-            $icon = match ($day->status) {
-                'approved' => '✅',
-                'rejected' => '❌',
-                default => '⏳',
-            };
+    $sortedDays = $dayOffRequest->days->sortBy('date');
 
-            $date = Carbon::parse($day->date)->translatedFormat('d.m.Y (l)');
+    $message = [];
+    $message[] = '📌 <b>Запрос на выходной</b>';
+    $message[] = '';
+    $message[] = '👤 <b>Сотрудник:</b> ' . $employeeText;
+    $message[] = '🏷️ <b>Dip:</b> ' . e($dipText);
+    $message[] = '';
+    $message[] = '📅 <b>Даты:</b>';
 
-            $message[] = "{$icon} <b>{$date}</b>";
-        }
+    foreach ($sortedDays as $day) {
+        $icon = match ($day->status) {
+            'approved' => '✅',
+            'rejected' => '❌',
+            default => '⏳',
+        };
 
+        $date = Carbon::parse($day->date)->translatedFormat('d.m.Y (l)');
+
+        $message[] = "{$icon} <b>{$date}</b>";
+    }
+
+    if (filled($dayOffRequest->reason)) {
         $message[] = '';
         $message[] = '💬 <b>Причина:</b>';
         $message[] = '<blockquote>' . e(trim((string) $dayOffRequest->reason)) . '</blockquote>';
-        $message[] = '';
-        $message[] = '<b>Последнее решение:</b> ' . e($moderatorText);
-        $message[] = '<b>Время:</b> ' . now()->format('d.m.Y H:i');
+    }
 
-        $keyboard = [];
+    $message[] = '';
+    $message[] = '<b>Последнее решение:</b> ' . e($moderatorText);
+    $message[] = '<b>Время:</b> ' . now()->format('d.m.Y H:i');
 
-        foreach ($dayOffRequest->days->sortBy('date') as $day) {
-            if ($day->status !== 'pending') {
-                continue;
-            }
+    $keyboard = [];
 
-            $date = Carbon::parse($day->date)->format('d.m');
-
-            $keyboard[] = [
-                [
-                    'text' => "✅ {$date}",
-                 'callback_data' => 'dayoffday:approve:' . $day->id
-                ],
-                [
-                    'text' => "❌ {$date}",
-                    'callback_data' => 'dayoffday:reject:' . $day->id,
-                ],
-            ];
+    foreach ($sortedDays as $day) {
+        if ($day->status !== 'pending') {
+            continue;
         }
+
+        $date = Carbon::parse($day->date)->format('d.m');
 
         $keyboard[] = [
             [
-                'text' => 'Открыть сотрудника',
-                'url' => 'https://t.me/TrisAcademyBot?start=user_' . $dayOffRequest->user_id,
+                'text' => "✅ {$date}",
+                'callback_data' => 'dayoffday:approve:' . $day->id,
+            ],
+            [
+                'text' => "❌ {$date}",
+                'callback_data' => 'dayoffday:reject:' . $day->id,
             ],
         ];
-
-        Http::post($this->telegramApiUrl('editMessageText'), [
-            'chat_id' => $chatId,
-            'message_id' => $messageId,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-            'text' => implode("\n", $message),
-            'reply_markup' => [
-                'inline_keyboard' => $keyboard,
-            ],
-        ]);
     }
+
+    $payload = [
+        'chat_id' => $chatId,
+        'message_id' => $messageId,
+        'parse_mode' => 'HTML',
+        'disable_web_page_preview' => true,
+        'text' => implode("\n", $message),
+    ];
+
+    if (! empty($keyboard)) {
+        $payload['reply_markup'] = [
+            'inline_keyboard' => $keyboard,
+        ];
+    } else {
+        $payload['reply_markup'] = [
+            'inline_keyboard' => [],
+        ];
+    }
+
+    Http::post($this->telegramApiUrl('editMessageText'), $payload);
+}
 
     private function answerCallback(array $callbackQuery, string $text): void
     {

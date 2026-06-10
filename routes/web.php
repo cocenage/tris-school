@@ -102,6 +102,9 @@ Route::post('/telegram/analytics-webhook/{secret}', TelegramAnalyticsWebhookCont
     ])
     ->name('telegram.analytics-webhook');
 
+Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
+    ->name('telegram.work-webhook');
+
 Route::fallback(function () {
     if (!Auth::check()) {
         return redirect()->route('landing.page');
@@ -117,5 +120,3 @@ Route::fallback(function () {
 
 });
 
-Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
-    ->name('telegram.work-webhook');
