@@ -3,7 +3,13 @@
 namespace App\Filament\Resources\ControlResponses\Tables;
 
 use App\Models\ControlResponse;
+use App\Models\RewardProgram;
+use App\Models\RewardProgramPointEvent;
+use Filament\Actions\Action;
 use Filament\Actions\ViewAction;
+use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
@@ -100,6 +106,83 @@ class ControlResponsesTable
             ))
             ->actions([
                 ViewAction::make(),
+
+                Action::make('addRewardPoints')
+                    ->label('Баллы')
+                    ->icon('heroicon-o-gift')
+                    ->color('success')
+                    ->schema([
+                        Select::make('reward_program_id')
+                            ->label('Программа')
+                            ->options(fn () => RewardProgram::query()
+                                ->where('is_active', true)
+                                ->orderByDesc('starts_at')
+                                ->pluck('name', 'id'))
+                            ->searchable()
+                            ->required(),
+
+                        TextInput::make('points')
+                            ->label('Баллы')
+                            ->numeric()
+                            ->required()
+                            ->default(fn (ControlResponse $record) => match ($record->result_zone) {
+                                'green' => 1,
+                                'yellow' => 0,
+                                'red' => 0,
+                                default => 0,
+                            }),
+
+                        TextInput::make('reason')
+                            ->label('Причина')
+                            ->required()
+                            ->default(fn (ControlResponse $record) => match ($record->result_zone) {
+                                'green' => 'Зелёный контроль качества',
+                                'yellow' => 'Контроль качества с замечаниями',
+                                'red' => 'Красная зона на контроле',
+                                default => 'Контроль качества',
+                            })
+                            ->maxLength(255),
+
+                        DatePicker::make('event_date')
+                            ->label('Дата')
+                            ->default(now())
+                            ->required(),
+                    ])
+                   ->action(function (ControlResponse $record, array $data): void {
+    $exists = RewardProgramPointEvent::query()
+        ->where('reward_program_id', $data['reward_program_id'])
+        ->where('user_id', $record->cleaner_id)
+        ->where('source_type', ControlResponse::class)
+        ->where('source_id', $record->id)
+        ->exists();
+
+    if ($exists) {
+        \Filament\Notifications\Notification::make()
+            ->title('Баллы уже начислены')
+            ->body('По этому контролю уже есть начисление в выбранной программе.')
+            ->warning()
+            ->send();
+
+        return;
+    }
+
+    RewardProgramPointEvent::create([
+        'reward_program_id' => $data['reward_program_id'],
+        'user_id' => $record->cleaner_id,
+        'created_by' => auth()->id(),
+        'points' => (int) $data['points'],
+        'reason' => $data['reason'],
+        'event_date' => $data['event_date'],
+        'source_type' => ControlResponse::class,
+        'source_id' => $record->id,
+    ]);
+
+    \Filament\Notifications\Notification::make()
+        ->title('Баллы начислены')
+        ->success()
+        ->send();
+})
+                    ->visible(fn (ControlResponse $record): bool => filled($record->cleaner_id)),
             ]);
     }
 }

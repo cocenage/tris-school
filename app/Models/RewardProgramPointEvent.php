@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 class RewardProgramPointEvent extends Model
 {
@@ -36,5 +37,10 @@ class RewardProgramPointEvent extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function source(): MorphTo
+    {
+        return $this->morphTo();
     }
 }

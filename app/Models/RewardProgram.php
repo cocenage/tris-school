@@ -35,5 +35,13 @@ class RewardProgram extends Model
             ->sum('points');
     }
 
-    
+    public function leaderboard()
+{
+    return $this->pointEvents()
+        ->selectRaw('user_id, SUM(points) as total_points')
+        ->with('user')
+        ->groupBy('user_id')
+        ->orderByDesc('total_points')
+        ->get();
+}
 }

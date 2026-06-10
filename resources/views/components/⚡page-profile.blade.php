@@ -354,19 +354,19 @@ $this->profileRequired = false;
 @endphp
 
 @if($rewardProgram && $rewardTargetPoints)
-    <div class="mt-[15px] rounded-[30px] bg-[#F2F2F2] p-[18px]">
-        <div class="flex items-start justify-between gap-[12px]">
+    <div class="mt-[15px] mb-[20px] rounded-[30px] bg-[#F8F7F5] p-[15px]">
+        <div class="flex items-start justify-between gap-[10px]">
             <div>
                 <div class="text-[13px] text-black/45">
                     Бонусная программа
                 </div>
 
-                <div class="mt-[4px] text-[20px] font-semibold text-[#111]">
-                    🌴 {{ $rewardProgram->name }}
+                <div class="mt-[4px] text-[20px]  text-[#111]">
+                   {{ $rewardProgram->name }}
                 </div>
             </div>
 
-            <div class="rounded-full bg-white px-[12px] py-[7px] text-[13px] font-semibold">
+            <div class="rounded-full bg-white px-[12px] py-[7px] text-[13px] ">
                 {{ $rewardProgress }}%
             </div>
         </div>
@@ -396,7 +396,7 @@ $this->profileRequired = false;
                     Осталось
                 </div>
 
-                <div class="mt-[3px] text-[16px] font-semibold text-[#111]">
+                <div class="mt-[3px] text-[16px]  text-[#111]">
                     {{ $rewardLeft }} баллов
                 </div>
             </div>
@@ -406,7 +406,7 @@ $this->profileRequired = false;
                     Следующая цель
                 </div>
 
-                <div class="mt-[3px] text-[14px] font-semibold leading-[1.25] text-[#111]">
+                <div class="mt-[3px] text-[14px]  leading-[1.25] text-[#111]">
                     {{ $rewardTargetName }}
                 </div>
             </div>
@@ -596,7 +596,7 @@ $this->profileRequired = false;
 <x-ui.bottom-sheet x-model="profileSheetOpen">
     <form wire:submit="saveProfile" class="p-[20px]">
         <div class="mb-[20px]">
-            <h2 class="text-[24px] font-semibold leading-none tracking-[-0.03em]">
+            <h2 class="text-[24px]  leading-none tracking-[-0.03em]">
                 Данные профиля
             </h2>
 

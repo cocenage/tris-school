@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\RewardPrograms\RelationManagers;
 
+use App\Models\ControlResponse;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -64,6 +65,16 @@ class PointEventsRelationManager extends RelationManager
                     ->label('Причина')
                     ->wrap()
                     ->searchable(),
+
+                TextColumn::make('source_label')
+                    ->label('Источник')
+                    ->state(function ($record): string {
+                        if ($record->source_type === ControlResponse::class && $record->source_id) {
+                            return 'Контроль #' . $record->source_id;
+                        }
+
+                        return 'Вручную';
+                    }),
 
                 TextColumn::make('event_date')
                     ->label('Дата')

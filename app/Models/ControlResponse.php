@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class ControlResponse extends Model
 {
@@ -308,4 +309,9 @@ class ControlResponse extends Model
 
         return $label !== '' ? $label : ($custom !== '' ? $custom : '—');
     }
+
+    public function rewardPointEvents(): MorphMany
+{
+    return $this->morphMany(RewardProgramPointEvent::class, 'source');
+}
 }

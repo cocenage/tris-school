@@ -81,4 +81,26 @@ class VacationRequest extends Model
         'status' => $status,
     ]);
 }
+
+public function syncStatusAndNotify(): void
+{
+    $this->loadMissing(['days', 'user']);
+
+    $statuses = $this->days->pluck('status')->unique();
+
+    $status = match (true) {
+        $statuses->count() === 1 && $statuses->first() === 'approved' => 'approved',
+        $statuses->count() === 1 && $statuses->first() === 'rejected' => 'rejected',
+        $statuses->contains('approved') && $statuses->contains('rejected') => 'partially_approved',
+        default => 'pending',
+    };
+
+    $this->forceFill([
+        'status' => $status,
+    ])->save();
+
+    app(\App\Services\Forms\VacationRequestTelegramService::class)
+        ->sendResult($this);
+}
+
 }
