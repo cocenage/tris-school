@@ -311,44 +311,108 @@ $this->profileRequired = false;
     x-on:open-profile-edit.window="$wire.openProfileEdit()"
     class="w-full bg-white p-[15px]"
 >
-<div class="mb-[20px] min-h-[134px] rounded-[35px] bg-[#F8F7F5] p-[20px]">
-    <span class="truncate text-[18px]">
-        Открывайте Tris Academy в одно касание
-    </span>
+@php
+    use App\Models\RewardProgram;
 
-    <p class="mt-[10px] text-[15px] leading-[1.25] text-[#777777]">
-        Добавьте Tris Academy на экран Домой для быстрого доступа
-    </p>
+    $rewardProgram = RewardProgram::query()
+        ->where('is_active', true)
+        ->latest('starts_at')
+        ->first();
 
-<div
-    x-data="{
-        addToHomeScreen() {
-            const tg = window.Telegram?.WebApp;
+    $rewardPoints = 0;
+    $rewardTargetName = null;
+    $rewardTargetPoints = null;
+    $rewardProgress = 0;
+    $rewardLeft = null;
 
-            if (! tg) {
-                alert('Откройте приложение внутри Telegram');
-                return;
-            }
+    if ($rewardProgram) {
+        $rewardPoints = (int) $rewardProgram
+            ->pointEvents()
+            ->where('user_id', auth()->id())
+            ->sum('points');
 
-            if (! tg.isVersionAtLeast?.('8.0')) {
-                tg.showAlert('Обновите Telegram до последней версии');
-                return;
-            }
+        $targets = collect($rewardProgram->targets ?? [])
+            ->map(fn ($points, $name) => [
+                'name' => (string) $name,
+                'points' => (int) $points,
+            ])
+            ->sortBy('points')
+            ->values();
 
-            if (typeof tg.addToHomeScreen !== 'function') {
-                tg.showAlert('На этом устройстве добавление на экран Домой недоступно');
-                return;
-            }
+        $nextTarget = $targets->first(fn ($target) => $rewardPoints < $target['points'])
+            ?? $targets->last();
 
-            tg.addToHomeScreen();
+        if ($nextTarget) {
+            $rewardTargetName = $nextTarget['name'];
+            $rewardTargetPoints = $nextTarget['points'];
+            $rewardLeft = max(0, $rewardTargetPoints - $rewardPoints);
+            $rewardProgress = $rewardTargetPoints > 0
+                ? min(100, (int) round(($rewardPoints / $rewardTargetPoints) * 100))
+                : 0;
         }
-    }"
->
-    <x-ui.button type="button" @click="addToHomeScreen()">
-        Добавить на экран Домой
-    </x-ui.button>
-</div>
-</div>
+    }
+@endphp
+
+@if($rewardProgram && $rewardTargetPoints)
+    <div class="mt-[15px] rounded-[30px] bg-[#F2F2F2] p-[18px]">
+        <div class="flex items-start justify-between gap-[12px]">
+            <div>
+                <div class="text-[13px] text-black/45">
+                    Бонусная программа
+                </div>
+
+                <div class="mt-[4px] text-[20px] font-semibold text-[#111]">
+                    🌴 {{ $rewardProgram->name }}
+                </div>
+            </div>
+
+            <div class="rounded-full bg-white px-[12px] py-[7px] text-[13px] font-semibold">
+                {{ $rewardProgress }}%
+            </div>
+        </div>
+
+        <div class="mt-[16px]">
+            <div class="flex items-end justify-between gap-[10px]">
+                <div class="text-[28px] font-bold leading-none text-[#111]">
+                    {{ $rewardPoints }}
+                </div>
+
+                <div class="text-[14px] text-black/50">
+                    из {{ $rewardTargetPoints }}
+                </div>
+            </div>
+
+            <div class="mt-[10px] h-[10px] overflow-hidden rounded-full bg-white">
+                <div
+                    class="h-full rounded-full bg-[#111]"
+                    style="width: {{ $rewardProgress }}%;"
+                ></div>
+            </div>
+        </div>
+
+        <div class="mt-[14px] grid grid-cols-2 gap-[10px]">
+            <div class="rounded-[20px] bg-white px-[14px] py-[12px]">
+                <div class="text-[12px] text-black/40">
+                    Осталось
+                </div>
+
+                <div class="mt-[3px] text-[16px] font-semibold text-[#111]">
+                    {{ $rewardLeft }} баллов
+                </div>
+            </div>
+
+            <div class="rounded-[20px] bg-white px-[14px] py-[12px]">
+                <div class="text-[12px] text-black/40">
+                    Следующая цель
+                </div>
+
+                <div class="mt-[3px] text-[14px] font-semibold leading-[1.25] text-[#111]">
+                    {{ $rewardTargetName }}
+                </div>
+            </div>
+        </div>
+    </div>
+@endif
 
     <div class="mb-[10px]">
         <span class="text-[16px] opacity-50">

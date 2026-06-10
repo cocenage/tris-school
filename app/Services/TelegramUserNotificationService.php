@@ -36,7 +36,6 @@ class TelegramUserNotificationService
                 '',
                 '<b>Имя:</b> ' . $this->escape($this->userName($user)),
                 '<b>Telegram:</b> ' . $this->escape($this->telegramUsername($user)),
-                '<b>Telegram ID:</b> ' . $this->escape((string) $user->telegram_id),
                 '<b>Статус:</b> ожидает одобрения',
                 '',
                 'Пользователь ждёт подтверждения доступа к сайту.',

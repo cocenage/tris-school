@@ -23,13 +23,15 @@ class UsersTable
             ->recordUrl(fn ($record) => UserResource::getUrl('edit', ['record' => $record]))
 
             ->columns([
-                ImageColumn::make('telegram_avatar_path')
-                    ->label('')
-                    ->disk('public')
-                    ->circular()
-                    ->size(44)
-                    ->defaultImageUrl(asset('images/avatar-placeholder.png'))
-                    ->grow(false),
+               ImageColumn::make('avatar_url')
+    ->label('')
+    ->circular()
+    ->size(44)
+    ->defaultImageUrl(asset('images/avatar-placeholder.png'))
+    ->extraImgAttributes([
+        'class' => 'object-cover',
+    ])
+    ->grow(false),
 
                 TextColumn::make('name')
                     ->label('Пользователь')
