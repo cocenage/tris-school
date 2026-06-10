@@ -489,45 +489,36 @@ protected function sendTelegramNotification(DayOffRequest $request): void
 
     $name = $user?->name ?: 'Неизвестный пользователь';
 
-    $tgRaw = $user?->telegram_username
-        ? ltrim(trim($user->telegram_username), '@')
-        : null;
-
-    $tgUsername = ($tgRaw && preg_match('/^[A-Za-z0-9_]{5,32}$/', $tgRaw))
-        ? $tgRaw
-        : null;
-
-    $userTelegramUrl = $tgUsername
-        ? "https://t.me/{$tgUsername}"
-        : null;
+    $employeeText = $user?->telegram_id
+        ? '<a href="tg://user?id=' . e((string) $user->telegram_id) . '">' . e($name) . '</a>'
+        : e($name);
 
     $dipText = isset($user?->dip)
         ? ($user->dip ? 'dip' : 'no dip')
         : '—';
 
-    $formattedDates = $request->days
-        ->sortBy('date')
-        ->pluck('date')
-        ->map(fn ($date) => Carbon::parse($date)->translatedFormat('d.m.Y (l)'))
-        ->implode("\n• ");
+    $sortedDays = $request->days->sortBy('date');
 
-    $text = "📌 <b>Новый запрос на выходной!</b>\n\n";
+    $formattedDates = $sortedDays
+        ->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))
+        ->map(fn ($date) => '• ' . $date)
+        ->implode("\n");
 
-    if ($userTelegramUrl) {
-        $text .= "👤 <b>Сотрудник:</b> <a href='{$userTelegramUrl}'>" . e($name) . "</a>\n";
-    } else {
-        $text .= "👤 <b>Сотрудник:</b> " . e($name) . "\n";
+    $text = "📌 <b>Новый запрос на выходной</b>\n\n";
+    $text .= "👤 <b>Сотрудник:</b> {$employeeText}\n";
+    $text .= "🏷️ <b>Dip:</b> " . e($dipText) . "\n";
+    $text .= "📅 <b>Даты:</b>\n{$formattedDates}\n\n";
+
+    if (filled($request->reason)) {
+        $text .= "💬 <b>Причина:</b>\n";
+        $text .= "<blockquote>" . e(trim((string) $request->reason)) . "</blockquote>\n\n";
     }
 
-    $text .= "🏷️ <b>Dip:</b> {$dipText}\n";
-    $text .= "📅 <b>Даты:</b>\n• {$formattedDates}\n\n";
-    $text .= "💬 <b>Причина:</b>\n<blockquote>" . e(trim((string) $request->reason)) . "</blockquote>\n\n";
-
-    $text .= "⏳ <b>Статус:</b> ожидает решения\n";
+    $text .= "⏳ <b>Статус:</b> ожидает решения";
 
     $keyboard = [];
 
-    foreach ($request->days->sortBy('date') as $day) {
+    foreach ($sortedDays as $day) {
         $date = Carbon::parse($day->date)->format('d.m');
 
         $keyboard[] = [
@@ -541,13 +532,6 @@ protected function sendTelegramNotification(DayOffRequest $request): void
             ],
         ];
     }
-
-    $keyboard[] = [
-        [
-            'text' => 'Открыть сотрудника',
-            'url' => 'https://t.me/TrisAcademyBot?start=user_' . $request->user_id,
-        ],
-    ];
 
     $payload = [
         'chat_id' => $chatId,
