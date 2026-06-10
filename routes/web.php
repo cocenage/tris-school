@@ -103,6 +103,9 @@ Route::post('/telegram/analytics-webhook/{secret}', TelegramAnalyticsWebhookCont
     ->name('telegram.analytics-webhook');
 
 Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
+    ->withoutMiddleware([
+        \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
+    ])
     ->name('telegram.work-webhook');
 
 Route::fallback(function () {
