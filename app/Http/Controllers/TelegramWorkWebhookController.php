@@ -14,11 +14,20 @@ use Illuminate\Support\Facades\Log;
 
 class TelegramWorkWebhookController extends Controller
 {
+
+
     public function __invoke(
         Request $request,
         string $secret,
         TelegramUpdateIngestService $ingestService
     ) {
+
+Log::info('Telegram work webhook received', [
+    'secret_ok' => $secret === config('services.telegram.work_webhook_secret'),
+    'has_callback_query' => $request->has('callback_query'),
+    'callback_data' => $request->input('callback_query.data'),
+]);
+
         if ($secret !== config('services.telegram.work_webhook_secret')) {
             abort(403);
         }
