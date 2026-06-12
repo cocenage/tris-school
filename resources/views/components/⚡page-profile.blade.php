@@ -312,105 +312,126 @@ $this->profileRequired = false;
     class="w-full bg-white p-[15px]"
 >
 @php
-    use App\Models\RewardProgram;
-
-    $rewardProgram = RewardProgram::query()
-        ->where('is_active', true)
-        ->latest('starts_at')
+    $trisMare = \App\Models\TrisMareSnapshot::query()
+        ->where('user_id', $user->id)
         ->first();
 
-    $rewardPoints = 0;
-    $rewardTargetName = null;
-    $rewardTargetPoints = null;
-    $rewardProgress = 0;
-    $rewardLeft = null;
-
-    if ($rewardProgram) {
-        $rewardPoints = (int) $rewardProgram
-            ->pointEvents()
-            ->where('user_id', auth()->id())
-            ->sum('points');
-
-        $targets = collect($rewardProgram->targets ?? [])
-            ->map(fn ($points, $name) => [
-                'name' => (string) $name,
-                'points' => (int) $points,
-            ])
-            ->sortBy('points')
-            ->values();
-
-        $nextTarget = $targets->first(fn ($target) => $rewardPoints < $target['points'])
-            ?? $targets->last();
-
-        if ($nextTarget) {
-            $rewardTargetName = $nextTarget['name'];
-            $rewardTargetPoints = $nextTarget['points'];
-            $rewardLeft = max(0, $rewardTargetPoints - $rewardPoints);
-            $rewardProgress = $rewardTargetPoints > 0
-                ? min(100, (int) round(($rewardPoints / $rewardTargetPoints) * 100))
-                : 0;
-        }
-    }
+    $dailyHistory = collect($trisMare?->daily_history ?? [])
+        ->take(7);
 @endphp
 
-@if($rewardProgram && $rewardTargetPoints)
-    <div class="mt-[15px] mb-[20px] rounded-[30px] bg-[#F8F7F5] p-[15px]">
-        <div class="flex items-start justify-between gap-[10px]">
+@if($trisMare)
+    <div class="mt-6 rounded-[35px] bg-[#F2F2F2] p-[18px] text-left">
+        <div class="flex items-start justify-between gap-[15px]">
             <div>
-                <div class="text-[13px] text-black/45">
-                    Бонусная программа
+                <div class="text-[13px] opacity-50">
+                    TRIS Mare Progress
                 </div>
 
-                <div class="mt-[4px] text-[20px]  text-[#111]">
-                   {{ $rewardProgram->name }}
+                <div class="mt-[4px] text-[22px] font-semibold">
+                    🌴 TRIS Mare 2026
                 </div>
             </div>
 
-            <div class="rounded-full bg-white px-[12px] py-[7px] text-[13px] ">
-                {{ $rewardProgress }}%
+            <div class="rounded-full bg-white px-[12px] py-[7px] text-[13px] font-semibold">
+                {{ $trisMare->progress_percent }}%
             </div>
         </div>
 
-        <div class="mt-[16px]">
-            <div class="flex items-end justify-between gap-[10px]">
-                <div class="text-[28px] font-bold leading-none text-[#111]">
-                    {{ $rewardPoints }}
+        <div class="mt-[18px]">
+            <div class="flex items-end justify-between">
+                <div class="text-[36px] font-bold leading-none">
+                    {{ $trisMare->total_points }}
                 </div>
 
-                <div class="text-[14px] text-black/50">
-                    из {{ $rewardTargetPoints }}
+                <div class="text-[14px] opacity-50">
+                    из 230
                 </div>
             </div>
 
             <div class="mt-[10px] h-[10px] overflow-hidden rounded-full bg-white">
                 <div
                     class="h-full rounded-full bg-[#111]"
-                    style="width: {{ $rewardProgress }}%;"
+                    style="width: {{ min(100, max(0, $trisMare->progress_percent)) }}%;"
                 ></div>
             </div>
         </div>
 
         <div class="mt-[14px] grid grid-cols-2 gap-[10px]">
-            <div class="rounded-[20px] bg-white px-[14px] py-[12px]">
-                <div class="text-[12px] text-black/40">
-                    Осталось
-                </div>
-
-                <div class="mt-[3px] text-[16px]  text-[#111]">
-                    {{ $rewardLeft }} баллов
+            <div class="rounded-[22px] bg-white p-[13px]">
+                <div class="text-[12px] opacity-40">Рейтинг</div>
+                <div class="mt-[3px] text-[17px] font-semibold">
+                    {{ $trisMare->rating ? $trisMare->rating . ' место' : '—' }}
                 </div>
             </div>
 
-            <div class="rounded-[20px] bg-white px-[14px] py-[12px]">
-                <div class="text-[12px] text-black/40">
-                    Следующая цель
+            <div class="rounded-[22px] bg-white p-[13px]">
+                <div class="text-[12px] opacity-40">Рабочих дней</div>
+                <div class="mt-[3px] text-[17px] font-semibold">
+                    {{ $trisMare->working_days }}
                 </div>
+            </div>
 
-                <div class="mt-[3px] text-[14px]  leading-[1.25] text-[#111]">
-                    {{ $rewardTargetName }}
+            <div class="rounded-[22px] bg-white p-[13px]">
+                <div class="text-[12px] opacity-40">До 230</div>
+                <div class="mt-[3px] text-[17px] font-semibold">
+                    {{ $trisMare->left_to_230 }}
+                </div>
+            </div>
+
+            <div class="rounded-[22px] bg-white p-[13px]">
+                <div class="text-[12px] opacity-40">Всего за день</div>
+                <div class="mt-[3px] text-[17px] font-semibold">
+                    {{ $trisMare->daily_points }}
                 </div>
             </div>
         </div>
+
+        <div class="mt-[10px] rounded-[22px] bg-white p-[13px]">
+            <div class="text-[12px] opacity-40">
+                Следующие цели
+            </div>
+
+            <div class="mt-[3px] text-[14px] font-semibold">
+                До 320: {{ $trisMare->left_to_320 }} · До 400: {{ $trisMare->left_to_400 }}
+            </div>
+        </div>
+
+        @if($dailyHistory->isNotEmpty())
+            <div class="mt-[16px]">
+                <div class="mb-[8px] text-[14px] font-semibold">
+                    Последние начисления
+                </div>
+
+                <div class="flex flex-col gap-[8px]">
+                    @foreach($dailyHistory as $day)
+                        <div class="rounded-[18px] bg-white px-[13px] py-[11px]">
+                            <div class="flex items-center justify-between gap-[10px]">
+                                <div class="text-[13px] opacity-50">
+                                    {{ $day['date'] ?? '—' }}
+                                </div>
+
+                                <div class="text-[15px] font-semibold">
+                                    +{{ $day['points'] ?? 0 }}
+                                </div>
+                            </div>
+
+                            @if(! empty($day['comment']))
+                                <div class="mt-[5px] text-[13px] leading-[1.35] opacity-70">
+                                    {{ $day['comment'] }}
+                                </div>
+                            @endif
+                        </div>
+                    @endforeach
+                </div>
+            </div>
+        @endif
+
+        @if($trisMare->synced_at)
+            <div class="mt-[12px] text-center text-[11px] opacity-40">
+                Обновлено: {{ $trisMare->synced_at->format('d.m.Y H:i') }}
+            </div>
+        @endif
     </div>
 @endif
 
