@@ -493,14 +493,24 @@ $this->profileRequired = false;
         </a>
     </div>
 
-    @if($user->isAdmin())
-        <div class="mb-[10px] pt-[20px]">
-            <span class="text-[16px] opacity-50">
-                Администрирование
-            </span>
-        </div>
+@php
+    $canSeeAdminPanel = $user->isAdmin();
+    $canSeeFinancePanel = $user->isAdmin() || (bool) $user->access_finance;
+    $canSeeEducationPanel = $user->isAdmin() || (bool) $user->access_education;
 
-        <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
+    $hasAnyAdminAccess = $canSeeAdminPanel || $canSeeFinancePanel || $canSeeEducationPanel;
+@endphp
+
+@if($hasAnyAdminAccess)
+    <div class="mb-[10px] pt-[20px]">
+        <span class="text-[16px] opacity-50">
+            Администрирование
+        </span>
+    </div>
+
+    <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
+
+        @if($canSeeAdminPanel)
             <a
                 href="{{ route('page-profile.all-checks') }}"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
@@ -532,42 +542,52 @@ $this->profileRequired = false;
 
                 <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
             </a>
+        @endif
 
-            <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+        @if($canSeeFinancePanel)
+            @if($canSeeAdminPanel)
+                <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+            @endif
 
             <a
                 href="/admin/finance"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
             >
                 <div class="flex min-w-0 items-center gap-4">
-                    <x-heroicon-o-cog-6-tooth class="h-[24px] w-[24px]" />
+                    <x-heroicon-o-banknotes class="h-[24px] w-[24px]" />
 
                     <span class="truncate text-[18px]">
-                        Админ-панель финансы
+                        Финансы
                     </span>
                 </div>
 
                 <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
             </a>
+        @endif
 
-            <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+        @if($canSeeEducationPanel)
+            @if($canSeeAdminPanel || $canSeeFinancePanel)
+                <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+            @endif
 
             <a
                 href="/admin/education"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
             >
                 <div class="flex min-w-0 items-center gap-4">
-                    <x-heroicon-o-cog-6-tooth class="h-[24px] w-[24px]" />
+                    <x-heroicon-o-academic-cap class="h-[24px] w-[24px]" />
 
                     <span class="truncate text-[18px]">
-                        Админ-панель обучения
+                        Обучение
                     </span>
                 </div>
 
                 <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
             </a>
-        </div>
-    @endif
+        @endif
+
+    </div>
+@endif
 
     <div class="mb-[10px] pt-[20px]">
         <span class="text-[16px] opacity-50">

@@ -81,23 +81,13 @@ class VacationRequestForm
                 Section::make('Даты')
                     ->description('При создании можно добавить одну или несколько дат отпуска.')
                     ->schema([
-                        DatePicker::make('start_date')
-    ->label('Дата начала')
-    ->native(false)
-    ->required(),
-
-DatePicker::make('end_date')
-    ->label('Дата окончания')
-    ->native(false)
-    ->required()
-    ->afterOrEqual('start_date'),
                         Repeater::make('days')
                             ->label('Даты')
                             ->relationship('days')
                             ->schema([
                                 DatePicker::make('date')
                                     ->label('Дата')
-                                    ->native(false)
+                          
                                     ->required(),
 
                                 Hidden::make('user_id')
@@ -112,8 +102,7 @@ DatePicker::make('end_date')
                                         'rejected' => 'Отклонено',
                                     ])
                                     ->default('pending')
-                                    ->required()
-                                    ->native(false),
+                                    ->required(),
                             ])
                             ->columns(2)
                             ->defaultItems(1)
