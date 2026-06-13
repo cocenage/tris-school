@@ -9,6 +9,22 @@
             ->orderBy('rating')
             ->get()
         : ($record?->leaderboard() ?? collect());
+
+    $targetPoints = 230;
+
+    $participantsCount = $leaders->count();
+    $totalPoints = $leaders->sum(fn ($item) => (int) $item->total_points);
+    $averagePoints = $participantsCount > 0
+        ? (int) round($totalPoints / $participantsCount)
+        : 0;
+
+    $reached230 = $leaders->filter(fn ($item) => (int) $item->total_points >= 230)->count();
+    $reached320 = $leaders->filter(fn ($item) => (int) $item->total_points >= 320)->count();
+    $reached400 = $leaders->filter(fn ($item) => (int) $item->total_points >= 400)->count();
+
+    $lastSyncedAt = $isTrisMare
+        ? \App\Models\TrisMareSnapshot::query()->max('synced_at')
+        : null;
 @endphp
 
 <x-filament-widgets::widget>
