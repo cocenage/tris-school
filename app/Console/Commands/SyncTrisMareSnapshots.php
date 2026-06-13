@@ -20,7 +20,7 @@ class SyncTrisMareSnapshots extends Command
         $summaryGid = env('TRIS_MARE_SUMMARY_GID');
         $dailyGid = env('TRIS_MARE_DAILY_GID');
 
-        if (! $sheetId || ! $summaryGid || ! $dailyGid) {
+        if (!$sheetId || !$summaryGid || !$dailyGid) {
             $this->error('Не заполнены TRIS_MARE_SHEET_ID / TRIS_MARE_SUMMARY_GID / TRIS_MARE_DAILY_GID');
 
             return self::FAILURE;
@@ -36,7 +36,7 @@ class SyncTrisMareSnapshots extends Command
         foreach ($summaryRows as $row) {
             $employeeId = $this->cell($row, 0); // A: ID сотрудника
 
-            if ($employeeId === '' || ! is_numeric($employeeId)) {
+            if ($employeeId === '' || !is_numeric($employeeId)) {
                 continue;
             }
 
@@ -75,7 +75,14 @@ class SyncTrisMareSnapshots extends Command
             $imported++;
         }
 
-        $this->info("TRIS Mare импортирован. Обновлено: {$imported}");
+        $withoutUserId = collect($summaryRows)
+            ->filter(fn($row) => $this->cell($row, 1) !== '')
+            ->filter(fn($row) => $this->cell($row, 0) === '' || !is_numeric($this->cell($row, 0)))
+            ->count();
+
+        $this->info("TRIS Mare импортирован.");
+        $this->info("Обновлено: {$imported}");
+        $this->info("Без ID сотрудника: {$withoutUserId}");
 
         return self::SUCCESS;
     }
@@ -86,14 +93,14 @@ class SyncTrisMareSnapshots extends Command
 
         $response = Http::timeout(30)->get($url);
 
-        if (! $response->successful()) {
+        if (!$response->successful()) {
             throw new \RuntimeException("Не удалось загрузить CSV gid={$gid}");
         }
 
         $lines = preg_split('/\r\n|\r|\n/', trim($response->body()));
 
         return collect($lines)
-            ->map(fn (string $line) => str_getcsv($line))
+            ->map(fn(string $line) => str_getcsv($line))
             ->values()
             ->all();
     }
@@ -108,7 +115,7 @@ class SyncTrisMareSnapshots extends Command
             $points = $this->intCell($row, 12); // M: Баллы за день
             $comment = $this->cell($row, 13); // N: Комментарий
 
-            if ($employeeId === '' || ! is_numeric($employeeId)) {
+            if ($employeeId === '' || !is_numeric($employeeId)) {
                 continue;
             }
 

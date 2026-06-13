@@ -14,11 +14,10 @@ class TelegramAuthService
             'telegram_id' => $telegramUser['telegram_id'],
         ]);
 
-        $isNew = ! $user->exists;
+        $isNew = !$user->exists;
 
         $firstName = $telegramUser['first_name'] ?? null;
         $lastName = $telegramUser['last_name'] ?? null;
-        $fullName = trim(collect([$firstName, $lastName])->filter()->implode(' '));
 
         $user->telegram_username = $telegramUser['username'] ?? $user->telegram_username;
         $user->telegram_first_name = $firstName ?? $user->telegram_first_name;
@@ -29,23 +28,20 @@ class TelegramAuthService
         $user->last_login_at = now();
 
         if ($isNew) {
-            $user->name = $fullName ?: ('Telegram User '.$telegramUser['telegram_id']);
             $user->role = 'cleaner';
             $user->status = 'pending';
             $user->is_active = true;
             $user->password = Str::password(32);
-        } elseif (blank($user->name) && $fullName !== '') {
-            $user->name = $fullName;
         }
 
         $user->save();
 
         if ($user->status === 'pending') {
-    $notifications = app(TelegramUserNotificationService::class);
+            $notifications = app(TelegramUserNotificationService::class);
 
-    $notifications->accessRequested($user);
-    $notifications->accessPending($user);
-}
+            $notifications->accessRequested($user);
+            $notifications->accessPending($user);
+        }
 
         Auth::login($user, true);
         request()->session()->regenerate();
@@ -55,7 +51,7 @@ class TelegramAuthService
 
     public function markWriteAccessGranted(User $user): void
     {
-        if (! $user->telegram_write_access_granted_at) {
+        if (!$user->telegram_write_access_granted_at) {
             $user->telegram_write_access_granted_at = now();
             $user->save();
         }

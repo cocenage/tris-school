@@ -93,7 +93,7 @@ new class extends Component {
                                 type="text"
                                 wire:model="name"
                                 class="h-[54px] w-full rounded-[22px] border border-[#E7E7E7] bg-[#F8F8F8] px-[16px] text-[16px] outline-none focus:border-[#213259]"
-                                placeholder="Ваше имя"
+                                placeholder="Ваше настоящее имя"
                             >
 
                             @error('name')

@@ -157,6 +157,16 @@ $this->profileRequired = false;
         return 'событий';
     }
 
+public function showTrisMareHelp(): void
+{
+    $this->toast(
+        'info',
+        'Вопрос по баллам?',
+        'Если есть вопросы по баллам, свяжитесь с супервайзером. Данные обновляются после вечерней синхронизации.',
+        6500,
+    );
+}
+
     protected function eventsForDay(Carbon $day): Collection
     {
         $events = collect();
@@ -317,121 +327,170 @@ $this->profileRequired = false;
         ->first();
 
     $dailyHistory = collect($trisMare?->daily_history ?? [])
-        ->take(7);
+        ->take(10);
+
+    $progress = $trisMare
+        ? min(100, max(0, (int) $trisMare->progress_percent))
+        : 0;
 @endphp
 
 @if($trisMare)
-    <div class="mt-6 rounded-[35px] bg-[#F2F2F2] p-[18px] text-left">
-        <div class="flex items-start justify-between gap-[15px]">
+    <div
+        x-data="{ trisMareHistoryOpen: false }"
+        class="mt-6 rounded-[32px] bg-[#F2F2F2] p-[15px] text-left"
+    >
+        <div class="flex items-start justify-between gap-[14px]">
             <div>
-                <div class="text-[13px] opacity-50">
-                    TRIS Mare Progress
+                <div class="text-[12px] text-black/40">
+                    TRIS Mare 2026
                 </div>
 
-                <div class="mt-[4px] text-[22px] font-semibold">
-                    🌴 TRIS Mare 2026
-                </div>
-            </div>
-
-            <div class="rounded-full bg-white px-[12px] py-[7px] text-[13px] font-semibold">
-                {{ $trisMare->progress_percent }}%
-            </div>
-        </div>
-
-        <div class="mt-[18px]">
-            <div class="flex items-end justify-between">
-                <div class="text-[36px] font-bold leading-none">
+                <div class="mt-[4px] text-[28px] font-bold leading-none text-[#111]">
                     {{ $trisMare->total_points }}
-                </div>
-
-                <div class="text-[14px] opacity-50">
-                    из 230
+                    <span class="text-[14px] font-medium text-black/40">/ 230</span>
                 </div>
             </div>
 
-            <div class="mt-[10px] h-[10px] overflow-hidden rounded-full bg-white">
-                <div
-                    class="h-full rounded-full bg-[#111]"
-                    style="width: {{ min(100, max(0, $trisMare->progress_percent)) }}%;"
-                ></div>
+            <div class="rounded-full bg-white px-[11px] py-[7px] text-[12px] font-semibold text-[#111]">
+                {{ $progress }}%
             </div>
         </div>
 
-        <div class="mt-[14px] grid grid-cols-2 gap-[10px]">
-            <div class="rounded-[22px] bg-white p-[13px]">
-                <div class="text-[12px] opacity-40">Рейтинг</div>
-                <div class="mt-[3px] text-[17px] font-semibold">
-                    {{ $trisMare->rating ? $trisMare->rating . ' место' : '—' }}
+        <div class="mt-[14px] h-[8px] overflow-hidden rounded-full bg-white">
+            <div
+                class="h-full rounded-full bg-[#111]"
+                style="width: {{ $progress }}%;"
+            ></div>
+        </div>
+
+        <div class="mt-[14px] grid grid-cols-4 gap-[7px]">
+            <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
+                <div class="text-[10px] text-black/35">Рейтинг</div>
+                <div class="mt-[2px] text-[14px] font-semibold">
+                    {{ $trisMare->rating ? '#' . $trisMare->rating : '—' }}
                 </div>
             </div>
 
-            <div class="rounded-[22px] bg-white p-[13px]">
-                <div class="text-[12px] opacity-40">Рабочих дней</div>
-                <div class="mt-[3px] text-[17px] font-semibold">
+            <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
+                <div class="text-[10px] text-black/35">Дней</div>
+                <div class="mt-[2px] text-[14px] font-semibold">
                     {{ $trisMare->working_days }}
                 </div>
             </div>
 
-            <div class="rounded-[22px] bg-white p-[13px]">
-                <div class="text-[12px] opacity-40">До 230</div>
-                <div class="mt-[3px] text-[17px] font-semibold">
+            <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
+                <div class="text-[10px] text-black/35">До 230</div>
+                <div class="mt-[2px] text-[14px] font-semibold">
                     {{ $trisMare->left_to_230 }}
                 </div>
             </div>
 
-            <div class="rounded-[22px] bg-white p-[13px]">
-                <div class="text-[12px] opacity-40">Всего за день</div>
-                <div class="mt-[3px] text-[17px] font-semibold">
-                    {{ $trisMare->daily_points }}
+            <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
+                <div class="text-[10px] text-black/35">День</div>
+                <div class="mt-[2px] text-[14px] font-semibold">
+                    +{{ $trisMare->daily_points }}
                 </div>
             </div>
         </div>
 
-        <div class="mt-[10px] rounded-[22px] bg-white p-[13px]">
-            <div class="text-[12px] opacity-40">
-                Следующие цели
-            </div>
+        <div class="mt-[12px] flex items-center gap-[8px]">
+            <button
+                type="button"
+                x-on:click="trisMareHistoryOpen = true"
+                class="flex-1 rounded-full bg-[#111] px-[14px] py-[11px] text-[13px] font-semibold text-white"
+            >
+                История начислений
+            </button>
 
-            <div class="mt-[3px] text-[14px] font-semibold">
-                До 320: {{ $trisMare->left_to_320 }} · До 400: {{ $trisMare->left_to_400 }}
-            </div>
+            <button
+                type="button"
+                wire:click="showTrisMareHelp"
+                class="rounded-full bg-white px-[14px] py-[11px] text-[13px] font-semibold text-[#111]"
+            >
+                ?
+            </button>
         </div>
 
-        @if($dailyHistory->isNotEmpty())
-            <div class="mt-[16px]">
-                <div class="mb-[8px] text-[14px] font-semibold">
-                    Последние начисления
-                </div>
+        <div class="mt-[10px] text-center text-[11px] text-black/35">
+            До 320: {{ $trisMare->left_to_320 }} · До 400: {{ $trisMare->left_to_400 }}
 
-                <div class="flex flex-col gap-[8px]">
-                    @foreach($dailyHistory as $day)
-                        <div class="rounded-[18px] bg-white px-[13px] py-[11px]">
-                            <div class="flex items-center justify-between gap-[10px]">
-                                <div class="text-[13px] opacity-50">
-                                    {{ $day['date'] ?? '—' }}
-                                </div>
+            @if($trisMare->synced_at)
+                · обновлено {{ $trisMare->synced_at->format('d.m H:i') }}
+            @endif
+        </div>
 
-                                <div class="text-[15px] font-semibold">
-                                    +{{ $day['points'] ?? 0 }}
-                                </div>
+        <div
+            x-cloak
+            x-show="trisMareHistoryOpen"
+            x-transition.opacity
+            class="fixed inset-0 z-[100] bg-black/35"
+            x-on:click.self="trisMareHistoryOpen = false"
+        >
+            <div
+                x-show="trisMareHistoryOpen"
+                x-transition:enter="transition ease-out duration-200"
+                x-transition:enter-start="translate-y-full"
+                x-transition:enter-end="translate-y-0"
+                x-transition:leave="transition ease-in duration-150"
+                x-transition:leave-start="translate-y-0"
+                x-transition:leave-end="translate-y-full"
+                class="absolute bottom-0 left-1/2 max-h-[75dvh] w-full max-w-[768px] -translate-x-1/2 overflow-hidden rounded-t-[34px] bg-white"
+            >
+                <div class="sticky top-0 bg-white px-[20px] pb-[12px] pt-[16px]">
+                    <div class="mx-auto mb-[14px] h-[4px] w-[44px] rounded-full bg-black/15"></div>
+
+                    <div class="flex items-center justify-between gap-[12px]">
+                        <div>
+                            <div class="text-[20px] font-semibold">
+                                История начислений
                             </div>
 
-                            @if(! empty($day['comment']))
-                                <div class="mt-[5px] text-[13px] leading-[1.35] opacity-70">
-                                    {{ $day['comment'] }}
-                                </div>
-                            @endif
+                            <div class="mt-[2px] text-[12px] text-black/40">
+                                Последние {{ $dailyHistory->count() }} дней
+                            </div>
                         </div>
-                    @endforeach
+
+                        <button
+                            type="button"
+                            x-on:click="trisMareHistoryOpen = false"
+                            class="rounded-full bg-[#F2F2F2] px-[13px] py-[9px] text-[13px] font-semibold"
+                        >
+                            Закрыть
+                        </button>
+                    </div>
+                </div>
+
+                <div class="max-h-[58dvh] overflow-y-auto px-[20px] pb-[24px]">
+                    @if($dailyHistory->isNotEmpty())
+                        <div class="flex flex-col gap-[8px]">
+                            @foreach($dailyHistory as $day)
+                                <div class="rounded-[20px] bg-[#F2F2F2] px-[14px] py-[12px]">
+                                    <div class="flex items-center justify-between gap-[12px]">
+                                        <div class="text-[13px] font-medium text-black/45">
+                                            {{ $day['date'] ?? '—' }}
+                                        </div>
+
+                                        <div class="text-[16px] font-bold text-[#111]">
+                                            +{{ $day['points'] ?? 0 }}
+                                        </div>
+                                    </div>
+
+                                    @if(! empty($day['comment']))
+                                        <div class="mt-[6px] text-[13px] leading-[1.35] text-black/65">
+                                            {{ $day['comment'] }}
+                                        </div>
+                                    @endif
+                                </div>
+                            @endforeach
+                        </div>
+                    @else
+                        <div class="rounded-[22px] bg-[#F2F2F2] p-[16px] text-[14px] text-black/50">
+                            История начислений пока пустая.
+                        </div>
+                    @endif
                 </div>
             </div>
-        @endif
-
-        @if($trisMare->synced_at)
-            <div class="mt-[12px] text-center text-[11px] opacity-40">
-                Обновлено: {{ $trisMare->synced_at->format('d.m.Y H:i') }}
-            </div>
-        @endif
+        </div>
     </div>
 @endif
 
