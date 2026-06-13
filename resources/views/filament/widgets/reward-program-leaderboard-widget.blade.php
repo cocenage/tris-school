@@ -10,13 +10,9 @@
             ->get()
         : ($record?->leaderboard() ?? collect());
 
-    $targetPoints = 230;
-
     $participantsCount = $leaders->count();
     $totalPoints = $leaders->sum(fn ($item) => (int) $item->total_points);
-    $averagePoints = $participantsCount > 0
-        ? (int) round($totalPoints / $participantsCount)
-        : 0;
+    $averagePoints = $participantsCount > 0 ? (int) round($totalPoints / $participantsCount) : 0;
 
     $reached230 = $leaders->filter(fn ($item) => (int) $item->total_points >= 230)->count();
     $reached320 = $leaders->filter(fn ($item) => (int) $item->total_points >= 320)->count();
@@ -30,7 +26,11 @@
 <x-filament-widgets::widget>
     <x-filament::section>
         <x-slot name="heading">
-            {{ $isTrisMare ? 'TRIS Mare — рейтинг из Google Sheets' : 'Рейтинг участников' }}
+            TRIS Mare 2026
+        </x-slot>
+
+        <x-slot name="description">
+            Рейтинг участников из Google Sheets
         </x-slot>
 
         @if($leaders->isEmpty())
@@ -38,100 +38,135 @@
                 Пока нет данных.
             </div>
         @else
-            @if($isTrisMare)
-                <div class="mb-4 grid gap-3 md:grid-cols-3">
-                    <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
-                        <div class="text-sm text-gray-500">Участников</div>
-                        <div class="mt-1 text-2xl font-bold">{{ $participantsCount }}</div>
+            <div class="grid gap-3 md:grid-cols-6">
+                <div class="rounded-xl bg-primary-50 p-4 dark:bg-primary-950">
+                    <div class="text-xs font-medium text-primary-600 dark:text-primary-400">
+                        Участников
                     </div>
-
-                    <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
-                        <div class="text-sm text-gray-500">Всего баллов</div>
-                        <div class="mt-1 text-2xl font-bold">{{ $totalPoints }}</div>
-                    </div>
-
-                    <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
-                        <div class="text-sm text-gray-500">Средний балл</div>
-                        <div class="mt-1 text-2xl font-bold">{{ $averagePoints }}</div>
+                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
+                        {{ $participantsCount }}
                     </div>
                 </div>
 
-                <div class="mb-4 grid gap-3 md:grid-cols-3">
-                    <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
-                        <div class="text-sm text-gray-500">230+</div>
-                        <div class="mt-1 text-xl font-bold">{{ $reached230 }}</div>
+                <div class="rounded-xl bg-gray-50 p-4 dark:bg-gray-900">
+                    <div class="text-xs font-medium text-gray-500">
+                        Всего баллов
                     </div>
-
-                    <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
-                        <div class="text-sm text-gray-500">320+</div>
-                        <div class="mt-1 text-xl font-bold">{{ $reached320 }}</div>
-                    </div>
-
-                    <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
-                        <div class="text-sm text-gray-500">400+</div>
-                        <div class="mt-1 text-xl font-bold">{{ $reached400 }}</div>
+                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
+                        {{ $totalPoints }}
                     </div>
                 </div>
 
-                <div class="mb-4 rounded-xl bg-gray-50 px-4 py-3 text-sm text-gray-500 dark:bg-gray-900">
-                    Обновлено:
-                    {{ $lastSyncedAt ? \Carbon\Carbon::parse($lastSyncedAt)->format('d.m.Y H:i') : '—' }}
+                <div class="rounded-xl bg-gray-50 p-4 dark:bg-gray-900">
+                    <div class="text-xs font-medium text-gray-500">
+                        Средний
+                    </div>
+                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
+                        {{ $averagePoints }}
+                    </div>
                 </div>
-            @endif
 
-            <div class="space-y-3">
-                @foreach($leaders as $index => $leader)
-                    @php
-                        if ($isTrisMare) {
-                            $name = $leader->employee_name;
-                            $points = (int) $leader->total_points;
-                            $rating = $leader->rating ?: ($index + 1);
-                            $left = max(0, 230 - $points);
-                            $progress = min(100, max(0, (int) $leader->progress_percent));
-                            $sub = 'До 230: ' . $left . ' · дней: ' . (int) $leader->working_days;
-                        } else {
-                            $name = $leader->user?->name ?? '—';
-                            $points = (int) $leader->total_points;
-                            $rating = $index + 1;
-                            $left = max(0, $targetPoints - $points);
-                            $progress = $targetPoints > 0
-                                ? min(100, (int) round(($points / $targetPoints) * 100))
-                                : 0;
-                            $sub = 'Осталось до первой цели: ' . $left . ' баллов';
-                        }
-                    @endphp
+                <div class="rounded-xl bg-success-50 p-4 dark:bg-success-950">
+                    <div class="text-xs font-medium text-success-600 dark:text-success-400">
+                        230+
+                    </div>
+                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
+                        {{ $reached230 }}
+                    </div>
+                </div>
 
-                    <div class="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
-                        <div class="flex items-center justify-between gap-4">
-                            <div>
-                                <div class="font-semibold">
-                                    {{ $rating }}. {{ $name }}
-                                </div>
+                <div class="rounded-xl bg-warning-50 p-4 dark:bg-warning-950">
+                    <div class="text-xs font-medium text-warning-600 dark:text-warning-400">
+                        320+
+                    </div>
+                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
+                        {{ $reached320 }}
+                    </div>
+                </div>
 
-                                <div class="mt-1 text-sm text-gray-500">
-                                    {{ $sub }}
-                                </div>
-                            </div>
+                <div class="rounded-xl bg-danger-50 p-4 dark:bg-danger-950">
+                    <div class="text-xs font-medium text-danger-600 dark:text-danger-400">
+                        400+
+                    </div>
+                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
+                        {{ $reached400 }}
+                    </div>
+                </div>
+            </div>
 
-                            <div class="text-right">
-                                <div class="text-xl font-bold">
+            <div class="mt-4 overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+                        <tr>
+                            <th class="px-4 py-3">#</th>
+                            <th class="px-4 py-3">Сотрудник</th>
+                            <th class="px-4 py-3 text-right">Баллы</th>
+                            <th class="px-4 py-3 text-right">До 230</th>
+                            <th class="px-4 py-3 text-right">Дней</th>
+                            <th class="px-4 py-3">Прогресс</th>
+                        </tr>
+                    </thead>
+
+                    <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+                        @foreach($leaders as $index => $leader)
+                            @php
+                                $rating = $leader->rating ?: ($index + 1);
+                                $points = (int) $leader->total_points;
+                                $left = max(0, 230 - $points);
+                                $progress = min(100, max(0, (int) $leader->progress_percent));
+
+                                $rowClass = match (true) {
+                                    $rating === 1 => 'bg-yellow-50/70 dark:bg-yellow-950/20',
+                                    $rating === 2 => 'bg-gray-50/80 dark:bg-gray-900/60',
+                                    $rating === 3 => 'bg-orange-50/60 dark:bg-orange-950/20',
+                                    default => 'bg-white dark:bg-gray-950',
+                                };
+                            @endphp
+
+                            <tr class="{{ $rowClass }}">
+                                <td class="px-4 py-3 font-semibold text-gray-500">
+                                    {{ $rating }}
+                                </td>
+
+                                <td class="px-4 py-3 font-medium text-gray-950 dark:text-white">
+                                    {{ $leader->employee_name }}
+                                </td>
+
+                                <td class="px-4 py-3 text-right font-bold text-gray-950 dark:text-white">
                                     {{ $points }}
-                                </div>
+                                </td>
 
-                                <div class="text-xs text-gray-500">
-                                    баллов
-                                </div>
-                            </div>
-                        </div>
+                                <td class="px-4 py-3 text-right text-gray-500">
+                                    {{ $left }}
+                                </td>
 
-                        <div class="mt-3 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
-                            <div
-                                class="h-full rounded-full bg-primary-600"
-                                style="width: {{ $progress }}%;"
-                            ></div>
-                        </div>
-                    </div>
-                @endforeach
+                                <td class="px-4 py-3 text-right text-gray-500">
+                                    {{ (int) $leader->working_days }}
+                                </td>
+
+                                <td class="px-4 py-3">
+                                    <div class="flex items-center gap-2">
+                                        <div class="h-2 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
+                                            <div
+                                                class="h-full rounded-full bg-primary-600"
+                                                style="width: {{ $progress }}%;"
+                                            ></div>
+                                        </div>
+
+                                        <div class="w-10 text-right text-xs text-gray-500">
+                                            {{ $progress }}%
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="mt-3 text-right text-xs text-gray-500">
+                Обновлено:
+                {{ $lastSyncedAt ? \Carbon\Carbon::parse($lastSyncedAt)->format('d.m.Y H:i') : '—' }}
             </div>
         @endif
     </x-filament::section>

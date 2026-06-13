@@ -364,13 +364,7 @@ public function showTrisMareHelp(): void
         </div>
 
         <div class="mt-[14px] grid grid-cols-4 gap-[7px]">
-            <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
-                <div class="text-[10px] text-black/35">Рейтинг</div>
-                <div class="mt-[2px] text-[14px] font-semibold">
-                    {{ $trisMare->rating ? '#' . $trisMare->rating : '—' }}
-                </div>
-            </div>
-
+    
             <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
                 <div class="text-[10px] text-black/35">Дней</div>
                 <div class="mt-[2px] text-[14px] font-semibold">
@@ -409,14 +403,6 @@ public function showTrisMareHelp(): void
             >
                 ?
             </button>
-        </div>
-
-        <div class="mt-[10px] text-center text-[11px] text-black/35">
-            До 320: {{ $trisMare->left_to_320 }} · До 400: {{ $trisMare->left_to_400 }}
-
-            @if($trisMare->synced_at)
-                · обновлено {{ $trisMare->synced_at->format('d.m H:i') }}
-            @endif
         </div>
 
         <div
