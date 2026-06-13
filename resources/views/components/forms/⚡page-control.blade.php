@@ -332,19 +332,12 @@ protected function getDraftPayload(): array
         return (bool) (($room['is_optional'] ?? false) || ($question['is_optional'] ?? false));
     }
 
-    protected function isQuestionFilled(array $question, array $answer): bool
-    {
-        $type = (string) ($question['answer_type'] ?? 'options');
+protected function isQuestionFilled(array $question, array $answer): bool
+{
+    $custom = trim((string) ($answer['custom'] ?? ''));
 
-        $selected = trim((string) ($answer['selected'] ?? ''));
-        $custom = trim((string) ($answer['custom'] ?? ''));
-
-        return match ($type) {
-            'text' => $custom !== '',
-            'both' => $selected !== '' || $custom !== '',
-            default => $selected !== '',
-        };
-    }
+    return $custom !== '';
+}
 
     public function getRequiredQuestionsTotalProperty(): int
     {
@@ -1214,14 +1207,12 @@ protected function getDraftPayload(): array
                                                             </div>
                                                         @endif
 
-                                                        @if($type === 'text' || $type === 'both')
-                                                            <input
-                                                                type="text"
-                                                                wire:model.blur="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom"
-                                                                placeholder="{{ $type === 'both' ? 'Комментарий / другое' : 'Введите ответ' }}"
-                                                                class="mt-[10px] h-[48px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[15px] text-[14px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
-                                                            >
-                                                        @endif
+                                                      <textarea
+    wire:model.blur="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom"
+    rows="3"
+    placeholder="Текстовый ответ / комментарий"
+    class="mt-[10px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[15px] py-[13px] text-[14px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
+></textarea>
 
                                                         <div class="mt-[12px] rounded-[20px] border border-dashed border-[#CBD5E1] bg-[#F8FAFC] p-[12px]">
                                                             <div class="flex items-center justify-between gap-[10px]">
@@ -1236,14 +1227,13 @@ protected function getDraftPayload(): array
 
                                                                 <label class="shrink-0 cursor-pointer rounded-full bg-[#213259] px-[12px] py-[8px] text-[12px] font-semibold text-white">
                                                                     Добавить
-                                                                    <input
-                                                                        type="file"
-                                                                        multiple
-                                                                        accept="image/*"
-                                                                        capture="environment"
-                                                                        wire:model="photoUploads.{{ $roomIndex }}.{{ $questionIndex }}"
-                                                                        class="hidden"
-                                                                    >
+                                                                   <input
+    type="file"
+    multiple
+    accept="image/*"
+    wire:model="photoUploads.{{ $roomIndex }}.{{ $questionIndex }}"
+    class="hidden"
+>
                                                                 </label>
                                                             </div>
 

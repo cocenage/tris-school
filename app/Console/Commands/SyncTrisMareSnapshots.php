@@ -105,41 +105,41 @@ class SyncTrisMareSnapshots extends Command
             ->all();
     }
 
-    protected function buildDailyHistory(array $rows): array
-    {
-        $history = [];
+protected function buildDailyHistory(array $rows): array
+{
+    $history = [];
 
-        foreach ($rows as $row) {
-            $date = $this->cell($row, 0); // A: Дата
-            $employeeId = $this->cell($row, 3); // D: ID сотрудника
-            $points = $this->intCell($row, 12); // M: Баллы за день
-            $comment = $this->cell($row, 13); // N: Комментарий
+    foreach ($rows as $row) {
+        $date = $this->cell($row, 0); // A: Дата
+        $employeeId = $this->cell($row, 3); // D: ID сотрудника
+        $points = $this->intCell($row, 11); // L: Баллы за день
+        $comment = $this->cell($row, 12); // M: Комментарий
 
-            if ($employeeId === '' || !is_numeric($employeeId)) {
-                continue;
-            }
-
-            if ($date === '') {
-                continue;
-            }
-
-            $history[$employeeId][] = [
-                'date' => $date,
-                'points' => $points,
-                'comment' => $comment,
-            ];
+        if ($employeeId === '' || ! is_numeric($employeeId)) {
+            continue;
         }
 
-        foreach ($history as $employeeId => $items) {
-            $history[$employeeId] = collect($items)
-                ->reverse()
-                ->take(10)
-                ->values()
-                ->all();
+        if ($date === '') {
+            continue;
         }
 
-        return $history;
+        $history[$employeeId][] = [
+            'date' => $date,
+            'points' => $points,
+            'comment' => $comment,
+        ];
     }
+
+    foreach ($history as $employeeId => $items) {
+        $history[$employeeId] = collect($items)
+            ->reverse()
+            ->take(10)
+            ->values()
+            ->all();
+    }
+
+    return $history;
+}
 
     protected function cell(array $row, int $index): string
     {
