@@ -108,6 +108,7 @@ class SyncTrisMareSnapshots extends Command
 protected function buildDailyHistory(array $rows): array
 {
     $history = [];
+    $today = now('Europe/Rome')->startOfDay();
 
     foreach ($rows as $row) {
         $date = $this->cell($row, 0); // A: Дата
@@ -123,16 +124,30 @@ protected function buildDailyHistory(array $rows): array
             continue;
         }
 
+        try {
+            $dateObject = \Carbon\Carbon::createFromFormat('d.m.Y', $date, 'Europe/Rome')->startOfDay();
+        } catch (\Throwable) {
+            continue;
+        }
+
+        if ($dateObject->greaterThan($today)) {
+            continue;
+        }
+
+        if ($points === 0 && ($comment === '' || $comment === '0')) {
+            continue;
+        }
+
         $history[$employeeId][] = [
-            'date' => $date,
+            'date' => $dateObject->format('d.m.Y'),
             'points' => $points,
-            'comment' => $comment,
+            'comment' => $comment === '0' ? '' : $comment,
         ];
     }
 
     foreach ($history as $employeeId => $items) {
         $history[$employeeId] = collect($items)
-            ->reverse()
+            ->sortByDesc('date')
             ->take(10)
             ->values()
             ->all();
