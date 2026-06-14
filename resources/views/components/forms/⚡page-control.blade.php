@@ -6,6 +6,8 @@ use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Component;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
 use Livewire\WithFileUploads;
@@ -20,9 +22,14 @@ new class extends Component {
     public array $photoUploads = [];
     public array $queuedPhotos = [];
     public int $photoLimit = 12;
+    public int $answerTextLimit = 2000;
+
 
     public ?int $openRoomIndex = 0;
     public bool $attemptedSubmit = false;
+    public bool $showOnlyIncomplete = false;
+    public bool $reviewSheetOpen = false;
+    public bool $isSubmitting = false;
 
     public ?int $draftId = null;
     public string $draftState = 'idle';
@@ -44,6 +51,8 @@ new class extends Component {
 
     public function mount(): void
     {
+        abort_unless(Auth::check(), 403);
+
         $this->cleaning_date = now()->toDateString();
         $this->inspection_date = now()->toDateString();
 
@@ -63,6 +72,7 @@ new class extends Component {
 
         $this->autoSaveEnabled = true;
     }
+
 
     protected function buildEmptyAnswers(): void
     {
@@ -119,6 +129,9 @@ new class extends Component {
             'successMessage',
             'openRoomIndex',
             'attemptedSubmit',
+            'showOnlyIncomplete',
+            'reviewSheetOpen',
+            'isSubmitting',
         ], true)) {
             return;
         }
@@ -316,6 +329,9 @@ protected function getDraftPayload(): array
         $this->comment = '';
         $this->openRoomIndex = 0;
         $this->attemptedSubmit = false;
+        $this->showOnlyIncomplete = false;
+        $this->reviewSheetOpen = false;
+        $this->isSubmitting = false;
 
         $this->buildEmptyAnswers();
         $this->photoUploads = [];
@@ -332,12 +348,13 @@ protected function getDraftPayload(): array
         return (bool) (($room['is_optional'] ?? false) || ($question['is_optional'] ?? false));
     }
 
-protected function isQuestionFilled(array $question, array $answer): bool
-{
-    $custom = trim((string) ($answer['custom'] ?? ''));
+    protected function isQuestionFilled(array $question, array $answer): bool
+    {
+        $selected = trim((string) ($answer['selected'] ?? ''));
+        $custom = trim((string) ($answer['custom'] ?? ''));
 
-    return $custom !== '';
-}
+        return $selected !== '' || $custom !== '';
+    }
 
     public function getRequiredQuestionsTotalProperty(): int
     {
@@ -411,7 +428,66 @@ protected function isQuestionFilled(array $question, array $answer): bool
 
     public function getFormButtonTextProperty(): string
     {
-        return $this->formReady ? 'Отправить контроль' : 'Продолжить';
+        return $this->formReady ? 'Проверить и отправить' : 'Продолжить';
+    }
+
+    public function getIncompleteQuestionsProperty(): array
+    {
+        $items = [];
+
+        foreach ($this->rooms as $roomIndex => $room) {
+            foreach (($room['items'] ?? []) as $questionIndex => $question) {
+                if ($this->questionIsOptional($room, $question)) {
+                    continue;
+                }
+
+                $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
+
+                if (! $this->isQuestionFilled($question, $answer)) {
+                    $items[] = [
+                        'room' => $roomIndex,
+                        'question' => $questionIndex,
+                        'room_title' => $room['title'] ?? ('Комната ' . ($roomIndex + 1)),
+                        'question_title' => $question['question'] ?? 'Вопрос',
+                    ];
+                }
+            }
+        }
+
+        return $items;
+    }
+
+    public function getIncompleteQuestionsCountProperty(): int
+    {
+        return count($this->incompleteQuestions);
+    }
+
+    public function getQueuedPhotosTotalProperty(): int
+    {
+        return $this->countQueuedPhotos();
+    }
+
+    public function getReviewSummaryProperty(): array
+    {
+        $cleaner = $this->cleaner_id
+            ? User::query()->whereKey($this->cleaner_id)->value('name')
+            : null;
+
+        $apartment = $this->apartment_id
+            ? Apartment::query()->whereKey($this->apartment_id)->value('name')
+            : null;
+
+        return [
+            'cleaner' => $cleaner ?: 'Не выбран',
+            'apartment' => $apartment ?: 'Не выбрана',
+            'cleaning_date' => $this->cleaning_date ?: 'Не указана',
+            'inspection_date' => $this->inspection_date ?: 'Не указана',
+            'required_done' => $this->requiredQuestionsDone,
+            'required_total' => $this->requiredQuestionsTotal,
+            'incomplete_count' => $this->incompleteQuestionsCount,
+            'photos_total' => $this->queuedPhotosTotal,
+            'progress' => $this->formProgress,
+        ];
     }
 
     public function getRoomProgress(int $roomIndex): array
@@ -477,12 +553,91 @@ protected function isQuestionFilled(array $question, array $answer): bool
         $this->openRoomIndex = $roomIndex;
     }
 
+    public function toggleOnlyIncomplete(): void
+    {
+        $this->showOnlyIncomplete = ! $this->showOnlyIncomplete;
+    }
+
+    public function goToQuestion(int $roomIndex, int $questionIndex): void
+    {
+        $this->openRoomIndex = $roomIndex;
+
+        $this->dispatch(
+            'control-scroll',
+            type: 'question',
+            room: $roomIndex,
+            q: $questionIndex
+        );
+    }
+
+    public function goToNextIncomplete(): void
+    {
+        $next = $this->incompleteQuestions[0] ?? null;
+
+        if (! $next) {
+            $this->dispatch('toast', type: 'success', message: 'Все обязательные вопросы заполнены');
+            return;
+        }
+
+        $this->goToQuestion((int) $next['room'], (int) $next['question']);
+    }
+
     public function setAnswer(int $roomIndex, int $questionIndex, string $value): void
     {
         $this->answers[$roomIndex][$questionIndex]['selected'] = $value;
 
         $this->resetErrorBag("answers.$roomIndex.$questionIndex");
         $this->touchAutosave();
+    }
+
+
+    protected function countQueuedPhotos(): int
+    {
+        $total = 0;
+
+        foreach ($this->queuedPhotos as $questions) {
+            foreach (($questions ?? []) as $files) {
+                $total += is_array($files) ? count($files) : 0;
+            }
+        }
+
+        return $total;
+    }
+
+    protected function validateQueuedPhotosLimits(): bool
+    {
+        $valid = true;
+        $total = 0;
+
+        foreach ($this->queuedPhotos as $roomIndex => $questions) {
+            foreach (($questions ?? []) as $questionIndex => $files) {
+                $files = is_array($files) ? $files : [];
+                $total += count($files);
+
+                if (count($files) > $this->photoLimit) {
+                    $this->addError("queuedPhotos.$roomIndex.$questionIndex", "Максимум {$this->photoLimit} фото на один вопрос");
+                    $valid = false;
+                }
+
+                foreach ($files as $file) {
+                    if (! $file instanceof TemporaryUploadedFile) {
+                        continue;
+                    }
+
+                    if (! str_starts_with((string) $file->getMimeType(), 'image/')) {
+                        $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Можно загружать только изображения');
+                        $valid = false;
+                    }
+
+                    if ($file->getSize() > 10 * 1024 * 1024) {
+                        $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Одно фото не должно быть больше 10 МБ');
+                        $valid = false;
+                    }
+                }
+            }
+        }
+
+        return $valid;
     }
 
     protected function queueUploadedPhotos(string $name): void
@@ -534,6 +689,7 @@ protected function isQuestionFilled(array $question, array $answer): bool
             $this->addError("queuedPhotos.$roomIndex.$questionIndex", "Максимум {$this->photoLimit} фото на один вопрос");
         }
 
+
         $this->queuedPhotos[$roomIndex][$questionIndex] = $valid;
         $this->photoUploads[$roomIndex][$questionIndex] = [];
 
@@ -553,9 +709,9 @@ protected function isQuestionFilled(array $question, array $answer): bool
         $this->touchAutosave();
     }
 
-    protected function storeQueuedPhotos(): array
+    protected function storeQueuedPhotos(array &$storedPaths): array
     {
-        $answers = $this->answers;
+        $answers = $this->normalizedAnswers($this->answers);
 
         foreach ($this->queuedPhotos as $roomIndex => $questions) {
             foreach (($questions ?? []) as $questionIndex => $files) {
@@ -569,16 +725,36 @@ protected function isQuestionFilled(array $question, array $answer): bool
                         'public'
                     );
 
+                    $storedPaths[] = $path;
+
                     $answers[$roomIndex][$questionIndex]['media'][] = [
                         'disk' => 'public',
                         'path' => $path,
-                        'url' => asset('storage/' . $path),
-                        'original_name' => $file->getClientOriginalName(),
+                        'original_name' => mb_substr($file->getClientOriginalName(), 0, 180),
                         'mime' => $file->getMimeType(),
                         'size' => $file->getSize(),
                         'uploaded_at' => now()->toDateTimeString(),
                     ];
                 }
+            }
+        }
+
+        return $answers;
+    }
+
+    protected function normalizedAnswers(array $source): array
+    {
+        $answers = [];
+
+        foreach ($this->rooms as $roomIndex => $room) {
+            foreach (($room['items'] ?? []) as $questionIndex => $question) {
+                $answer = $source[$roomIndex][$questionIndex] ?? [];
+
+                $answers[$roomIndex][$questionIndex] = [
+                    'selected' => mb_substr(trim((string) ($answer['selected'] ?? '')), 0, 255),
+                    'custom' => mb_substr(trim((string) ($answer['custom'] ?? '')), 0, $this->answerTextLimit),
+                    'media' => is_array($answer['media'] ?? null) ? array_values($answer['media']) : [],
+                ];
             }
         }
 
@@ -620,25 +796,29 @@ protected function isQuestionFilled(array $question, array $answer): bool
             }
         }
 
-        $this->submit();
+        $this->openReview();
     }
 
     protected function validateMeta(): void
     {
-        if (! $this->cleaner_id || ! User::query()->whereKey($this->cleaner_id)->exists()) {
+        if (! $this->cleaner_id || ! User::query()->whereKey($this->cleaner_id)->where('is_active', true)->whereIn('role', ['cleaner', 'supervisor'])->exists()) {
             $this->addError('cleaner_id', 'Выберите человека');
         }
 
-        if (! $this->apartment_id || ! Apartment::query()->whereKey($this->apartment_id)->exists()) {
+        if (! $this->apartment_id || ! Apartment::query()->whereKey($this->apartment_id)->where('is_active', true)->exists()) {
             $this->addError('apartment_id', 'Выберите квартиру');
         }
 
-        if (! $this->cleaning_date) {
-            $this->addError('cleaning_date', 'Укажите дату уборки');
+        if (! $this->cleaning_date || ! strtotime($this->cleaning_date)) {
+            $this->addError('cleaning_date', 'Укажите корректную дату уборки');
         }
 
-        if (! $this->inspection_date) {
-            $this->addError('inspection_date', 'Укажите дату проверки');
+        if (! $this->inspection_date || ! strtotime($this->inspection_date)) {
+            $this->addError('inspection_date', 'Укажите корректную дату проверки');
+        }
+
+        if ($this->cleaning_date && $this->inspection_date && strtotime($this->inspection_date) < strtotime($this->cleaning_date)) {
+            $this->addError('inspection_date', 'Дата проверки не может быть раньше даты уборки');
         }
 
         if (mb_strlen($this->previous_cleaner) > 255) {
@@ -662,6 +842,10 @@ protected function isQuestionFilled(array $question, array $answer): bool
 
                 if (! $this->isQuestionFilled($question, $answer)) {
                     $this->addError("answers.$roomIndex.$questionIndex", 'Ответьте на вопрос');
+                }
+
+                if (mb_strlen((string) ($answer['custom'] ?? '')) > $this->answerTextLimit) {
+                    $this->addError("answers.$roomIndex.$questionIndex", "Текстовый ответ: максимум {$this->answerTextLimit} символов");
                 }
             }
         }
@@ -709,7 +893,7 @@ protected function isQuestionFilled(array $question, array $answer): bool
         $this->dispatch('control-scroll', type: 'top');
     }
 
-    public function submit(): void
+    public function openReview(): void
     {
         $this->attemptedSubmit = true;
         $this->resetErrorBag();
@@ -718,60 +902,127 @@ protected function isQuestionFilled(array $question, array $answer): bool
         $this->validateRooms();
 
         if ($this->getErrorBag()->isNotEmpty()) {
+            $this->isSubmitting = false;
             $this->dispatch('toast', type: 'error', message: 'Вы заполнили не все обязательные поля');
             $this->scrollToFirstError();
             return;
         }
 
-        $answersForSave = $this->storeQueuedPhotos();
-        $score = ControlResponse::calculateScores($this->rooms, $answersForSave);
+        if (! $this->validateQueuedPhotosLimits()) {
+            $this->isSubmitting = false;
+            $this->dispatch('toast', type: 'error', message: 'Проверьте загруженные фото');
+            $this->scrollToFirstError();
+            return;
+        }
 
-        $response = ControlResponse::create([
-            'control_id' => $this->control->id,
-            'cleaner_id' => $this->cleaner_id,
-            'supervisor_id' => Auth::id(),
-            'apartment_id' => $this->apartment_id,
+        $this->reviewSheetOpen = true;
+    }
 
-            'is_assigned' => $this->is_assigned,
-            'previous_cleaner' => $this->previous_cleaner,
-            'cleaning_date' => $this->cleaning_date,
-            'inspection_date' => $this->inspection_date,
+    public function confirmSubmit(): void
+    {
+        $this->reviewSheetOpen = false;
+        $this->submit();
+    }
 
-            'comment' => $this->comment,
-            'responses' => $answersForSave,
-            'schema_snapshot' => $this->rooms,
+    public function submit(): void
+    {
+        if ($this->isSubmitting) {
+            return;
+        }
 
-            'total_points' => $score['total_points'],
-            'max_points' => $score['max_points'],
-            'score_percent' => $score['score_percent'],
-            'has_critical_failure' => $score['has_critical_failure'],
-            'result_zone' => $score['result_zone'],
+        $this->isSubmitting = true;
+        $this->attemptedSubmit = true;
+        $this->resetErrorBag();
 
-            'status' => 'sent',
-            'sent_at' => now(),
-        ]);
+        $this->validateMeta();
+        $this->validateRooms();
 
-        activity()
-            ->causedBy(Auth::user())
-            ->performedOn($response)
-            ->event('control_completed')
-            ->withProperties([
-                'control_id' => $this->control->id,
-                'control_name' => $this->control->name,
-                'cleaner_id' => $this->cleaner_id,
-                'apartment_id' => $this->apartment_id,
-                'cleaning_date' => $this->cleaning_date,
-                'inspection_date' => $this->inspection_date,
-                'total_points' => $score['total_points'],
-                'max_points' => $score['max_points'],
-                'score_percent' => $score['score_percent'],
-                'result_zone' => $score['result_zone'],
-            ])
-            ->log('Супервайзер отправил контроль качества');
+        if ($this->getErrorBag()->isNotEmpty()) {
+            $this->isSubmitting = false;
+            $this->dispatch('toast', type: 'error', message: 'Вы заполнили не все обязательные поля');
+            $this->scrollToFirstError();
+            return;
+        }
+
+        if (! $this->validateQueuedPhotosLimits()) {
+            $this->isSubmitting = false;
+            $this->dispatch('toast', type: 'error', message: 'Проверьте загруженные фото');
+            $this->scrollToFirstError();
+            return;
+        }
+
+        $storedPaths = [];
+
+        try {
+            $responseData = DB::transaction(function () use (&$storedPaths) {
+                $answersForSave = $this->storeQueuedPhotos($storedPaths);
+                $score = ControlResponse::calculateScores($this->rooms, $answersForSave);
+
+                $response = ControlResponse::create([
+                    'control_id' => $this->control->id,
+                    'cleaner_id' => $this->cleaner_id,
+                    'supervisor_id' => Auth::id(),
+                    'apartment_id' => $this->apartment_id,
+
+                    'is_assigned' => $this->is_assigned,
+                    'previous_cleaner' => trim($this->previous_cleaner),
+                    'cleaning_date' => $this->cleaning_date,
+                    'inspection_date' => $this->inspection_date,
+
+                    'comment' => trim($this->comment),
+                    'responses' => $answersForSave,
+                    'schema_snapshot' => $this->rooms,
+
+                    'total_points' => $score['total_points'],
+                    'max_points' => $score['max_points'],
+                    'score_percent' => $score['score_percent'],
+                    'has_critical_failure' => $score['has_critical_failure'],
+                    'result_zone' => $score['result_zone'],
+
+                    'status' => 'sent',
+                    'sent_at' => now(),
+                ]);
+
+                activity()
+                    ->causedBy(Auth::user())
+                    ->performedOn($response)
+                    ->event('control_completed')
+                    ->withProperties([
+                        'control_id' => $this->control->id,
+                        'control_name' => $this->control->name,
+                        'cleaner_id' => $this->cleaner_id,
+                        'apartment_id' => $this->apartment_id,
+                        'cleaning_date' => $this->cleaning_date,
+                        'inspection_date' => $this->inspection_date,
+                        'total_points' => $score['total_points'],
+                        'max_points' => $score['max_points'],
+                        'score_percent' => $score['score_percent'],
+                        'result_zone' => $score['result_zone'],
+                    ])
+                    ->log('Супервайзер отправил контроль качества');
+
+                return [
+                    'score' => $score,
+                ];
+            });
+        } catch (\Throwable $e) {
+            foreach ($storedPaths as $path) {
+                Storage::disk('public')->delete($path);
+            }
+
+            report($e);
+
+            $this->isSubmitting = false;
+            $this->dispatch('toast', type: 'error', message: 'Не удалось отправить контроль. Попробуйте ещё раз.');
+            return;
+        }
+
+        $score = $responseData['score'];
 
         $this->clearDraft();
         $this->resetControlForm();
 
+        $this->isSubmitting = false;
         $this->successMessage = "Контроль отправлен. Оценка: {$score['total_points']} / {$score['max_points']} ({$score['score_percent']}%).";
         $this->successSheetOpen = true;
     }
@@ -889,7 +1140,25 @@ protected function isQuestionFilled(array $question, array $answer): bool
                         </div>
 
                         <div class="mt-[10px] text-[12px] font-medium text-[#64748B]">
-                            Обязательные вопросы: {{ $this->requiredQuestionsDone }} / {{ $this->requiredQuestionsTotal }}
+                            Обязательные вопросы: {{ $this->requiredQuestionsDone }} / {{ $this->requiredQuestionsTotal }} · Фото: {{ $this->queuedPhotosTotal }}
+                        </div>
+
+                        <div class="mt-[12px] grid grid-cols-2 gap-[8px]">
+                            <button
+                                type="button"
+                                wire:click="toggleOnlyIncomplete"
+                                class="rounded-[18px] px-[12px] py-[10px] text-[12px] font-semibold transition {{ $showOnlyIncomplete ? 'bg-[#213259] text-white' : 'bg-white text-[#213259]' }}"
+                            >
+                                {{ $showOnlyIncomplete ? 'Показать все' : 'Только незаполненные' }}
+                            </button>
+
+                            <button
+                                type="button"
+                                wire:click="goToNextIncomplete"
+                                class="rounded-[18px] bg-white px-[12px] py-[10px] text-[12px] font-semibold text-[#213259]"
+                            >
+                                Следующий незаполненный
+                            </button>
                         </div>
                     </div>
 
@@ -1150,7 +1419,13 @@ protected function isQuestionFilled(array $question, array $answer): bool
                                                         $optional = $this->questionIsOptional($room, $question);
                                                         $answer = $answers[$roomIndex][$questionIndex] ?? [];
                                                         $selected = (string) ($answer['selected'] ?? '');
+                                                        $isFilled = $this->isQuestionFilled($question, $answer);
+                                                        $questionPhotos = $queuedPhotos[$roomIndex][$questionIndex] ?? [];
                                                     @endphp
+
+                                                    @if($showOnlyIncomplete && (! $optional && $isFilled))
+                                                        @continue
+                                                    @endif
 
                                                     <div
                                                         id="question-{{ $roomIndex }}-{{ $questionIndex }}"
@@ -1160,16 +1435,22 @@ protected function isQuestionFilled(array $question, array $answer): bool
                                                             'border-[#E6ECF2]' => ! $errors->has("answers.$roomIndex.$questionIndex"),
                                                         ])
                                                     >
-                                                        <div class="mb-[12px] text-[15px] font-semibold leading-[1.35] tracking-[-0.01em] text-[#111827]">
-                                                            {{ $question['question'] ?? 'Вопрос' }}
+                                                        <div class="mb-[12px] flex items-start justify-between gap-[10px]">
+                                                            <div class="min-w-0 text-[15px] font-semibold leading-[1.35] tracking-[-0.01em] text-[#111827]">
+                                                                {{ $question['question'] ?? 'Вопрос' }}
 
-                                                            @if(!$optional)
-                                                                <span class="text-[#2D6494]">*</span>
-                                                            @else
-                                                                <span class="ml-[4px] text-[12px] font-medium text-[#94A3B8]">
-                                                                    необязательно
-                                                                </span>
-                                                            @endif
+                                                                @if(!$optional)
+                                                                    <span class="text-[#2D6494]">*</span>
+                                                                @else
+                                                                    <span class="ml-[4px] text-[12px] font-medium text-[#94A3B8]">
+                                                                        необязательно
+                                                                    </span>
+                                                                @endif
+                                                            </div>
+
+                                                            <div class="shrink-0 rounded-full px-[9px] py-[5px] text-[11px] font-semibold {{ $isFilled ? 'bg-[#E7F8EF] text-[#16834B]' : 'bg-[#F1F5F9] text-[#64748B]' }}">
+                                                                {{ $isFilled ? 'готово' : 'пусто' }}
+                                                            </div>
                                                         </div>
 
                                                         @error("answers.$roomIndex.$questionIndex")
@@ -1221,7 +1502,7 @@ protected function isQuestionFilled(array $question, array $answer): bool
                                                                         Фото к вопросу
                                                                     </div>
                                                                     <div class="mt-[2px] text-[12px] font-medium text-[#64748B]">
-                                                                        До {{ $photoLimit }} фото, максимум 10 МБ за файл
+                                                                        {{ count($questionPhotos) }} / {{ $photoLimit }} фото
                                                                     </div>
                                                                 </div>
 
@@ -1251,9 +1532,11 @@ protected function isQuestionFilled(array $question, array $answer): bool
                                                                 </div>
                                                             @enderror
 
-                                                            @php
-                                                                $questionPhotos = $queuedPhotos[$roomIndex][$questionIndex] ?? [];
-                                                            @endphp
+                                                            @error('photoUploads')
+                                                                <div class="mt-[10px] rounded-[16px] bg-[#FEE4E2] px-[12px] py-[9px] text-[13px] font-semibold text-[#B42318]">
+                                                                    {{ $message }}
+                                                                </div>
+                                                            @enderror
 
                                                             @if(!empty($questionPhotos))
                                                                 <div class="mt-[10px] grid grid-cols-3 gap-[8px]">
@@ -1342,14 +1625,15 @@ protected function isQuestionFilled(array $question, array $answer): bool
                         :progress="$this->formProgress"
                         wire:click="continueForm"
                         wire:loading.attr="disabled"
-                        wire:target="continueForm,submit"
+                        wire:target="continueForm,openReview,confirmSubmit,submit"
+                      :disabled="$isSubmitting"
                     >
-                        <span wire:loading.remove wire:target="continueForm,submit">
+                        <span wire:loading.remove wire:target="continueForm,openReview,confirmSubmit,submit">
                             {{ $this->formButtonText }}
                         </span>
 
-                        <span wire:loading wire:target="continueForm,submit">
-                            Сохраняем...
+                        <span wire:loading wire:target="continueForm,openReview,confirmSubmit,submit">
+                            Проверяем...
                         </span>
                     </x-ui.button>
                 </div>
@@ -1370,6 +1654,60 @@ protected function isQuestionFilled(array $question, array $answer): bool
             </div>
         </div>
     </form>
+
+    <div x-data="{ reviewOpen: @entangle('reviewSheetOpen').live }">
+        <x-ui.bottom-sheet x-model="reviewOpen">
+            @php($summary = $this->reviewSummary)
+
+            <div class="p-5">
+                <h1 class="text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
+                    Проверка перед отправкой
+                </h1>
+
+                <p class="mt-[8px] text-[14px] leading-[1.45] text-black/55">
+                    Проверьте основные данные. После отправки контроль сохранится как финальный результат.
+                </p>
+
+                <div class="mt-[18px] space-y-[8px] rounded-[26px] bg-[#F8FAFC] p-[14px] text-[14px] font-medium text-[#111827]">
+                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Кого проверили</span><span class="text-right font-semibold">{{ $summary['cleaner'] }}</span></div>
+                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Квартира</span><span class="text-right font-semibold">{{ $summary['apartment'] }}</span></div>
+                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Дата уборки</span><span class="font-semibold">{{ $summary['cleaning_date'] }}</span></div>
+                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Дата проверки</span><span class="font-semibold">{{ $summary['inspection_date'] }}</span></div>
+                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Обязательные</span><span class="font-semibold">{{ $summary['required_done'] }} / {{ $summary['required_total'] }}</span></div>
+                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Фото</span><span class="font-semibold">{{ $summary['photos_total'] }}</span></div>
+                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Прогресс</span><span class="font-semibold">{{ $summary['progress'] }}%</span></div>
+                </div>
+
+                @if($this->incompleteQuestionsCount > 0)
+                    <div class="mt-[14px] rounded-[22px] bg-[#FEECEC] p-[14px] text-[13px] font-semibold text-[#B42318]">
+                        Остались незаполненные вопросы: {{ $this->incompleteQuestionsCount }}
+                    </div>
+                @endif
+
+                <div class="mt-[22px] grid grid-cols-2 gap-[10px]">
+                    <x-ui.button
+                        type="button"
+                        variant="secondary"
+                        @click="reviewOpen = false"
+                    >
+                        Назад
+                    </x-ui.button>
+
+                    <x-ui.button
+                        type="button"
+                        variant="primary"
+                        wire:click="confirmSubmit"
+                        wire:loading.attr="disabled"
+                        wire:target="confirmSubmit,submit"
+                       :disabled="$isSubmitting"
+                    >
+                        <span wire:loading.remove wire:target="confirmSubmit,submit">Отправить</span>
+                        <span wire:loading wire:target="confirmSubmit,submit">Отправляем...</span>
+                    </x-ui.button>
+                </div>
+            </div>
+        </x-ui.bottom-sheet>
+    </div>
 
     <div x-data="{ sheetOpen: @entangle('successSheetOpen').live }">
         <x-ui.bottom-sheet x-model="sheetOpen">

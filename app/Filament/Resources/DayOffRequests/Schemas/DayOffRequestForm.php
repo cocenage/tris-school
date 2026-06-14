@@ -34,10 +34,17 @@ class DayOffRequestForm
                             ->required()
                             ->visibleOn('create'),
 
-                        Placeholder::make('user_name')
-                            ->label('Сотрудник')
-                            ->content(fn ($record) => $record?->user?->name ?? '—')
-                            ->visibleOn('edit'),
+   Select::make('user_id')
+    ->label('Сотрудник')
+    ->options(
+        User::query()
+            ->orderBy('name')
+            ->pluck('name', 'id')
+            ->all()
+    )
+    ->searchable()
+    ->preload()
+    ->required(),
 
                         Select::make('status')
                             ->label('Статус заявки')

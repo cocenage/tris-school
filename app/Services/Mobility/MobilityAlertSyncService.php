@@ -50,16 +50,17 @@ class MobilityAlertSyncService
         ?string $forcedRisk = null
     ): int {
         try {
-            $response = Http::timeout(20)
-                ->retry(2, 1000)
-                ->withoutVerifying()
+            $response = Http::withoutVerifying()
+                ->connectTimeout(10)
+                ->timeout(20)
+                ->retry(1, 1000)
                 ->withHeaders([
-                    'User-Agent' => 'TRIS Mobility Alert Bot',
+                    'User-Agent' => 'Mozilla/5.0 (compatible; TRIS Mobility Alert Bot)',
                     'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 ])
                 ->get($url);
         } catch (\Throwable $e) {
-            Log::warning('Mobility source request failed', [
+            Log::warning('Mobility sync source failed', [
                 'source' => $source,
                 'url' => $url,
                 'error' => $e->getMessage(),
@@ -69,25 +70,41 @@ class MobilityAlertSyncService
         }
 
         if (! $response->successful()) {
-            Log::warning('Mobility source returned bad status', [
+            Log::warning('Mobility sync source returned bad status', [
                 'source' => $source,
                 'url' => $url,
                 'status' => $response->status(),
+                'body_preview' => Str::limit($response->body(), 500),
             ]);
 
             return 0;
         }
 
-        $items = $this->extractLinks($url, $response->body());
+        $html = $response->body();
+
+        Log::info('Mobility sync source loaded', [
+            'source' => $source,
+            'url' => $url,
+            'status' => $response->status(),
+            'length' => strlen($html),
+        ]);
+
+        $items = $this->extractLinks($url, $html);
+
+        Log::info('Mobility sync links extracted', [
+            'source' => $source,
+            'count' => count($items),
+        ]);
 
         $created = 0;
 
         foreach ($items as $item) {
-            if (! $this->looksUseful($item['title'], $source)) {
+            $title = $this->cleanTitle($item['title']);
+
+            if (! $this->looksUseful($title, $source)) {
                 continue;
             }
 
-            $title = $this->cleanTitle($item['title']);
             $eventDate = $this->extractDate($title) ?? now()->addDay()->startOfDay();
 
             $hash = sha1($source . '|' . $title . '|' . $item['url']);
@@ -111,6 +128,11 @@ class MobilityAlertSyncService
                 $created++;
             }
         }
+
+        Log::info('Mobility sync source finished', [
+            'source' => $source,
+            'created' => $created,
+        ]);
 
         return $created;
     }
@@ -140,7 +162,7 @@ class MobilityAlertSyncService
             ];
         }
 
-        return array_slice($items, 0, 80);
+        return array_slice($items, 0, 100);
     }
 
     protected function cleanTitle(string $title): string
@@ -169,153 +191,115 @@ class MobilityAlertSyncService
         return rtrim($baseUrl, '/') . '/' . ltrim($href, '/');
     }
 
-protected function looksUseful(string $title, string $source): bool
-{
-    $text = mb_strtolower($title);
+    protected function looksUseful(string $title, string $source): bool
+    {
+        $text = mb_strtolower($title);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Жестко выкидываем мусор
-    |--------------------------------------------------------------------------
-    */
+        $trashKeywords = [
+            'manifestazione di interesse',
+            'manifestazioni di interesse',
+            'imprese e fornitori',
+            'impreseefornitori',
+            'fornitori',
+            'vendita immobili',
+            'vendita',
+            'affitto',
+            'fibre ottiche',
+            'mappa metro',
+            'mappa',
+            'biglietti',
+            'abbonamenti',
+            'lavora con noi',
+            'atm lavora',
+            'gare',
+            'bandi',
+            'appalti',
+            'privacy',
+            'cookie',
+            'contatti',
+            'newsletter',
+        ];
 
-    $trashKeywords = [
-        'manifestazione di interesse',
-        'manifestazioni di interesse',
-        'imprese e fornitori',
-        'impreseefornitori',
-        'fornitori',
-        'vendita immobili',
-        'vendita',
-        'affitto',
-        'fibre ottiche',
-        'mappa metro',
-        'mappa',
-        'biglietti',
-        'abbonamenti',
-        'lavora con noi',
-        'atm lavora',
-        'gare',
-        'bandi',
-        'appalti',
-        'privacy',
-        'cookie',
-        'contatti',
-        'newsletter',
-    ];
-
-    foreach ($trashKeywords as $keyword) {
-        if (str_contains($text, $keyword)) {
-            return false;
+        foreach ($trashKeywords as $keyword) {
+            if (str_contains($text, $keyword)) {
+                return false;
+            }
         }
-    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | MIT — только забастовки транспорта по Милану / Ломбардии
-    |--------------------------------------------------------------------------
-    */
-
-    if ($source === 'mit') {
-        return str_contains($text, 'lombardia')
-            || str_contains($text, 'milano')
-            || str_contains($text, 'trasporto pubblico')
-            || str_contains($text, 'trasporto ferroviario')
-            || str_contains($text, 'ferroviario')
-            || str_contains($text, 'atm')
-            || str_contains($text, 'trenord');
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Отсекаем мелкие остановки и автобусную локалку
-    |--------------------------------------------------------------------------
-    */
-
-    $ignorePatterns = [
-        '/^bus\s\d+/u',
-        '/^tram\s\d+/u',
-        '/^filobus\s\d+/u',
-        '/fermata/u',
-        '/fermate/u',
-        '/deviazione/u',
-        '/deviazioni/u',
-        '/deviano/u',
-        '/spostata/u',
-        '/sospesa/u',
-        '/sospese/u',
-    ];
-
-    foreach ($ignorePatterns as $pattern) {
-        if (preg_match($pattern, $text)) {
-            return false;
+        if ($source === 'mit') {
+            return str_contains($text, 'sciopero')
+                || str_contains($text, 'scioperi')
+                || str_contains($text, 'lombardia')
+                || str_contains($text, 'milano')
+                || str_contains($text, 'trasporto pubblico')
+                || str_contains($text, 'trasporto ferroviario')
+                || str_contains($text, 'ferroviario')
+                || str_contains($text, 'atm')
+                || str_contains($text, 'trenord');
         }
-    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Оставляем только реально полезное
-    |--------------------------------------------------------------------------
-    */
+        $ignorePatterns = [
+            '/^bus\s\d+/u',
+            '/^tram\s\d+/u',
+            '/^filobus\s\d+/u',
+            '/fermata/u',
+            '/fermate/u',
+            '/deviazione/u',
+            '/deviazioni/u',
+            '/deviano/u',
+            '/spostata/u',
+            '/sospesa/u',
+            '/sospese/u',
+        ];
 
-    $importantKeywords = [
-        'sciopero',
-        'scioperi',
-
-        'manifestazione',
-        'manifestazioni',
-
-        'evento',
-        'eventi',
-
-        'concerto',
-        'concerti',
-
-        'partite a san siro',
-        'san siro',
-
-        'fashion week',
-        'salone del mobile',
-
-        'marathon',
-        'maratona',
-
-        'chiude',
-        'chiusura',
-
-        'metro',
-        'metropolitana',
-
-        'm1',
-        'm2',
-        'm3',
-        'm4',
-        'm5',
-
-        'trenord',
-
-        'stazione',
-
-        'circolazione',
-
-        'viabilità',
-
-        'traffico',
-
-        'lavori',
-        'cantieri',
-
-        'cambiamenti programmati',
-    ];
-
-    foreach ($importantKeywords as $keyword) {
-        if (str_contains($text, $keyword)) {
-            return true;
+        foreach ($ignorePatterns as $pattern) {
+            if (preg_match($pattern, $text)) {
+                return false;
+            }
         }
-    }
 
-    return false;
-}
+        $importantKeywords = [
+            'sciopero',
+            'scioperi',
+            'manifestazione',
+            'manifestazioni',
+            'evento',
+            'eventi',
+            'concerto',
+            'concerti',
+            'partite a san siro',
+            'san siro',
+            'fashion week',
+            'salone del mobile',
+            'marathon',
+            'maratona',
+            'chiude',
+            'chiusura',
+            'metro',
+            'metropolitana',
+            'm1',
+            'm2',
+            'm3',
+            'm4',
+            'm5',
+            'trenord',
+            'stazione',
+            'circolazione',
+            'viabilità',
+            'traffico',
+            'lavori',
+            'cantieri',
+            'cambiamenti programmati',
+        ];
+
+        foreach ($importantKeywords as $keyword) {
+            if (str_contains($text, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     protected function detectType(string $title): string
     {
@@ -323,9 +307,14 @@ protected function looksUseful(string $title, string $source): bool
 
         return match (true) {
             str_contains($text, 'sciopero') => 'strike',
+            str_contains($text, 'scioperi') => 'strike',
             str_contains($text, 'concerto') => 'event',
             str_contains($text, 'san siro') => 'event',
+            str_contains($text, 'manifestazione') => 'event',
+            str_contains($text, 'maratona') => 'event',
+            str_contains($text, 'marathon') => 'event',
             str_contains($text, 'lavori') => 'roadwork',
+            str_contains($text, 'cantieri') => 'roadwork',
             str_contains($text, 'chiusura') => 'roadwork',
             str_contains($text, 'chiude') => 'roadwork',
             default => 'transport',
@@ -338,6 +327,7 @@ protected function looksUseful(string $title, string $source): bool
 
         if (
             str_contains($text, 'sciopero') ||
+            str_contains($text, 'scioperi') ||
             str_contains($text, 'san siro') ||
             str_contains($text, 'manifestazione') ||
             str_contains($text, 'chiusura') ||
@@ -350,6 +340,7 @@ protected function looksUseful(string $title, string $source): bool
             str_contains($text, 'modifiche') ||
             str_contains($text, 'cambiamenti') ||
             str_contains($text, 'lavori') ||
+            str_contains($text, 'cantieri') ||
             str_contains($text, 'metro') ||
             str_contains($text, 'trenord')
         ) {

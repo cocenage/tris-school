@@ -48,51 +48,14 @@
                     </div>
                 </div>
 
-                <div class="rounded-xl bg-gray-50 p-4 dark:bg-gray-900">
-                    <div class="text-xs font-medium text-gray-500">
-                        Всего баллов
-                    </div>
-                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
-                        {{ $totalPoints }}
-                    </div>
-                </div>
+      
 
-                <div class="rounded-xl bg-gray-50 p-4 dark:bg-gray-900">
-                    <div class="text-xs font-medium text-gray-500">
-                        Средний
-                    </div>
-                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
-                        {{ $averagePoints }}
-                    </div>
-                </div>
+       
 
-                <div class="rounded-xl bg-success-50 p-4 dark:bg-success-950">
-                    <div class="text-xs font-medium text-success-600 dark:text-success-400">
-                        230+
-                    </div>
-                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
-                        {{ $reached230 }}
-                    </div>
-                </div>
 
-                <div class="rounded-xl bg-warning-50 p-4 dark:bg-warning-950">
-                    <div class="text-xs font-medium text-warning-600 dark:text-warning-400">
-                        320+
-                    </div>
-                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
-                        {{ $reached320 }}
-                    </div>
-                </div>
 
-                <div class="rounded-xl bg-danger-50 p-4 dark:bg-danger-950">
-                    <div class="text-xs font-medium text-danger-600 dark:text-danger-400">
-                        400+
-                    </div>
-                    <div class="mt-1 text-2xl font-bold text-gray-950 dark:text-white">
-                        {{ $reached400 }}
-                    </div>
-                </div>
-            </div>
+
+
 
             <div class="mt-4 overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
                 <table class="w-full text-left text-sm">

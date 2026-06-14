@@ -1103,11 +1103,62 @@ protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Coll
             ->values();
     }
 
-    return $expanded
-        ->sortByDesc('priority')
+return $this->removeDuplicateStaffAbsences($expanded)
+    ->sortByDesc('priority')
+    ->values();
+}
+ protected function removeDuplicateStaffAbsences(Collection $events): Collection
+{
+    $vacationDates = [];
+    $explicitDayOffDates = [];
+
+    foreach ($events as $event) {
+        if (blank($event['user_id'] ?? null)) {
+            continue;
+        }
+
+        $cursor = $event['start']->copy()->startOfDay();
+        $end = $event['end']->copy()->startOfDay();
+
+        while ($cursor->lte($end)) {
+            $key = (int) $event['user_id'] . '_' . $cursor->toDateString();
+
+            if (($event['type'] ?? null) === 'vacation') {
+                $vacationDates[$key] = true;
+            }
+
+            if (
+                ($event['type'] ?? null) === 'day_off'
+                && ! str_starts_with((string) ($event['id'] ?? ''), 'regular_day_off_user_')
+            ) {
+                $explicitDayOffDates[$key] = true;
+            }
+
+            $cursor->addDay();
+        }
+    }
+
+    return $events
+        ->reject(function (array $event) use ($vacationDates, $explicitDayOffDates) {
+            if (blank($event['user_id'] ?? null)) {
+                return false;
+            }
+
+            $key = (int) $event['user_id'] . '_' . $event['start']->copy()->startOfDay()->toDateString();
+            $id = (string) ($event['id'] ?? '');
+
+            if (($event['type'] ?? null) === 'day_off' && isset($vacationDates[$key])) {
+                return true;
+            }
+
+            if (str_starts_with($id, 'regular_day_off_user_') && isset($explicitDayOffDates[$key])) {
+                return true;
+            }
+
+            return false;
+        })
         ->values();
 }
- 
 
 
 
@@ -2157,13 +2208,31 @@ protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Coll
                                             {{ $this->formatEventRange($event) }}
                                         </p>
 
-                                   @if (filled($event['lane_title'] ?? null))
-    <p class="mb-[6px] text-[13px] font-semibold leading-none text-black/70">
-        👤 {{ $event['lane_title'] }}
-    </p>
+@if (filled($event['lane_title'] ?? null))
+    <div class="mb-[8px] flex items-center gap-[7px]">
+        <div class="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-full bg-white/65 text-[12px] font-bold text-[#111]">
+            {{ mb_substr($event['lane_title'], 0, 1) }}
+        </div>
+
+        <div class="min-w-0">
+            <p class="truncate text-[15px] font-semibold leading-none text-[#111]">
+                {{ $event['lane_title'] }}
+            </p>
+
+            <p class="mt-[4px] text-[12px] leading-none text-black/55">
+                {{ match ($event['type'] ?? null) {
+                    'vacation' => 'Отпуск',
+                    'day_off' => 'Выходной',
+                    'tasks' => 'Задача',
+                    'holiday' => 'Праздник',
+                    default => 'Событие',
+                } }}
+            </p>
+        </div>
+    </div>
 @endif
 
-<p class="text-[16px] leading-[1.15]">
+<p class="text-[15px] leading-[1.2] text-black/75">
     {{ $event['title'] }}
 </p>
 
@@ -2229,7 +2298,7 @@ protected function getExpandedEvents(Carbon $rangeStart, Carbon $rangeEnd): Coll
                                                 </p>
 
                                                 <p class="mt-[6px] text-[12px] leading-[1.2] text-[#9F1D1D]">
-                                                    {{ $user->not_working_reason ?? 'Не работает' }}
+                                                 {{ $user->not_working_reason ?? 'Не работает' }}
                                                 </p>
                                             </div>
                                         </div>
