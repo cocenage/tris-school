@@ -567,9 +567,7 @@ $canSeeEducationPanel = $user->isAdmin() || $user->hasPanelAccess('education');
 $hasAnyAdminAccess =
     $canSeeAdminPanel ||
     $canSeeFinancePanel ||
-    $canSeeEducationPanel;nAccess = $canSeeFinancePanel || $canSeeEducationPanel;
-
-
+    $canSeeEducationPanel;
 @endphp
 
 @if($hasAnyAdminAccess)
