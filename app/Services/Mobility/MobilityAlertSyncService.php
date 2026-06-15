@@ -14,7 +14,8 @@ class MobilityAlertSyncService
     {
         return $this->syncMitStrikes()
             + $this->syncAtm()
-            + $this->syncTrenord();
+            + $this->syncTrenord()
+            + $this->syncUndergroundStatus();
     }
 
     protected function syncMitStrikes(): int
@@ -39,18 +40,96 @@ class MobilityAlertSyncService
     {
         $created = 0;
 
-        $urls = [
+        foreach ([
             'https://www.trenord.it/news/',
             'https://www.trenord.it/assistenza/informazioni-utili/in-caso-di-sciopero/',
             'https://www.trenord.it/',
-        ];
-
-        foreach ($urls as $url) {
+        ] as $url) {
             $created += $this->syncGenericPage(
                 source: 'trenord',
                 url: $url
             );
         }
+
+        return $created;
+    }
+
+    protected function syncUndergroundStatus(): int
+    {
+        $url = 'https://t.me/s/undergroundstatus';
+
+        try {
+            $response = Http::withoutVerifying()
+                ->connectTimeout(10)
+                ->timeout(20)
+                ->retry(1, 1000)
+                ->withHeaders([
+                    'User-Agent' => 'Mozilla/5.0 (compatible; TRIS Mobility Alert Bot)',
+                    'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                ])
+                ->get($url);
+        } catch (\Throwable $e) {
+            Log::warning('Mobility telegram source failed', [
+                'source' => 'telegram_undergroundstatus',
+                'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+
+            return 0;
+        }
+
+        if (! $response->successful()) {
+            Log::warning('Mobility telegram source bad status', [
+                'source' => 'telegram_undergroundstatus',
+                'url' => $url,
+                'status' => $response->status(),
+            ]);
+
+            return 0;
+        }
+
+        preg_match_all(
+            '/<div class="tgme_widget_message_text js-message_text"[^>]*>(.*?)<\/div>/is',
+            $response->body(),
+            $matches
+        );
+
+        $created = 0;
+
+        foreach ($matches[1] ?? [] as $rawText) {
+            $text = str_replace(['<br/>', '<br>', '<br />'], "\n", $rawText);
+            $title = $this->cleanTitle(strip_tags($text));
+
+            if (! $this->looksLikeUndergroundAlert($title)) {
+                continue;
+            }
+
+            $hash = sha1('telegram_undergroundstatus|' . $title . '|' . now()->toDateString());
+
+            $alert = MobilityAlert::firstOrCreate(
+                ['external_hash' => $hash],
+                [
+                    'source' => 'telegram',
+                    'title' => Str::limit($title, 250, ''),
+                    'description' => $title,
+                    'url' => $url,
+                    'type' => $this->detectType($title, 'telegram'),
+                    'risk' => $this->detectRisk($title, 'telegram'),
+                    'district' => $this->detectDistrict($title),
+                    'starts_at' => now()->startOfDay(),
+                    'ends_at' => null,
+                ]
+            );
+
+            if ($alert->wasRecentlyCreated) {
+                $created++;
+            }
+        }
+
+        Log::info('Mobility telegram source finished', [
+            'source' => 'telegram_undergroundstatus',
+            'created' => $created,
+        ]);
 
         return $created;
     }
@@ -92,21 +171,7 @@ class MobilityAlertSyncService
             return 0;
         }
 
-        $html = $response->body();
-
-        Log::info('Mobility source loaded', [
-            'source' => $source,
-            'url' => $url,
-            'length' => strlen($html),
-        ]);
-
-        $items = $this->extractLinks($url, $html);
-
-        Log::info('Mobility source links extracted', [
-            'source' => $source,
-            'url' => $url,
-            'count' => count($items),
-        ]);
+        $items = $this->extractLinks($url, $response->body());
 
         $created = 0;
 
@@ -125,7 +190,7 @@ class MobilityAlertSyncService
                 ['external_hash' => $hash],
                 [
                     'source' => $source,
-                    'title' => $title,
+                    'title' => Str::limit($title, 250, ''),
                     'description' => null,
                     'url' => $item['url'],
                     'type' => $forcedType ?? $this->detectType($title, $source),
@@ -182,37 +247,11 @@ class MobilityAlertSyncService
             ->all();
     }
 
-    protected function cleanTitle(string $title): string
-    {
-        $title = html_entity_decode($title);
-        $title = preg_replace('/\s+/', ' ', $title);
-
-        return trim($title);
-    }
-
-    protected function absoluteUrl(string $baseUrl, string $href): string
-    {
-        if (Str::startsWith($href, ['http://', 'https://'])) {
-            return $href;
-        }
-
-        $parts = parse_url($baseUrl);
-
-        $scheme = $parts['scheme'] ?? 'https';
-        $host = $parts['host'] ?? '';
-
-        if (Str::startsWith($href, '/')) {
-            return $scheme . '://' . $host . $href;
-        }
-
-        return rtrim($baseUrl, '/') . '/' . ltrim($href, '/');
-    }
-
     protected function looksUseful(string $title, string $source): bool
     {
         $text = mb_strtolower($title);
 
-        $trashKeywords = [
+        foreach ([
             'manifestazione di interesse',
             'manifestazioni di interesse',
             'imprese e fornitori',
@@ -235,9 +274,7 @@ class MobilityAlertSyncService
             'cookie',
             'contatti',
             'newsletter',
-        ];
-
-        foreach ($trashKeywords as $keyword) {
+        ] as $keyword) {
             if (str_contains($text, $keyword)) {
                 return false;
             }
@@ -267,27 +304,7 @@ class MobilityAlertSyncService
                 || str_contains($text, 'trenord');
         }
 
-        $ignorePatterns = [
-            '/^bus\s\d+/u',
-            '/^tram\s\d+/u',
-            '/^filobus\s\d+/u',
-            '/fermata/u',
-            '/fermate/u',
-            '/deviazione/u',
-            '/deviazioni/u',
-            '/deviano/u',
-            '/spostata/u',
-            '/sospesa/u',
-            '/sospese/u',
-        ];
-
-        foreach ($ignorePatterns as $pattern) {
-            if (preg_match($pattern, $text)) {
-                return false;
-            }
-        }
-
-        $importantKeywords = [
+        foreach ([
             'sciopero',
             'scioperi',
             'manifestazione',
@@ -319,9 +336,42 @@ class MobilityAlertSyncService
             'lavori',
             'cantieri',
             'cambiamenti programmati',
-        ];
+        ] as $keyword) {
+            if (str_contains($text, $keyword)) {
+                return true;
+            }
+        }
 
-        foreach ($importantKeywords as $keyword) {
+        return false;
+    }
+
+    protected function looksLikeUndergroundAlert(string $title): bool
+    {
+        $text = mb_strtolower($title);
+
+        foreach ([
+            'm1',
+            'm2',
+            'm3',
+            'm4',
+            'm5',
+            'metro',
+            'metropolitana',
+            'sciopero',
+            'scioperi',
+            'chiusa',
+            'chiuso',
+            'chiude',
+            'interrotta',
+            'interrotto',
+            'sospesa',
+            'sospeso',
+            'ritardi',
+            'rallentamenti',
+            'servizio',
+            'circolazione',
+            'atm',
+        ] as $keyword) {
             if (str_contains($text, $keyword)) {
                 return true;
             }
@@ -347,7 +397,6 @@ class MobilityAlertSyncService
             str_contains($text, 'cantieri') => 'roadwork',
             str_contains($text, 'chiusura') => 'roadwork',
             str_contains($text, 'chiude') => 'roadwork',
-            $source === 'trenord' => 'transport',
             default => 'transport',
         };
     }
@@ -360,16 +409,24 @@ class MobilityAlertSyncService
             str_contains($text, 'sciopero') ||
             str_contains($text, 'scioperi') ||
             str_contains($text, 'agitazione') ||
-            str_contains($text, 'san siro') ||
-            str_contains($text, 'manifestazione') ||
+            str_contains($text, 'interrotta') ||
+            str_contains($text, 'interrotto') ||
+            str_contains($text, 'sospesa') ||
+            str_contains($text, 'sospeso') ||
+            str_contains($text, 'chiusa') ||
+            str_contains($text, 'chiuso') ||
             str_contains($text, 'chiusura') ||
-            str_contains($text, 'chiude')
+            str_contains($text, 'chiude') ||
+            str_contains($text, 'san siro') ||
+            str_contains($text, 'manifestazione')
         ) {
             return 'high';
         }
 
         if (
             $source === 'trenord' ||
+            str_contains($text, 'ritardi') ||
+            str_contains($text, 'rallentamenti') ||
             str_contains($text, 'modifiche') ||
             str_contains($text, 'cambiamenti') ||
             str_contains($text, 'lavori') ||
@@ -406,6 +463,11 @@ class MobilityAlertSyncService
             'assago' => 'Assago',
             'rho' => 'Rho',
             'monza' => 'Monza',
+            'm1' => 'M1',
+            'm2' => 'M2',
+            'm3' => 'M3',
+            'm4' => 'M4',
+            'm5' => 'M5',
         ];
 
         foreach ($districts as $needle => $district) {
@@ -447,5 +509,31 @@ class MobilityAlertSyncService
         }
 
         return null;
+    }
+
+    protected function cleanTitle(string $title): string
+    {
+        $title = html_entity_decode($title);
+        $title = preg_replace('/\s+/', ' ', $title);
+
+        return trim($title);
+    }
+
+    protected function absoluteUrl(string $baseUrl, string $href): string
+    {
+        if (Str::startsWith($href, ['http://', 'https://'])) {
+            return $href;
+        }
+
+        $parts = parse_url($baseUrl);
+
+        $scheme = $parts['scheme'] ?? 'https';
+        $host = $parts['host'] ?? '';
+
+        if (Str::startsWith($href, '/')) {
+            return $scheme . '://' . $host . $href;
+        }
+
+        return rtrim($baseUrl, '/') . '/' . ltrim($href, '/');
     }
 }
