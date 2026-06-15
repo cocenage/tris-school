@@ -560,11 +560,14 @@ public function showTrisMareHelp(): void
     </div>
 
 @php
-$canSeeAdminPanel = false;
-$canSeeFinancePanel = (bool) $user->access_finance;
-$canSeeEducationPanel = (bool) $user->access_education;
+$canSeeAdminPanel = $user->isAdmin();
+$canSeeFinancePanel = $user->isAdmin() || $user->hasPanelAccess('finance');
+$canSeeEducationPanel = $user->isAdmin() || $user->hasPanelAccess('education');
 
-$hasAnyAdminAccess = $canSeeFinancePanel || $canSeeEducationPanel;
+$hasAnyAdminAccess =
+    $canSeeAdminPanel ||
+    $canSeeFinancePanel ||
+    $canSeeEducationPanel;nAccess = $canSeeFinancePanel || $canSeeEducationPanel;
 
 
 @endphp
