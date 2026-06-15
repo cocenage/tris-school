@@ -206,12 +206,12 @@ CheckboxList::make('weekend_days')
                     ->schema([
                         Toggle::make('access_finance')
                             ->label('Финансы')
-                            ->dehydrated(false),
+                       ,
 
                         Toggle::make('access_education')
                             ->label('Обучение')
                             ->helperText('Контроли, коучинги и календари')
-                            ->dehydrated(false),
+                       ,
                     ])
                     ->columns(2),
 

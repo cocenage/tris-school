@@ -2,7 +2,9 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Resources\DayOffRequests\DayOffRequestResource;
 use App\Filament\Resources\Users\UserResource;
+use App\Filament\Resources\VacationRequests\VacationRequestResource;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -12,7 +14,6 @@ use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
 use Filament\Widgets\AccountWidget;
-use Filament\Widgets\FilamentInfoWidget;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
@@ -27,17 +28,43 @@ class EducationPanelProvider extends PanelProvider
         return $panel
             ->id('education')
             ->path('admin/education')
+            ->login()
             ->brandName('Админ-панель обучения')
             ->colors([
                 'primary' => Color::Amber,
+                'gray' => Color::Zinc,
+                'success' => Color::Emerald,
+                'warning' => Color::Orange,
+                'danger' => Color::Rose,
+                'info' => Color::Sky,
             ])
-            ->discoverResources(in: app_path('Filament/Education/Resources'), for: 'App\Filament\Education\Resources')
-            ->discoverPages(in: app_path('Filament/Education/Pages'), for: 'App\Filament\Education\Pages')
+            ->sidebarCollapsibleOnDesktop()
+            ->globalSearchKeyBindings(['command+k', 'ctrl+k'])
+            ->maxContentWidth('full')
+
+            ->discoverResources(
+                in: app_path('Filament/Education/Resources'),
+                for: 'App\\Filament\\Education\\Resources'
+            )
+            ->discoverPages(
+                in: app_path('Filament/Education/Pages'),
+                for: 'App\\Filament\\Education\\Pages'
+            )
             ->pages([
                 Dashboard::class,
             ])
-            ->discoverWidgets(in: app_path('Filament/Education/Widgets'), for: 'App\Filament\Education\Widgets')
+            ->discoverWidgets(
+                in: app_path('Filament/Education/Widgets'),
+                for: 'App\\Filament\\Education\\Widgets'
+            )
             ->widgets([
+
+            ])
+            ->resources([
+                UserResource::class,
+                DayOffRequestResource::class,
+                VacationRequestResource::class,
+
             ])
             ->middleware([
                 EncryptCookies::class,
@@ -52,9 +79,7 @@ class EducationPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
-            ])
-            ->resources([
-                UserResource::class,
             ]);
+
     }
 }

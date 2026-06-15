@@ -37,10 +37,22 @@ class MobilityAlertSyncService
 
     protected function syncTrenord(): int
     {
-        return $this->syncGenericPage(
-            source: 'trenord',
-            url: 'https://www.trenord.it'
-        );
+        $created = 0;
+
+        $urls = [
+            'https://www.trenord.it/news/',
+            'https://www.trenord.it/assistenza/informazioni-utili/in-caso-di-sciopero/',
+            'https://www.trenord.it/',
+        ];
+
+        foreach ($urls as $url) {
+            $created += $this->syncGenericPage(
+                source: 'trenord',
+                url: $url
+            );
+        }
+
+        return $created;
     }
 
     protected function syncGenericPage(
@@ -60,7 +72,7 @@ class MobilityAlertSyncService
                 ])
                 ->get($url);
         } catch (\Throwable $e) {
-            Log::warning('Mobility sync source failed', [
+            Log::warning('Mobility source request failed', [
                 'source' => $source,
                 'url' => $url,
                 'error' => $e->getMessage(),
@@ -70,7 +82,7 @@ class MobilityAlertSyncService
         }
 
         if (! $response->successful()) {
-            Log::warning('Mobility sync source returned bad status', [
+            Log::warning('Mobility source returned bad status', [
                 'source' => $source,
                 'url' => $url,
                 'status' => $response->status(),
@@ -82,17 +94,17 @@ class MobilityAlertSyncService
 
         $html = $response->body();
 
-        Log::info('Mobility sync source loaded', [
+        Log::info('Mobility source loaded', [
             'source' => $source,
             'url' => $url,
-            'status' => $response->status(),
             'length' => strlen($html),
         ]);
 
         $items = $this->extractLinks($url, $html);
 
-        Log::info('Mobility sync links extracted', [
+        Log::info('Mobility source links extracted', [
             'source' => $source,
+            'url' => $url,
             'count' => count($items),
         ]);
 
@@ -105,7 +117,7 @@ class MobilityAlertSyncService
                 continue;
             }
 
-            $eventDate = $this->extractDate($title) ?? now()->addDay()->startOfDay();
+            $eventDate = $this->extractDate($title) ?? now()->startOfDay();
 
             $hash = sha1($source . '|' . $title . '|' . $item['url']);
 
@@ -116,8 +128,8 @@ class MobilityAlertSyncService
                     'title' => $title,
                     'description' => null,
                     'url' => $item['url'],
-                    'type' => $forcedType ?? $this->detectType($title),
-                    'risk' => $forcedRisk ?? $this->detectRisk($title),
+                    'type' => $forcedType ?? $this->detectType($title, $source),
+                    'risk' => $forcedRisk ?? $this->detectRisk($title, $source),
                     'district' => $this->detectDistrict($title),
                     'starts_at' => $eventDate,
                     'ends_at' => null,
@@ -129,8 +141,9 @@ class MobilityAlertSyncService
             }
         }
 
-        Log::info('Mobility sync source finished', [
+        Log::info('Mobility source finished', [
             'source' => $source,
+            'url' => $url,
             'created' => $created,
         ]);
 
@@ -162,7 +175,11 @@ class MobilityAlertSyncService
             ];
         }
 
-        return array_slice($items, 0, 100);
+        return collect($items)
+            ->unique(fn ($item) => $item['title'] . '|' . $item['url'])
+            ->take(120)
+            ->values()
+            ->all();
     }
 
     protected function cleanTitle(string $title): string
@@ -206,11 +223,11 @@ class MobilityAlertSyncService
             'affitto',
             'fibre ottiche',
             'mappa metro',
+            'metro maps',
             'mappa',
             'biglietti',
             'abbonamenti',
             'lavora con noi',
-            'atm lavora',
             'gare',
             'bandi',
             'appalti',
@@ -235,6 +252,18 @@ class MobilityAlertSyncService
                 || str_contains($text, 'trasporto ferroviario')
                 || str_contains($text, 'ferroviario')
                 || str_contains($text, 'atm')
+                || str_contains($text, 'trenord');
+        }
+
+        if ($source === 'trenord') {
+            return str_contains($text, 'sciopero')
+                || str_contains($text, 'scioperi')
+                || str_contains($text, 'agitazione')
+                || str_contains($text, 'circolazione')
+                || str_contains($text, 'lombardia')
+                || str_contains($text, 'milano')
+                || str_contains($text, 'treni')
+                || str_contains($text, 'ferroviario')
                 || str_contains($text, 'trenord');
         }
 
@@ -301,13 +330,14 @@ class MobilityAlertSyncService
         return false;
     }
 
-    protected function detectType(string $title): string
+    protected function detectType(string $title, string $source): string
     {
         $text = mb_strtolower($title);
 
         return match (true) {
             str_contains($text, 'sciopero') => 'strike',
             str_contains($text, 'scioperi') => 'strike',
+            str_contains($text, 'agitazione') => 'strike',
             str_contains($text, 'concerto') => 'event',
             str_contains($text, 'san siro') => 'event',
             str_contains($text, 'manifestazione') => 'event',
@@ -317,17 +347,19 @@ class MobilityAlertSyncService
             str_contains($text, 'cantieri') => 'roadwork',
             str_contains($text, 'chiusura') => 'roadwork',
             str_contains($text, 'chiude') => 'roadwork',
+            $source === 'trenord' => 'transport',
             default => 'transport',
         };
     }
 
-    protected function detectRisk(string $title): string
+    protected function detectRisk(string $title, string $source): string
     {
         $text = mb_strtolower($title);
 
         if (
             str_contains($text, 'sciopero') ||
             str_contains($text, 'scioperi') ||
+            str_contains($text, 'agitazione') ||
             str_contains($text, 'san siro') ||
             str_contains($text, 'manifestazione') ||
             str_contains($text, 'chiusura') ||
@@ -337,12 +369,14 @@ class MobilityAlertSyncService
         }
 
         if (
+            $source === 'trenord' ||
             str_contains($text, 'modifiche') ||
             str_contains($text, 'cambiamenti') ||
             str_contains($text, 'lavori') ||
             str_contains($text, 'cantieri') ||
             str_contains($text, 'metro') ||
-            str_contains($text, 'trenord')
+            str_contains($text, 'trenord') ||
+            str_contains($text, 'circolazione')
         ) {
             return 'medium';
         }
@@ -369,6 +403,9 @@ class MobilityAlertSyncService
             'crescenzago' => 'Crescenzago',
             'gobba' => 'Cascina Gobba',
             'gessate' => 'Gessate',
+            'assago' => 'Assago',
+            'rho' => 'Rho',
+            'monza' => 'Monza',
         ];
 
         foreach ($districts as $needle => $district) {
