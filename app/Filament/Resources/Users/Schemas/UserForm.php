@@ -187,17 +187,20 @@ CheckboxList::make('weekend_days')
                             ->label('Праздники')
                             ->dehydrated(false),
 
-                        Toggle::make('calendar_peak')
-                            ->label('Пики загрузки')
-                            ->dehydrated(false),
+          Toggle::make('calendar_peak')
+    ->label('Пики загрузки')
+    ->default(true)
+    ->dehydrated(false),
 
-                        Toggle::make('calendar_vacation')
-                            ->label('Выходные и отпуска')
-                            ->dehydrated(false),
+Toggle::make('calendar_vacation')
+    ->label('Выходные и отпуска')
+    ->default(true)
+    ->dehydrated(false),
 
-                        Toggle::make('calendar_strike')
-                            ->label('Забастовки')
-                            ->dehydrated(false),
+Toggle::make('calendar_strike')
+    ->label('Забастовки')
+    ->default(true)
+    ->dehydrated(false),
                     ])
                     ->columns(2),
 

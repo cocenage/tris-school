@@ -26,44 +26,13 @@ new class extends Component {
         ]);
     }
 
-    protected function percent(): ?int
-    {
-        if ($this->controlResponse->score_percent !== null) {
-            return max(0, min(100, (int) $this->controlResponse->score_percent));
-        }
-
-        if (! $this->controlResponse->max_points) {
-            return null;
-        }
-
-        return (int) round(
-            ($this->controlResponse->total_points / $this->controlResponse->max_points) * 100
-        );
-    }
-
     protected function color(): string
     {
-        $zone = (string) ($this->controlResponse->result_zone ?? '');
-
-        if ($zone === 'green') {
-            return '#27AE60';
-        }
-
-        if ($zone === 'yellow') {
-            return '#2D6494';
-        }
-
-        if ($zone === 'red') {
-            return '#D92D20';
-        }
-
-        $percent = $this->percent();
-
-        return match (true) {
-            $percent === null => '#7D7D7D',
-            $percent >= 80 => '#27AE60',
-            $percent >= 50 => '#2D6494',
-            default => '#D92D20',
+        return match ($this->controlResponse->result_zone) {
+            'green' => '#27AE60',
+            'yellow' => '#F59E0B',
+            'red' => '#D92D20',
+            default => '#7D7D7D',
         };
     }
 
@@ -77,50 +46,17 @@ new class extends Component {
         };
     }
 
-    protected function answerText(array $question, array $answer): string
+    protected function errors(): array
     {
-        $selected = trim((string) ($answer['selected'] ?? ''));
-        $custom = trim((string) ($answer['custom'] ?? ''));
+        $schema = is_array($this->controlResponse->schema_snapshot)
+            ? $this->controlResponse->schema_snapshot
+            : [];
 
-        $label = $selected;
+        $responses = is_array($this->controlResponse->responses)
+            ? $this->controlResponse->responses
+            : [];
 
-        foreach (($question['answer_options_scored'] ?? []) as $optIndex => $opt) {
-            $value = trim((string) ($opt['value'] ?? ('option_' . $optIndex)));
-            $optionLabel = trim((string) ($opt['label'] ?? ''));
-
-            if ($selected !== '' && ($selected === $value || $selected === $optionLabel)) {
-                $label = $optionLabel;
-                break;
-            }
-        }
-
-        if ($label !== '' && $custom !== '') {
-            return $label . ' / ' . $custom;
-        }
-
-        return $label ?: ($custom ?: '—');
-    }
-
-    protected function answerColor(array $question, array $answer): string
-    {
-        $selected = trim((string) ($answer['selected'] ?? ''));
-
-        if ($selected === '') {
-            return '#7D7D7D';
-        }
-
-        foreach (($question['answer_options_scored'] ?? []) as $optIndex => $opt) {
-            $value = trim((string) ($opt['value'] ?? ('option_' . $optIndex)));
-            $optionLabel = trim((string) ($opt['label'] ?? ''));
-
-            if ($selected === $value || $selected === $optionLabel) {
-                return (bool) ($opt['is_positive'] ?? false)
-                    ? '#27AE60'
-                    : '#D92D20';
-            }
-        }
-
-        return '#7D7D7D';
+        return ControlResponse::analyzeAnswers($schema, $responses)['errors'] ?? [];
     }
 };
 ?>
@@ -145,12 +81,9 @@ new class extends Component {
 
 @php
     $record = $controlResponse;
-    $schema = is_array($record->schema_snapshot) ? $record->schema_snapshot : [];
-    $responses = is_array($record->responses) ? $record->responses : [];
-
     $color = $this->color();
-    $percent = $this->percent();
     $zoneLabel = $this->zoneLabel();
+    $errors = $this->errors();
 
     $apartmentName = $record->apartment?->name ?? 'Квартира не указана';
     $comment = trim((string) ($record->comment ?? ''));
@@ -178,7 +111,7 @@ new class extends Component {
                             </div>
 
                             <div class="shrink-0 rounded-full bg-white/15 px-[12px] py-[7px] text-[13px] font-semibold">
-                                {{ $percent !== null ? $percent . '%' : '—' }}
+                                {{ $zoneLabel }}
                             </div>
                         </div>
                     </div>
@@ -203,23 +136,23 @@ new class extends Component {
                             </div>
 
                             <div class="rounded-[18px] bg-[#F8F8F8] px-[13px] py-[11px]">
-                                <div class="text-black/40">Дата уборки</div>
+                                <div class="text-black/40">Ошибок</div>
                                 <div class="mt-[3px] font-semibold text-[#111111]">
-                                    {{ optional($record->cleaning_date)->format('d.m.Y') ?? '—' }}
+                                    {{ (int) $record->errors_count }}
                                 </div>
                             </div>
 
                             <div class="rounded-[18px] bg-[#F8F8F8] px-[13px] py-[11px]">
-                                <div class="text-black/40">Баллы</div>
+                                <div class="text-black/40">Штраф</div>
                                 <div class="mt-[3px] font-semibold text-[#111111]">
-                                    {{ (int) $record->total_points }}/{{ (int) $record->max_points }}
+                                    {{ (int) $record->penalty_points }}
                                 </div>
                             </div>
 
                             <div class="col-span-2 rounded-[18px] bg-[#F8F8F8] px-[13px] py-[11px]">
-                                <div class="text-black/40">Итог</div>
+                                <div class="text-black/40">Причина зоны</div>
                                 <div class="mt-[3px] font-semibold text-[#111111]">
-                                    {{ $zoneLabel }}
+                                    {{ $record->result_zone_reason ?: '—' }}
                                 </div>
                             </div>
 
@@ -227,7 +160,7 @@ new class extends Component {
                                 <div class="col-span-2 rounded-[18px] bg-[#FFF1F0] px-[13px] py-[11px]">
                                     <div class="text-[#D92D20]/70">Критическая ошибка</div>
                                     <div class="mt-[3px] font-semibold text-[#D92D20]">
-                                        Есть отрицательный ответ в критическом вопросе
+                                        Первые два вопроса блока “Спальные места”
                                     </div>
                                 </div>
                             @endif
@@ -244,50 +177,66 @@ new class extends Component {
                     </div>
                 </div>
 
-                @if(empty($schema))
-                    <div class="rounded-[28px] bg-[#F8F8F8] px-[18px] py-[20px] text-center text-[15px] text-black/45">
-                        Ответы не найдены
+                @if(empty($errors))
+                    <div class="rounded-[28px] bg-[#F0FDF4] px-[18px] py-[20px] text-center text-[15px] font-semibold text-[#166534]">
+                        Ошибок нет. Контроль в зелёной зоне.
                     </div>
                 @else
-                    <div class="space-y-[16px]">
-                        @foreach($schema as $roomIndex => $room)
-                            <div class="overflow-hidden rounded-[30px] border border-[#E7E7E7] bg-white">
-                                <div class="bg-[#F8F8F8] px-[18px] py-[14px]">
-                                    <div class="text-[17px] font-semibold text-[#111111]">
-                                        {{ $room['title'] ?? ('Комната ' . ($roomIndex + 1)) }}
+                    <div class="mb-[10px] text-[16px] font-semibold text-[#111111]">
+                        Ошибки контроля
+                    </div>
+
+                    <div class="space-y-[12px]">
+                        @foreach($errors as $error)
+                            @php
+                                $media = is_array($error['media'] ?? null) ? $error['media'] : [];
+                            @endphp
+
+                            <div class="overflow-hidden rounded-[26px] border border-[#FECACA] bg-white">
+                                <div class="flex items-center justify-between gap-[12px] bg-[#FEE2E2] px-[16px] py-[12px]">
+                                    <div class="min-w-0 truncate text-[15px] font-bold text-[#991B1B]">
+                                        {{ $error['room_title'] ?? 'Комната' }}
                                     </div>
 
-                                    @if(!empty($room['description']))
-                                        <div class="mt-[5px] text-[13px] leading-[1.4] text-black/45">
-                                            {{ $room['description'] }}
-                                        </div>
-                                    @endif
+                                    <div class="shrink-0 rounded-full bg-white px-[10px] py-[5px] text-[12px] font-bold text-[#991B1B]">
+                                        −{{ (int) ($error['penalty_points'] ?? 0) }}
+                                    </div>
                                 </div>
 
-                                <div class="space-y-[12px] p-[14px]">
-                                    @foreach(($room['items'] ?? []) as $questionIndex => $question)
-                                        @php
-                                            $answer = $responses[$roomIndex][$questionIndex] ?? [];
-                                            $answerColor = $this->answerColor($question, $answer);
-                                        @endphp
-
-                                        <div class="rounded-[22px] bg-[#F8F8F8] px-[14px] py-[13px]">
-                                            <div class="text-[13px] font-medium leading-[1.35] text-black/45">
-                                                {{ $question['question'] ?? 'Вопрос' }}
-                                            </div>
-
-                                            <div class="mt-[8px] flex items-start gap-[9px]">
-                                                <span
-                                                    class="mt-[3px] h-[10px] w-[10px] shrink-0 rounded-full"
-                                                    style="background: {{ $answerColor }};"
-                                                ></span>
-
-                                                <div class="text-[15px] font-semibold leading-[1.35] text-[#111111]">
-                                                    {{ $this->answerText($question, $answer) }}
-                                                </div>
-                                            </div>
+                                <div class="p-[15px]">
+                                    @if(! empty($error['is_critical']))
+                                        <div class="mb-[10px] inline-flex rounded-full bg-[#D92D20] px-[10px] py-[5px] text-[12px] font-bold text-white">
+                                            Критическая ошибка
                                         </div>
-                                    @endforeach
+                                    @endif
+
+                                    <div class="text-[13px] font-medium leading-[1.35] text-black/45">
+                                        {{ $error['question'] ?? 'Вопрос' }}
+                                    </div>
+
+                                    <div class="mt-[8px] text-[15px] font-semibold leading-[1.35] text-[#111111]">
+                                        {{ $error['selected_label'] ?? '—' }}
+                                    </div>
+
+                                    @if(! empty($media))
+                                        <div class="mt-[12px] flex gap-[8px] overflow-x-auto pb-[2px]">
+                                            @foreach($media as $photo)
+                                                @php
+                                                    $url = (string) ($photo['url'] ?? '');
+                                                @endphp
+
+                                                @if($url !== '')
+                                                    <a href="{{ $url }}" target="_blank" class="shrink-0">
+                                                        <img
+                                                            src="{{ $url }}"
+                                                            alt=""
+                                                            class="h-[92px] w-[92px] rounded-[18px] border border-[#FECACA] object-cover"
+                                                        >
+                                                    </a>
+                                                @endif
+                                            @endforeach
+                                        </div>
+                                    @endif
                                 </div>
                             </div>
                         @endforeach
@@ -298,4 +247,3 @@ new class extends Component {
         </div>
     </div>
 </div>
-

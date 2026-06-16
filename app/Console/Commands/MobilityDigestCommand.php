@@ -61,26 +61,41 @@ protected function buildMessage(Carbon $date, $alerts): string
 {
     $weather = app(MilanWeatherService::class)->today();
 
-$text = '<b>'.Arr::random($this->greetings)."</b>\n\n";
+    $text = '<b>' . Arr::random($this->greetings) . "</b>\n\n";
+
     $text .= "Сегодня: {$weather['summary']}\n";
 
-    if ($weather['advice']) {
-        $text .= "\n{$weather['advice']}\n";
+    if (! empty($weather['advice'])) {
+        $text .= $weather['advice'] . "\n";
     }
 
-    if ($alerts->isNotEmpty()) {
-        $text .= "\n🚦 <b>Передвижение</b>\n\n";
+    $places = $alerts
+        ->map(function (MobilityAlert $alert) {
+            return $alert->district
+                ?: $this->detectReadablePlace($alert->title);
+        })
+        ->filter()
+        ->unique()
+        ->sort()
+        ->values();
 
-        foreach ($alerts as $alert) {
-            $text .= $this->alertLine($alert);
+    if ($places->isNotEmpty()) {
+        $text .= "\n🚦 <b>Передвижение</b>\n\n";
+        $text .= "⚠️ Есть изменения:\n";
+
+        foreach ($places->take(7) as $place) {
+            $text .= "• " . e($place) . "\n";
+        }
+
+        if ($places->count() > 7) {
+            $text .= "• и ещё " . ($places->count() - 7) . "\n";
         }
     }
 
-$text .= "\n".Arr::random($this->endings);
+    $text .= "\n" . Arr::random($this->endings);
 
     return trim($text);
 }
-
 
 
 protected function shouldIncludeAlert(MobilityAlert $alert): bool

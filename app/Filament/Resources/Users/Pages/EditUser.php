@@ -33,7 +33,7 @@ class EditUser extends EditRecord
                 ->url(UserResource::getUrl('index')),
         ];
     }
-    
+
     protected function savePanelAccess(string $panel, bool $canAccess): void
     {
         $this->record->panelAccesses()->updateOrCreate(
@@ -50,9 +50,9 @@ class EditUser extends EditRecord
         $data['calendar_workflow'] = $this->record->hasCalendarTypeAccess('workflow');
         $data['calendar_finance'] = $this->record->hasCalendarTypeAccess('finance');
         $data['calendar_holiday'] = $this->record->hasCalendarTypeAccess('holiday');
-        $data['calendar_peak'] = $this->record->hasCalendarTypeAccess('peak');
-        $data['calendar_vacation'] = $this->record->hasCalendarTypeAccess('vacation');
-        $data['calendar_strike'] = $this->record->hasCalendarTypeAccess('strike');
+        $data['calendar_peak'] = $this->record->hasCalendarTypeAccess('peak', true);
+        $data['calendar_vacation'] = $this->record->hasCalendarTypeAccess('vacation', true);
+        $data['calendar_strike'] = $this->record->hasCalendarTypeAccess('strike', true);
 
         return $data;
     }
