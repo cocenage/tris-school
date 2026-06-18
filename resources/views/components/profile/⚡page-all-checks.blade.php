@@ -168,31 +168,15 @@ new class extends Component {
         return $max > 0 ? max(0, min(100, (int) round(($total / $max) * 100))) : 0;
     }
 
-    protected function controlColor($item): string
-    {
-        $zone = (string) ($item->result_zone ?? '');
-
-        if ($zone === 'green') {
-            return '#27AE60';
-        }
-
-        if ($zone === 'yellow') {
-            return '#2D6494';
-        }
-
-        if ($zone === 'red') {
-            return '#D92D20';
-        }
-
-        $pct = $this->percent($item);
-
-        return match (true) {
-            $pct >= 80 => '#27AE60',
-            $pct >= 50 => '#2D6494',
-            $pct > 0 => '#D92D20',
-            default => '#7D7D7D',
-        };
-    }
+   protected function controlColor($item): string
+{
+    return match ((string) ($item->result_zone ?? '')) {
+        'green' => '#27AE60',
+        'yellow' => '#F59E0B',
+        'red' => '#D92D20',
+        default => '#7D7D7D',
+    };
+}а
 };
 ?>
 
@@ -280,6 +264,11 @@ new class extends Component {
                             $controlsCount = $stats[$cleaner->id]['controls_count'] ?? 0;
                             $coachingsCount = $stats[$cleaner->id]['coachings_count'] ?? 0;
 
+$lastControls = $items
+    ->filter(fn ($item) => ($item->item_type ?? null) === 'control')
+    ->take(12)
+    ->values();а
+
                             $monthsWorked = $cleaner->work_started_at
                                 ? Carbon::parse($cleaner->work_started_at)->diffInMonths(now())
                                 : null;
@@ -314,6 +303,18 @@ new class extends Component {
                                                 {{ optional($cleaner->work_started_at)->format('d.m.Y') ?? '—' }}
                                             </span>
                                         </div>
+
+                                        @if($lastControls->isNotEmpty())
+    <div class="mt-[8px] flex flex-wrap gap-[5px]">
+        @foreach($lastControls as $controlItem)
+            <span
+                class="h-[10px] w-[10px] rounded-full"
+                title="{{ optional($controlItem->inspection_date ?? $controlItem->sent_at ?? $controlItem->created_at)->format('d.m.Y') }}"
+                style="background: {{ $this->controlColor($controlItem) }};"
+            ></span>
+        @endforeach
+    </div>
+@endif
                                     </div>
 
                                     <div class="flex items-center gap-[8px] shrink-0">

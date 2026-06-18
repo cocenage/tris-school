@@ -89,14 +89,14 @@ new class extends Component {
         }
     }
 
-    public function getPeopleProperty()
-    {
-        return User::query()
-            ->where('is_active', true)
-            ->whereIn('role', ['cleaner', 'supervisor'])
-            ->orderBy('name')
-            ->get(['id', 'name', 'role', 'telegram_avatar_path']);
-    }
+public function getPeopleProperty()
+{
+    return User::query()
+        ->activeStaff()
+        ->whereIn('role', ['cleaner', 'supervisor'])
+        ->orderBy('name')
+        ->get(['id', 'name', 'role', 'telegram_avatar_path']);
+}
 
     public function getApartmentsProperty()
     {
@@ -973,11 +973,14 @@ protected function getDraftPayload(): array
                     'responses' => $answersForSave,
                     'schema_snapshot' => $this->rooms,
 
-                    'total_points' => $score['total_points'],
-                    'max_points' => $score['max_points'],
-                    'score_percent' => $score['score_percent'],
-                    'has_critical_failure' => $score['has_critical_failure'],
-                    'result_zone' => $score['result_zone'],
+              'total_points' => $score['total_points'],
+'max_points' => $score['max_points'],
+'score_percent' => $score['score_percent'],
+'penalty_points' => $score['penalty_points'],
+'errors_count' => $score['errors_count'],
+'has_critical_failure' => $score['has_critical_failure'],
+'result_zone' => $score['result_zone'],
+'result_zone_reason' => $score['result_zone_reason'],
 
                     'status' => 'sent',
                     'sent_at' => now(),
@@ -998,6 +1001,9 @@ protected function getDraftPayload(): array
                         'max_points' => $score['max_points'],
                         'score_percent' => $score['score_percent'],
                         'result_zone' => $score['result_zone'],
+                        'penalty_points' => $score['penalty_points'],
+'errors_count' => $score['errors_count'],
+'result_zone_reason' => $score['result_zone_reason'],
                     ])
                     ->log('Супервайзер отправил контроль качества');
 

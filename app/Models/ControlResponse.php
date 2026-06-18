@@ -4,9 +4,9 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
-use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class ControlResponse extends Model
 {
@@ -17,16 +17,13 @@ class ControlResponse extends Model
         'supervisor_id',
         'cleaner_id',
         'apartment_id',
-
         'is_assigned',
         'previous_cleaner',
         'cleaning_date',
         'inspection_date',
-
         'comment',
         'responses',
         'schema_snapshot',
-
         'total_points',
         'max_points',
         'score_percent',
@@ -35,7 +32,6 @@ class ControlResponse extends Model
         'has_critical_failure',
         'result_zone',
         'result_zone_reason',
-
         'status',
         'sent_at',
     ];
@@ -75,11 +71,6 @@ class ControlResponse extends Model
         return $this->belongsTo(User::class, 'supervisor_id');
     }
 
-    public function user()
-    {
-        return $this->belongsTo(User::class);
-    }
-
     public function getResultZoneLabelAttribute(): string
     {
         return match ($this->result_zone) {
@@ -110,7 +101,7 @@ class ControlResponse extends Model
 
         $zoneData = self::resolveResultZoneData(
             penaltyPoints: $analysis['penalty_points'],
-            hasCriticalFailure: $analysis['has_critical_failure']
+            hasCriticalFailure: $analysis['has_critical_failure'],
         );
 
         return [
@@ -180,7 +171,7 @@ class ControlResponse extends Model
 
                 $penaltyPoints += $questionPenalty;
 
-                $isCritical = self::isSleepingPlacesCriticalQuestion($roomTitle, (int) $questionIndex);
+                $isCritical = self::isCriticalQuestion($roomTitle, (int) $questionIndex, $question);
 
                 if ($isCritical) {
                     $hasCriticalFailure = true;
@@ -209,35 +200,34 @@ class ControlResponse extends Model
         ];
     }
 
-    public static function resolveResultZoneData(int $penaltyPoints, bool $hasCriticalFailure): array
-    {
-        if ($penaltyPoints <= 0) {
-            return [
-                'zone' => 'green',
-                'reason' => 'Ошибок нет',
-            ];
-        }
-
-        if ($hasCriticalFailure) {
-            return [
-                'zone' => 'red',
-                'reason' => 'Критическая ошибка в первых двух вопросах блока “Спальные места”',
-            ];
-        }
-
-        if ($penaltyPoints >= 8) {
-            return [
-                'zone' => 'red',
-                'reason' => 'Набрано 8 или больше штрафных баллов',
-            ];
-        }
-
+public static function resolveResultZoneData(int $penaltyPoints, bool $hasCriticalFailure): array
+{
+    if ($penaltyPoints <= 0) {
         return [
-            'zone' => 'yellow',
-            'reason' => 'Есть ошибки, но меньше 8 штрафных баллов',
+            'zone' => 'green',
+            'reason' => 'Ошибок нет',
         ];
     }
 
+    if ($hasCriticalFailure) {
+        return [
+            'zone' => 'red',
+            'reason' => 'Критическая ошибка в первых двух вопросах блока “Спальные места”',
+        ];
+    }
+
+    if ($penaltyPoints >= 8) {
+        return [
+            'zone' => 'red',
+            'reason' => 'Набрано 8 или больше штрафных баллов',
+        ];
+    }
+
+    return [
+        'zone' => 'yellow',
+        'reason' => 'Есть ошибки, но меньше 8 штрафных баллов',
+    ];
+}
     public static function resolveResultZone(int $penaltyPoints, bool $hasCriticalFailure): string
     {
         return self::resolveResultZoneData($penaltyPoints, $hasCriticalFailure)['zone'];
@@ -269,6 +259,15 @@ class ControlResponse extends Model
         }
 
         return [$maxForQuestion, $selectedPoints];
+    }
+
+    protected static function isCriticalQuestion(string $roomTitle, int $questionIndex, array $question): bool
+    {
+        if ((bool) ($question['is_red_zone_question'] ?? false)) {
+            return true;
+        }
+
+        return self::isSleepingPlacesCriticalQuestion($roomTitle, $questionIndex);
     }
 
     protected static function isSleepingPlacesCriticalQuestion(string $roomTitle, int $questionIndex): bool
@@ -311,7 +310,7 @@ class ControlResponse extends Model
     }
 
     public function rewardPointEvents(): MorphMany
-{
-    return $this->morphMany(RewardProgramPointEvent::class, 'source');
-}
+    {
+        return $this->morphMany(RewardProgramPointEvent::class, 'source');
+    }
 }

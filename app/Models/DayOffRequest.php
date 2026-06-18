@@ -154,4 +154,11 @@ class DayOffRequest extends Model
 
         $this->notifyUserIfFinal();
     }
+
+    public function approvedDays(): HasMany
+{
+    return $this->hasMany(DayOffRequestDay::class)
+        ->where('status', 'approved')
+        ->orderBy('date');
+}
 }

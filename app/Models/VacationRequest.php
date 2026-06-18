@@ -103,4 +103,10 @@ public function syncStatusAndNotify(): void
         ->sendResult($this);
 }
 
+public function approvedDays(): HasMany
+{
+    return $this->hasMany(VacationRequestDay::class)
+        ->where('status', 'approved')
+        ->orderBy('date');
+}
 }

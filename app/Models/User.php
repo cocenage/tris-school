@@ -26,7 +26,7 @@ class User extends Authenticatable implements FilamentUser
         'telegram_login_source',
         'telegram_access_approved_notified_at',
         'telegram_access_requested_notified_at',
-        
+
         'role',
         'status',
 
@@ -121,7 +121,7 @@ class User extends Authenticatable implements FilamentUser
         if ($this->role === 'admin') {
             return [
                 'workflow',
-                  'tasks',
+                'tasks',
                 'finance',
                 'holiday',
                 'peak',
@@ -188,5 +188,12 @@ class User extends Authenticatable implements FilamentUser
     public function canManageTasks(): bool
     {
         return in_array($this->role, ['admin', 'supervisor'], true);
+    }
+    
+    public function scopeActiveStaff($query)
+    {
+        return $query
+            ->where('is_active', true)
+            ->where('status', 'approved');
     }
 }
