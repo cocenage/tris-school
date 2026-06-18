@@ -176,7 +176,7 @@ new class extends Component {
         'red' => '#D92D20',
         default => '#7D7D7D',
     };
-}а
+}
 };
 ?>
 
