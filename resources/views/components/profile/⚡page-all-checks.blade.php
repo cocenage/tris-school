@@ -267,7 +267,7 @@ new class extends Component {
 $lastControls = $items
     ->filter(fn ($item) => ($item->item_type ?? null) === 'control')
     ->take(12)
-    ->values();а
+    ->values();
 
                             $monthsWorked = $cleaner->work_started_at
                                 ? Carbon::parse($cleaner->work_started_at)->diffInMonths(now())
