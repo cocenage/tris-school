@@ -5,6 +5,7 @@ namespace App\Services\Forms;
 use App\Models\FeedbackSuggestion;
 use App\Models\SalaryQuestion;
 use App\Models\ScheduleQuestion;
+use App\Models\User;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -17,7 +18,7 @@ class StaffFormTelegramService
         $this->send(
             title: '💰 Новый вопрос по зарплате',
             typeLabel: 'Вопрос по зарплате',
-            userName: $record->user?->name ?? 'Неизвестный сотрудник',
+            user: $record->user,
             type: $record->type,
             comment: $record->comment,
             attachments: $record->attachments ?? [],
@@ -33,7 +34,7 @@ class StaffFormTelegramService
         $this->send(
             title: '📅 Новый вопрос по графику',
             typeLabel: 'Вопрос по графику',
-            userName: $record->user?->name ?? 'Неизвестный сотрудник',
+            user: $record->user,
             type: $record->type,
             comment: $record->comment,
             attachments: $record->attachments ?? [],
@@ -49,7 +50,7 @@ class StaffFormTelegramService
         $this->send(
             title: '💡 Новое обращение',
             typeLabel: 'Обратная связь',
-            userName: $record->user?->name ?? 'Неизвестный сотрудник',
+            user: $record->user,
             type: $record->type,
             comment: $record->comment,
             attachments: $record->attachments ?? [],
@@ -58,10 +59,31 @@ class StaffFormTelegramService
         );
     }
 
+    protected function telegramUserLink(?User $user): string
+    {
+        if (! $user) {
+            return 'Неизвестный сотрудник';
+        }
+
+        $name = e($user->name ?? 'Сотрудник');
+
+        if (filled($user->telegram_username)) {
+            $username = ltrim($user->telegram_username, '@');
+
+            return '<a href="https://t.me/' . e($username) . '">' . $name . '</a>';
+        }
+
+        if (filled($user->telegram_id)) {
+            return '<a href="tg://user?id=' . e((string) $user->telegram_id) . '">' . $name . '</a>';
+        }
+
+        return $name;
+    }
+
     protected function send(
         string $title,
         string $typeLabel,
-        string $userName,
+        ?User $user,
         string $type,
         string $comment,
         array $attachments,
@@ -81,16 +103,14 @@ class StaffFormTelegramService
 
         $message[] = "<b>{$title}</b>";
         $message[] = '';
-
-        $message[] = '👤 <b>Сотрудник:</b> ' . e($userName);
+        $message[] = '👤 <b>Сотрудник:</b> ' . $this->telegramUserLink($user);
         $message[] = '🏷️ <b>Категория:</b> ' . e($typeLabel);
         $message[] = '📌 <b>Тема:</b> ' . e($type);
-
         $message[] = '';
         $message[] = '💬 <b>Комментарий:</b>';
         $message[] = '<blockquote>' . e(trim($comment)) . '</blockquote>';
 
-        if (!empty($attachments)) {
+        if (! empty($attachments)) {
             $message[] = '';
             $message[] = '📎 <b>Прикреплено файлов:</b> ' . count($attachments);
         }
@@ -100,17 +120,14 @@ class StaffFormTelegramService
             'text' => implode("\n", $message),
             'parse_mode' => 'HTML',
             'disable_web_page_preview' => true,
-
             'reply_markup' => [
                 'inline_keyboard' => [
-
                     [
                         [
                             'text' => '⚡ Открыть заявку',
                             'url' => $adminUrl,
-                        ]
+                        ],
                     ],
-
                     [
                         [
                             'text' => '👤 Сотрудники',
@@ -119,9 +136,8 @@ class StaffFormTelegramService
                         [
                             'text' => '📊 Панель',
                             'url' => url('/admin'),
-                        ]
+                        ],
                     ],
-
                 ],
             ],
         ];

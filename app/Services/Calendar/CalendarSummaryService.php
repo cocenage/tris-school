@@ -4,7 +4,7 @@ namespace App\Services\Calendar;
 
 use App\Models\DayOffRequestDay;
 use App\Models\User;
-use App\Models\VacationRequest;
+use App\Models\VacationRequestDay;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
@@ -33,46 +33,41 @@ class CalendarSummaryService
     protected function getWorkersForDay(Carbon $day): array
     {
         $users = User::query()
-            ->where('is_active', true)
+            ->activeStaff()
             ->where('role', 'cleaner')
             ->orderBy('name')
             ->get();
 
+        $userIds = $users->pluck('id');
+
         $dayOffDays = DayOffRequestDay::query()
             ->with(['request'])
             ->whereDate('date', $day->toDateString())
-            ->whereIn('user_id', $users->pluck('id'))
-            ->whereHas('request', fn ($q) => $q->where('status', 'approved'))
-            ->get()
-            ->keyBy('user_id');
-
-        $vacationRequests = VacationRequest::query()
-            ->with(['days'])
             ->where('status', 'approved')
-            ->whereIn('user_id', $users->pluck('id'))
-            ->whereHas('days', fn ($q) => $q->whereDate('date', $day->toDateString()))
+            ->whereIn('user_id', $userIds)
             ->get()
             ->keyBy('user_id');
 
-        $notWorking = $users->filter(function (User $user) use ($day, $dayOffDays, $vacationRequests) {
+        $vacationDays = VacationRequestDay::query()
+            ->with(['request'])
+            ->whereDate('date', $day->toDateString())
+            ->where('status', 'approved')
+            ->whereIn('user_id', $userIds)
+            ->get()
+            ->keyBy('user_id');
+
+        $notWorking = $users->filter(function (User $user) use ($day, $dayOffDays, $vacationDays) {
             return $this->isRegularWeekend($user, $day)
                 || $dayOffDays->has($user->id)
-                || $vacationRequests->has($user->id);
-        })->map(function (User $user) use ($day, $dayOffDays, $vacationRequests) {
-            if ($vacationRequests->has($user->id)) {
-                $request = $vacationRequests->get($user->id);
-
-                $lastDay = $request->days
-                    ->sortBy('date')
-                    ->last();
-
-                $until = $lastDay
-                    ? ' до ' . Carbon::parse($lastDay->date)->translatedFormat('j F')
-                    : '';
+                || $vacationDays->has($user->id);
+        })->map(function (User $user) use ($day, $dayOffDays, $vacationDays) {
+            if ($vacationDays->has($user->id)) {
+                $vacationDay = $vacationDays->get($user->id);
+                $request = $vacationDay?->request;
 
                 $user->not_working_reason = filled($request?->reason)
-                    ? 'Отпуск' . $until . ': ' . $request->reason
-                    : 'Отпуск' . $until;
+                    ? 'Отпуск: ' . $request->reason
+                    : 'Отпуск';
 
                 return $user;
             }

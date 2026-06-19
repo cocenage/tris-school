@@ -139,16 +139,16 @@ class CalendarEventsService
             ]);
         }
 
-        $vacationRequests = VacationRequest::query()
-            ->with(['user', 'days'])
-            ->whereIn('status', ['approved', 'partially_approved'])
-            ->whereHas('days', function ($query) use ($rangeStart, $rangeEnd) {
-                $query->whereBetween('date', [
-                    $rangeStart->copy()->toDateString(),
-                    $rangeEnd->copy()->toDateString(),
-                ]);
-            })
-            ->get();
+$vacationRequests = VacationRequest::query()
+    ->with(['days'])
+    ->whereIn('status', ['approved', 'partially_approved'])
+    ->whereIn('user_id', $users->pluck('id'))
+    ->whereHas('days', function ($q) use ($day) {
+        $q->whereDate('date', $day->toDateString())
+          ->where('status', 'approved');
+    })
+    ->get()
+    ->keyBy('user_id');
 
         foreach ($vacationRequests as $vacationRequest) {
             $user = $vacationRequest->user;

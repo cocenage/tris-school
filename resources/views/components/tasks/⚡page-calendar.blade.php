@@ -840,18 +840,12 @@ new class extends Component {
             return collect();
         }
 
-        $baseEvents = CalendarEvent::query()
-            ->with('user')
-            ->where('is_active', true)
-            ->where(function ($query) {
-                $query
-                    ->whereNull('user_id')
-                    ->orWhereHas('user', fn ($q) => $q->activeStaff());
-            })
-            ->whereIn('type', $allowedTypes)
-            ->orderByDesc('priority')
-            ->orderBy('start_date')
-            ->get();
+$baseEvents = CalendarEvent::query()
+    ->where('is_active', true)
+    ->whereIn('type', $allowedTypes)
+    ->orderByDesc('priority')
+    ->orderBy('start_date')
+    ->get();
 
         $expanded = collect();
 
@@ -1285,7 +1279,7 @@ new class extends Component {
 
     protected function mapEventOccurrence(CalendarEvent $event, Carbon $start, Carbon $end): array
     {
-        $user = $event->user;
+        $user = null;
 
         $title = $event->title;
 
