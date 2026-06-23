@@ -143,10 +143,12 @@ $vacationRequests = VacationRequest::query()
     ->with(['days'])
     ->whereIn('status', ['approved', 'partially_approved'])
     ->whereIn('user_id', $users->pluck('id'))
-    ->whereHas('days', function ($q) use ($day) {
-        $q->whereDate('date', $day->toDateString())
-          ->where('status', 'approved');
-    })
+ ->whereHas('days', function ($q) use ($start, $end) {
+    $q->whereBetween('date', [
+        $start->toDateString(),
+        $end->toDateString(),
+    ])->where('status', 'approved');
+})
     ->get()
     ->keyBy('user_id');
 

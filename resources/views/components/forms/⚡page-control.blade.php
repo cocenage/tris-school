@@ -19,6 +19,8 @@ new class extends Component {
 
     public array $rooms = [];
     public array $answers = [];
+    public array $peopleOptions = [];
+    public array $apartmentOptions = [];
     public array $photoUploads = [];
     public array $queuedPhotos = [];
     public int $photoLimit = 12;
@@ -69,6 +71,7 @@ new class extends Component {
 
         $this->buildEmptyAnswers();
         $this->restoreDraft();
+        $this->loadSelectOptions();
 
         $this->autoSaveEnabled = true;
     }
@@ -89,22 +92,32 @@ new class extends Component {
         }
     }
 
-public function getPeopleProperty()
-{
-    return User::query()
-        ->activeStaff()
-        ->whereIn('role', ['cleaner', 'supervisor'])
-        ->orderBy('name')
-        ->get(['id', 'name', 'role', 'telegram_avatar_path']);
-}
-
-    public function getApartmentsProperty()
+    protected function loadSelectOptions(): void
     {
-        return Apartment::query()
+        $this->peopleOptions = User::query()
+            ->activeStaff()
+            ->whereIn('role', ['cleaner', 'supervisor'])
+            ->orderBy('name')
+            ->get(['id', 'name', 'role', 'telegram_avatar_path'])
+            ->map(fn (User $user): array => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'role' => $user->role,
+                'telegram_avatar_path' => $user->telegram_avatar_path,
+            ])
+            ->all();
+
+        $this->apartmentOptions = Apartment::query()
             ->where('is_active', true)
             ->orderBy('sort_order')
             ->orderBy('name')
-            ->get(['id', 'name', 'image']);
+            ->get(['id', 'name', 'image'])
+            ->map(fn (Apartment $apartment): array => [
+                'id' => $apartment->id,
+                'name' => $apartment->name,
+                'image' => $apartment->image,
+            ])
+            ->all();
     }
 
     public function updated(string $name): void
@@ -973,14 +986,14 @@ protected function getDraftPayload(): array
                     'responses' => $answersForSave,
                     'schema_snapshot' => $this->rooms,
 
-              'total_points' => $score['total_points'],
-'max_points' => $score['max_points'],
-'score_percent' => $score['score_percent'],
-'penalty_points' => $score['penalty_points'],
-'errors_count' => $score['errors_count'],
-'has_critical_failure' => $score['has_critical_failure'],
-'result_zone' => $score['result_zone'],
-'result_zone_reason' => $score['result_zone_reason'],
+                    'total_points' => $score['total_points'],
+                    'max_points' => $score['max_points'],
+                    'score_percent' => $score['score_percent'],
+                    'penalty_points' => $score['penalty_points'],
+                    'errors_count' => $score['errors_count'],
+                    'has_critical_failure' => $score['has_critical_failure'],
+                    'result_zone' => $score['result_zone'],
+                    'result_zone_reason' => $score['result_zone_reason'],
 
                     'status' => 'sent',
                     'sent_at' => now(),
@@ -1002,8 +1015,8 @@ protected function getDraftPayload(): array
                         'score_percent' => $score['score_percent'],
                         'result_zone' => $score['result_zone'],
                         'penalty_points' => $score['penalty_points'],
-'errors_count' => $score['errors_count'],
-'result_zone_reason' => $score['result_zone_reason'],
+                        'errors_count' => $score['errors_count'],
+                        'result_zone_reason' => $score['result_zone_reason'],
                     ])
                     ->log('Супервайзер отправил контроль качества');
 
@@ -1094,7 +1107,7 @@ protected function getDraftPayload(): array
 
                 this.timer = setTimeout(() => {
                     $wire.saveDraftAuto();
-                }, 1200);
+                }, 2500);
             },
 
             init() {
@@ -1199,9 +1212,9 @@ protected function getDraftPayload(): array
                                     >
                                         <option value="">Выберите человека</option>
 
-                                        @foreach($this->people as $person)
-                                            <option value="{{ $person->id }}">
-                                                {{ $person->name }}
+                                        @foreach($peopleOptions as $person)
+                                            <option value="{{ $person['id'] }}">
+                                                {{ $person['name'] }}
                                             </option>
                                         @endforeach
                                     </select>
@@ -1224,9 +1237,9 @@ protected function getDraftPayload(): array
                                     >
                                         <option value="">Выберите квартиру</option>
 
-                                        @foreach($this->apartments as $apartment)
-                                            <option value="{{ $apartment->id }}">
-                                                {{ $apartment->name }}
+                                        @foreach($apartmentOptions as $apartment)
+                                            <option value="{{ $apartment['id'] }}">
+                                                {{ $apartment['name'] }}
                                             </option>
                                         @endforeach
                                     </select>
@@ -1470,26 +1483,43 @@ protected function getDraftPayload(): array
                                                        @foreach($opts as $optIndex => $opt)
     @php
         $value = (string) ($opt['value'] ?? $opt['label'] ?? ('option_' . $optIndex));
-
         $legacyValue = 'option_' . $optIndex;
-
-        $active = $selected === $value || $selected === $legacyValue;
     @endphp
 
-    <button
-        type="button"
-        wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
-        class="flex min-h-[50px] w-full items-center justify-between rounded-[20px] px-[15px] text-left text-[14px] font-semibold transition
-            {{ $active ? 'bg-[#213259] text-white shadow-[0_10px_24px_rgba(33,50,89,0.18)]' : 'bg-[#F1F5F9] text-[#111827]' }}"
-    >
-        <span>{{ $opt['label'] ?? 'Вариант' }}</span>
+    <div
+        x-data="{
+            selected: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.selected'),
+            value: @js($value),
+            legacyValue: @js($legacyValue),
 
-        @if($active)
-            <span class="rounded-full bg-white/15 px-[8px] py-[4px] text-[11px] text-white/75">
+            get active() {
+                return this.selected === this.value || this.selected === this.legacyValue;
+            },
+
+            choose() {
+                this.selected = this.value;
+            }
+        }"
+    >
+        <button
+            type="button"
+            @click="choose(); save();"
+            :class="active
+                ? 'bg-[#213259] text-white shadow-[0_10px_24px_rgba(33,50,89,0.18)]'
+                : 'bg-[#F1F5F9] text-[#111827]'"
+            class="flex min-h-[50px] w-full items-center justify-between rounded-[20px] px-[15px] text-left text-[14px] font-semibold transition"
+        >
+            <span>{{ $opt['label'] ?? 'Вариант' }}</span>
+
+            <span
+                x-show="active"
+                x-cloak
+                class="rounded-full bg-white/15 px-[8px] py-[4px] text-[11px] text-white/75"
+            >
                 выбрано
             </span>
-        @endif
-    </button>
+        </button>
+    </div>
 @endforeach
                                                             </div>
                                                         @endif
