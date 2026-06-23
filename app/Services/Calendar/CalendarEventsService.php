@@ -151,8 +151,7 @@ $vacationRequests = VacationRequest::query()
             $rangeEnd->toDateString(),
         ])->where('status', 'approved');
     })
-    ->get();
-    ->keyBy('user_id');
+    ->get();    
 
         foreach ($vacationRequests as $vacationRequest) {
             $user = $vacationRequest->user;
