@@ -11,6 +11,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpKernel\Attribute\Cache;
 
 class TelegramWorkWebhookController extends Controller
 {
@@ -46,6 +47,15 @@ Log::info('Telegram work webhook received', [
         if (! $message) {
             return response()->json(['ok' => true, 'skipped' => 'no_message']);
         }
+
+        if (($message['chat']['type'] ?? null) === 'private') {
+    $this->sendPrivateFallbackMessage($message);
+
+    return response()->json([
+        'ok' => true,
+        'skipped' => 'private_message_fallback',
+    ]);
+}
 
         $chatId = (string) data_get($message, 'chat.id');
 
@@ -396,6 +406,48 @@ private function editDayOffRequestMessage(
             'text' => $text,
         ]);
     }
+
+    private function sendPrivateFallbackMessage(array $message): void
+{
+    $chatId = data_get($message, 'chat.id');
+
+    if (! $chatId) {
+        return;
+    }
+
+    $cacheKey = 'telegram_private_fallback_sent:' . $chatId;
+
+    if (Cache::has($cacheKey)) {
+        return;
+    }
+
+    Cache::put($cacheKey, true, now()->addSeconds(60));
+
+    Http::post($this->telegramApiUrl('sendMessage'), [
+        'chat_id' => $chatId,
+        'text' => implode("\n", [
+            'Привет!',
+            '',
+            'Я не читаю личные сообщения, у меня нет ответа на ваш вопрос.',
+            '',
+            'Пожалуйста, выберите нужный тип заявки в академии:',
+            'https://academy.trisservice.eu/applications',
+        ]),
+        'disable_web_page_preview' => true,
+        'reply_markup' => [
+            'inline_keyboard' => [
+                [
+                    [
+                        'text' => 'Выбрать тип заявки',
+                        'web_app' => [
+                            'url' => 'https://academy.trisservice.eu/applications',
+                        ],
+                    ],
+                ],
+            ],
+        ],
+    ]);
+}
 
     private function telegramApiUrl(string $method): string
     {

@@ -122,10 +122,7 @@ new class extends Component {
 
     public function updated(string $name): void
     {
-        if (str_starts_with($name, 'photoUploads.')) {
-            $this->queueUploadedPhotos($name);
-            return;
-        }
+      
 
         if (! $this->autoSaveEnabled) {
             return;
@@ -708,6 +705,11 @@ protected function getDraftPayload(): array
 
         $this->touchAutosave();
     }
+
+    public function finishPhotoUpload(int $roomIndex, int $questionIndex): void
+{
+    $this->queueUploadedPhotos("photoUploads.$roomIndex.$questionIndex");
+}
 
     public function removeQueuedPhoto(int $roomIndex, int $questionIndex, int $photoIndex): void
     {
@@ -1544,11 +1546,19 @@ protected function getDraftPayload(): array
 
                                                                 <label class="shrink-0 cursor-pointer rounded-full bg-[#213259] px-[12px] py-[8px] text-[12px] font-semibold text-white">
                                                                     Добавить
-                                                                   <input
+<input
     type="file"
     multiple
     accept="image/*"
-    wire:model="photoUploads.{{ $roomIndex }}.{{ $questionIndex }}"
+    x-on:change="
+        window.controlUploadCompressedPhotos(
+            $event,
+            $wire,
+            'photoUploads.{{ $roomIndex }}.{{ $questionIndex }}',
+            {{ $roomIndex }},
+            {{ $questionIndex }}
+        )
+    "
     class="hidden"
 >
                                                                 </label>
@@ -1774,7 +1784,99 @@ protected function getDraftPayload(): array
         </x-ui.bottom-sheet>
     </div>
 </div>
+<script>
+    window.controlCompressPhoto = async function (file) {
+        if (!file.type.startsWith('image/')) {
+            return file;
+        }
 
+        if (file.size <= 900 * 1024) {
+            return file;
+        }
+
+        const objectUrl = URL.createObjectURL(file);
+
+        const image = await new Promise((resolve, reject) => {
+            const img = new Image();
+
+            img.onload = () => {
+                URL.revokeObjectURL(objectUrl);
+                resolve(img);
+            };
+
+            img.onerror = () => {
+                URL.revokeObjectURL(objectUrl);
+                reject();
+            };
+
+            img.src = objectUrl;
+        });
+
+        const maxSize = 1600;
+        let width = image.width;
+        let height = image.height;
+
+        if (width > height && width > maxSize) {
+            height = Math.round(height * (maxSize / width));
+            width = maxSize;
+        } else if (height > maxSize) {
+            width = Math.round(width * (maxSize / height));
+            height = maxSize;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(image, 0, 0, width, height);
+
+        return await new Promise((resolve) => {
+            canvas.toBlob((blob) => {
+                if (!blob) {
+                    resolve(file);
+                    return;
+                }
+
+                resolve(new File(
+                    [blob],
+                    file.name.replace(/\.[^.]+$/, '') + '.jpg',
+                    {
+                        type: 'image/jpeg',
+                        lastModified: Date.now(),
+                    }
+                ));
+            }, 'image/jpeg', 0.72);
+        });
+    };
+
+    window.controlUploadCompressedPhotos = async function (event, wire, property, roomIndex, questionIndex) {
+        const input = event.target;
+        const files = Array.from(input.files || []);
+
+        if (!files.length) {
+            return;
+        }
+
+        const compressed = [];
+
+        for (const file of files) {
+            compressed.push(await window.controlCompressPhoto(file));
+        }
+
+        wire.uploadMultiple(
+            property,
+            compressed,
+            () => {
+                wire.finishPhotoUpload(roomIndex, questionIndex);
+                input.value = '';
+            },
+            () => {
+                input.value = '';
+            }
+        );
+    };
+</script>
 <script>
     document.addEventListener('livewire:init', () => {
         Livewire.on('control-scroll', (event) => {
