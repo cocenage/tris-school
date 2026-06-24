@@ -1553,7 +1553,7 @@ protected function getDraftPayload(): array
     x-on:change="
         window.controlUploadCompressedPhotos(
             $event,
-            $wire,
+            @this,
             'photoUploads.{{ $roomIndex }}.{{ $questionIndex }}',
             {{ $roomIndex }},
             {{ $questionIndex }}
@@ -1785,72 +1785,7 @@ protected function getDraftPayload(): array
     </div>
 </div>
 <script>
-    window.controlCompressPhoto = async function (file) {
-        if (!file.type.startsWith('image/')) {
-            return file;
-        }
-
-        if (file.size <= 900 * 1024) {
-            return file;
-        }
-
-        const objectUrl = URL.createObjectURL(file);
-
-        const image = await new Promise((resolve, reject) => {
-            const img = new Image();
-
-            img.onload = () => {
-                URL.revokeObjectURL(objectUrl);
-                resolve(img);
-            };
-
-            img.onerror = () => {
-                URL.revokeObjectURL(objectUrl);
-                reject();
-            };
-
-            img.src = objectUrl;
-        });
-
-        const maxSize = 1600;
-        let width = image.width;
-        let height = image.height;
-
-        if (width > height && width > maxSize) {
-            height = Math.round(height * (maxSize / width));
-            width = maxSize;
-        } else if (height > maxSize) {
-            width = Math.round(width * (maxSize / height));
-            height = maxSize;
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(image, 0, 0, width, height);
-
-        return await new Promise((resolve) => {
-            canvas.toBlob((blob) => {
-                if (!blob) {
-                    resolve(file);
-                    return;
-                }
-
-                resolve(new File(
-                    [blob],
-                    file.name.replace(/\.[^.]+$/, '') + '.jpg',
-                    {
-                        type: 'image/jpeg',
-                        lastModified: Date.now(),
-                    }
-                ));
-            }, 'image/jpeg', 0.72);
-        });
-    };
-
-    window.controlUploadCompressedPhotos = async function (event, wire, property, roomIndex, questionIndex) {
+    window.controlUploadCompressedPhotos = async function (event, livewire, property, roomIndex, questionIndex) {
         const input = event.target;
         const files = Array.from(input.files || []);
 
@@ -1858,23 +1793,30 @@ protected function getDraftPayload(): array
             return;
         }
 
-        const compressed = [];
+        try {
+            const compressed = [];
 
-        for (const file of files) {
-            compressed.push(await window.controlCompressPhoto(file));
-        }
-
-        wire.uploadMultiple(
-            property,
-            compressed,
-            () => {
-                wire.finishPhotoUpload(roomIndex, questionIndex);
-                input.value = '';
-            },
-            () => {
-                input.value = '';
+            for (const file of files) {
+                compressed.push(await window.controlCompressPhoto(file));
             }
-        );
+
+            livewire.uploadMultiple(
+                property,
+                compressed,
+                () => {
+                    livewire.call('finishPhotoUpload', roomIndex, questionIndex);
+                    input.value = '';
+                },
+                () => {
+                    alert('Не удалось загрузить фото');
+                    input.value = '';
+                }
+            );
+        } catch (error) {
+            console.error(error);
+            alert('Ошибка обработки фото');
+            input.value = '';
+        }
     };
 </script>
 <script>
