@@ -1785,6 +1785,89 @@ protected function getDraftPayload(): array
     </div>
 </div>
 <script>
+    window.controlCompressPhoto = async function (file) {
+        try {
+            if (!file || !file.type || !file.type.startsWith('image/')) {
+                return file;
+            }
+
+            // HEIC/HEIF часто не читается через canvas, грузим как есть
+            if (
+                file.type.includes('heic') ||
+                file.type.includes('heif') ||
+                file.name.toLowerCase().endsWith('.heic') ||
+                file.name.toLowerCase().endsWith('.heif')
+            ) {
+                return file;
+            }
+
+            if (file.size <= 900 * 1024) {
+                return file;
+            }
+
+            const objectUrl = URL.createObjectURL(file);
+
+            const image = await new Promise((resolve, reject) => {
+                const img = new Image();
+
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+                img.src = objectUrl;
+            });
+
+            const maxSize = 1600;
+            let width = image.naturalWidth || image.width;
+            let height = image.naturalHeight || image.height;
+
+            URL.revokeObjectURL(objectUrl);
+
+            if (!width || !height) {
+                return file;
+            }
+
+            if (width > height && width > maxSize) {
+                height = Math.round(height * (maxSize / width));
+                width = maxSize;
+            } else if (height > maxSize) {
+                width = Math.round(width * (maxSize / height));
+                height = maxSize;
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+
+            const ctx = canvas.getContext('2d');
+
+            if (!ctx) {
+                return file;
+            }
+
+            ctx.drawImage(image, 0, 0, width, height);
+
+            return await new Promise((resolve) => {
+                canvas.toBlob((blob) => {
+                    if (!blob) {
+                        resolve(file);
+                        return;
+                    }
+
+                    resolve(new File(
+                        [blob],
+                        file.name.replace(/\.[^.]+$/, '') + '.jpg',
+                        {
+                            type: 'image/jpeg',
+                            lastModified: Date.now(),
+                        }
+                    ));
+                }, 'image/jpeg', 0.72);
+            });
+        } catch (error) {
+            console.warn('Photo compression failed, uploading original:', error);
+            return file;
+        }
+    };
+
     window.controlUploadCompressedPhotos = async function (event, livewire, property, roomIndex, questionIndex) {
         const input = event.target;
         const files = Array.from(input.files || []);
@@ -1793,30 +1876,24 @@ protected function getDraftPayload(): array
             return;
         }
 
-        try {
-            const compressed = [];
+        const compressed = [];
 
-            for (const file of files) {
-                compressed.push(await window.controlCompressPhoto(file));
-            }
-
-            livewire.uploadMultiple(
-                property,
-                compressed,
-                () => {
-                    livewire.call('finishPhotoUpload', roomIndex, questionIndex);
-                    input.value = '';
-                },
-                () => {
-                    alert('Не удалось загрузить фото');
-                    input.value = '';
-                }
-            );
-        } catch (error) {
-            console.error(error);
-            alert('Ошибка обработки фото');
-            input.value = '';
+        for (const file of files) {
+            compressed.push(await window.controlCompressPhoto(file));
         }
+
+        livewire.uploadMultiple(
+            property,
+            compressed,
+            () => {
+                livewire.call('finishPhotoUpload', roomIndex, questionIndex);
+                input.value = '';
+            },
+            () => {
+                alert('Не удалось загрузить фото');
+                input.value = '';
+            }
+        );
     };
 </script>
 <script>
