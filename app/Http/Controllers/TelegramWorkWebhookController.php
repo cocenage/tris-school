@@ -409,6 +409,10 @@ private function editDayOffRequestMessage(
 
     private function sendPrivateFallbackMessage(array $message): void
 {
+       Log::info('PRIVATE MESSAGE RECEIVED', [
+        'chat_id' => data_get($message, 'chat.id'),
+        'text' => data_get($message, 'text'),
+    ]);
     $chatId = data_get($message, 'chat.id');
 
     if (! $chatId) {
