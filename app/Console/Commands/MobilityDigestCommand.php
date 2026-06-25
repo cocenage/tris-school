@@ -31,7 +31,7 @@ protected array $endings = [
     'Легкого рабочего дня 🌤',
     'Пусть день пройдет спокойно 🤝',
 ];
-    protected $signature = 'mobility:digest {--date=}';
+   protected $signature = 'mobility:digest {--date=} {--dry-run}';
 
     protected $description = 'Send daily shift assistant digest to Telegram forum topics';
 
@@ -48,11 +48,21 @@ protected array $endings = [
             ->filter(fn (MobilityAlert $alert) => $this->shouldIncludeAlert($alert))
             ->values();
 
-        $message = $this->buildMessage($date, $alerts);
+$message = $this->buildMessage($date, $alerts);
 
-        $this->sendTelegram($message);
+if ($this->option('dry-run')) {
+    $this->line('');
+    $this->line('===== DRY RUN MOBILITY DIGEST =====');
+    $this->line($message);
+    $this->line('===================================');
+    $this->line('');
 
-        $this->info('Daily shift digest sent.');
+    return self::SUCCESS;
+}
+
+$this->sendTelegram($message);
+
+$this->info('Daily shift digest sent.');
 
         return self::SUCCESS;
     }
@@ -69,26 +79,20 @@ protected function buildMessage(Carbon $date, $alerts): string
         $text .= $weather['advice'] . "\n";
     }
 
-    $places = $alerts
-        ->map(function (MobilityAlert $alert) {
-            return $alert->district
-                ?: $this->detectReadablePlace($alert->title);
-        })
-        ->filter()
-        ->unique()
-        ->sort()
+    $importantAlerts = $alerts
+        ->filter(fn (MobilityAlert $alert) => $this->isReallyImportantAlert($alert))
         ->values();
 
-    if ($places->isNotEmpty()) {
+    if ($importantAlerts->isNotEmpty()) {
         $text .= "\n🚦 <b>Передвижение</b>\n\n";
-        $text .= "⚠️ Есть изменения:\n";
+        $text .= "🚨 <b>Важно:</b>\n";
 
-        foreach ($places->take(7) as $place) {
-            $text .= "• " . e($place) . "\n";
+        foreach ($importantAlerts->take(5) as $alert) {
+            $text .= $this->importantAlertLine($alert);
         }
 
-        if ($places->count() > 7) {
-            $text .= "• и ещё " . ($places->count() - 7) . "\n";
+        if ($importantAlerts->count() > 5) {
+            $text .= "• и ещё " . ($importantAlerts->count() - 5) . "\n";
         }
     }
 
@@ -97,6 +101,33 @@ protected function buildMessage(Carbon $date, $alerts): string
     return trim($text);
 }
 
+protected function isReallyImportantAlert(MobilityAlert $alert): bool
+{
+    $title = mb_strtolower($alert->title);
+    $type = mb_strtolower($alert->type ?? '');
+
+    return str_contains($title, 'sciopero')
+        || str_contains($title, 'strike')
+        || str_contains($type, 'strike')
+        || str_contains($title, 'забаст')
+        || str_contains($title, 'atm')
+        || str_contains($title, 'trenord');
+}
+
+protected function importantAlertLine(MobilityAlert $alert): string
+{
+    $title = mb_strtolower($alert->title);
+
+    if (str_contains($title, 'sciopero') || str_contains($title, 'strike') || str_contains($title, 'забаст')) {
+        return "• Забастовка ATM / транспорта. Лучше заранее проверить маршрут.\n";
+    }
+
+    if (str_contains($title, 'trenord')) {
+        return "• Возможны изменения поездов Trenord. Проверьте расписание заранее.\n";
+    }
+
+    return "• " . e($alert->title) . "\n";
+}
 
 protected function shouldIncludeAlert(MobilityAlert $alert): bool
 {
