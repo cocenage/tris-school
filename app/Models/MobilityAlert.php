@@ -25,4 +25,9 @@ class MobilityAlert extends Model
         'ends_at' => 'date',
         'sent_at' => 'datetime',
     ];
+
+    public function messages()
+    {
+        return $this->hasMany(MobilityAlertMessage::class);
+    }
 }

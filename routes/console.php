@@ -15,12 +15,21 @@ Schedule::command('tasks:check-deadlines')->everyFifteenMinutes();
 
 Schedule::command('mobility:sync')
     ->dailyAt('07:30')
+     ->hourly()
     ->withoutOverlapping();
 
+    Schedule::command('mobility:admin-alerts')
+    ->hourly()
+    ->withoutOverlapping();
+    
 Schedule::command('mobility:digest')
     ->dailyAt('08:00')
+     ->hourly()
     ->withoutOverlapping();
 
+    
     Schedule::command('tris-mare:sync')
     ->dailyAt('20:15')
     ->timezone('Europe/Rome');
+
+    
