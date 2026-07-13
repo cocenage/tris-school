@@ -23,15 +23,16 @@ class TelegramWorkWebhookController extends Controller
         TelegramUpdateIngestService $ingestService
     ) {
 
-Log::info('Telegram work webhook received', [
-    'secret_ok' => $secret === config('services.telegram.work_webhook_secret'),
-    'has_callback_query' => $request->has('callback_query'),
-    'callback_data' => $request->input('callback_query.data'),
-]);
+        $configuredSecret = (string) config('services.telegram.work_webhook_secret');
 
-        if ($secret !== config('services.telegram.work_webhook_secret')) {
+        if ($configuredSecret === '' || ! hash_equals($configuredSecret, $secret)) {
             abort(403);
         }
+
+        Log::info('Telegram work webhook received', [
+            'update_id' => $request->input('update_id'),
+            'has_callback_query' => $request->has('callback_query'),
+        ]);
 
         $update = $request->all();
 
@@ -79,7 +80,9 @@ Log::info('Telegram work webhook received', [
         } catch (\Throwable $e) {
             Log::error('Telegram work webhook failed', [
                 'error' => $e->getMessage(),
-                'update' => $update,
+                'update_id' => $update['update_id'] ?? null,
+                'chat_id' => data_get($message, 'chat.id'),
+                'message_id' => data_get($message, 'message_id'),
             ]);
 
             return response()->json(['ok' => false], 500);
@@ -116,16 +119,23 @@ Log::info('Telegram work webhook received', [
 
         [, $action, $userId] = $parts;
 
-        $chatId = (string) data_get($callbackQuery, 'message.chat.id');
-        $allowedChatIds = config('services.telegram.work_allowed_chat_ids', []);
-
-        if (! empty($allowedChatIds) && ! in_array($chatId, $allowedChatIds, true)) {
+        if (! $this->isAllowedCallbackChat($callbackQuery)) {
             $this->answerCallback($callbackQuery, 'Нет доступа к этому чату');
 
             return response()->json([
                 'ok' => true,
                 'skipped' => 'chat_not_allowed',
-                'chat_id' => $chatId,
+            ]);
+        }
+
+        $moderator = $this->resolveModerator($callbackQuery, ['admin']);
+
+        if (! $moderator) {
+            $this->answerCallback($callbackQuery, 'Недостаточно прав');
+
+            return response()->json([
+                'ok' => true,
+                'skipped' => 'moderator_not_allowed',
             ]);
         }
 
@@ -136,12 +146,6 @@ Log::info('Telegram work webhook received', [
 
             return response()->json(['ok' => true, 'skipped' => 'user_not_found']);
         }
-
-        $fromTelegramId = data_get($callbackQuery, 'from.id');
-
-        $moderator = $fromTelegramId
-            ? User::where('telegram_id', (string) $fromTelegramId)->first()
-            : null;
 
         $moderatorText = $this->telegramUserText($callbackQuery['from'] ?? []);
 
@@ -193,6 +197,26 @@ Log::info('Telegram work webhook received', [
             return response()->json(['ok' => true, 'skipped' => 'unknown_dayoffday_action']);
         }
 
+        if (! $this->isAllowedCallbackChat($callbackQuery)) {
+            $this->answerCallback($callbackQuery, 'Нет доступа к этому чату');
+
+            return response()->json([
+                'ok' => true,
+                'skipped' => 'chat_not_allowed',
+            ]);
+        }
+
+        $reviewer = $this->resolveModerator($callbackQuery, ['admin', 'supervisor']);
+
+        if (! $reviewer) {
+            $this->answerCallback($callbackQuery, 'Недостаточно прав');
+
+            return response()->json([
+                'ok' => true,
+                'skipped' => 'reviewer_not_allowed',
+            ]);
+        }
+
         $day = DayOffRequestDay::with([
             'request.user',
             'request.days',
@@ -211,12 +235,6 @@ Log::info('Telegram work webhook received', [
 
             return response()->json(['ok' => true, 'skipped' => 'dayoff_request_not_found']);
         }
-
-        $fromTelegramId = data_get($callbackQuery, 'from.id');
-
-        $reviewer = $fromTelegramId
-            ? User::where('telegram_id', (string) $fromTelegramId)->first()
-            : null;
 
         $status = $action === 'approve' ? 'approved' : 'rejected';
 
@@ -448,6 +466,35 @@ private function editDayOffRequestMessage(
         ],
     ]);
 }
+
+    private function isAllowedCallbackChat(array $callbackQuery): bool
+    {
+        $chatId = (string) data_get($callbackQuery, 'message.chat.id');
+        $allowedChatIds = array_map(
+            'strval',
+            config('services.telegram.work_allowed_chat_ids', [])
+        );
+
+        return $chatId !== ''
+            && $allowedChatIds !== []
+            && in_array($chatId, $allowedChatIds, true);
+    }
+
+    private function resolveModerator(array $callbackQuery, array $allowedRoles): ?User
+    {
+        $telegramId = data_get($callbackQuery, 'from.id');
+
+        if (! $telegramId) {
+            return null;
+        }
+
+        return User::query()
+            ->where('telegram_id', (string) $telegramId)
+            ->where('status', 'approved')
+            ->where('is_active', true)
+            ->whereIn('role', $allowedRoles)
+            ->first();
+    }
 
     private function telegramApiUrl(string $method): string
     {

@@ -86,7 +86,7 @@ class TelegramAnalyticsWebhookController extends Controller
                     ? Carbon::createFromTimestamp($message['edit_date'])
                     : null,
 
-                'raw' => json_encode($update, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'raw' => $update,
             ]
         );
 
@@ -141,7 +141,8 @@ private function resolveTopic(TelegramChat $chat, array $message): ?TelegramTopi
                 'username' => $from['username'] ?? null,
                 'first_name' => $from['first_name'] ?? null,
                 'last_name' => $from['last_name'] ?? null,
-                'is_bot' => (bool) ($from['is_bot'] ?? false),
+                'full_name' => trim(($from['first_name'] ?? '') . ' ' . ($from['last_name'] ?? '')) ?: null,
+                'last_seen_at' => now(),
             ]
         );
     }

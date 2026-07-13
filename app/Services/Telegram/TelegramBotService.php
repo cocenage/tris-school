@@ -31,10 +31,12 @@ class TelegramBotService
             ->connectTimeout(3)
             ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
 
-        Log::info('Telegram sendMessage response', [
-            'status' => $response->status(),
-            'body' => $response->body(),
-            'payload' => $payload,
-        ]);
+        if (! $response->successful()) {
+            Log::warning('Telegram sendMessage failed', [
+                'status' => $response->status(),
+                'chat_id' => $chatId,
+                'thread_id' => $threadId,
+            ]);
+        }
     }
 }

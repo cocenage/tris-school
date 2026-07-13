@@ -26,6 +26,7 @@ class User extends Authenticatable implements FilamentUser
         'telegram_login_source',
         'telegram_access_approved_notified_at',
         'telegram_access_requested_notified_at',
+        'telegram_access_pending_notified_at',
 
         'role',
         'status',
@@ -59,6 +60,8 @@ class User extends Authenticatable implements FilamentUser
             'telegram_write_access_granted_at' => 'datetime',
             'telegram_last_auth_at' => 'datetime',
             'telegram_access_approved_notified_at' => 'datetime',
+            'telegram_access_requested_notified_at' => 'datetime',
+            'telegram_access_pending_notified_at' => 'datetime',
             'birthday' => 'date',
             'work_started_at' => 'date',
             'dip' => 'boolean',

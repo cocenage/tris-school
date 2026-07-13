@@ -1,7 +1,11 @@
 <?php
 
-it('returns a successful response', function () {
-    $response = $this->get('/');
+it('redirects guests from the root page to login', function () {
+    $this->get('/')
+        ->assertRedirect(route('landing.page'));
+});
 
-    $response->assertStatus(200);
+it('shows the login page', function () {
+    $this->get(route('landing.page'))
+        ->assertOk();
 });
