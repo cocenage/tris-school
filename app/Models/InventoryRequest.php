@@ -144,11 +144,12 @@ class InventoryRequest extends Model
             'request_id' => $this->id,
         ]);
 
-        app(InventoryRequestTelegramService::class)->sendResult($this);
-
-        $this->update([
-            'notified_at' => now(),
-        ]);
+        \App\Jobs\SendRequestResultNotificationJob::dispatch(
+            InventoryRequestTelegramService::class,
+            self::class,
+            $this->id,
+            true,
+        )->afterCommit();
     }
 
     public function syncStatusAndNotify(): void

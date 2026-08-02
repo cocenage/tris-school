@@ -7,10 +7,47 @@ use App\Models\DayOffRequestDay;
 use App\Models\User;
 use App\Models\VacationRequest;
 use Carbon\Carbon;
+use Carbon\CarbonPeriod;
 use Illuminate\Support\Collection;
 
 class CalendarEventsService
 {
+    /**
+     * Return the dates covered by active peak calendar events.
+     *
+     * This intentionally uses the same occurrence expansion as the calendar
+     * itself, including weekly, monthly and yearly repetitions.
+     */
+    public function getPeakDatesForRange(Carbon $rangeStart, Carbon $rangeEnd): Collection
+    {
+        $rangeStart = $rangeStart->copy()->startOfDay();
+        $rangeEnd = $rangeEnd->copy()->endOfDay();
+
+        return CalendarEvent::query()
+            ->where('type', CalendarEvent::TYPE_PEAK)
+            ->where('is_active', true)
+            ->get()
+            ->flatMap(fn (CalendarEvent $event) => $this->expandEventOccurrences(
+                $event,
+                $rangeStart->copy(),
+                $rangeEnd->copy(),
+            ))
+            ->flatMap(function (array $occurrence) {
+                return collect(CarbonPeriod::create(
+                    $occurrence['start']->copy()->startOfDay(),
+                    $occurrence['end']->copy()->startOfDay(),
+                ))->map(fn (Carbon $date) => $date->toDateString());
+            })
+            ->unique()
+            ->sort()
+            ->values();
+    }
+
+    public function isPeakDay(Carbon $day): bool
+    {
+        return $this->getPeakDatesForRange($day, $day)->isNotEmpty();
+    }
+
     public function getEventsForDay(Carbon $day, string $filter = 'all'): Collection
     {
         $start = $day->copy()->startOfDay();

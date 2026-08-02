@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\FeedbackSuggestion;
+use App\Jobs\SendTelegramNotificationJob;
 use App\Services\Forms\StaffFormTelegramService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -109,7 +110,7 @@ public function resetForm(): void
         $this->successMessage = null;
     }
 
-    public function submit(StaffFormTelegramService $telegram): void
+    public function submit(): void
     {
         $this->validate([
             'type' => ['required', 'string', 'max:255'],
@@ -154,7 +155,12 @@ activity()
     ->log('Пользователь отправил обратную связь');
 
             try {
-                $telegram->sendFeedbackSuggestion($record);
+                SendTelegramNotificationJob::dispatch(
+                    StaffFormTelegramService::class,
+                    'sendFeedbackSuggestion',
+                    FeedbackSuggestion::class,
+                    $record->id,
+                )->afterCommit();
             } catch (\Throwable $e) {
                 Log::error('Feedback suggestion telegram failed but record saved', [
                     'record_id' => $record->id,
@@ -203,12 +209,7 @@ activity()
             Обратная связь
         </span>
 
-        <button
-            type="button"
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
-        >
-            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
-        </button>
+        <x-ui.guide-trigger />
     </div>
 </x-slot:header>
 
@@ -349,13 +350,12 @@ activity()
                              Опишите ваше обращение
                         </h2>
 
-                        <textarea
+                        <x-ui.textarea
                             wire:model.live.debounce.400ms="comment"
                             rows="6"
                             maxlength="2000"
                             placeholder="Например: было бы удобно, если бы в приложении появилась новая функция"
-                            class="w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[16px] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
-                        ></textarea>
+                        />
 
                
                     </div>
@@ -540,4 +540,13 @@ activity()
             </div>
         </x-ui.bottom-sheet>
     </div>
+
+    <x-ui.guide
+        guide-key="feedback-suggestion-guide-v1"
+        :steps="[
+            ['title' => 'Обратная связь', 'text' => 'Выберите тему, опишите предложение или проблему и при необходимости приложите файл.'],
+            ['title' => 'Опишите подробнее', 'text' => 'Добавьте конкретные детали: где возникла проблема, что уже проверили и какого результата ожидаете.'],
+            ['title' => 'Отправьте обращение', 'text' => 'Проверьте текст и нажмите «Отправить». После отправки обращение попадёт ответственному сотруднику.'],
+        ]"
+    />
 </div>

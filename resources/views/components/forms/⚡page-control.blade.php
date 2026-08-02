@@ -1074,7 +1074,7 @@ protected function getDraftPayload(): array
             Контроль качества
         </span>
 
-        <div class="h-[36px] w-[36px]"></div>
+        <x-ui.guide-trigger />
     </div>
 </x-slot:header>
 
@@ -1783,6 +1783,15 @@ protected function getDraftPayload(): array
             </div>
         </x-ui.bottom-sheet>
     </div>
+
+    <x-ui.guide
+        guide-key="quality-control-guide-v1"
+        :steps="[
+            ['title' => 'Контроль качества', 'text' => 'Заполните данные контроля, ответьте на вопросы по комнатам и при необходимости добавьте фотографии.'],
+            ['title' => 'Заполняйте по этапам', 'text' => 'Прогресс показывает, какие комнаты и обязательные вопросы уже пройдены. Незавершённые пункты можно открыть из сводки.'],
+            ['title' => 'Проверьте и отправьте', 'text' => 'Перед окончательной отправкой проверьте сводку и нажмите «Отправить». До этого момента ответы остаются черновиком.'],
+        ]"
+    />
 </div>
 <script>
     window.controlCompressPhoto = async function (file) {

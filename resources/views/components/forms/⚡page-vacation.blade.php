@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\VacationRequest;
+use App\Jobs\SendTelegramNotificationJob;
 use App\Models\VacationRequestDay;
 use App\Services\Forms\VacationRequestTelegramService;
 use Carbon\Carbon;
@@ -382,7 +383,7 @@ public function getFormButtonTextProperty(): string
             ->diffInDays(Carbon::parse($this->draftEndDate)->startOfDay()) + 1;
     }
 
-    public function submit(VacationRequestTelegramService $telegram): void
+    public function submit(): void
     {
         if (! $this->draftStartDate) {
             $this->toast(
@@ -503,7 +504,12 @@ public function getFormButtonTextProperty(): string
 });
 
             try {
-                $telegram->sendCreated($request);
+                SendTelegramNotificationJob::dispatch(
+                    VacationRequestTelegramService::class,
+                    'sendCreated',
+                    VacationRequest::class,
+                    $request->id,
+                )->afterCommit();
             } catch (\Throwable $e) {
                 Log::error('Vacation telegram failed but request saved', [
                     'request_id' => $request->id,
@@ -571,12 +577,7 @@ public function getFormButtonTextProperty(): string
             Заявка на отпуск
         </span>
 
-        <button
-            type="button"
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
-        >
-            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
-        </button>
+        <x-ui.guide-trigger />
     </div>
 </x-slot:header>
 
@@ -714,13 +715,12 @@ public function getFormButtonTextProperty(): string
                             Опишите причину отпуска
                         </h2>
 
-                        <textarea
+                        <x-ui.textarea
                             wire:model.live.debounce.500ms="comment"
                             rows="4"
                             maxlength="500"
                             placeholder="Например: планирую отпуск в выбранные даты"
-                            class="w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[16px] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
-                        ></textarea>
+                        />
 
                         @error('comment')
                             <div class="mt-[8px] px-[4px] text-[15px] text-[#D92D20]">
@@ -820,4 +820,13 @@ public function getFormButtonTextProperty(): string
             </div>
         </x-ui.bottom-sheet>
     </div>
+
+    <x-ui.guide
+        guide-key="vacation-request-guide-v1"
+        :steps="[
+            ['title' => 'Заявка на отпуск', 'text' => 'Выберите период отпуска, укажите причину и отправьте заявку на согласование.'],
+            ['title' => 'Выберите даты', 'text' => 'Укажите первый и последний день отпуска. Перед отправкой проверьте весь период.'],
+            ['title' => 'Проверьте заявку', 'text' => 'Добавьте пояснение, убедитесь, что даты и причина заполнены, затем нажмите «Отправить».'],
+        ]"
+    />
 </div>

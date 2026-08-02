@@ -559,6 +559,24 @@ public function showTrisMareHelp(): void
         </a>
     </div>
 
+    <div class="mb-[10px] pt-[20px]">
+        <span class="text-[16px] opacity-50">Объекты</span>
+    </div>
+
+    <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
+        <a
+            href="{{ route('page-apartments') }}"
+            class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
+        >
+            <div class="flex min-w-0 items-center gap-4">
+                <x-heroicon-o-home-modern class="h-[24px] w-[24px]" />
+                <span class="truncate text-[18px]">Квартиры</span>
+            </div>
+
+            <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
+        </a>
+    </div>
+
 @php
 $canSeeAdminPanel = $user->isAdmin();
 $canSeeFinancePanel = $user->isAdmin() || $user->hasPanelAccess('finance');
