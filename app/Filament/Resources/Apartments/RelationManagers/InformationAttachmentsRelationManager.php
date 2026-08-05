@@ -27,9 +27,11 @@ class InformationAttachmentsRelationManager extends RelationManager
         return $schema->components([
             Select::make('information_section_id')
                 ->label('Раздел')
-                ->relationship('section', 'title')
-                ->modifyQueryUsing(fn (Builder $query): Builder => $query
-                    ->where('apartment_id', $this->getOwnerRecord()->getKey()))
+                ->relationship(
+                    'section',
+                    'title',
+                    fn (Builder $query): Builder => $query->where('apartment_id', $this->getOwnerRecord()->getKey()),
+                )
                 ->searchable()
                 ->preload()
                 ->nullable(),

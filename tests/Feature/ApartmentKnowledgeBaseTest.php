@@ -11,6 +11,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 
 beforeEach(function () {
     config(['database.connections.sqlite.database' => ':memory:']);
@@ -249,6 +250,26 @@ it('streams private attachments only through an authorized apartment route', fun
 
     $this->actingAs($cleaner)->get(route('page-apartments.attachment', [$apartment, $attachment]))->assertOk()->assertHeader('Content-Type', 'application/pdf');
     $this->actingAs($cleaner)->get(route('page-apartments.attachment', [$other, $attachment]))->assertNotFound();
+});
+
+it('rejects an attachment linked to a section from another apartment', function () {
+    $admin = apartmentTestUser('admin', 'Admin');
+    $first = apartmentTestRecord('First apartment');
+    $second = apartmentTestRecord('Second apartment');
+    $section = $first->informationSections()->create(['type' => 'general', 'title' => 'First section', 'content' => 'Content']);
+
+    expect(fn () => ApartmentInformationAttachment::create([
+        'apartment_id' => $second->id,
+        'information_section_id' => $section->id,
+        'disk' => 'local',
+        'path' => 'apartment-information/invalid.pdf',
+        'original_name' => 'invalid.pdf',
+        'mime_type' => 'application/pdf',
+        'file_size' => 1,
+        'uploaded_by' => $admin->id,
+    ]))->toThrow(ValidationException::class);
+
+    expect(ApartmentInformationAttachment::query()->count())->toBe(0);
 });
 
 it('escapes section content instead of rendering arbitrary html', function () {

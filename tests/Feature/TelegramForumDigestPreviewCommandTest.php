@@ -1,8 +1,10 @@
 <?php
 
 use App\Services\Telegram\TelegramForumDigestBuilder;
+use App\Services\Telegram\TelegramDigestFormatter;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function () {
@@ -155,4 +157,18 @@ it('prints a compact JSON contract without message text or raw payload', functio
     $this->artisan('telegram:forum-digest-preview', ['--date' => '2026-06-17', '--json' => true])
         ->assertExitCode(0)
         ->expectsOutputToContain('"date": "2026-06-17"');
+});
+
+it('uses the evening formatter for the human preview without sending Telegram', function () {
+    Http::fake();
+
+    $formatter = Mockery::mock(TelegramDigestFormatter::class);
+    $formatter->shouldReceive('evening')->once()->andReturn('formatted-evening-preview');
+    $this->app->instance(TelegramDigestFormatter::class, $formatter);
+
+    $this->artisan('telegram:forum-digest-preview', ['--date' => '2026-06-17'])
+        ->expectsOutput('formatted-evening-preview')
+        ->assertExitCode(0);
+
+    expect(Http::recorded())->toHaveCount(0);
 });

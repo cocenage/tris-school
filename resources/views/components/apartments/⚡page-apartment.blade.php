@@ -102,13 +102,51 @@ new class extends Component {
 
                     @if($section->attachments->isNotEmpty())
                         <div class="mt-[14px] space-y-[7px] border-t border-black/5 pt-[12px]">
-                            @foreach($section->attachments as $attachment)
-                                <a href="{{ route('page-apartments.attachment', [$apartment, $attachment]) }}" target="_blank" class="flex items-center gap-[9px] rounded-[16px] bg-white px-[11px] py-[10px] text-[13px] text-[#213259]">
-                                    <x-heroicon-o-paper-clip class="h-[17px] w-[17px] shrink-0" />
-                                    <span class="min-w-0 flex-1 truncate">{{ $attachment->caption ?: $attachment->original_name }}</span>
-                                    <x-heroicon-o-arrow-top-right-on-square class="h-[15px] w-[15px] shrink-0 text-black/35" />
-                                </a>
-                            @endforeach
+                          @foreach($section->attachments as $attachment)
+    @php
+        $attachmentUrl = route('page-apartments.attachment', [$apartment, $attachment]);
+        $isImage = str_starts_with((string) $attachment->mime_type, 'image/');
+        $isPdf = $attachment->mime_type === 'application/pdf';
+        $label = $attachment->caption ?: $attachment->original_name;
+    @endphp
+
+    @if($isImage)
+        <figure class="overflow-hidden rounded-[20px] bg-white">
+         
+                <img
+                    src="{{ $attachmentUrl }}"
+                    alt="{{ $label }}"
+                    loading="lazy"
+                    class="max-h-[440px] w-full object-cover"
+                >
+          
+
+            @if(filled($attachment->caption))
+                <figcaption class="px-[13px] py-[10px] text-[13px] leading-[1.35] text-black/55">
+                    {{ $attachment->caption }}
+                </figcaption>
+            @endif
+        </figure>
+    @else
+      
+            @if($isPdf)
+                <x-heroicon-o-document-text class="h-[21px] w-[21px] shrink-0" />
+            @else
+                <x-heroicon-o-paper-clip class="h-[19px] w-[19px] shrink-0" />
+            @endif
+
+            <div class="min-w-0 flex-1">
+                <p class="truncate text-[13px] font-medium">{{ $label }}</p>
+
+                <p class="mt-[2px] text-[11px] text-black/40">
+                    {{ $isPdf ? 'PDF-документ' : 'Файл' }}
+                </p>
+            </div>
+
+            <x-heroicon-o-arrow-top-right-on-square class="h-[16px] w-[16px] shrink-0 text-black/35" />
+      
+    @endif
+@endforeach
                         </div>
                     @endif
                 </section>

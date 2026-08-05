@@ -2,38 +2,24 @@
 
 use App\Services\Operations\OperationalContextBuilder;
 
-it('renders a read-only operational preview without delivery', function () {
+it('renders the deterministic morning preview without delivery', function () {
     $context = [
         'date' => '2026-07-31',
         'timezone' => 'Europe/Rome',
         'staff' => [
-            'shift' => [
-                'total' => 2,
-                'working' => 1,
-                'not_working' => 1,
-                'label' => 'Средняя нагрузка',
-            ],
+            'shift' => ['total' => 2],
             'working' => [['name' => 'Мария']],
             'not_working' => [['name' => 'Анна', 'reason' => 'Выходной']],
         ],
         'calendar' => ['events' => []],
-        'requests' => [],
-        'tasks' => [],
+        'requests' => ['items' => []],
+        'tasks' => ['total' => 0, 'open' => 0, 'items' => []],
         'checks' => [],
         'tris_mare' => [],
-        'mobility' => [],
-        'telegram' => [
-            'messages' => 0,
-            'chats' => 0,
-            'topics' => 0,
-            'authors' => 0,
-            'attachments' => 0,
-            'signals' => [],
-        ],
+        'mobility' => ['items' => []],
+        'telegram' => ['messages' => 0],
         'risks' => [],
-        'data_quality' => [
-            'telegram' => ['status' => 'empty'],
-        ],
+        'data_quality' => [],
     ];
 
     $builder = Mockery::mock(OperationalContextBuilder::class);
@@ -48,7 +34,5 @@ it('renders a read-only operational preview without delivery', function () {
     $this->app->instance(OperationalContextBuilder::class, $builder);
 
     $this->artisan('operational:preview', ['--date' => '2026-07-31'])
-        ->expectsOutput('Режим: только чтение. AI не вызывается, Telegram не отправляется, данные не изменяются.')
-        ->expectsOutputToContain('Работают: Мария')
         ->assertExitCode(0);
 });

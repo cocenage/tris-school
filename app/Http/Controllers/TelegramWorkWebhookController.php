@@ -52,25 +52,14 @@ Log::info('Telegram work webhook received', [
 
         if (($message['chat']['type'] ?? null) === 'private') {
             try {
-                $savedMessage = $ingestService->ingest($update);
-
-                if ($savedMessage) {
-                    try {
-                        $assistantService->handle($savedMessage, $message, true);
-                    } catch (\Throwable $e) {
-                        Log::error('Telegram private assistant processing failed after ingest', [
-                            'message_id' => $savedMessage->id,
-                            'error' => $e->getMessage(),
-                        ]);
-                    }
-                }
+                $this->sendPrivateFallbackMessageStrict($message);
 
                 return response()->json([
                     'ok' => true,
-                    'message_id' => $savedMessage?->id,
+                    'skipped' => 'private_message',
                 ]);
             } catch (\Throwable $e) {
-                Log::error('Telegram private assistant failed', [
+                Log::error('Telegram private message fallback failed', [
                     'error' => $e->getMessage(),
                 ]);
 
@@ -475,8 +464,9 @@ private function editDayOffRequestMessage(
         ]);
     }
 
-    private function sendPrivateFallbackMessage(array $message): void
-{
+    /** @deprecated Kept temporarily for compatibility with older callers. */
+    private function sendPrivateFallbackMessageLegacy(array $message): void
+    {
     $chatId = data_get($message, 'chat.id');
 
     if (! $chatId) {
@@ -516,6 +506,33 @@ private function editDayOffRequestMessage(
         ],
     ]);
 }
+
+    private function sendPrivateFallbackMessageStrict(array $message): void
+    {
+        $chatId = data_get($message, 'chat.id');
+
+        if (! $chatId) {
+            return;
+        }
+
+        $messageKey = data_get($message, 'message_id')
+            ?: sha1(json_encode($message, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $cacheKey = 'telegram_private_fallback_sent:' . $chatId . ':' . $messageKey;
+
+        if (! Cache::add($cacheKey, true, now()->addDay())) {
+            return;
+        }
+
+        $response = Http::post($this->telegramApiUrl('sendMessage'), [
+            'chat_id' => $chatId,
+            'text' => "\u{042F} \u{043D}\u{0435} \u{043E}\u{0431}\u{0440}\u{0430}\u{0431}\u{0430}\u{0442}\u{044B}\u{0432}\u{0430}\u{044E} \u{043B}\u{0438}\u{0447}\u{043D}\u{044B}\u{0435} \u{0441}\u{043E}\u{043E}\u{0431}\u{0449}\u{0435}\u{043D}\u{0438}\u{044F}. \u{0418}\u{0441}\u{043F}\u{043E}\u{043B}\u{044C}\u{0437}\u{0443}\u{0439}\u{0442}\u{0435} \u{0440}\u{0430}\u{0431}\u{043E}\u{0447}\u{0438}\u{0439} \u{0447}\u{0430}\u{0442}.",
+            'disable_web_page_preview' => true,
+        ]);
+
+        if (! $response->successful()) {
+            Cache::forget($cacheKey);
+        }
+    }
 
     private function telegramApiUrl(string $method): string
     {
