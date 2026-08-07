@@ -17,10 +17,12 @@ new class extends Component {
     public Carbon $month;
 
     public bool $policyModalOpen = false;
+    public bool $peakModalOpen = false;
     public bool $successSheetOpen = false;
     public bool $sundayWarningConfirmed = false;
 
     public ?string $draftStartDate = null;
+    public ?string $peakModalDate = null;
 
     public array $ranges = [];
     public string $comment = '';
@@ -153,6 +155,12 @@ public function getFormButtonTextProperty(): string
         $this->sundayWarningConfirmed = false;
     }
 
+    public function closePeakModal(): void
+    {
+        $this->peakModalOpen = false;
+        $this->peakModalDate = null;
+    }
+
     public function confirmSundaySubmission(): void
     {
         $this->policyModalOpen = false;
@@ -172,6 +180,8 @@ public function getFormButtonTextProperty(): string
         $this->comment = '';
         $this->draftStartDate = null;
         $this->policyModalOpen = false;
+        $this->peakModalOpen = false;
+        $this->peakModalDate = null;
         $this->sundayWarningConfirmed = false;
 
         $this->resetErrorBag();
@@ -400,12 +410,8 @@ public function getFormButtonTextProperty(): string
         }
 
         if ($this->isPeakDay($date)) {
-            $this->addError('ranges', 'Дата ' . Carbon::parse($date)->format('d.m.Y') . ' недоступна: на неё назначен пиковый день.');
-            $this->toast(
-                'warning',
-                'Дата недоступна',
-                'На эту дату в календаре отмечен пик нагрузки.'
-            );
+            $this->peakModalDate = Carbon::parse($date)->format('d.m.Y');
+            $this->peakModalOpen = true;
 
             return;
         }
@@ -828,8 +834,8 @@ scrollToNextRequired(hasRanges, hasComment) {
                                             $style .= 'color:#C3CDD8;';
                                             $class .= ' cursor-not-allowed';
                                         } elseif (!empty($day['peak'])) {
-                                            $style .= 'background:#F3E69C;color:#7A5D00;';
-                                            $class .= ' cursor-not-allowed opacity-80';
+                                            $style .= 'background:#FDE2E2;color:#B42318;';
+                                            $class .= ' cursor-pointer font-semibold ring-1 ring-[#F3A6A0]';
                                         } elseif (!empty($day['draft_start'])) {
                                             $style .= 'background:#213259;color:#FFFFFF;';
                                             $class .= ' font-semibold ';
@@ -860,10 +866,10 @@ scrollToNextRequired(hasRanges, hasComment) {
                                         wire:click="selectDate('{{ $day['date'] }}')"
                                         class="{{ $class }}"
                                         style="{{ $style }}"
-                                        @disabled(!$day['current'] || $day['past'] || $day['peak'])
+                                        @disabled(!$day['current'] || $day['past'])
                                         @if (!empty($day['peak']))
-                                            title="Пиковый день — выходной недоступен"
-                                            aria-label="{{ $day['day'] }}: пиковый день, выходной недоступен"
+                                            title="Показать причину недоступности"
+                                            aria-label="{{ $day['day'] }}: дата недоступна из-за высокой загрузки"
                                         @elseif (!empty($day['sunday']))
                                             title="Воскресенье можно выбрать, перед отправкой потребуется подтверждение"
                                             aria-label="{{ $day['day'] }}: воскресенье, перед отправкой потребуется подтверждение"
@@ -872,16 +878,12 @@ scrollToNextRequired(hasRanges, hasComment) {
                                         {{ $day['day'] }}
 
                                         @if (!empty($day['peak']))
-                                            <span class="absolute bottom-[3px] left-1/2 -translate-x-1/2 text-[7px] font-semibold uppercase leading-none text-[#7A5D00]">пик</span>
+                                            <span class="absolute bottom-[3px] left-1/2 -translate-x-1/2 text-[7px] font-semibold uppercase leading-none text-[#B42318]">пик</span>
                                         @endif
                                     </button>
                                 @endforeach
                             </div>
 
-                            <div class="mt-[16px] flex items-start gap-[8px] px-[16px] text-[12px] leading-[1.4] text-[#7A5D00]">
-                                <span class="mt-[2px] h-[10px] w-[10px] shrink-0 rounded-full bg-[#F3E69C] ring-1 ring-[#D6B95B]"></span>
-                                <span>Пиковый день отмечен в календаре и недоступен для заявки на выходной.</span>
-                            </div>
                         </div>
                     </div>
 
@@ -1044,6 +1046,31 @@ scrollToNextRequired(hasRanges, hasComment) {
 
     </div>
 
+    <div x-data="{ modalOpen: @entangle('peakModalOpen').live }">
+        <x-ui.modal x-model="modalOpen">
+            <div class="p-5 text-center">
+                <h1 class="text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
+                    Эта дата сейчас недоступна
+                </h1>
+
+                <p class="pt-[18px] text-[16px] leading-[1.5] text-black/60">
+                    На {{ $peakModalDate ?? 'этот день' }} ожидается высокая загрузка, поэтому оформить выходной сейчас нельзя.
+                    Выберите другую дату или свяжитесь с администратором, если ситуация срочная.
+                </p>
+
+                <div class="pt-[28px]">
+                    <x-ui.button
+                        variant="primary"
+                        type="button"
+                        wire:click="closePeakModal"
+                    >
+                        Понятно
+                    </x-ui.button>
+                </div>
+            </div>
+        </x-ui.modal>
+    </div>
+
 <x-ui.guide guide-key="day-off-request-guide-v4">
     <div
         x-data="{
@@ -1128,6 +1155,16 @@ scrollToNextRequired(hasRanges, hasComment) {
         </div>
 
         <div class="flex flex-1 flex-col px-[20px] pt-[18px] pb-[8px]">
+            <div class="mb-[18px] rounded-[18px] bg-[#F7F9FC] px-[14px] py-[13px] text-[14px] leading-[1.5] text-[#52627A]">
+                <p class="font-semibold text-[#213259]">Как оформить выходной</p>
+                <ul class="mt-[7px] list-disc space-y-[4px] pl-[18px] text-left">
+                    <li>Выберите одну или несколько свободных дат в календаре.</li>
+                    <li>Красная дата недоступна из-за высокой загрузки — нажмите на неё, чтобы увидеть причину.</li>
+                    <li>Заполните причину: это обязательное поле, минимум несколько слов.</li>
+                    <li>После отправки заявка появится в разделе «Мои заявки». О решении сообщит система и Telegram.</li>
+                    <li>Если ответ задерживается, проверьте статус в «Моих заявках» и обратитесь к администратору.</li>
+                </ul>
+            </div>
             <div class="flex flex-1 flex-col">
                 <div class="relative flex h-[330px] shrink-0 items-center justify-center overflow-hidden rounded-[36px] bg-gradient-to-br from-[#F4F7FB] via-[#EEF4FF] to-[#F7F2EC] p-[18px] ">
               

@@ -6,6 +6,7 @@ use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class SendRequestResultNotificationJob implements ShouldQueue, ShouldBeUnique
 {
@@ -14,6 +15,11 @@ class SendRequestResultNotificationJob implements ShouldQueue, ShouldBeUnique
     public int $tries = 3;
     public int $timeout = 30;
     public int $uniqueFor = 3600;
+
+    public function backoff(): array
+    {
+        return [10, 30];
+    }
 
     public function __construct(
         public string $serviceClass,
@@ -45,5 +51,15 @@ class SendRequestResultNotificationJob implements ShouldQueue, ShouldBeUnique
         if ($this->markNotified && in_array('notified_at', $record->getFillable(), true)) {
             $record->forceFill(['notified_at' => now()])->saveQuietly();
         }
+    }
+
+    public function failed(Throwable $exception): void
+    {
+        Log::error('Telegram result notification job failed permanently', [
+            'service' => $this->serviceClass,
+            'model' => $this->modelClass,
+            'record_id' => $this->modelId,
+            'error' => $exception->getMessage(),
+        ]);
     }
 }

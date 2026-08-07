@@ -80,44 +80,36 @@ class MobilityDigestCommand extends Command
     {
         $weather = app(MilanWeatherService::class)->today();
 
-        $text = '<b>' . Arr::random($this->greetings) . "</b>\n\n";
-
-        $text .= "Сегодня: {$weather['summary']}\n";
+        $alerts = $this->deduplicateAlerts($alerts);
+        $text = "🚦 <b>Передвижение</b>\n\n";
+        $text .= "Сегодня: " . e((string) ($weather['summary'] ?? 'данные о погоде недоступны')) . "\n";
 
         if (! empty($weather['advice'])) {
-            $text .= $weather['advice'] . "\n";
+            $text .= e((string) $weather['advice']) . "\n";
         }
 
-        if ($alerts->isNotEmpty()) {
-            $text .= "\n🚦 <b>Передвижение</b>\n\n";
-
-            $critical = $alerts->filter(fn (MobilityAlert $alert) => $this->isStrike($alert))->values();
-            $other = $alerts->reject(fn (MobilityAlert $alert) => $this->isStrike($alert))->values();
-
-            if ($critical->isNotEmpty()) {
-                $text .= "🚨 <b>Важно:</b>\n";
-
-                foreach ($critical->take(5) as $alert) {
-                    $text .= $this->workerAlertLine($alert);
-                }
-            }
-
-            if ($other->isNotEmpty()) {
-                if ($critical->isNotEmpty()) {
-                    $text .= "\n";
-                }
-
-                $text .= "⚠️ <b>Ещё изменения:</b>\n";
-
-                foreach ($other->take(3) as $alert) {
-                    $text .= $this->workerAlertLine($alert);
-                }
+        if ($alerts->isEmpty()) {
+            $text .= "\nСущественных ограничений на транспорте не обнаружено.\n";
+        } else {
+            foreach ($alerts->take(6) as $alert) {
+                $text .= "\n" . $this->workerAlertLine($alert);
             }
         }
-
-        $text .= "\n" . Arr::random($this->endings);
 
         return trim($text);
+    }
+
+    protected function deduplicateAlerts($alerts)
+    {
+        return collect($alerts)
+            ->filter(fn (MobilityAlert $alert) => $this->shouldShowInWorkerDigest($alert))
+            ->unique(fn (MobilityAlert $alert) => implode('|', [
+                $alert->type,
+                $alert->district,
+                $this->normalizedText($alert->description ?: $alert->title),
+                optional($alert->starts_at)->toDateString(),
+            ]))
+            ->values();
     }
 
     protected function shouldShowInWorkerDigest(MobilityAlert $alert): bool
@@ -196,34 +188,27 @@ class MobilityDigestCommand extends Command
 
     protected function workerAlertLine(MobilityAlert $alert): string
     {
-        if ($this->isStrike($alert)) {
-            return "• Забастовка общественного транспорта. Лучше заранее проверить маршрут.\n";
-        }
+        $label = $alert->district ?: ($alert->type === 'strike' ? 'Забастовка' : 'Транспорт');
+        $summary = $this->shortText($alert->description ?: $alert->title);
+        $icon = $this->isStrike($alert) || in_array($alert->risk, ['critical', 'high'], true) ? '⚠️' : 'ℹ️';
 
-        $title = mb_strtolower($alert->title);
+        return $icon . ' <b>' . e($label) . "</b>\n" . e($summary) . "\n";
+    }
 
-        if (str_contains($title, 'trenord')) {
-            return "• Возможны изменения поездов Trenord. Проверьте расписание заранее.\n";
-        }
+    protected function normalizedText(?string $value): string
+    {
+        $value = preg_replace('/https?:\/\/\S+/iu', '', strip_tags((string) $value));
+        $value = preg_replace('/[\p{P}\p{S}\s]+/u', ' ', mb_strtolower($value));
 
-        if (
-            str_contains($title, 'chiusura') ||
-            str_contains($title, 'chiude') ||
-            str_contains($title, 'lavori') ||
-            str_contains($title, 'cantieri')
-        ) {
-            return "• Работы или перекрытия. Лучше заложить больше времени.\n";
-        }
+        return trim($value);
+    }
 
-        if (str_contains($title, 'manifestazione')) {
-            return "• Мероприятие или демонстрация. Возможны задержки на дорогах.\n";
-        }
+    protected function shortText(?string $value): string
+    {
+        $value = $this->normalizedText($value);
+        $value = preg_replace('/milanmetrost[a-z.\s]*[èe] anche su chatgpt/iu', '', $value);
 
-        if (str_contains($title, 'maratona')) {
-            return "• Марафон или спортивное событие. Возможны перекрытия и пробки.\n";
-        }
-
-        return "• " . e($alert->title) . "\n";
+        return trim(mb_strimwidth($value, 0, 240, '…')) ?: 'Подробности уточняются в официальном источнике.';
     }
 
     protected function telegramTargets(): array

@@ -106,6 +106,8 @@ class VacationRequestTelegramService
                 'status' => $response->status(),
                 'body' => $response->body(),
             ]);
+
+            throw new \RuntimeException('Telegram rejected vacation result notification.');
         }
     }
 
@@ -168,6 +170,8 @@ class VacationRequestTelegramService
             'status' => $response->status(),
             'body' => $response->body(),
         ]);
+
+        throw new \RuntimeException('Telegram rejected vacation notification.');
     }
 }
 }

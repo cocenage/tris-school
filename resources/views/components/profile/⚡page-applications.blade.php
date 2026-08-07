@@ -146,6 +146,17 @@ new class extends Component
         };
     }
 
+    public function decisionAt(object $request): ?Carbon
+    {
+        foreach (['reviewed_at', 'processed_at', 'answered_at'] as $field) {
+            if (! empty($request->{$field})) {
+                return Carbon::parse($request->{$field});
+            }
+        }
+
+        return null;
+    }
+
     public function dayStatusLabel(?string $status): string
     {
         return match ($status) {
@@ -394,6 +405,12 @@ new class extends Component
 
                                     {{ $request->created_at->translatedFormat('d F, H:i') }}
                                 </div>
+
+                                @if ($this->decisionAt($request))
+                                    <div class="mt-[4px] text-[12px] leading-[1.4] text-[#8A8A84]">
+                                        Решение: {{ $this->decisionAt($request)->translatedFormat('d F Y, H:i') }}
+                                    </div>
+                                @endif
                             </div>
 
                             <span class="inline-flex shrink-0 rounded-full px-[10px] py-[5px] text-[12px] font-medium {{ $this->statusBadgeClasses($request->status) }}">

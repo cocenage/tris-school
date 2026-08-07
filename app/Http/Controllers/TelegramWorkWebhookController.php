@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class TelegramWorkWebhookController extends Controller
 {
@@ -25,11 +26,9 @@ class TelegramWorkWebhookController extends Controller
         TelegramAssistantService $assistantService,
     ) {
 
-Log::info('Telegram work webhook received', [
-    'secret_ok' => $secret === config('services.telegram.work_webhook_secret'),
-    'has_callback_query' => $request->has('callback_query'),
-    'callback_data' => $request->input('callback_query.data'),
-]);
+        Log::debug('Telegram work webhook received', [
+            'has_callback_query' => $request->has('callback_query'),
+        ]);
 
         if ($secret !== config('services.telegram.work_webhook_secret')) {
             abort(403);
@@ -104,7 +103,6 @@ Log::info('Telegram work webhook received', [
         } catch (\Throwable $e) {
             Log::error('Telegram work webhook failed', [
                 'error' => $e->getMessage(),
-                'update' => $update,
             ]);
 
             return response()->json(['ok' => false], 500);
@@ -176,7 +174,7 @@ Log::info('Telegram work webhook received', [
             ? User::where('telegram_id', (string) $fromTelegramId)->first()
             : null;
 
-        if (! $moderator || $moderator->status !== 'approved' || ! in_array($moderator->role, ['admin', 'supervisor'], true)) {
+        if (! $this->canReviewRequests($moderator)) {
             $this->answerCallback($callbackQuery, 'Недостаточно прав');
 
             return response()->json(['ok' => true, 'skipped' => 'reviewer_not_allowed']);
@@ -190,6 +188,17 @@ Log::info('Telegram work webhook received', [
 
         $moderatorText = $this->telegramUserText($callbackQuery['from'] ?? []);
 
+        if (! in_array($action, ['approve', 'reject'], true)) {
+            $this->answerCallback($callbackQuery, 'Неизвестное действие');
+
+            return response()->json(['ok' => true, 'skipped' => 'unknown_action']);
+        }
+
+        $this->answerCallback(
+            $callbackQuery,
+            $action === 'approve' ? 'Обрабатываем одобрение' : 'Обрабатываем отклонение',
+        );
+
         if ($action === 'approve') {
             $user->forceFill([
                 'status' => 'approved',
@@ -200,7 +209,6 @@ Log::info('Telegram work webhook received', [
             app(TelegramUserNotificationService::class)->accessApproved($user);
 
             $statusText = '✅ <b>Доступ одобрен</b>';
-            $callbackText = 'Доступ одобрен';
         } elseif ($action === 'reject') {
             $user->forceFill([
                 'status' => 'rejected',
@@ -208,15 +216,9 @@ Log::info('Telegram work webhook received', [
             ])->save();
 
             $statusText = '❌ <b>Доступ отклонён</b>';
-            $callbackText = 'Доступ отклонён';
-        } else {
-            $this->answerCallback($callbackQuery, 'Неизвестное действие');
-
-            return response()->json(['ok' => true, 'skipped' => 'unknown_action']);
         }
 
         $this->editAccessMessage($callbackQuery, $user, $statusText, $moderatorText);
-        $this->answerCallback($callbackQuery, $callbackText);
 
         return response()->json(['ok' => true]);
     }
@@ -231,6 +233,15 @@ Log::info('Telegram work webhook received', [
         }
 
         [, $action, $dayId] = $parts;
+
+        $chatId = (string) data_get($callbackQuery, 'message.chat.id');
+        $allowedChatIds = config('services.telegram.work_allowed_chat_ids', []);
+
+        if (! empty($allowedChatIds) && ! in_array($chatId, $allowedChatIds, true)) {
+            $this->answerCallback($callbackQuery, 'Нет доступа к этому чату');
+
+            return response()->json(['ok' => true, 'skipped' => 'chat_not_allowed']);
+        }
 
         if (! in_array($action, ['approve', 'reject'], true)) {
             $this->answerCallback($callbackQuery, 'Неизвестное действие');
@@ -263,7 +274,7 @@ Log::info('Telegram work webhook received', [
             ? User::where('telegram_id', (string) $fromTelegramId)->first()
             : null;
 
-        if (! $reviewer || $reviewer->status !== 'approved' || ! in_array($reviewer->role, ['admin', 'supervisor'], true)) {
+        if (! $this->canReviewRequests($reviewer)) {
             $this->answerCallback($callbackQuery, 'Недостаточно прав');
 
             return response()->json(['ok' => true, 'skipped' => 'reviewer_not_allowed']);
@@ -277,16 +288,27 @@ Log::info('Telegram work webhook received', [
 
         $status = $action === 'approve' ? 'approved' : 'rejected';
 
-        $day->forceFill([
-            'status' => $status,
-        ])->save();
+        $this->answerCallback(
+            $callbackQuery,
+            $status === 'approved' ? 'Обрабатываем одобрение' : 'Обрабатываем отклонение',
+        );
 
-        $dayOffRequest->forceFill([
-            'reviewed_at' => now(),
-            'reviewed_by' => $reviewer?->id,
-        ])->save();
+        DB::transaction(function () use ($day, $dayOffRequest, $status, $reviewer): void {
+            $reviewedAt = now();
 
-        $dayOffRequest->syncStatusAndNotify();
+            $day->forceFill([
+                'status' => $status,
+                'reviewed_at' => $reviewedAt,
+                'reviewed_by' => $reviewer->id,
+            ])->save();
+
+            $dayOffRequest->forceFill([
+                'reviewed_at' => $reviewedAt,
+                'reviewed_by' => $reviewer->id,
+            ])->save();
+
+            $dayOffRequest->syncStatusAndNotify();
+        });
 
         $dayOffRequest->refresh();
         $dayOffRequest->load(['user', 'days']);
@@ -299,14 +321,15 @@ Log::info('Telegram work webhook received', [
             moderatorText: $moderatorText,
         );
 
-        $this->answerCallback(
-            $callbackQuery,
-            $status === 'approved'
-                ? 'Дата одобрена'
-                : 'Дата отклонена'
-        );
-
         return response()->json(['ok' => true]);
+    }
+
+    private function canReviewRequests(?User $user): bool
+    {
+        return $user !== null
+            && $user->status === 'approved'
+            && $user->is_active !== false
+            && in_array($user->role, ['admin', 'supervisor'], true);
     }
 
     private function editAccessMessage(
@@ -337,16 +360,7 @@ Log::info('Telegram work webhook received', [
                 '<b>Решение принял:</b> ' . e($moderatorText),
                 '<b>Время:</b> ' . now()->format('d.m.Y H:i'),
             ]),
-            'reply_markup' => [
-                'inline_keyboard' => [
-                    [
-                        [
-                            'text' => 'Открыть пользователя',
-                            'url' => url('/admin/education/users/' . $user->id . '/edit'),
-                        ],
-                    ],
-                ],
-            ],
+            'reply_markup' => ['inline_keyboard' => []],
         ]);
     }
 
@@ -463,49 +477,6 @@ private function editDayOffRequestMessage(
             'text' => $text,
         ]);
     }
-
-    /** @deprecated Kept temporarily for compatibility with older callers. */
-    private function sendPrivateFallbackMessageLegacy(array $message): void
-    {
-    $chatId = data_get($message, 'chat.id');
-
-    if (! $chatId) {
-        return;
-    }
-
-    $cacheKey = 'telegram_private_fallback_sent:' . $chatId;
-
-    if (Cache::has($cacheKey)) {
-        return;
-    }
-
-    Cache::put($cacheKey, true, now()->addSeconds(60));
-
-    Http::post($this->telegramApiUrl('sendMessage'), [
-        'chat_id' => $chatId,
-        'text' => implode("\n", [
-            'Привет!',
-            '',
-            'Я не читаю личные сообщения, у меня нет ответа на ваш вопрос.',
-            '',
-            'Пожалуйста, выберите нужный тип заявки в академии:',
-            'https://academy.trisservice.eu/applications',
-        ]),
-        'disable_web_page_preview' => true,
-        'reply_markup' => [
-            'inline_keyboard' => [
-                [
-                    [
-                        'text' => 'Выбрать тип заявки',
-                        'web_app' => [
-                            'url' => 'https://academy.trisservice.eu/applications',
-                        ],
-                    ],
-                ],
-            ],
-        ],
-    ]);
-}
 
     private function sendPrivateFallbackMessageStrict(array $message): void
     {

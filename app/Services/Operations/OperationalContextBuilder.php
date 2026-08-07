@@ -300,23 +300,63 @@ class OperationalContextBuilder
             ->orderBy('starts_at')
             ->get();
 
+        $normalized = $items
+            ->map(fn (MobilityAlert $alert) => $this->normalizeMobilityAlert($alert))
+            ->filter()
+            ->unique(fn (array $alert) => implode('|', [
+                $alert['type'],
+                $alert['district'],
+                mb_strtolower($alert['title']),
+                $alert['starts_at'],
+            ]))
+            ->values();
+
         return [
-            'total' => $items->count(),
-            'by_risk' => $items->groupBy('risk')->map->count()->all(),
-            'items' => $items->map(fn (MobilityAlert $alert) => [
-                'id' => $alert->id,
-                'source' => $alert->source,
-                'type' => $alert->type,
-                'risk' => $alert->risk,
-                'title' => $alert->title,
-                'district' => $alert->district,
-                'starts_at' => $alert->starts_at?->toDateString(),
-                'ends_at' => $alert->ends_at?->toDateString(),
-                'url' => $alert->url,
-                'impact' => 'unknown',
-                'impact_reason' => 'Нет связи между транспортом и маршрутом сотрудника',
-            ])->values()->all(),
+            'total' => $normalized->count(),
+            'by_risk' => $normalized->groupBy('risk')->map->count()->all(),
+            'items' => $normalized->all(),
         ];
+    }
+
+    protected function normalizeMobilityAlert(MobilityAlert $alert): ?array
+    {
+        $title = $this->cleanMobilityText($alert->title);
+        $description = $this->cleanMobilityText($alert->description);
+
+        if ($title === '' || in_array($title, ['regolare', 'servizio regolare'], true)) {
+            return null;
+        }
+
+        $risk = $alert->risk;
+        $lower = mb_strtolower($title . ' ' . $description);
+
+        if (str_contains($lower, 'regolare') || str_contains($lower, 'servizio normale')) {
+            $risk = 'low';
+        }
+
+        return [
+            'id' => $alert->id,
+            'source' => $alert->source,
+            'type' => $alert->type ?: 'info',
+            'risk' => $risk ?: 'low',
+            'title' => $title,
+            'summary' => $description !== '' ? $description : $title,
+            'district' => $alert->district,
+            'starts_at' => $alert->starts_at?->toDateString(),
+            'ends_at' => $alert->ends_at?->toDateString(),
+            'url' => $alert->url,
+            'impact' => 'unknown',
+            'impact_reason' => 'Связь между транспортом и маршрутом сотрудника не определена',
+        ];
+    }
+
+    protected function cleanMobilityText(?string $value): string
+    {
+        $value = preg_replace('/https?:\/\/\S+/iu', '', strip_tags((string) $value));
+        $value = preg_replace('/milanmetrost[a-z.\s]*[èe] anche su chatgpt/iu', '', $value);
+        $value = preg_replace('/\s+/u', ' ', $value);
+
+        return trim($value);
     }
 
     protected function telegram(Carbon $day): array

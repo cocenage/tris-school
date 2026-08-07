@@ -158,7 +158,7 @@ class StaffFormTelegramService
                 'thread_id' => $threadId,
             ]);
 
-            return;
+            throw new \RuntimeException('Telegram rejected staff form notification.');
         }
 
         $this->sendAttachments(
@@ -226,6 +226,8 @@ class StaffFormTelegramService
                     'thread_id' => $threadId,
                     'media' => $media,
                 ]);
+
+                throw new \RuntimeException('Telegram rejected staff form attachments.');
             }
         }
     }

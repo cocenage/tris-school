@@ -4,35 +4,38 @@ namespace App\Console\Commands;
 
 use App\Models\MobilityAlert;
 use App\Models\MobilityAlertMessage;
+use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class MobilityAdminAlertsCommand extends Command
 {
-    protected $signature = 'mobility:admin-alerts {--dry-run}';
+    protected $signature = 'mobility:admin-alerts {--dry-run} {--since=}';
 
     protected $description = 'Send new mobility alerts to admin Telegram chats';
 
     public function handle(): int
     {
-        $alerts = MobilityAlert::query()
-            ->whereIn('risk', ['critical', 'high', 'medium'])
+        $query = MobilityAlert::query()
             ->where(function ($query) {
-                $query
-                    ->where('type', 'strike')
-                    ->orWhere('title', 'ilike', '%sciopero%')
-                    ->orWhere('title', 'ilike', '%strike%')
-                    ->orWhere('description', 'ilike', '%sciopero%')
-                    ->orWhere('description', 'ilike', '%strike%');
-            })
-            ->whereDoesntHave('messages', function ($query) {
-                $query
-                    ->where('message_type', 'admin_alert')
-                    ->whereNull('deleted_at');
-            })
+                $query->where('type', 'strike')
+                    ->orWhere('risk', 'high')
+                    ->orWhereRaw('LOWER(title) LIKE ?', ['%sciopero%'])
+                    ->orWhereRaw('LOWER(title) LIKE ?', ['%strike%'])
+                    ->orWhereRaw('LOWER(description) LIKE ?', ['%sciopero%'])
+                    ->orWhereRaw('LOWER(description) LIKE ?', ['%strike%']);
+            });
+
+        if ($this->option('since')) {
+            $query->where('created_at', '>=', Carbon::parse($this->option('since')));
+        }
+
+        $alerts = $query
             ->orderBy('starts_at')
-            ->get();
+            ->get()
+            ->reject(fn (MobilityAlert $alert): bool => $this->isRegularStatus($alert))
+            ->values();
 
         if ($alerts->isEmpty()) {
             $this->info('No new admin mobility alerts.');
@@ -68,7 +71,7 @@ class MobilityAdminAlertsCommand extends Command
             : 'дата не указана';
 
         $text = "🚨 <b>Важное уведомление</b>\n\n";
-        $text .= "<b>{$this->escape($alert->title)}</b>\n\n";
+        $text .= "<b>{$this->escape($this->cleanMobilityText($alert->title))}</b>\n\n";
         $text .= "Дата: {$date}\n";
         $text .= "Риск: {$this->escape($alert->risk ?? 'unknown')}\n";
         $text .= "Тип: {$this->escape($alert->type ?? 'unknown')}\n";
@@ -78,8 +81,9 @@ class MobilityAdminAlertsCommand extends Command
             $text .= "Район/линия: {$this->escape($alert->district)}\n";
         }
 
-        if (! empty($alert->description)) {
-            $text .= "\n{$this->escape($alert->description)}\n";
+        $description = $this->cleanMobilityText($alert->description);
+        if ($description !== '') {
+            $text .= "\n{$this->escape($description)}\n";
         }
 
         if (! empty($alert->url)) {
@@ -132,6 +136,17 @@ class MobilityAdminAlertsCommand extends Command
         }
 
         foreach ($targets as $target) {
+            $alreadySent = $alert->messages()
+                ->where('message_type', 'admin_alert')
+                ->where('chat_id', (string) $target['chat_id'])
+                ->where('thread_id', $target['thread_id'] ? (string) $target['thread_id'] : null)
+                ->whereNull('deleted_at')
+                ->exists();
+
+            if ($alreadySent) {
+                continue;
+            }
+
             $payload = [
                 'chat_id' => $target['chat_id'],
                 'text' => $message,
@@ -192,5 +207,24 @@ class MobilityAdminAlertsCommand extends Command
     protected function escape(?string $value): string
     {
         return e($value ?? '');
+    }
+
+    protected function isRegularStatus(MobilityAlert $alert): bool
+    {
+        $text = mb_strtolower($alert->title.' '.($alert->description ?? ''));
+
+        return str_contains($text, 'regolare')
+            || str_contains($text, 'servizio normale')
+            || str_contains($text, 'nessun problema');
+    }
+
+    protected function cleanMobilityText(?string $value): string
+    {
+        $value = strip_tags((string) $value);
+        $value = preg_replace('/https?:\/\/\S+/iu', '', $value);
+        $value = preg_replace('/milanmetrost[a-z.\s]*[èe]?[\s]*(anche su chatgpt)?/iu', '', $value);
+        $value = preg_replace('/\s+/u', ' ', $value);
+
+        return trim((string) $value);
     }
 }
