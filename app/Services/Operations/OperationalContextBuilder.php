@@ -11,6 +11,7 @@ use App\Models\TrisMareSnapshot;
 use App\Models\VacationRequestDay;
 use App\Services\Calendar\CalendarEventsService;
 use App\Services\Calendar\CalendarSummaryService;
+use App\Services\Mobility\MobilityAlertSyncService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -28,6 +29,7 @@ class OperationalContextBuilder
     public function __construct(
         protected CalendarSummaryService $calendarSummaryService,
         protected CalendarEventsService $calendarEventsService,
+        protected MobilityAlertSyncService $mobilityNormalizer,
     ) {}
 
     public function build(Carbon|string|null $date = null): array
@@ -301,14 +303,15 @@ class OperationalContextBuilder
             ->get();
 
         $normalized = $items
-            ->map(fn (MobilityAlert $alert) => $this->normalizeMobilityAlert($alert))
+            ->flatMap(fn (MobilityAlert $alert) => $this->normalizeMobilityAlert($alert))
             ->filter()
-            ->unique(fn (array $alert) => implode('|', [
-                $alert['type'],
-                $alert['district'],
-                mb_strtolower($alert['title']),
-                $alert['starts_at'],
-            ]))
+            ->sortByDesc(fn (array $alert): int => mb_strlen($alert['summary'] ?? $alert['title'] ?? ''))
+            ->unique(fn (array $alert): string => $alert['canonical_key'])
+            ->map(function (array $alert): array {
+                unset($alert['canonical_key']);
+
+                return $alert;
+            })
             ->values();
 
         return [
@@ -318,13 +321,32 @@ class OperationalContextBuilder
         ];
     }
 
-    protected function normalizeMobilityAlert(MobilityAlert $alert): ?array
+    protected function normalizeMobilityAlert(MobilityAlert $alert): array
     {
         $title = $this->cleanMobilityText($alert->title);
         $description = $this->cleanMobilityText($alert->description);
 
+        $lineEvents = $this->mobilityNormalizer->splitTelegramStatusEvents($title);
+
+        if ($lineEvents === [] && $this->mobilityNormalizer->isTelegramStatusMessage($title)) {
+            return [];
+        }
+
+        if ($lineEvents !== []) {
+            return collect($lineEvents)
+                ->map(fn (array $event): array => $this->normalizedMobilityItem(
+                    alert: $alert,
+                    title: $event['title'],
+                    description: $event['description'],
+                    type: $event['type'],
+                    risk: $event['risk'],
+                    district: $event['line'],
+                ))
+                ->all();
+        }
+
         if ($title === '' || in_array($title, ['regolare', 'servizio regolare'], true)) {
-            return null;
+            return [];
         }
 
         $risk = $alert->risk;
@@ -334,7 +356,7 @@ class OperationalContextBuilder
             $risk = 'low';
         }
 
-        return [
+        return [[
             'id' => $alert->id,
             'source' => $alert->source,
             'type' => $alert->type ?: 'info',
@@ -345,9 +367,72 @@ class OperationalContextBuilder
             'starts_at' => $alert->starts_at?->toDateString(),
             'ends_at' => $alert->ends_at?->toDateString(),
             'url' => $alert->url,
+            'canonical_key' => $this->mobilityNormalizer->canonicalFingerprint(
+                $alert->source ?? 'mobility',
+                $title,
+                $description,
+                $alert->type ?: 'info',
+                $alert->starts_at?->toDateString(),
+            ),
             'impact' => 'unknown',
             'impact_reason' => 'Связь между транспортом и маршрутом сотрудника не определена',
+        ]];
+    }
+
+    protected function normalizedMobilityItem(
+        MobilityAlert $alert,
+        string $title,
+        string $description,
+        string $type,
+        string $risk,
+        ?string $district,
+    ): array {
+        $lower = mb_strtolower($title . ' ' . $description);
+        $line = preg_match('/\b(M[1-5])\b/i', $lower, $lineMatch)
+            ? mb_strtoupper($lineMatch[1])
+            : null;
+        $summary = $this->mobilitySummary($line, $type, $lower, $description ?: $title);
+
+        return [
+            'id' => $alert->id,
+            'source' => $alert->source,
+            'type' => $type,
+            'risk' => $risk,
+            'title' => $title,
+            'summary' => $summary,
+            'district' => $district,
+            'starts_at' => $alert->starts_at?->toDateString(),
+            'ends_at' => $alert->ends_at?->toDateString(),
+            'url' => $alert->url,
+            'canonical_key' => $this->mobilityNormalizer->canonicalFingerprint(
+                $alert->source ?? 'mobility',
+                $title,
+                $description,
+                $type,
+                $alert->starts_at?->toDateString(),
+            ),
+            'impact' => 'unknown',
+            'impact_reason' => 'РЎРІСЏР·СЊ РјРµР¶РґСѓ С‚СЂР°РЅСЃРїРѕСЂС‚РѕРј Рё РјР°СЂС€СЂСѓС‚РѕРј СЃРѕС‚СЂСѓРґРЅРёРєР° РЅРµ РѕРїСЂРµРґРµР»РµРЅР°',
         ];
+    }
+
+    protected function mobilitySummary(?string $line, string $type, string $lower, string $fallback): string
+    {
+        $prefix = $line ? $line . ' — ' : '';
+
+        if ($type === 'partial_closure') {
+            if ($line === 'M2' && str_contains($lower, 'crescenzago')) {
+                return 'M2 — частично ограничено движение между Gobba и Cologno Nord, работают автобусы BM2.';
+            }
+
+            return $prefix . 'частично ограничено движение.';
+        }
+
+        if ($type === 'closure') {
+            return $prefix . 'линия закрыта.';
+        }
+
+        return $fallback;
     }
 
     protected function cleanMobilityText(?string $value): string

@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\MobilityAlert;
+use App\Services\Mobility\MobilityAlertSyncService;
 use App\Services\Weather\MilanWeatherService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
@@ -101,14 +102,43 @@ class MobilityDigestCommand extends Command
 
     protected function deduplicateAlerts($alerts)
     {
+        $normalizer = app(MobilityAlertSyncService::class);
+
         return collect($alerts)
             ->filter(fn (MobilityAlert $alert) => $this->shouldShowInWorkerDigest($alert))
-            ->unique(fn (MobilityAlert $alert) => implode('|', [
-                $alert->type,
-                $alert->district,
-                $this->normalizedText($alert->description ?: $alert->title),
-                optional($alert->starts_at)->toDateString(),
-            ]))
+            ->flatMap(function (MobilityAlert $alert) use ($normalizer) {
+                $lineEvents = $normalizer->splitTelegramStatusEvents($alert->title);
+
+                if ($lineEvents === []) {
+                    return [[
+                        'type' => $alert->type,
+                        'risk' => $alert->risk,
+                        'district' => $alert->district,
+                        'title' => $alert->title,
+                        'description' => $alert->description,
+                        'source' => $alert->source,
+                        'starts_at' => optional($alert->starts_at)->toDateString(),
+                    ]];
+                }
+
+                return collect($lineEvents)->map(fn (array $event): array => [
+                    'type' => $event['type'],
+                    'risk' => $event['risk'],
+                    'district' => $event['line'],
+                    'title' => $event['title'],
+                    'description' => $event['description'],
+                    'source' => $alert->source,
+                    'starts_at' => optional($alert->starts_at)->toDateString(),
+                ])->all();
+            })
+            ->reject(fn (array $alert): bool => str_contains(mb_strtolower(($alert['title'] ?? '') . ' ' . ($alert['description'] ?? '')), 'regolare'))
+            ->unique(fn (array $alert): string => $normalizer->canonicalFingerprint(
+                $alert['source'] ?? 'mobility',
+                $alert['title'] ?? '',
+                $alert['description'] ?? null,
+                $alert['type'] ?? null,
+                $alert['starts_at'] ?? null,
+            ))
             ->values();
     }
 
@@ -129,6 +159,8 @@ class MobilityDigestCommand extends Command
             || str_contains($type, 'train')
             || str_contains($title, 'chiusura')
             || str_contains($title, 'chiude')
+            || str_contains($title, 'chiusa')
+            || str_contains($title, 'sospesa')
             || str_contains($title, 'lavori')
             || str_contains($title, 'cantieri')
             || str_contains($title, 'deviazioni')
@@ -186,13 +218,19 @@ class MobilityDigestCommand extends Command
         return false;
     }
 
-    protected function workerAlertLine(MobilityAlert $alert): string
+    protected function workerAlertLine(array $alert): string
     {
-        $label = $alert->district ?: ($alert->type === 'strike' ? 'Забастовка' : 'Транспорт');
-        $summary = $this->shortText($alert->description ?: $alert->title);
-        $icon = $this->isStrike($alert) || in_array($alert->risk, ['critical', 'high'], true) ? '⚠️' : 'ℹ️';
+        $label = $alert['district'] ?? 'transport';
+        $type = $alert['type'] ?? 'info';
+        $summary = match ($type) {
+            'partial_closure' => 'частично ограничено движение между Gobba и Cologno Nord, работают автобусы BM2.',
+            'closure' => 'линия закрыта.',
+            default => $this->shortText($alert['description'] ?? $alert['title'] ?? ''),
+        };
+        $icon = in_array($alert['risk'] ?? null, ['critical', 'high'], true) ? '⚠️' : 'ℹ️';
 
         return $icon . ' <b>' . e($label) . "</b>\n" . e($summary) . "\n";
+
     }
 
     protected function normalizedText(?string $value): string

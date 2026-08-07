@@ -133,7 +133,7 @@ it('authorizes and applies an access approval callback from a mapped supervisor'
         'name' => 'Cleaner', 'telegram_id' => '456', 'status' => 'pending', 'role' => 'cleaner', 'is_active' => true,
     ]);
 
-    $response = $this->postJson('/telegram/work-webhook/test-secret', [
+    $response = $this->postJson('/api/telegram/work-webhook/test-secret', [
         'callback_query' => [
             'id' => 'callback-1',
             'data' => 'access:approve:' . $employee->id,

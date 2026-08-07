@@ -78,12 +78,62 @@ it('deduplicates mobility events and never treats a regular status as a high ale
 
     expect($message)
         ->toContain('Передвижение')
-        ->toContain('gobba')
-        ->toContain('autobus')
+        ->toContain('Gobba')
+        ->toContain('автобусы')
         ->not->toContain('HIGH')
         ->not->toContain('REGOLARE');
 
     $this->artisan('mobility:digest', ['--date' => '2026-08-03', '--dry-run' => true])
         ->assertExitCode(0)
         ->expectsOutputToContain('Передвижение');
+});
+
+it('splits metro line statuses and canonicalizes the Crescenzago cluster', function () {
+    $normalizer = app(\App\Services\Mobility\MobilityAlertSyncService::class);
+    $events = $normalizer->splitTelegramStatusEvents(
+        'M1 REGOLARE M2 PARZ. SOSPESA M3 CHIUSA M4 CHIUSA M5 CHIUSA'
+    );
+
+    expect(collect($events)->pluck('line')->all())
+        ->toBe(['M2', 'M3', 'M4', 'M5']);
+    expect($events[0]['risk'])->toBe('medium')
+        ->and($events[1]['risk'])->toBe('high');
+
+    $first = $normalizer->canonicalFingerprint(
+        'telegram',
+        'M2 bus BM2 Gobba - Cologno Nord',
+        'Crescenzago closed',
+        'partial_closure',
+        '2026-08-03',
+    );
+    $second = $normalizer->canonicalFingerprint(
+        'atm',
+        'Crescenzago closed!',
+        'M2 buses Gobba ↔ Cologno Nord',
+        'closure',
+        '2026-08-03',
+    );
+
+    expect($first)->toBe($second);
+});
+
+it('normalizes operational mobility items into separate non-raw line events', function () {
+    $builder = app(\App\Services\Operations\OperationalContextBuilder::class);
+    $method = new ReflectionMethod($builder, 'normalizeMobilityAlert');
+    $method->setAccessible(true);
+
+    $alert = new MobilityAlert([
+        'source' => 'telegram',
+        'title' => 'Linea M1 REGOLARE Linea M2 PARZ. SOSPESA Linea M3 CHIUSA Linea M4 CHIUSA Linea M5 CHIUSA',
+        'description' => 'MilanMetroStatus.it è anche su ChatGPT',
+        'type' => 'transport',
+        'risk' => 'high',
+        'starts_at' => '2026-08-03',
+    ]);
+
+    $items = collect($method->invoke($builder, $alert));
+
+    expect($items->pluck('district')->all())->toBe(['M2', 'M3', 'M4', 'M5'])
+        ->and($items->pluck('risk')->all())->toBe(['medium', 'high', 'high', 'high'])
+        ->and($items->pluck('title')->implode(' '))->not->toContain('Linea');
 });
