@@ -134,11 +134,12 @@ class DayOffRequest extends Model
             'request_id' => $this->id,
         ]);
 
-        app(DayOffRequestTelegramService::class)->sendResult($this);
-
-        $this->update([
-            'notified_at' => now(),
-        ]);
+        \App\Jobs\SendRequestResultNotificationJob::dispatch(
+            DayOffRequestTelegramService::class,
+            self::class,
+            $this->id,
+            true,
+        )->afterCommit();
     }
 
     public function syncStatusAndNotify(): void

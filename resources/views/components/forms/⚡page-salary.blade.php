@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\SalaryQuestion;
+use App\Jobs\SendTelegramNotificationJob;
 use App\Services\Forms\StaffFormTelegramService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -109,7 +110,7 @@ public function resetForm(): void
         $this->successMessage = null;
     }
 
-    public function submit(StaffFormTelegramService $telegram): void
+    public function submit(): void
     {
         $this->validate([
             'type' => ['required', 'string', 'max:255'],
@@ -154,7 +155,12 @@ public function resetForm(): void
     ->log('Пользователь отправил вопрос по зарплате');
 
             try {
-                $telegram->sendSalaryQuestion($record);
+                SendTelegramNotificationJob::dispatch(
+                    StaffFormTelegramService::class,
+                    'sendSalaryQuestion',
+                    SalaryQuestion::class,
+                    $record->id,
+                )->afterCommit();
             } catch (\Throwable $e) {
                 Log::error('Salary question telegram failed but record saved', [
                     'record_id' => $record->id,
@@ -206,19 +212,7 @@ public function resetForm(): void
             Вопрос по зарплате
         </span>
 
-     <button
-            type="button"
-     
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
-                   bg-[#E1E1E1] backdrop-blur-md
-                   text-white
-                   transition-all duration-300
-                   hover:bg-[#7D7D7D]"
-        >
-            <x-heroicon-o-magnifying-glass
-                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
-            />
-        </button>
+        <x-ui.guide-trigger />
     </div>
 </x-slot:header>
 
@@ -360,13 +354,12 @@ public function resetForm(): void
                             Опишите ваш вопрос
                         </h2>
 
-                        <textarea
+                        <x-ui.textarea
                             wire:model.live.debounce.400ms="comment"
                             rows="6"
                             maxlength="2000"
                             placeholder="Например: сумма поступила не полностью или аванс не был начислен"
-                            class="w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[16px] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
-                        ></textarea>
+                        />
 
          
                     </div>
@@ -562,4 +555,13 @@ public function resetForm(): void
             </div>
         </x-ui.bottom-sheet>
     </div>
+
+    <x-ui.guide
+        guide-key="salary-question-guide-v1"
+        :steps="[
+            ['title' => 'Вопрос по зарплате', 'text' => 'Выберите тему, подробно опишите вопрос и при необходимости приложите файл.'],
+            ['title' => 'Опишите ситуацию', 'text' => 'Укажите даты, суммы или другие детали, которые помогут быстрее разобраться.'],
+            ['title' => 'Отправьте обращение', 'text' => 'Проверьте данные и нажмите «Отправить». Ответ появится после рассмотрения.'],
+        ]"
+    />
 </div>

@@ -99,8 +99,11 @@ public function syncStatusAndNotify(): void
         'status' => $status,
     ])->save();
 
-    app(\App\Services\Forms\VacationRequestTelegramService::class)
-        ->sendResult($this);
+    \App\Jobs\SendRequestResultNotificationJob::dispatch(
+        \App\Services\Forms\VacationRequestTelegramService::class,
+        self::class,
+        $this->id,
+    )->afterCommit();
 }
 
 public function approvedDays(): HasMany

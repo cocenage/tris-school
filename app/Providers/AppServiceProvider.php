@@ -3,9 +3,12 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Models\Apartment;
+use App\Policies\ApartmentPolicy;
 use App\Observers\UserObserver;
 use Filament\Facades\Filament;
 use Filament\Navigation\NavigationItem;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -23,6 +26,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Gate::policy(Apartment::class, ApartmentPolicy::class);
+
         Filament::serving(function () {
             Filament::registerNavigationItems([
                 NavigationItem::make('На сайт')

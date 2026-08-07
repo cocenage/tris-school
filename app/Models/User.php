@@ -185,6 +185,28 @@ class User extends Authenticatable implements FilamentUser
         return $this->hasMany(\App\Models\InventoryRequest::class);
     }
 
+    public function controlResponsesAsCleaner()
+    {
+        return $this->hasMany(\App\Models\ControlResponse::class, 'cleaner_id');
+    }
+
+    public function controlResponsesAsSupervisor()
+    {
+        return $this->hasMany(\App\Models\ControlResponse::class, 'supervisor_id');
+    }
+
+    public function apartmentAccessGrants()
+    {
+        return $this->hasMany(ApartmentUserAccess::class);
+    }
+
+    public function accessibleApartments()
+    {
+        return $this->belongsToMany(Apartment::class, 'apartment_user_access')
+            ->withPivot(['granted_by', 'expires_at'])
+            ->withTimestamps();
+    }
+
     public function canManageTasks(): bool
     {
         return in_array($this->role, ['admin', 'supervisor'], true);

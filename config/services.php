@@ -66,10 +66,19 @@ return [
 
         )),
 
+        'assistant_enabled' => env('TELEGRAM_ASSISTANT_ENABLED', true),
+        'assistant_staff_chat_id' => env('TELEGRAM_ASSISTANT_STAFF_CHAT_ID'),
+        'assistant_staff_thread_id' => env('TELEGRAM_ASSISTANT_STAFF_THREAD_ID'),
+
 
 
         'analytics_bot_token' => env('TELEGRAM_ANALYTICS_BOT_TOKEN'),
         'analytics_webhook_secret' => env('TELEGRAM_ANALYTICS_WEBHOOK_SECRET'),
+
+        // Read-only forum digest route. Values are intentionally optional;
+        // preview remains usable when no delivery route is configured.
+        'digest_target_chat_id' => env('TELEGRAM_DIGEST_TARGET_CHAT_ID'),
+        'digest_target_thread_id' => env('TELEGRAM_DIGEST_TARGET_THREAD_ID'),
 
         
     'mobility_targets' => env('TELEGRAM_MOBILITY_TARGETS'),

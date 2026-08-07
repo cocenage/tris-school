@@ -528,34 +528,23 @@ public function showTrisMareHelp(): void
         </a>
     </div>
 
+
+
     <div class="mb-[10px] pt-[20px]">
-        <span class="text-[16px] opacity-50">
-            Календарь и события
-        </span>
+        <span class="text-[16px] opacity-50">Объекты</span>
     </div>
 
     <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
         <a
-            href="{{ route('page-profile.calendar') }}"
+            href="{{ route('page-apartments') }}"
             class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
         >
             <div class="flex min-w-0 items-center gap-4">
-                <x-heroicon-o-calendar-days class="h-[24px] w-[24px]" />
-
-                <span class="truncate text-[18px]">
-                    Календарь
-                </span>
+                <x-heroicon-o-home-modern class="h-[24px] w-[24px]" />
+                <span class="truncate text-[18px]">Квартиры</span>
             </div>
 
-            <div class="ml-[15px] flex min-w-0 shrink-0 items-center gap-[8px]">
-                @if($this->calendarBadge)
-                    <span class="max-w-[155px] truncate rounded-full bg-white px-[10px] py-[5px] text-[12px] font-medium text-[#555555]">
-                        {{ $this->calendarBadge }}
-                    </span>
-                @endif
-
-                <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
-            </div>
+            <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
         </a>
     </div>
 

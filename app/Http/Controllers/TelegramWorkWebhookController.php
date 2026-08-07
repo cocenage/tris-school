@@ -6,6 +6,7 @@ use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\User;
 use App\Services\Telegram\TelegramUpdateIngestService;
+use App\Services\Telegram\TelegramAssistantService;
 use App\Services\TelegramUserNotificationService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -20,7 +21,8 @@ class TelegramWorkWebhookController extends Controller
     public function __invoke(
         Request $request,
         string $secret,
-        TelegramUpdateIngestService $ingestService
+        TelegramUpdateIngestService $ingestService,
+        TelegramAssistantService $assistantService,
     ) {
 
 Log::info('Telegram work webhook received', [
@@ -49,13 +51,21 @@ Log::info('Telegram work webhook received', [
         }
 
         if (($message['chat']['type'] ?? null) === 'private') {
-    $this->sendPrivateFallbackMessage($message);
+            try {
+                $this->sendPrivateFallbackMessageStrict($message);
 
-    return response()->json([
-        'ok' => true,
-        'skipped' => 'private_message_fallback',
-    ]);
-}
+                return response()->json([
+                    'ok' => true,
+                    'skipped' => 'private_message',
+                ]);
+            } catch (\Throwable $e) {
+                Log::error('Telegram private message fallback failed', [
+                    'error' => $e->getMessage(),
+                ]);
+
+                return response()->json(['ok' => false], 500);
+            }
+        }
 
         $chatId = (string) data_get($message, 'chat.id');
 
@@ -70,7 +80,22 @@ Log::info('Telegram work webhook received', [
         }
 
         try {
-            $savedMessage = $ingestService->ingest($update);
+            $activated = $assistantService->isActivated($message);
+            $savedMessage = $ingestService->ingest(
+                $update,
+                $activated && $this->isInstructionCommand($message),
+            );
+
+            if ($savedMessage && $activated) {
+                try {
+                    $assistantService->handle($savedMessage, $message);
+                } catch (\Throwable $e) {
+                    Log::error('Telegram assistant processing failed after ingest', [
+                        'message_id' => $savedMessage->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
 
             return response()->json([
                 'ok' => true,
@@ -84,6 +109,14 @@ Log::info('Telegram work webhook received', [
 
             return response()->json(['ok' => false], 500);
         }
+    }
+
+    private function isInstructionCommand(array $message): bool
+    {
+        return preg_match(
+            '/^\/(?:help|assistant)(?:@[^\s]+)?\b/ui',
+            trim((string) ($message['text'] ?? '')),
+        ) === 1;
     }
 
     private function handleCallbackQuery(array $callbackQuery)
@@ -142,6 +175,18 @@ Log::info('Telegram work webhook received', [
         $moderator = $fromTelegramId
             ? User::where('telegram_id', (string) $fromTelegramId)->first()
             : null;
+
+        if (! $moderator || $moderator->status !== 'approved' || ! in_array($moderator->role, ['admin', 'supervisor'], true)) {
+            $this->answerCallback($callbackQuery, 'Недостаточно прав');
+
+            return response()->json(['ok' => true, 'skipped' => 'reviewer_not_allowed']);
+        }
+
+        if ($user->status !== 'pending') {
+            $this->answerCallback($callbackQuery, 'По пользователю уже принято решение');
+
+            return response()->json(['ok' => true, 'skipped' => 'access_already_reviewed']);
+        }
 
         $moderatorText = $this->telegramUserText($callbackQuery['from'] ?? []);
 
@@ -217,6 +262,18 @@ Log::info('Telegram work webhook received', [
         $reviewer = $fromTelegramId
             ? User::where('telegram_id', (string) $fromTelegramId)->first()
             : null;
+
+        if (! $reviewer || $reviewer->status !== 'approved' || ! in_array($reviewer->role, ['admin', 'supervisor'], true)) {
+            $this->answerCallback($callbackQuery, 'Недостаточно прав');
+
+            return response()->json(['ok' => true, 'skipped' => 'reviewer_not_allowed']);
+        }
+
+        if ($day->status !== 'pending') {
+            $this->answerCallback($callbackQuery, 'По этой дате уже принято решение');
+
+            return response()->json(['ok' => true, 'skipped' => 'dayoffday_already_reviewed']);
+        }
 
         $status = $action === 'approve' ? 'approved' : 'rejected';
 
@@ -407,8 +464,9 @@ private function editDayOffRequestMessage(
         ]);
     }
 
-    private function sendPrivateFallbackMessage(array $message): void
-{
+    /** @deprecated Kept temporarily for compatibility with older callers. */
+    private function sendPrivateFallbackMessageLegacy(array $message): void
+    {
     $chatId = data_get($message, 'chat.id');
 
     if (! $chatId) {
@@ -448,6 +506,33 @@ private function editDayOffRequestMessage(
         ],
     ]);
 }
+
+    private function sendPrivateFallbackMessageStrict(array $message): void
+    {
+        $chatId = data_get($message, 'chat.id');
+
+        if (! $chatId) {
+            return;
+        }
+
+        $messageKey = data_get($message, 'message_id')
+            ?: sha1(json_encode($message, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        $cacheKey = 'telegram_private_fallback_sent:' . $chatId . ':' . $messageKey;
+
+        if (! Cache::add($cacheKey, true, now()->addDay())) {
+            return;
+        }
+
+        $response = Http::post($this->telegramApiUrl('sendMessage'), [
+            'chat_id' => $chatId,
+            'text' => "\u{042F} \u{043D}\u{0435} \u{043E}\u{0431}\u{0440}\u{0430}\u{0431}\u{0430}\u{0442}\u{044B}\u{0432}\u{0430}\u{044E} \u{043B}\u{0438}\u{0447}\u{043D}\u{044B}\u{0435} \u{0441}\u{043E}\u{043E}\u{0431}\u{0449}\u{0435}\u{043D}\u{0438}\u{044F}. \u{0418}\u{0441}\u{043F}\u{043E}\u{043B}\u{044C}\u{0437}\u{0443}\u{0439}\u{0442}\u{0435} \u{0440}\u{0430}\u{0431}\u{043E}\u{0447}\u{0438}\u{0439} \u{0447}\u{0430}\u{0442}.",
+            'disable_web_page_preview' => true,
+        ]);
+
+        if (! $response->successful()) {
+            Cache::forget($cacheKey);
+        }
+    }
 
     private function telegramApiUrl(string $method): string
     {

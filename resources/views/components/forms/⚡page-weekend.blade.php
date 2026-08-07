@@ -2,12 +2,14 @@
 
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
+use App\Jobs\SendTelegramNotificationJob;
+use App\Services\Forms\DayOffRequestTelegramService;
+use App\Services\Calendar\CalendarEventsService;
 use Carbon\Carbon;
 use Carbon\CarbonPeriod;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Livewire\Component;
 
@@ -16,8 +18,8 @@ new class extends Component {
 
     public bool $policyModalOpen = false;
     public bool $successSheetOpen = false;
+    public bool $sundayWarningConfirmed = false;
 
-    public ?string $policyDate = null;
     public ?string $draftStartDate = null;
 
     public array $ranges = [];
@@ -145,16 +147,17 @@ public function getFormButtonTextProperty(): string
         $this->persistDraft();
     }
 
-    public function openPolicyModal(string $date): void
-    {
-        $this->policyDate = $date;
-        $this->policyModalOpen = true;
-    }
-
     public function closePolicyModal(): void
     {
         $this->policyModalOpen = false;
-        $this->policyDate = null;
+        $this->sundayWarningConfirmed = false;
+    }
+
+    public function confirmSundaySubmission(): void
+    {
+        $this->policyModalOpen = false;
+        $this->sundayWarningConfirmed = true;
+        $this->submit();
     }
 
     public function closeSuccessSheet(): void
@@ -169,7 +172,7 @@ public function getFormButtonTextProperty(): string
         $this->comment = '';
         $this->draftStartDate = null;
         $this->policyModalOpen = false;
-        $this->policyDate = null;
+        $this->sundayWarningConfirmed = false;
 
         $this->resetErrorBag();
         $this->resetValidation();
@@ -212,9 +215,22 @@ public function getFormButtonTextProperty(): string
         return false;
     }
 
-    protected function isSundayOrMonday(string $date): bool
+    protected function isSunday(string $date): bool
     {
-        return in_array(Carbon::parse($date)->dayOfWeekIso, [1, 7], true);
+        return Carbon::parse($date)->isSunday();
+    }
+
+    protected function isPeakDay(string $date): bool
+    {
+        return app(CalendarEventsService::class)->isPeakDay(Carbon::parse($date));
+    }
+
+    protected function peakDatesForRange(Carbon $start, Carbon $end): array
+    {
+        return app(CalendarEventsService::class)
+            ->getPeakDatesForRange($start, $end)
+            ->flip()
+            ->all();
     }
 
     protected function findRangeIndexByDate(string $date): ?int
@@ -242,15 +258,16 @@ public function getFormButtonTextProperty(): string
             return null;
         }
 
-        $policyDates = [];
+        $peakDates = [];
         $requestedDates = [];
         $selectedDates = [];
+        $peakDateSet = $this->peakDatesForRange($start, $end);
 
         foreach (CarbonPeriod::create($start, $end) as $periodDate) {
             $date = $periodDate->toDateString();
 
-            if ($this->isSundayOrMonday($date)) {
-                $policyDates[] = mb_strtolower(Carbon::parse($date)->translatedFormat('D d.m'));
+            if (isset($peakDateSet[$date])) {
+                $peakDates[] = Carbon::parse($date)->format('d.m');
                 continue;
             }
 
@@ -264,10 +281,10 @@ public function getFormButtonTextProperty(): string
             }
         }
 
-        if (! empty($policyDates)) {
+        if (! empty($peakDates)) {
             return [
-                'title' => 'Нужно согласование',
-                'message' => 'В диапазон попадают: ' . implode(', ', $policyDates),
+                'title' => 'Пиковая дата недоступна',
+                'message' => 'В диапазон попадают даты пиковой нагрузки: ' . implode(', ', $peakDates),
             ];
         }
 
@@ -374,16 +391,21 @@ public function getFormButtonTextProperty(): string
             return;
         }
 
-        if ($this->isSundayOrMonday($date)) {
-            $this->openPolicyModal($date);
-
-            return;
-        }
-
         $existingRangeIndex = $this->findRangeIndexByDate($date);
 
         if ($existingRangeIndex !== null) {
             $this->removeRange($existingRangeIndex);
+
+            return;
+        }
+
+        if ($this->isPeakDay($date)) {
+            $this->addError('ranges', 'Дата ' . Carbon::parse($date)->format('d.m.Y') . ' недоступна: на неё назначен пиковый день.');
+            $this->toast(
+                'warning',
+                'Дата недоступна',
+                'На эту дату в календаре отмечен пик нагрузки.'
+            );
 
             return;
         }
@@ -404,6 +426,10 @@ public function getFormButtonTextProperty(): string
         $end = $this->month->copy()->endOfMonth()->endOfWeek(Carbon::SUNDAY);
 
         $requestStatuses = $this->requestStatuses;
+        $peakDates = $this->peakDatesForRange(
+            $start->copy()->startOfDay(),
+            $end->copy()->endOfDay(),
+        );
         $days = [];
 
         while ($start->lte($end)) {
@@ -428,7 +454,8 @@ public function getFormButtonTextProperty(): string
                 'requested' => $status === 'pending',
                 'approved' => $status === 'approved',
                 'rejected' => $status === 'rejected',
-                'policy' => $status === null && $this->isSundayOrMonday($date),
+                'sunday' => $status === null && $this->isSunday($date),
+                'peak' => $status === null && isset($peakDates[$date]),
 
                 'preview_start' => false,
                 'preview_inside' => false,
@@ -460,109 +487,11 @@ public function getFormButtonTextProperty(): string
         return 'Ответ ожидайте сегодня с 10:00 до 18:00';
     }
 
-    protected function adminRecordUrl(DayOffRequest $request): string
-    {
-        return url('/admin/day-off-requests/' . $request->id . '/edit');
-    }
-
-protected function sendTelegramNotification(DayOffRequest $request): void
-{
-    $request->loadMissing(['user', 'days']);
-
-    $token = config('services.telegram.bot_token');
-    $chatId = config('services.telegram.chat_id_formweekend');
-    $threadId = config('services.telegram.thread_id_formweekend');
-
-    if (blank($token) || blank($chatId)) {
-        Log::warning('Telegram notification skipped: missing credentials', [
-            'request_id' => $request->id,
-            'token_exists' => filled($token),
-            'chat_id' => $chatId,
-        ]);
-
-        return;
-    }
-
-    $user = $request->user;
-
-    Carbon::setLocale('ru');
-
-    $name = $user?->name ?: 'Неизвестный пользователь';
-
-    $employeeText = $user?->telegram_id
-        ? '<a href="tg://user?id=' . e((string) $user->telegram_id) . '">' . e($name) . '</a>'
-        : e($name);
-
-    $dipText = isset($user?->dip)
-        ? ($user->dip ? 'dip' : 'no dip')
-        : '—';
-
-    $sortedDays = $request->days->sortBy('date');
-
-    $formattedDates = $sortedDays
-        ->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))
-        ->map(fn ($date) => '• ' . $date)
-        ->implode("\n");
-
-    $text = "📌 <b>Новый запрос на выходной</b>\n\n";
-    $text .= "👤 <b>Сотрудник:</b> {$employeeText}\n";
-    $text .= "🏷️ <b>Dip:</b> " . e($dipText) . "\n";
-    $text .= "📅 <b>Даты:</b>\n{$formattedDates}\n\n";
-
-    if (filled($request->reason)) {
-        $text .= "💬 <b>Причина:</b>\n";
-        $text .= "<blockquote>" . e(trim((string) $request->reason)) . "</blockquote>\n\n";
-    }
-
-    $text .= "⏳ <b>Статус:</b> ожидает решения";
-
-    $keyboard = [];
-
-    foreach ($sortedDays as $day) {
-        $date = Carbon::parse($day->date)->format('d.m');
-
-        $keyboard[] = [
-            [
-                'text' => "✅ {$date}",
-                'callback_data' => 'dayoffday:approve:' . $day->id,
-            ],
-            [
-                'text' => "❌ {$date}",
-                'callback_data' => 'dayoffday:reject:' . $day->id,
-            ],
-        ];
-    }
-
-    $payload = [
-        'chat_id' => $chatId,
-        'text' => $text,
-        'parse_mode' => 'HTML',
-        'disable_web_page_preview' => true,
-        'reply_markup' => [
-            'inline_keyboard' => $keyboard,
-        ],
-    ];
-
-    if (filled($threadId)) {
-        $payload['message_thread_id'] = (int) $threadId;
-    }
-
-    $response = Http::timeout(10)->post(
-        "https://api.telegram.org/bot{$token}/sendMessage",
-        $payload
-    );
-
-    if ($response->failed()) {
-        Log::error('Telegram send failed', [
-            'status' => $response->status(),
-            'body' => $response->body(),
-            'request_id' => $request->id,
-        ]);
-    }
-}
-
     public function submit(): void
     {
+        $sundayWarningConfirmed = $this->sundayWarningConfirmed;
+        $this->sundayWarningConfirmed = false;
+
         if (empty($this->ranges)) {
             $this->toast(
                 'warning',
@@ -608,9 +537,12 @@ protected function sendTelegramNotification(DayOffRequest $request): void
         try {
             $dates = [];
 
+            $peakDates = [];
+
             foreach ($this->ranges as $range) {
                 $rangeStart = Carbon::parse($range['start'])->startOfDay();
                 $rangeEnd = Carbon::parse($range['end'])->startOfDay();
+                $peakDateSet = $this->peakDatesForRange($rangeStart, $rangeEnd);
 
                 foreach (CarbonPeriod::create($rangeStart, $rangeEnd) as $day) {
                     $date = $day->toDateString();
@@ -624,12 +556,31 @@ protected function sendTelegramNotification(DayOffRequest $request): void
                         return;
                     }
 
+                    if (isset($peakDateSet[$date])) {
+                        $peakDates[] = Carbon::parse($date)->format('d.m.Y');
+                        continue;
+                    }
+
                     $dates[] = $date;
                 }
             }
 
+            if (! empty($peakDates)) {
+                $message = 'Недоступные даты пиковой нагрузки: ' . implode(', ', array_unique($peakDates));
+                $this->addError('ranges', $message);
+                $this->toast('warning', 'Заявка не отправлена', $message);
+
+                return;
+            }
+
             $dates = array_values(array_unique($dates));
             sort($dates);
+
+            if (collect($dates)->contains(fn (string $date) => $this->isSunday($date)) && ! $sundayWarningConfirmed) {
+                $this->policyModalOpen = true;
+
+                return;
+            }
 
             $request = DB::transaction(function () use ($dates) {
     $request = DayOffRequest::create([
@@ -661,7 +612,12 @@ protected function sendTelegramNotification(DayOffRequest $request): void
 });
 
             try {
-                $this->sendTelegramNotification($request);
+                SendTelegramNotificationJob::dispatch(
+                    DayOffRequestTelegramService::class,
+                    'sendCreated',
+                    DayOffRequest::class,
+                    $request->id,
+                )->afterCommit();
             } catch (\Throwable $e) {
                 Log::error('Telegram failed but request saved', [
                     'request_id' => $request->id,
@@ -672,6 +628,7 @@ protected function sendTelegramNotification(DayOffRequest $request): void
             $this->ranges = [];
             $this->draftStartDate = null;
             $this->comment = '';
+            $this->sundayWarningConfirmed = false;
 
             $this->resetErrorBag();
             $this->resetValidation();
@@ -733,13 +690,7 @@ protected function sendTelegramNotification(DayOffRequest $request): void
 
 
 
-<button
-    type="button"
-    onclick="window.dispatchEvent(new CustomEvent('open-guide', { detail: { reset: true } }))"
-    class="group flex h-[40px] min-w-[40px] cursor-pointer items-center justify-center rounded-full bg-[#E1E1E1] text-white backdrop-blur-md transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:scale-[1.04] hover:bg-[#7D7D7D] active:scale-[0.92]"
->
-    <x-heroicon-o-question-mark-circle class="h-[20px] w-[20px] stroke-[2.2]" />
-</button>
+<x-ui.guide-trigger />
 
     </div>
 </x-slot:header>
@@ -876,6 +827,9 @@ scrollToNextRequired(hasRanges, hasComment) {
                                         if ($day['past']) {
                                             $style .= 'color:#C3CDD8;';
                                             $class .= ' cursor-not-allowed';
+                                        } elseif (!empty($day['peak'])) {
+                                            $style .= 'background:#F3E69C;color:#7A5D00;';
+                                            $class .= ' cursor-not-allowed opacity-80';
                                         } elseif (!empty($day['draft_start'])) {
                                             $style .= 'background:#213259;color:#FFFFFF;';
                                             $class .= ' font-semibold ';
@@ -906,15 +860,27 @@ scrollToNextRequired(hasRanges, hasComment) {
                                         wire:click="selectDate('{{ $day['date'] }}')"
                                         class="{{ $class }}"
                                         style="{{ $style }}"
-                                        @disabled(!$day['current'] || $day['past'])
+                                        @disabled(!$day['current'] || $day['past'] || $day['peak'])
+                                        @if (!empty($day['peak']))
+                                            title="Пиковый день — выходной недоступен"
+                                            aria-label="{{ $day['day'] }}: пиковый день, выходной недоступен"
+                                        @elseif (!empty($day['sunday']))
+                                            title="Воскресенье можно выбрать, перед отправкой потребуется подтверждение"
+                                            aria-label="{{ $day['day'] }}: воскресенье, перед отправкой потребуется подтверждение"
+                                        @endif
                                     >
                                         {{ $day['day'] }}
 
-                                        @if (!empty($day['policy']))
-                                            <span class="absolute bottom-[4px] left-1/2 block h-[5px] w-[5px] -translate-x-1/2 rounded-full bg-[#6D84A3]"></span>
+                                        @if (!empty($day['peak']))
+                                            <span class="absolute bottom-[3px] left-1/2 -translate-x-1/2 text-[7px] font-semibold uppercase leading-none text-[#7A5D00]">пик</span>
                                         @endif
                                     </button>
                                 @endforeach
+                            </div>
+
+                            <div class="mt-[16px] flex items-start gap-[8px] px-[16px] text-[12px] leading-[1.4] text-[#7A5D00]">
+                                <span class="mt-[2px] h-[10px] w-[10px] shrink-0 rounded-full bg-[#F3E69C] ring-1 ring-[#D6B95B]"></span>
+                                <span>Пиковый день отмечен в календаре и недоступен для заявки на выходной.</span>
                             </div>
                         </div>
                     </div>
@@ -924,14 +890,13 @@ scrollToNextRequired(hasRanges, hasComment) {
                          Опишите причину
                         </h2>
 
-                        <textarea
+                        <x-ui.textarea
                                 x-ref="reasonInput"
     wire:model.live.debounce.500ms="comment"
                             rows="4"
                             maxlength="500"
                             placeholder="Например: нужен выходной в выбранные даты"
-                            class="w-full rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] px-[20px] py-[15px] text-[16px] placeholder:text-black/35 outline-none transition focus:border-[#D6D6D6] focus:bg-white focus:ring-0"
-                        ></textarea>
+                        />
 
                         @error('comment')
                             <div class="mt-[8px] px-[4px] text-[15px] text-[#D92D20]">
@@ -1015,33 +980,29 @@ scrollToNextRequired(hasRanges, hasComment) {
                 >
 
                 <h1 class="mt-[28px] text-[22px]! font-semibold tracking-[-0.02em] text-[#111111]">
-                    Обязательные рабочие дни
+                    Подтвердите заявку на воскресенье
                 </h1>
 
                 <p class="pt-[18px] text-[16px] leading-[1.5] text-black/55 flex flex-col">
-                    <span>Воскресенье и понедельник — обязательные рабочие дни</span>
-                     <span> Выходной на эти дни можно согласовать только в пятницу</span>
-                    
-                   
+                    <span>Согласование выходного на воскресенье возможно только в пятницу, когда будет понятна ожидаемая нагрузка и сможем ли мы выполнить свои обязательства перед клиентами.</span>
                 </p>
 
                 <div class="flex gap-[10px] pt-[32px]">
-                  <x-ui.button
-    variant="secondary"
-    @click="modalOpen = false"
->
-    Понятно
-</x-ui.button>
-
-                    @if (filled($adminChatUrl))
                     <x-ui.button
-    variant="primary"
-    href="{{ $adminChatUrl }}"
-    target="_blank"
->
-    Написать
-</x-ui.button>
-                    @endif
+                        variant="secondary"
+                        type="button"
+                        wire:click="closePolicyModal"
+                    >
+                        Вернуться
+                    </x-ui.button>
+
+                    <x-ui.button
+                        variant="primary"
+                        type="button"
+                        wire:click="confirmSundaySubmission"
+                    >
+                        Понятно, отправить заявку
+                    </x-ui.button>
                 </div>
             </div>
         </x-ui.modal>
@@ -1106,8 +1067,8 @@ scrollToNextRequired(hasRanges, hasComment) {
                 },
                 {
                              image: '/images/weekend/4.webp',
-                    title: 'Пн и вс выбрать нельзя',
-                    text: 'Понедельник и воскресенье — обязательные рабочие дни. Если нужен выходной, свяжитесь с администратором в пятницу для уточнения.',
+                     title: 'Воскресенье можно выбрать',
+                     text: 'Заявку на воскресенье можно отправить заранее. Перед отправкой появится предупреждение, а решение примут в пятницу с учётом ожидаемой нагрузки.',
                 },
                   {
                              image: '/images/weekend/5.webp',

@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\LogoutController;
+use App\Http\Controllers\ApartmentAttachmentController;
+use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\TelegramAnalyticsWebhookController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
@@ -67,11 +69,19 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/applications/schedule', 'forms.page-schedule')->name('page-applications.schedule');
     Route::livewire('/applications/feedback', 'forms.page-feedback')->name('page-applications.feedback');
 
+    Route::post('/form-guides/seen', [FormGuideController::class, 'store'])
+        ->name('form-guides.seen');
+
     Route::livewire('/profile', 'page-profile')->name('page-profile');
     Route::livewire('/profile/checks', 'profile.page-checks')->name('page-profile.checks');
     Route::livewire('/profile/checks/{controlResponse}', 'profile.page-check-result')->name('page-profile.checks.result');
     Route::livewire('/profile/all-checks', 'profile.page-all-checks')->name('page-profile.all-checks');
     Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
+
+    Route::livewire('/apartments', 'apartments.page-apartments')->name('page-apartments');
+    Route::livewire('/apartments/{apartment}', 'apartments.page-apartment')->name('page-apartments.show');
+    Route::get('/apartments/{apartment}/attachments/{attachment}', ApartmentAttachmentController::class)
+        ->name('page-apartments.attachment');
 
     Route::livewire('/tasks', 'tasks.page-tasks')
         ->name('page-tasks');
@@ -122,4 +132,3 @@ Route::fallback(function () {
 
 
 });
-

@@ -17,11 +17,9 @@ class ApartmentsTable
     public static function configure(Table $table): Table
     {
         return $table
-            ->defaultSort('sort_order')
+            ->defaultSort('name')
             ->columns([
-                ImageColumn::make('image')
-                    ->label('Фото')
-                    ->square(),
+                ImageColumn::make('image')->label('Фото')->square(),
 
                 TextColumn::make('name')
                     ->label('Название')
@@ -40,13 +38,24 @@ class ApartmentsTable
                     ->searchable()
                     ->toggleable(),
 
-                TextColumn::make('sort_order')
-                    ->label('Порядок')
-                    ->sortable(),
-
                 IconColumn::make('is_active')
                     ->label('Активна')
                     ->boolean()
+                    ->sortable(),
+
+                TextColumn::make('information_status')
+                    ->label('Страница')
+                    ->badge()
+                    ->formatStateUsing(fn (?string $state): string => match ($state) {
+                        'published' => 'Опубликована',
+                        'archived' => 'Архив',
+                        default => 'Черновик',
+                    })
+                    ->color(fn (?string $state): string => match ($state) {
+                        'published' => 'success',
+                        'archived' => 'gray',
+                        default => 'warning',
+                    })
                     ->sortable(),
 
                 TextColumn::make('updated_at')
@@ -56,8 +65,14 @@ class ApartmentsTable
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                Tables\Filters\TernaryFilter::make('is_active')
-                    ->label('Активность'),
+                Tables\Filters\TernaryFilter::make('is_active')->label('Активность'),
+                Tables\Filters\SelectFilter::make('information_status')
+                    ->label('Статус страницы')
+                    ->options([
+                        'draft' => 'Черновик',
+                        'published' => 'Опубликована',
+                        'archived' => 'Архив',
+                    ]),
             ])
             ->actions([
                 ViewAction::make(),

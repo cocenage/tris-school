@@ -6,11 +6,16 @@ use App\Filament\Resources\Apartments\Pages\CreateApartment;
 use App\Filament\Resources\Apartments\Pages\EditApartment;
 use App\Filament\Resources\Apartments\Pages\ListApartments;
 use App\Filament\Resources\Apartments\Pages\ViewApartment;
+use App\Filament\Resources\Apartments\RelationManagers\InformationAttachmentsRelationManager;
+use App\Filament\Resources\Apartments\RelationManagers\InformationSectionsRelationManager;
+use App\Filament\Resources\Apartments\RelationManagers\AccessRelationManager;
 use App\Filament\Resources\Apartments\Schemas\ApartmentForm;
 use App\Filament\Resources\Apartments\Schemas\ApartmentInfolist;
 use App\Filament\Resources\Apartments\Tables\ApartmentsTable;
 use App\Models\Apartment;
+use App\Services\Apartments\ApartmentAccessService;
 use BackedEnum;
+use Illuminate\Database\Eloquent\Builder;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
@@ -38,6 +43,18 @@ class ApartmentResource extends Resource
         return ApartmentForm::configure($schema);
     }
 
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery();
+        $user = auth()->user();
+
+        if ($user && ! app(ApartmentAccessService::class)->canManage($user)) {
+            return app(ApartmentAccessService::class)->visibleQuery($user);
+        }
+
+        return $query;
+    }
+
     public static function infolist(Schema $schema): Schema
     {
         return ApartmentInfolist::configure($schema);
@@ -50,7 +67,11 @@ class ApartmentResource extends Resource
 
     public static function getRelations(): array
     {
-        return [];
+        return [
+            InformationSectionsRelationManager::class,
+            InformationAttachmentsRelationManager::class,
+            AccessRelationManager::class,
+        ];
     }
 
     public static function getPages(): array

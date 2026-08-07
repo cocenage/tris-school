@@ -7,13 +7,18 @@ use Illuminate\Support\Facades\Log;
 
 class TelegramBotService
 {
-    public function sendMessage(string $chatId, string $text, ?string $threadId = null): void
+    public function sendMessage(
+        string $chatId,
+        string $text,
+        ?string $threadId = null,
+        ?string $replyToMessageId = null,
+    ): ?int
     {
         $token = config('services.telegram.bot_token');
 
         if (!$token) {
             Log::warning('Telegram bot token is not configured.');
-            return;
+            return null;
         }
 
         $payload = [
@@ -27,6 +32,11 @@ class TelegramBotService
             $payload['message_thread_id'] = $threadId;
         }
 
+        if ($replyToMessageId) {
+            $payload['reply_to_message_id'] = (int) $replyToMessageId;
+            $payload['allow_sending_without_reply'] = true;
+        }
+
         $response = Http::timeout(5)
             ->connectTimeout(3)
             ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
@@ -36,5 +46,9 @@ class TelegramBotService
             'body' => $response->body(),
             'payload' => $payload,
         ]);
+
+        return $response->successful()
+            ? data_get($response->json(), 'result.message_id')
+            : null;
     }
 }

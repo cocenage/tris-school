@@ -78,7 +78,7 @@ new class extends Component {
             class="group flex flex-col items-center justify-center gap-[5px]">
 
             <x-heroicon-s-calendar-days class="w-[20px] h-[20px] transition-all duration-300
-                   {{ request()->routeIs('page-tasks*')
+                   {{ request()->routeIs('page-tasks.calendar')
     ? '[&>*]:fill-[url(#nav-gradient)]'
     : 'text-zinc-400 group-hover:text-[#7D7D7D]'
                 }}" />
@@ -88,7 +88,7 @@ new class extends Component {
     ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
     : 'text-zinc-400 group-hover:text-[#7D7D7D]'
                 }}">
-                Задачи
+                Календарь
             </span>
         </a>
 

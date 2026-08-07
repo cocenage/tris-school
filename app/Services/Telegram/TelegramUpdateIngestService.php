@@ -11,7 +11,7 @@ use Carbon\Carbon;
 
 class TelegramUpdateIngestService
 {
-    public function ingest(array $update): ?TelegramMessage
+    public function ingest(array $update, bool $processInstructionAutoReply = false): ?TelegramMessage
     {
         $message = $update['message']
             ?? $update['edited_message']
@@ -103,7 +103,9 @@ class TelegramUpdateIngestService
 
         $this->syncAttachments($messageModel, $message);
 
-\App\Jobs\ProcessTelegramInstructionAutoReply::dispatch($messageModel->id);
+        if ($processInstructionAutoReply) {
+            \App\Jobs\ProcessTelegramInstructionAutoReply::dispatch($messageModel->id);
+        }
 
 return $messageModel;
         

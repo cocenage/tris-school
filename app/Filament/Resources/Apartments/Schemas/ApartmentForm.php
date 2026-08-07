@@ -3,7 +3,7 @@
 namespace App\Filament\Resources\Apartments\Schemas;
 
 use Filament\Forms\Components\FileUpload;
-use Filament\Forms\Components\KeyValue;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -16,20 +16,11 @@ class ApartmentForm
     public static function configure(Schema $schema): Schema
     {
         return $schema->components([
-            Grid::make([
-                'default' => 1,
-                'lg' => 3,
-            ])->schema([
+            Grid::make(['default' => 1, 'lg' => 3])->schema([
                 Section::make('Основная информация')
-                    ->columnSpan([
-                        'default' => 1,
-                        'lg' => 2,
-                    ])
+                    ->columnSpan(['default' => 1, 'lg' => 2])
                     ->schema([
-                        Grid::make([
-                            'default' => 1,
-                            'md' => 2,
-                        ])->schema([
+                        Grid::make(['default' => 1, 'md' => 2])->schema([
                             TextInput::make('name')
                                 ->label('Название')
                                 ->required()
@@ -37,8 +28,7 @@ class ApartmentForm
 
                             TextInput::make('code')
                                 ->label('Код объекта')
-                                ->maxLength(100)
-                                ->helperText('Например: SAV-01 или APT-12'),
+                                ->maxLength(100),
                         ]),
 
                         Textarea::make('address')
@@ -50,6 +40,7 @@ class ApartmentForm
                             ->label('Фото объекта')
                             ->image()
                             ->imageEditor()
+                            ->disk('public')
                             ->directory('apartments')
                             ->visibility('public')
                             ->maxSize(10240)
@@ -58,30 +49,26 @@ class ApartmentForm
                         Textarea::make('notes')
                             ->label('Служебная заметка')
                             ->rows(4)
+                            ->maxLength(20000)
                             ->columnSpanFull(),
                     ]),
 
                 Section::make('Настройки')
-                    ->columnSpan([
-                        'default' => 1,
-                        'lg' => 1,
-                    ])
+                    ->columnSpan(['default' => 1, 'lg' => 1])
                     ->schema([
                         Toggle::make('is_active')
                             ->label('Активна')
                             ->default(true),
 
-                        TextInput::make('sort_order')
-                            ->label('Порядок сортировки')
-                            ->numeric()
-                            ->default(0)
-                            ->minValue(0),
-
-                        KeyValue::make('meta')
-                            ->label('Meta')
-                            ->keyLabel('Ключ')
-                            ->valueLabel('Значение')
-                            ->columnSpanFull(),
+                        Select::make('information_status')
+                            ->label('Статус информационной страницы')
+                            ->options([
+                                'draft' => 'Черновик',
+                                'published' => 'Опубликована',
+                                'archived' => 'Архив',
+                            ])
+                            ->required()
+                            ->default('published'),
                     ]),
             ]),
         ]);

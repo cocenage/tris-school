@@ -438,12 +438,7 @@ new class extends Component
             Заявка на инвентарь
         </span>
 
-        <button
-            type="button"
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer bg-[#E1E1E1] backdrop-blur-md text-white transition-all duration-300 hover:bg-[#7D7D7D]"
-        >
-            <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]" />
-        </button>
+        <x-ui.guide-trigger />
     </div>
 </x-slot:header>
 
@@ -693,4 +688,13 @@ new class extends Component
             </div>
         </x-ui.bottom-sheet>
     </div>
+
+    <x-ui.guide
+        guide-key="inventory-request-guide-v1"
+        :steps="[
+            ['title' => 'Заявка на инвентарь', 'text' => 'Выберите нужные позиции и количество, затем отправьте заявку ответственному сотруднику.'],
+            ['title' => 'Найдите позицию', 'text' => 'Используйте поиск или пролистайте каталог. Количество можно изменить прямо в карточке товара.'],
+            ['title' => 'Проверьте количество', 'text' => 'Перед отправкой убедитесь, что выбраны все нужные позиции и корректное количество.'],
+        ]"
+    />
 </div>
