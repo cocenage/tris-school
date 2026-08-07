@@ -84,6 +84,8 @@ class DayOffRequestTelegramService
                 'status' => $response->status(),
                 'body' => $response->body(),
             ]);
+
+            throw new \RuntimeException('Telegram rejected day-off notification.');
         }
     }
 
@@ -184,6 +186,8 @@ class DayOffRequestTelegramService
                 'status' => $response->status(),
                 'body' => $response->body(),
             ]);
+
+            throw new \RuntimeException('Telegram rejected day-off result notification.');
         }
     }
 }

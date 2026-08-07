@@ -188,7 +188,7 @@ class TelegramForumDigestBuilder
                 'chat_id' => (string) $row->chat_id,
                 'chat_title' => $row->chat_title,
                 'message_thread_id' => (string) $row->message_thread_id,
-                'topic_title' => $row->topic_title ?: 'Без названия',
+                'topic_title' => $row->topic_title ?: 'общая тема',
                 'message_count' => 0,
                 'authors' => [],
                 'attachment_count' => $attachmentCounts[$topicKey] ?? 0,

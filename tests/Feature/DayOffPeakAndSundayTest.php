@@ -132,7 +132,8 @@ it('does not add a peak date when a user selects it', function () {
     Livewire::test('forms.page-weekend')
         ->call('selectDate', '2026-08-25')
         ->assertSet('ranges', [])
-        ->assertHasErrors('ranges');
+        ->assertSet('peakModalOpen', true)
+        ->assertSet('peakModalDate', '25.08.2026');
 });
 
 it('rejects a peak date in a direct range submission', function () {

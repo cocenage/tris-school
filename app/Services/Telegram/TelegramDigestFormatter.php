@@ -70,7 +70,20 @@ class TelegramDigestFormatter
             ))
             ->take(7);
 
+        $mobilityItems = collect($context['mobility']['items'] ?? [])
+            ->unique(fn (array $item): string => implode('|', [
+                $item['type'] ?? '',
+                $item['district'] ?? '',
+                $this->value($item['title'] ?? ''),
+                $item['starts_at'] ?? '',
+            ]))
+            ->values();
+        $mobilityCriticalCount = $mobilityItems
+            ->filter(fn (array $item): bool => in_array($item['risk'] ?? null, ['critical', 'high'], true))
+            ->count();
+
         $risks = collect($context['risks'] ?? [])
+            ->reject(fn (array $risk): bool => ($risk['source'] ?? null) === 'mobility' || ($risk['code'] ?? null) === 'mobility_alert')
             ->sortBy(fn (array $risk): int => match ($risk['level'] ?? 'info') {
                 'critical' => 1,
                 'high' => 2,
@@ -78,6 +91,14 @@ class TelegramDigestFormatter
                 default => 4,
             })
             ->values();
+
+        if ($mobilityCriticalCount > 0) {
+            $risks->prepend([
+                'level' => 'high',
+                'code' => 'mobility_summary',
+                'message' => '🚇 ' . $mobilityCriticalCount . ' существенных транспортных ограничений',
+            ]);
+        }
 
         if ($pending->isNotEmpty() || $risks->isNotEmpty()) {
             $lines[] = '';
@@ -94,7 +115,7 @@ class TelegramDigestFormatter
             }
         }
 
-        $mobilityItems = collect($context['mobility']['items'] ?? [])->take(7);
+        $mobilityItems = $mobilityItems->take(7);
         if ($mobilityItems->isNotEmpty()) {
             $lines[] = '';
             $lines[] = 'Транспорт и ограничения';
@@ -105,8 +126,8 @@ class TelegramDigestFormatter
                 $lines[] = sprintf(
                     '- [%s] %s — %s',
                     mb_strtoupper((string) ($item['risk'] ?? 'info')),
-                    $this->value($item['title'] ?? null),
-                    $this->value($impact),
+                    $this->value($item['district'] ?? $item['title'] ?? null),
+                    $this->value($item['summary'] ?? $impact),
                 );
             }
         }

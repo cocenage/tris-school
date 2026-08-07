@@ -104,7 +104,7 @@ class MobilityAlertSyncService
                 continue;
             }
 
-            $hash = sha1('telegram_undergroundstatus|' . $title . '|' . now()->toDateString());
+            $hash = $this->fingerprint('telegram_undergroundstatus', $title, now()->toDateString());
 
             $alert = MobilityAlert::firstOrCreate(
                 ['external_hash' => $hash],
@@ -184,7 +184,7 @@ class MobilityAlertSyncService
 
             $eventDate = $this->extractDate($title) ?? now()->startOfDay();
 
-            $hash = sha1($source . '|' . $title . '|' . $item['url']);
+            $hash = $this->fingerprint($source, $title, $eventDate->toDateString());
 
             $alert = MobilityAlert::firstOrCreate(
                 ['external_hash' => $hash],
@@ -385,25 +385,23 @@ class MobilityAlertSyncService
         $text = mb_strtolower($title);
 
         return match (true) {
-            str_contains($text, 'sciopero') => 'strike',
-            str_contains($text, 'scioperi') => 'strike',
-            str_contains($text, 'agitazione') => 'strike',
-            str_contains($text, 'concerto') => 'event',
-            str_contains($text, 'san siro') => 'event',
-            str_contains($text, 'manifestazione') => 'event',
-            str_contains($text, 'maratona') => 'event',
-            str_contains($text, 'marathon') => 'event',
-            str_contains($text, 'lavori') => 'roadwork',
-            str_contains($text, 'cantieri') => 'roadwork',
-            str_contains($text, 'chiusura') => 'roadwork',
-            str_contains($text, 'chiude') => 'roadwork',
-            default => 'transport',
+            str_contains($text, 'sciopero'), str_contains($text, 'scioperi'), str_contains($text, 'agitazione') => 'strike',
+            str_contains($text, 'chiusura totale'), str_contains($text, 'linea chiusa'), str_contains($text, 'servizio sospeso') => 'closure',
+            str_contains($text, 'chiusura parziale'), str_contains($text, 'servizio parziale'), str_contains($text, 'autobus sostitutivi') => 'partial_closure',
+            str_contains($text, 'ritardi'), str_contains($text, 'rallentamenti'), str_contains($text, 'interrotta'), str_contains($text, 'interrotto') => 'disruption',
+            str_contains($text, 'lavori'), str_contains($text, 'cantieri'), str_contains($text, 'chiusura'), str_contains($text, 'chiude') => 'works',
+            str_contains($text, 'concerto'), str_contains($text, 'san siro'), str_contains($text, 'manifestazione'), str_contains($text, 'maratona'), str_contains($text, 'marathon') => 'info',
+            default => 'info',
         };
     }
 
     protected function detectRisk(string $title, string $source): string
     {
         $text = mb_strtolower($title);
+
+        if (str_contains($text, 'regolare') || str_contains($text, 'servizio normale') || str_contains($text, 'nessun problema')) {
+            return 'low';
+        }
 
         if (
             str_contains($text, 'sciopero') ||
@@ -418,7 +416,9 @@ class MobilityAlertSyncService
             str_contains($text, 'chiusura') ||
             str_contains($text, 'chiude') ||
             str_contains($text, 'san siro') ||
-            str_contains($text, 'manifestazione')
+            str_contains($text, 'manifestazione') ||
+            str_contains($text, 'servizio sospeso') ||
+            str_contains($text, 'chiusura totale')
         ) {
             return 'high';
         }
@@ -433,7 +433,9 @@ class MobilityAlertSyncService
             str_contains($text, 'cantieri') ||
             str_contains($text, 'metro') ||
             str_contains($text, 'trenord') ||
-            str_contains($text, 'circolazione')
+            str_contains($text, 'circolazione') ||
+            str_contains($text, 'autobus sostitutivi') ||
+            str_contains($text, 'chiusura parziale')
         ) {
             return 'medium';
         }
@@ -514,9 +516,21 @@ class MobilityAlertSyncService
     protected function cleanTitle(string $title): string
     {
         $title = html_entity_decode($title);
+        $title = strip_tags($title);
+        $title = preg_replace('/https?:\/\/\S+/iu', '', $title);
+        $title = preg_replace('/milanmetrost[a-z.\s]*[èe] anche su chatgpt/iu', '', $title);
+        $title = preg_replace('/[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]/u', '', $title);
         $title = preg_replace('/\s+/', ' ', $title);
 
         return trim($title);
+    }
+
+    protected function fingerprint(string $source, string $title, string $date): string
+    {
+        $normalized = mb_strtolower($this->cleanTitle($title));
+        $normalized = preg_replace('/[\p{P}\p{S}\s]+/u', ' ', $normalized);
+
+        return sha1($source . '|' . trim($normalized) . '|' . $date);
     }
 
     protected function absoluteUrl(string $baseUrl, string $href): string

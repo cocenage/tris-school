@@ -81,12 +81,16 @@ class InventoryRequestTelegramService
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
+
+                throw new \RuntimeException('Telegram rejected inventory notification.');
             }
         } catch (\Throwable $e) {
             Log::error('Inventory new request telegram exception', [
                 'request_id' => $request->id,
                 'message' => $e->getMessage(),
             ]);
+
+            throw $e;
         }
     }
 
@@ -215,12 +219,16 @@ class InventoryRequestTelegramService
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
+
+                throw new \RuntimeException('Telegram rejected inventory result notification.');
             }
         } catch (\Throwable $e) {
             Log::error('Inventory telegram send exception', [
                 'request_id' => $request->id,
                 'message' => $e->getMessage(),
             ]);
+
+            throw $e;
         }
     }
 }
