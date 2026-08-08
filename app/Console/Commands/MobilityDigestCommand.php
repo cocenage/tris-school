@@ -103,6 +103,7 @@ class MobilityDigestCommand extends Command
     protected function deduplicateAlerts($alerts)
     {
         $normalizer = app(MobilityAlertSyncService::class);
+        $alerts = $normalizer->filterRepresentedRawAlerts(collect($alerts));
 
         return collect($alerts)
             ->filter(fn (MobilityAlert $alert) => $this->shouldShowInWorkerDigest($alert))

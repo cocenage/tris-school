@@ -302,6 +302,8 @@ class OperationalContextBuilder
             ->orderBy('starts_at')
             ->get();
 
+        $items = $this->mobilityNormalizer->filterRepresentedRawAlerts($items);
+
         $normalized = $items
             ->flatMap(fn (MobilityAlert $alert) => $this->normalizeMobilityAlert($alert))
             ->filter()

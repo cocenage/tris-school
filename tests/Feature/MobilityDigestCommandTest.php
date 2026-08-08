@@ -137,3 +137,63 @@ it('normalizes operational mobility items into separate non-raw line events', fu
         ->and($items->pluck('risk')->all())->toBe(['medium', 'high', 'high', 'high'])
         ->and($items->pluck('title')->implode(' '))->not->toContain('Linea');
 });
+
+it('suppresses raw M1-M5 and Crescenzago source rows when normalized events exist', function () {
+    $normalizer = app(\App\Services\Mobility\MobilityAlertSyncService::class);
+    $rawMetro = MobilityAlert::make([
+        'source' => 'telegram',
+        'title' => 'Linea M1 CHIUSA Linea M2 PARZ. SOSPESA Linea M3 CHIUSA Linea M4 CHIUSA Linea M5 CHIUSA',
+        'type' => 'transport',
+        'risk' => 'high',
+        'starts_at' => '2026-08-03',
+    ]);
+    $normalizedLines = collect(['M1 CHIUSA', 'M2 PARZ. SOSPESA', 'M3 CHIUSA', 'M4 CHIUSA', 'M5 CHIUSA'])
+        ->map(fn (string $title): MobilityAlert => MobilityAlert::make([
+            'source' => 'telegram',
+            'title' => $title,
+            'type' => str_contains($title, 'PARZ') ? 'partial_closure' : 'closure',
+            'risk' => str_contains($title, 'PARZ') ? 'medium' : 'high',
+            'starts_at' => '2026-08-03',
+        ]));
+    $rawCrescenzago = MobilityAlert::make([
+        'source' => 'telegram',
+        'title' => 'Crescenzago — INFO M2 buses Gobba Cologno Nord',
+        'type' => 'info',
+        'risk' => 'high',
+        'starts_at' => '2026-08-03',
+    ]);
+    $normalizedM2 = MobilityAlert::make([
+        'source' => 'telegram',
+        'title' => 'M2 PARZ. SOSPESA',
+        'type' => 'partial_closure',
+        'risk' => 'medium',
+        'starts_at' => '2026-08-03',
+    ]);
+
+    $filtered = $normalizer->filterRepresentedRawAlerts(
+        collect([$rawMetro, ...$normalizedLines, $rawCrescenzago, $normalizedM2])
+    );
+
+    expect($filtered->contains($rawMetro))->toBeFalse()
+        ->and($filtered->contains($rawCrescenzago))->toBeFalse()
+        ->and($filtered->filter(fn (MobilityAlert $alert): bool => str_starts_with($alert->title, 'M'))->count())->toBe(6);
+
+    $builder = app(\App\Services\Operations\OperationalContextBuilder::class);
+    $normalize = new ReflectionMethod($builder, 'normalizeMobilityAlert');
+    $normalize->setAccessible(true);
+    $operational = $filtered
+        ->flatMap(fn (MobilityAlert $alert) => $normalize->invoke($builder, $alert))
+        ->unique(fn (array $item): string => $item['canonical_key']);
+
+    expect($operational->count())->toBe(5)
+        ->and($operational->pluck('title')->implode(' '))->not->toContain('Crescenzago')
+        ->and($operational->pluck('title')->implode(' '))->not->toContain('Linea');
+
+    $digest = app(\App\Console\Commands\MobilityDigestCommand::class);
+    $method = new ReflectionMethod($digest, 'deduplicateAlerts');
+    $method->setAccessible(true);
+    $rendered = collect($method->invoke($digest, collect([$rawCrescenzago, $normalizedM2])));
+
+    expect($rendered)->toHaveCount(1)
+        ->and($rendered->first()['district'])->toBe('M2');
+});
