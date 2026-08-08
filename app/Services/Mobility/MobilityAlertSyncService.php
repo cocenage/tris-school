@@ -4,6 +4,7 @@ namespace App\Services\Mobility;
 
 use App\Models\MobilityAlert;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -52,6 +53,133 @@ class MobilityAlertSyncService
             '/(?:linea\s*)?M[1-5]\s*(?:REGOLARE|PARZ\.\s*SOSPESA|PARZIALMENTE\s*SOSPESA|CHIUSA|SOSPESA)/iu',
             $this->cleanTitle($title),
         ) === 1;
+    }
+
+    /**
+     * Read-only suppression of legacy source rows when a normalized event is
+     * already present in the same read set.
+     */
+    public function filterRepresentedRawAlerts(Collection $alerts): Collection
+    {
+        $normalizedIdentities = $alerts
+            ->filter(fn (MobilityAlert $alert): bool => $this->isNormalizedRepresentation($alert))
+            ->flatMap(fn (MobilityAlert $alert): array => $this->representationIdentities($alert))
+            ->unique()
+            ->values();
+
+        if ($normalizedIdentities->isEmpty()) {
+            return $alerts->values();
+        }
+
+        return $alerts
+            ->reject(function (MobilityAlert $alert) use ($normalizedIdentities): bool {
+                if ($this->isNormalizedRepresentation($alert) || $this->isIndependentEvent($alert)) {
+                    return false;
+                }
+
+                $identities = $this->representationIdentities($alert);
+
+                return $identities !== []
+                    && collect($identities)->intersect($normalizedIdentities)->isNotEmpty();
+            })
+            ->values();
+    }
+
+    public function isNormalizedRepresentation(MobilityAlert $alert): bool
+    {
+        $events = $this->splitTelegramStatusEvents($alert->title);
+
+        if (count($events) !== 1) {
+            return false;
+        }
+
+        $cleanTitle = $this->normalisedKey($alert->title);
+        $eventTitle = $this->normalisedKey($events[0]['title']);
+
+        return $cleanTitle === $eventTitle;
+    }
+
+    protected function representationIdentities(MobilityAlert $alert): array
+    {
+        $text = $this->cleanTitle($alert->title . ' ' . ($alert->description ?? ''));
+        $events = $this->splitTelegramStatusEvents($alert->title);
+
+        if ($events !== []) {
+            return collect($events)
+                ->map(fn (array $event): string => $this->lineIdentity(
+                    $event['line'],
+                    $event['type'],
+                    $alert->starts_at?->toDateString(),
+                ))
+                ->all();
+        }
+
+        preg_match('/\b(M[1-5])\b/i', $text, $lineMatch);
+
+        if (! isset($lineMatch[1]) || ! $this->isRepresentableRawText($text)) {
+            return [];
+        }
+
+        $line = mb_strtoupper($lineMatch[1]);
+        $type = $this->inferRawEventType($text, $alert->type);
+
+        return [$this->lineIdentity($line, $type, $alert->starts_at?->toDateString())];
+    }
+
+    protected function lineIdentity(string $line, string $type, ?string $date): string
+    {
+        return mb_strtoupper($line) . '|' . $type . '|' . ($date ?: '');
+    }
+
+    protected function inferRawEventType(string $text, ?string $type): string
+    {
+        $lower = mb_strtolower($text);
+
+        if (str_contains($lower, 'bus')
+            || str_contains($lower, 'crescenzago')
+            || str_contains($lower, 'gobba')
+            || str_contains($lower, 'cologno')) {
+            return 'partial_closure';
+        }
+
+        if (str_contains($lower, 'chius') || str_contains($lower, 'sospes')) {
+            return 'closure';
+        }
+
+        return $type ?: 'info';
+    }
+
+    protected function isRepresentableRawText(string $text): bool
+    {
+        $lower = mb_strtolower($text);
+
+        return str_contains($lower, 'chius')
+            || str_contains($lower, 'sospes')
+            || str_contains($lower, 'bus')
+            || str_contains($lower, 'crescenzago')
+            || str_contains($lower, 'gobba')
+            || str_contains($lower, 'cologno')
+            || str_contains($lower, 'parz');
+    }
+
+    protected function isIndependentEvent(MobilityAlert $alert): bool
+    {
+        $text = mb_strtolower($alert->title . ' ' . ($alert->description ?? ''));
+
+        foreach (['concert', 'concerto', 'san siro', 'assago', 'partita', 'maraton', 'evento'] as $keyword) {
+            if (str_contains($text, $keyword)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function normalisedKey(?string $value): string
+    {
+        $value = mb_strtolower($this->cleanTitle((string) $value));
+
+        return trim((string) preg_replace('/[\p{P}\p{S}\s]+/u', ' ', $value));
     }
 
     public function canonicalFingerprint(
