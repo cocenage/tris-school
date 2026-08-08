@@ -6,6 +6,8 @@ use App\Models\FeedbackSuggestion;
 use App\Models\SalaryQuestion;
 use App\Models\ScheduleQuestion;
 use App\Models\User;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramRichMessageBuilder;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -146,15 +148,28 @@ class StaffFormTelegramService
             $payload['message_thread_id'] = (int) $threadId;
         }
 
-        $response = Http::timeout(10)->post(
-            "https://api.telegram.org/bot{$token}/sendMessage",
-            $payload
+        $rich = app(TelegramRichMessageBuilder::class)->build(
+            title: strip_tags($title),
+            status: 'Новое обращение',
+            fields: [
+                'Сотрудник' => strip_tags($this->telegramUserLink($user)),
+                'Категория' => $typeLabel,
+                'Тема' => $type,
+            ],
+            body: trim($comment),
+            notice: ! empty($attachments) ? 'Прикреплено файлов: ' . count($attachments) : null,
         );
 
-        if ($response->failed()) {
+        $messageId = app(TelegramBotService::class)->sendRichMessage(
+            chatId: (string) $chatId,
+            richMessage: $rich,
+            fallbackHtml: $payload['text'],
+            threadId: filled($threadId) ? (string) $threadId : null,
+            replyMarkup: $payload['reply_markup'],
+        );
+
+        if (! $messageId) {
             Log::error('Staff form telegram send failed', [
-                'status' => $response->status(),
-                'body' => $response->body(),
                 'thread_id' => $threadId,
             ]);
 

@@ -3,8 +3,9 @@
 namespace App\Services\Forms;
 
 use App\Models\DayOffRequest;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramRichMessageBuilder;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class DayOffRequestTelegramService
@@ -73,16 +74,29 @@ class DayOffRequestTelegramService
             $payload['message_thread_id'] = (int) $threadId;
         }
 
-        $response = Http::timeout(10)->post(
-            "https://api.telegram.org/bot{$token}/sendMessage",
-            $payload,
+        $rich = app(TelegramRichMessageBuilder::class)->build(
+            title: 'Заявка на выходной',
+            status: 'Ожидает решения',
+            fields: [
+                'Сотрудник' => $name,
+                'Dip' => $dipText,
+                'Даты' => $sortedDays->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))->implode(', '),
+            ],
+            body: $request->reason,
+            notice: 'Заявка ожидает решения администратора или супервайзера.',
         );
 
-        if ($response->failed()) {
+        $messageId = app(TelegramBotService::class)->sendRichMessage(
+            chatId: (string) $chatId,
+            richMessage: $rich,
+            fallbackHtml: $text,
+            threadId: filled($threadId) ? (string) $threadId : null,
+            replyMarkup: ['inline_keyboard' => $keyboard],
+        );
+
+        if (! $messageId) {
             Log::error('Day off created telegram send failed', [
                 'request_id' => $request->id,
-                'status' => $response->status(),
-                'body' => $response->body(),
             ]);
 
             throw new \RuntimeException('Telegram rejected day-off notification.');
@@ -167,24 +181,40 @@ class DayOffRequestTelegramService
             ],
         ];
 
-        $response = Http::timeout(10)->post(
-            "https://api.telegram.org/bot{$token}/sendMessage",
-            [
-                'chat_id' => $chatId,
-                'text' => implode("\n", $message),
-                'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
-                'reply_markup' => [
-                    'inline_keyboard' => $keyboard,
-                ],
-            ]
+        $fallbackHtml = implode("\n", $message);
+        $rich = app(TelegramRichMessageBuilder::class)->build(
+            title: 'Заявка на выходной',
+            status: match ($request->status) {
+                'approved' => 'Одобрено',
+                'rejected' => 'Отклонено',
+                'partially_approved' => 'Частично одобрено',
+                default => 'Статус обновлён',
+            },
+            fields: [
+                'Даты' => $request->days->sortBy('date')->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d F'))->implode(', '),
+            ],
+            body: $description,
+            results: $request->days->sortBy('date')->map(function ($day) {
+                $status = match ($day->status) {
+                    'approved' => 'одобрено',
+                    'rejected' => 'отклонено',
+                    default => 'ожидает решения',
+                };
+
+                return Carbon::parse($day->date)->translatedFormat('d F') . ' — ' . $status;
+            })->all(),
         );
 
-        if ($response->failed()) {
+        $messageId = app(TelegramBotService::class)->sendRichMessage(
+            chatId: (string) $chatId,
+            richMessage: $rich,
+            fallbackHtml: $fallbackHtml,
+            replyMarkup: ['inline_keyboard' => $keyboard],
+        );
+
+        if (! $messageId) {
             Log::error('Telegram send failed', [
                 'request_id' => $request->id,
-                'status' => $response->status(),
-                'body' => $response->body(),
             ]);
 
             throw new \RuntimeException('Telegram rejected day-off result notification.');

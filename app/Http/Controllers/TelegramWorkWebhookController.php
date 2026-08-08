@@ -7,6 +7,8 @@ use App\Models\DayOffRequestDay;
 use App\Models\User;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use App\Services\Telegram\TelegramAssistantService;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramRichMessageBuilder;
 use App\Services\TelegramUserNotificationService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -400,6 +402,35 @@ class TelegramWorkWebhookController extends Controller
             return;
         }
 
+        $fallbackHtml = implode("\n", [
+            '<b>Заявка на доступ</b>',
+            '',
+            '<b>Имя:</b> ' . e($user->name ?: 'Без имени'),
+            '<b>Telegram:</b> ' . e($user->telegram_username ? '@' . $user->telegram_username : '—'),
+            '',
+            $statusText,
+            '<b>Решение принял:</b> ' . e($moderatorText),
+            '<b>Время:</b> ' . now()->format('d.m.Y H:i'),
+        ]);
+
+        app(TelegramBotService::class)->editMessage(
+            chatId: (string) $chatId,
+            messageId: (int) $messageId,
+            richMessage: app(TelegramRichMessageBuilder::class)->build(
+                title: 'Заявка на доступ',
+                status: strip_tags($statusText),
+                fields: [
+                    'Имя' => $user->name ?: 'Без имени',
+                    'Telegram' => $user->telegram_username ? '@' . $user->telegram_username : '—',
+                ],
+                notice: 'Решение принял: ' . $moderatorText,
+            ),
+            fallbackHtml: $fallbackHtml,
+            replyMarkup: ['inline_keyboard' => []],
+        );
+
+        return;
+
         Http::post($this->telegramApiUrl('editMessageText'), [
             'chat_id' => $chatId,
             'message_id' => $messageId,
@@ -515,6 +546,42 @@ private function editDayOffRequestMessage(
             'inline_keyboard' => [],
         ];
     }
+
+    $status = match ($dayOffRequest->status) {
+        'approved' => 'Одобрено',
+        'rejected' => 'Отклонено',
+        'partially_approved' => 'Частично одобрено',
+        default => 'Статус обновлён',
+    };
+
+    app(TelegramBotService::class)->editMessage(
+        chatId: (string) $chatId,
+        messageId: (int) $messageId,
+        richMessage: app(TelegramRichMessageBuilder::class)->build(
+            title: 'Заявка на выходной',
+            status: $status,
+            fields: [
+                'Сотрудник' => $name,
+                'Dip' => $dipText,
+                'Даты' => $sortedDays->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))->implode(', '),
+            ],
+            body: $dayOffRequest->reason,
+            results: $sortedDays->map(function ($day) {
+                $status = match ($day->status) {
+                    'approved' => 'одобрено',
+                    'rejected' => 'отклонено',
+                    default => 'ожидает решения',
+                };
+
+                return Carbon::parse($day->date)->translatedFormat('d F') . ' — ' . $status;
+            })->all(),
+            notice: 'Последнее решение: ' . $moderatorText,
+        ),
+        fallbackHtml: $payload['text'],
+        replyMarkup: $payload['reply_markup'],
+    );
+
+    return;
 
     Http::post($this->telegramApiUrl('editMessageText'), $payload);
 }

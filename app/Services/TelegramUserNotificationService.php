@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Models\User;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramRichMessageBuilder;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -66,17 +68,28 @@ class TelegramUserNotificationService
             $payload['message_thread_id'] = $adminThreadId;
         }
 
-        $response = Http::timeout(10)->post(
-            'https://api.telegram.org/bot' . $botToken . '/sendMessage',
-            $payload
+        $rich = app(TelegramRichMessageBuilder::class)->build(
+            title: 'Заявка на доступ',
+            status: 'Ожидает одобрения',
+            fields: [
+                'Имя' => $this->userName($user),
+                'Telegram' => $this->telegramUsername($user),
+            ],
+            notice: 'Пользователь ждёт подтверждения доступа к сайту.',
         );
 
-        if (!$response->successful()) {
+        $messageId = app(TelegramBotService::class)->sendRichMessage(
+            chatId: (string) $adminChatId,
+            richMessage: $rich,
+            fallbackHtml: $payload['text'],
+            threadId: $adminThreadId ? (string) $adminThreadId : null,
+            replyMarkup: $payload['reply_markup'],
+        );
+
+        if (!$messageId) {
             Log::warning('Telegram access requested notification failed.', [
                 'user_id' => $user->id,
                 'telegram_id' => $user->telegram_id,
-                'status' => $response->status(),
-                'body' => $response->body(),
             ]);
 
             return;
@@ -107,6 +120,29 @@ class TelegramUserNotificationService
             Log::warning('Telegram bot token is not configured.');
             return;
         }
+
+        if (! $this->sendAccessRichNotice(
+            user: $user,
+            title: 'Заявка на доступ отправлена',
+            status: 'Ожидает подтверждения',
+            fallbackHtml: implode("\n", [
+                'вЏі <b>Р—Р°СЏРІРєР° РЅР° РґРѕСЃС‚СѓРї РѕС‚РїСЂР°РІР»РµРЅР°</b>',
+                '',
+                'РњС‹ РїРѕР»СѓС‡РёР»Рё РІР°С€Сѓ Р·Р°СЏРІРєСѓ.',
+                'РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РЅРµ РѕС‚РїСЂР°РІР»СЏР№С‚Рµ РµС‘ РїРѕРІС‚РѕСЂРЅРѕ.',
+                '',
+                'РљРѕРіРґР° Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂ РїРѕРґС‚РІРµСЂРґРёС‚ РґРѕСЃС‚СѓРї, РјС‹ РїСЂРёС€Р»С‘Рј СЃРѕРѕР±С‰РµРЅРёРµ Р·РґРµСЃСЊ.',
+            ]),
+        )) {
+            Log::warning('Telegram access pending notification failed.', ['user_id' => $user->id]);
+            return;
+        }
+
+        $user->forceFill([
+            'telegram_access_pending_notified_at' => now(),
+        ])->saveQuietly();
+
+        return;
 
         $response = Http::timeout(10)->post(
             'https://api.telegram.org/bot' . $botToken . '/sendMessage',
@@ -158,6 +194,33 @@ class TelegramUserNotificationService
             return;
         }
 
+        if (! $this->sendAccessRichNotice(
+            user: $user,
+            title: 'Доступ одобрен',
+            status: 'Одобрено',
+            fallbackHtml: implode("\n", [
+                'вњ… <b>Р”РѕСЃС‚СѓРї РѕРґРѕР±СЂРµРЅ</b>',
+                '',
+                'Р’Р°С€ Р°РєРєР°СѓРЅС‚ РїРѕРґС‚РІРµСЂР¶РґС‘РЅ.',
+                'РўРµРїРµСЂСЊ РІС‹ РјРѕР¶РµС‚Рµ РІРѕР№С‚Рё РІ РїСЂРёР»РѕР¶РµРЅРёРµ.',
+            ]),
+            replyMarkup: [
+                'inline_keyboard' => [[[
+                    'text' => 'РћС‚РєСЂС‹С‚СЊ РїСЂРёР»РѕР¶РµРЅРёРµ',
+                    'url' => route('landing'),
+                ]]],
+            ],
+        )) {
+            Log::warning('Telegram access approved notification failed.', ['user_id' => $user->id]);
+            return;
+        }
+
+        $user->forceFill([
+            'telegram_access_approved_notified_at' => now(),
+        ])->saveQuietly();
+
+        return;
+
         $response = Http::timeout(10)->post(
             'https://api.telegram.org/bot' . $botToken . '/sendMessage',
             [
@@ -202,6 +265,24 @@ class TelegramUserNotificationService
     protected function userAdminUrl(User $user): string
     {
         return url('/admin/education/users/' . $user->id . '/edit');
+    }
+
+    private function sendAccessRichNotice(
+        User $user,
+        string $title,
+        string $status,
+        string $fallbackHtml,
+        ?array $replyMarkup = null,
+    ): bool {
+        return (bool) app(TelegramBotService::class)->sendRichMessage(
+            chatId: (string) $user->telegram_id,
+            richMessage: app(TelegramRichMessageBuilder::class)->build(
+                title: $title,
+                status: $status,
+            ),
+            fallbackHtml: $fallbackHtml,
+            replyMarkup: $replyMarkup,
+        );
     }
 
     protected function userName(User $user): string

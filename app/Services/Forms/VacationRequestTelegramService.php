@@ -3,8 +3,9 @@
 namespace App\Services\Forms;
 
 use App\Models\VacationRequest;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramRichMessageBuilder;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class VacationRequestTelegramService
@@ -87,24 +88,40 @@ class VacationRequestTelegramService
             ],
         ];
 
-        $response = Http::timeout(10)->post(
-            "https://api.telegram.org/bot{$token}/sendMessage",
-            [
-                'chat_id' => $chatId,
-                'text' => implode("\n", $message),
-                'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
-                'reply_markup' => [
-                    'inline_keyboard' => $keyboard,
-                ],
-            ]
+        $fallbackHtml = implode("\n", $message);
+        $rich = app(TelegramRichMessageBuilder::class)->build(
+            title: 'Заявка на отпуск',
+            status: match ($request->status) {
+                'approved' => 'Одобрено',
+                'rejected' => 'Отклонено',
+                'partially_approved' => 'Частично одобрено',
+                default => 'Статус обновлён',
+            },
+            fields: [
+                'Даты отпуска' => $request->days->sortBy('date')->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d F'))->implode(', '),
+            ],
+            body: $description,
+            results: $request->days->sortBy('date')->map(function ($day) {
+                $status = match ($day->status) {
+                    'approved' => 'одобрено',
+                    'rejected' => 'отклонено',
+                    default => 'ожидает решения',
+                };
+
+                return Carbon::parse($day->date)->translatedFormat('d F') . ' — ' . $status;
+            })->all(),
         );
 
-        if ($response->failed()) {
+        $messageId = app(TelegramBotService::class)->sendRichMessage(
+            chatId: (string) $chatId,
+            richMessage: $rich,
+            fallbackHtml: $fallbackHtml,
+            replyMarkup: ['inline_keyboard' => $keyboard],
+        );
+
+        if (! $messageId) {
             Log::error('Vacation telegram send failed', [
                 'request_id' => $request->id,
-                'status' => $response->status(),
-                'body' => $response->body(),
             ]);
 
             throw new \RuntimeException('Telegram rejected vacation result notification.');
@@ -159,16 +176,27 @@ class VacationRequestTelegramService
         $payload['message_thread_id'] = (int) $threadId;
     }
 
-    $response = Http::timeout(10)->post(
-        "https://api.telegram.org/bot{$token}/sendMessage",
-        $payload
+    $rich = app(TelegramRichMessageBuilder::class)->build(
+        title: 'Новая заявка на отпуск',
+        status: 'Ожидает решения',
+        fields: [
+            'Сотрудник' => $name,
+            'Даты' => $request->days->sortBy('date')->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))->implode(', '),
+        ],
+        body: (string) $request->reason,
+        notice: 'Заявка ожидает решения администратора или супервайзера.',
     );
 
-    if ($response->failed()) {
+    $messageId = app(TelegramBotService::class)->sendRichMessage(
+        chatId: (string) $chatId,
+        richMessage: $rich,
+        fallbackHtml: $text,
+        threadId: filled($threadId) ? (string) $threadId : null,
+    );
+
+    if (! $messageId) {
         Log::error('Vacation created telegram send failed', [
             'request_id' => $request->id,
-            'status' => $response->status(),
-            'body' => $response->body(),
         ]);
 
         throw new \RuntimeException('Telegram rejected vacation notification.');
