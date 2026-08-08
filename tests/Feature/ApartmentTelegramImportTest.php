@@ -128,3 +128,11 @@ it('blocks import for an ordinary user', function (): void {
     expect(fn () => app(TelegramApartmentImportService::class)->import($apartment, $path, null, $cleaner))
         ->toThrow(AuthorizationException::class);
 });
+
+it('uses the Filament v5 schema Get utility in the import action', function (): void {
+    $source = file_get_contents(base_path('app/Filament/Resources/Apartments/Pages/ViewApartment.php'));
+
+    expect($source)
+        ->toContain('use Filament\\Schemas\\Components\\Utilities\\Get;')
+        ->not->toContain('use Filament\\Forms\\Get;');
+});

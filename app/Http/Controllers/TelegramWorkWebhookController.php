@@ -147,7 +147,6 @@ class TelegramWorkWebhookController extends Controller
                 'application_found' => null,
                 'authorization_passed' => null,
                 'handler_result' => 'error',
-                'error' => $e->getMessage(),
             ]);
 
             return response()->json(['ok' => false], 500);
@@ -179,6 +178,7 @@ class TelegramWorkWebhookController extends Controller
         $allowedChatIds = config('services.telegram.work_allowed_chat_ids', []);
 
         if (! empty($allowedChatIds) && ! in_array($chatId, $allowedChatIds, true)) {
+            $this->logCallbackEvent($data, null, null, false, 'chat_not_allowed');
             $this->answerCallback($callbackQuery, 'Нет доступа к этому чату');
 
             return response()->json([
@@ -211,6 +211,7 @@ class TelegramWorkWebhookController extends Controller
         }
 
         if ($user->status !== 'pending') {
+            $this->logCallbackEvent($data, true, true, true, 'access_already_reviewed');
             $this->answerCallback($callbackQuery, 'По пользователю уже принято решение');
 
             return response()->json(['ok' => true, 'skipped' => 'access_already_reviewed']);
@@ -219,6 +220,7 @@ class TelegramWorkWebhookController extends Controller
         $moderatorText = $this->telegramUserText($callbackQuery['from'] ?? []);
 
         if (! in_array($action, ['approve', 'reject'], true)) {
+            $this->logCallbackEvent($data, true, true, true, 'unknown_action');
             $this->answerCallback($callbackQuery, 'Неизвестное действие');
 
             return response()->json(['ok' => true, 'skipped' => 'unknown_action']);
@@ -271,12 +273,14 @@ class TelegramWorkWebhookController extends Controller
         $allowedChatIds = config('services.telegram.work_allowed_chat_ids', []);
 
         if (! empty($allowedChatIds) && ! in_array($chatId, $allowedChatIds, true)) {
+            $this->logCallbackEvent($data, null, null, false, 'chat_not_allowed');
             $this->answerCallback($callbackQuery, 'Нет доступа к этому чату');
 
             return response()->json(['ok' => true, 'skipped' => 'chat_not_allowed']);
         }
 
         if (! in_array($action, ['approve', 'reject'], true)) {
+            $this->logCallbackEvent($data, null, null, null, 'unknown_dayoffday_action');
             $this->answerCallback($callbackQuery, 'Неизвестное действие');
 
             return response()->json(['ok' => true, 'skipped' => 'unknown_dayoffday_action']);
@@ -317,6 +321,7 @@ class TelegramWorkWebhookController extends Controller
         }
 
         if ($day->status !== 'pending') {
+            $this->logCallbackEvent($data, true, true, true, 'dayoffday_already_reviewed');
             $this->answerCallback($callbackQuery, 'По этой дате уже принято решение');
 
             return response()->json(['ok' => true, 'skipped' => 'dayoffday_already_reviewed']);
@@ -416,6 +421,7 @@ class TelegramWorkWebhookController extends Controller
         app(TelegramBotService::class)->editMessage(
             chatId: (string) $chatId,
             messageId: (int) $messageId,
+            forceLegacy: true,
             richMessage: app(TelegramRichMessageBuilder::class)->build(
                 title: 'Заявка на доступ',
                 status: strip_tags($statusText),
@@ -557,6 +563,7 @@ private function editDayOffRequestMessage(
     app(TelegramBotService::class)->editMessage(
         chatId: (string) $chatId,
         messageId: (int) $messageId,
+        forceLegacy: true,
         richMessage: app(TelegramRichMessageBuilder::class)->build(
             title: 'Заявка на выходной',
             status: $status,

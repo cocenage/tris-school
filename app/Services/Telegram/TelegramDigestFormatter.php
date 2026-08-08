@@ -2,6 +2,7 @@
 
 namespace App\Services\Telegram;
 
+use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
 /**
@@ -70,22 +71,8 @@ class TelegramDigestFormatter
             ))
             ->take(7);
 
-        $mobilityItems = collect($context['mobility']['items'] ?? [])
-            ->filter(fn (array $item): bool => in_array(
-                strtolower((string) ($item['risk'] ?? 'info')),
-                ['critical', 'high', 'medium'],
-                true,
-            ))
-            ->unique(fn (array $item): string => implode('|', [
-                $item['type'] ?? '',
-                $item['district'] ?? '',
-                $this->value($item['title'] ?? ''),
-                $item['starts_at'] ?? '',
-            ]))
-            ->values();
-        $mobilityCriticalCount = $mobilityItems
-            ->filter(fn (array $item): bool => in_array(strtolower((string) ($item['risk'] ?? 'info')), ['critical', 'high'], true))
-            ->count();
+        $mobilityItems = $this->meaningfulMobilityItems($context);
+        $mobilityCriticalCount = $mobilityItems->count();
 
         $risks = collect($context['risks'] ?? [])
             ->reject(fn (array $risk): bool => ($risk['source'] ?? null) === 'mobility' || ($risk['code'] ?? null) === 'mobility_alert')
@@ -125,7 +112,12 @@ class TelegramDigestFormatter
             $lines[] = 'Транспорт и ограничения';
             foreach ($mobilityItems as $item) {
                 $summary = $this->value($item['summary'] ?? $item['impact'] ?? null);
-                $lines[] = '- ' . $this->value($item['district'] ?? $item['title'] ?? null)
+                $line = $this->mobilityLine($item);
+                if ($line !== null) {
+                    $summary = preg_replace('/^'.preg_quote($line, '/').'\s*[—-]\s*/iu', '', $summary) ?: $summary;
+                }
+                $label = $line ?? $this->value($item['district'] ?? $item['title'] ?? null);
+                $lines[] = '- ' . $label
                     . ' — ' . $summary;
             }
         }
@@ -234,6 +226,10 @@ class TelegramDigestFormatter
         $actions = [];
 
         foreach ($context['risks'] ?? [] as $risk) {
+            if (in_array($risk['code'] ?? null, ['mobility_alert', 'mobility_summary'], true)) {
+                continue;
+            }
+
             $actions[] = match ($risk['code'] ?? null) {
                 'low_staffing', 'reduced_staffing' => 'Проверить покрытие смены при сниженной загрузке.',
                 'peak_day' => 'Учесть пиковую дату при планировании.',
@@ -252,6 +248,99 @@ class TelegramDigestFormatter
         }
 
         return collect($actions)->filter()->unique()->take(7)->values()->all();
+    }
+
+    /**
+     * Keep only current actionable mobility items and collapse competing
+     * states for a line. This is presentation-only; sync/parser data remains
+     * untouched.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    protected function meaningfulMobilityItems(array $context): Collection
+    {
+        $date = (string) ($context['date'] ?? '');
+        $items = collect($context['mobility']['items'] ?? [])
+            ->filter(fn (mixed $item): bool => is_array($item))
+            ->filter(fn (array $item): bool => in_array(
+                strtolower((string) ($item['risk'] ?? 'info')),
+                ['critical', 'high', 'medium'],
+                true,
+            ))
+            ->filter(fn (array $item): bool => $this->mobilityIsCurrent($item, $date))
+            ->values();
+
+        $lineItems = $items->filter(fn (array $item): bool => $this->mobilityLine($item) !== null);
+        $otherItems = $items->reject(fn (array $item): bool => $this->mobilityLine($item) !== null);
+
+        $selectedLines = $lineItems
+            ->groupBy(fn (array $item): string => $this->mobilityLine($item) ?? '')
+            ->map(fn (Collection $line): array => $line
+                ->sort(function (array $left, array $right): int {
+                    $leftFreshness = (string) ($left['updated_at'] ?? $left['created_at'] ?? $left['starts_at'] ?? '');
+                    $rightFreshness = (string) ($right['updated_at'] ?? $right['created_at'] ?? $right['starts_at'] ?? '');
+                    $freshness = strcmp($rightFreshness, $leftFreshness);
+
+                    return $freshness !== 0
+                        ? $freshness
+                        : $this->mobilitySeverity($right) <=> $this->mobilitySeverity($left);
+                })
+                ->first())
+            ->values();
+
+        return $selectedLines
+            ->concat($otherItems->unique(fn (array $item): string => implode('|', [
+                $item['type'] ?? '',
+                $item['district'] ?? '',
+                $this->value($item['title'] ?? $item['summary'] ?? ''),
+            ])))
+            ->sortByDesc(fn (array $item): int => $this->mobilitySeverity($item))
+            ->values()
+            ->take(7);
+    }
+
+    /** @param array<string, mixed> $item */
+    protected function mobilityIsCurrent(array $item, string $date): bool
+    {
+        if ($date === '') {
+            return true;
+        }
+
+        try {
+            $day = Carbon::parse($date)->startOfDay();
+            $startsAt = ! empty($item['starts_at']) ? Carbon::parse((string) $item['starts_at'])->startOfDay() : null;
+            $endsAt = ! empty($item['ends_at']) ? Carbon::parse((string) $item['ends_at'])->endOfDay() : null;
+
+            return ($startsAt === null || $startsAt->lte($day->endOfDay()))
+                && ($endsAt === null || $endsAt->gte($day));
+        } catch (\Throwable) {
+            return true;
+        }
+    }
+
+    /** @param array<string, mixed> $item */
+    protected function mobilityLine(array $item): ?string
+    {
+        $value = implode(' ', [
+            (string) ($item['district'] ?? ''),
+            (string) ($item['title'] ?? ''),
+            (string) ($item['summary'] ?? ''),
+        ]);
+
+        return preg_match('/\b(M[1-5])\b/i', $value, $matches)
+            ? strtoupper($matches[1])
+            : null;
+    }
+
+    /** @param array<string, mixed> $item */
+    protected function mobilitySeverity(array $item): int
+    {
+        return match (strtolower((string) ($item['risk'] ?? 'info'))) {
+            'critical' => 4,
+            'high' => 3,
+            'medium' => 2,
+            default => 0,
+        };
     }
 
     protected function appendTopicSection(array &$lines, string $title, Collection $topics, callable $formatter): void
@@ -292,7 +381,7 @@ class TelegramDigestFormatter
             && empty($context['staff']['not_working'] ?? [])
             && empty($context['calendar']['events'] ?? [])
             && empty($context['tasks']['items'] ?? [])
-            && empty($context['mobility']['items'] ?? [])
+            && $this->meaningfulMobilityItems($context)->isEmpty()
             && empty($context['risks'] ?? [])
             && (int) ($context['telegram']['messages'] ?? 0) === 0;
     }
