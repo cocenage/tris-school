@@ -3,7 +3,8 @@
 namespace App\Services\Forms;
 
 use App\Models\InventoryRequest;
-use Illuminate\Support\Facades\Http;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramRichMessageBuilder;
 use Illuminate\Support\Facades\Log;
 
 class InventoryRequestTelegramService
@@ -59,29 +60,25 @@ class InventoryRequestTelegramService
         }
 
         try {
-            $response = Http::timeout(10)
-                ->asJson()
-                ->post("https://api.telegram.org/bot{$token}/sendMessage", [
-                    'chat_id' => $forumChatId,
-                    'message_thread_id' => (int) $threadId,
-                    'text' => implode("\n", $message),
-                    'parse_mode' => 'HTML',
-                    'disable_web_page_preview' => true,
-                ]);
+            $rich = app(TelegramRichMessageBuilder::class)->build(
+                title: 'Новая заявка на инвентарь',
+                status: 'Ожидает обработки',
+                fields: [
+                    'Сотрудник' => (string) ($request->user?->name ?? '—'),
+                    'Заявка' => '#' . $request->id,
+                    'Позиции' => $request->lines->sortBy('id')->map(fn ($line) => $line->item_name . ': ' . $line->requested_qty)->implode('; '),
+                ],
+                body: $request->comment,
+            );
 
-            Log::info('Inventory new request telegram response received', [
-                'request_id' => $request->id,
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
+            $messageId = app(TelegramBotService::class)->sendRichMessage(
+                chatId: (string) $forumChatId,
+                richMessage: $rich,
+                fallbackHtml: implode("\n", $message),
+                threadId: (string) $threadId,
+            );
 
-            if ($response->failed()) {
-                Log::error('Inventory new request telegram failed', [
-                    'request_id' => $request->id,
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-
+            if (! $messageId) {
                 throw new \RuntimeException('Telegram rejected inventory notification.');
             }
         } catch (\Throwable $e) {
@@ -203,23 +200,28 @@ class InventoryRequestTelegramService
         }
 
         try {
-            $response = Http::timeout(10)
-                ->asJson()
-                ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
+            $rich = app(TelegramRichMessageBuilder::class)->build(
+                title: 'Заявка на инвентарь',
+                status: match ($request->status) {
+                    'issued' => 'Обработана',
+                    'partially_issued' => 'Обработана частично',
+                    'cancelled' => 'Отклонена',
+                    default => 'Статус обновлён',
+                },
+                fields: [
+                    'Позиции' => $request->lines->sortBy('id')->map(fn ($line) => $line->item_name . ': ' . $line->requested_qty . ' → ' . $line->issued_qty)->implode('; '),
+                ],
+                body: $request->admin_comment,
+            );
 
-            Log::info('Inventory telegram response received', [
-                'request_id' => $request->id,
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
+            $messageId = app(TelegramBotService::class)->sendRichMessage(
+                chatId: (string) $chatId,
+                richMessage: $rich,
+                fallbackHtml: $payload['text'],
+                replyMarkup: $payload['reply_markup'] ?? null,
+            );
 
-            if ($response->failed()) {
-                Log::error('Inventory telegram send failed', [
-                    'request_id' => $request->id,
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-
+            if (! $messageId) {
                 throw new \RuntimeException('Telegram rejected inventory result notification.');
             }
         } catch (\Throwable $e) {
