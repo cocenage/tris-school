@@ -10,6 +10,110 @@ use Illuminate\Support\Str;
 
 class MobilityAlertSyncService
 {
+    public function splitTelegramStatusEvents(string $title): array
+    {
+        $clean = $this->cleanTitle($title);
+
+        preg_match_all(
+            '/(?:linea\s*)?(M[1-5])\s*(REGOLARE|PARZ\.\s*SOSPESA|PARZIALMENTE\s*SOSPESA|CHIUSA|SOSPESA)/iu',
+            $clean,
+            $matches,
+            PREG_SET_ORDER,
+        );
+
+        return collect($matches)
+            ->map(function (array $match): ?array {
+                $line = mb_strtoupper($match[1]);
+                $status = mb_strtoupper(preg_replace('/\s+/u', ' ', trim($match[2])));
+
+                if ($status === 'REGOLARE') {
+                    return null;
+                }
+
+                $partial = str_contains($status, 'PARZ');
+
+                return [
+                    'line' => $line,
+                    'status' => $status,
+                    'type' => $partial ? 'partial_closure' : 'closure',
+                    'risk' => $partial ? 'medium' : 'high',
+                    'title' => $line . ' ' . $status,
+                    'description' => $line . ' ' . $status,
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    public function isTelegramStatusMessage(string $title): bool
+    {
+        return preg_match(
+            '/(?:linea\s*)?M[1-5]\s*(?:REGOLARE|PARZ\.\s*SOSPESA|PARZIALMENTE\s*SOSPESA|CHIUSA|SOSPESA)/iu',
+            $this->cleanTitle($title),
+        ) === 1;
+    }
+
+    public function canonicalFingerprint(
+        string $source,
+        string $title,
+        ?string $description,
+        ?string $type,
+        ?string $date,
+    ): string {
+        $text = mb_strtolower($this->cleanTitle($title . ' ' . ($description ?? '')));
+        preg_match('/\b(M[1-5])\b/i', $text, $lineMatch);
+        $line = mb_strtoupper($lineMatch[1] ?? '');
+
+        $eventType = $type ?: $this->detectType($text, $source);
+        $stations = collect([
+            'gobba',
+            'cologno nord',
+            'crescenzago',
+            'garibaldi',
+            'porta genova',
+            'cadorna',
+            'centrale',
+        ])->filter(fn (string $station): bool => str_contains($text, $station));
+
+        $m2Cluster = $stations->intersect(['gobba', 'cologno nord', 'crescenzago'])->isNotEmpty();
+
+        if ($line === '' && $m2Cluster) {
+            $line = 'M2';
+        }
+
+        if ($line === 'M2' && $m2Cluster) {
+            $segment = 'm2-crescenzago-gobba-cologno-nord';
+            $eventType = in_array($eventType, ['closure', 'works', 'disruption'], true)
+                ? 'partial_closure'
+                : $eventType;
+        } else {
+            $segment = $stations->sort()->implode('|');
+        }
+
+        if ($segment === '') {
+            $segment = preg_replace('/[^a-z0-9]+/iu', ' ', $text);
+            $segment = trim((string) preg_replace('/\s+/u', ' ', $segment));
+        }
+
+        $operator = str_contains($text, 'm1')
+            || str_contains($text, 'm2')
+            || str_contains($text, 'm3')
+            || str_contains($text, 'm4')
+            || str_contains($text, 'm5')
+            || str_contains(mb_strtolower($source), 'telegram')
+            ? 'atm'
+            : mb_strtolower($source);
+
+        return sha1(implode('|', [
+            $operator,
+            $line,
+            $eventType,
+            $segment,
+            $date ?: '',
+        ]));
+    }
+
     public function sync(): int
     {
         return $this->syncMitStrikes()
@@ -104,25 +208,58 @@ class MobilityAlertSyncService
                 continue;
             }
 
-            $hash = $this->fingerprint('telegram_undergroundstatus', $title, now()->toDateString());
+            $lineEvents = $this->splitTelegramStatusEvents($title);
 
-            $alert = MobilityAlert::firstOrCreate(
-                ['external_hash' => $hash],
-                [
-                    'source' => 'telegram',
-                    'title' => Str::limit($title, 250, ''),
-                    'description' => $title,
-                    'url' => $url,
-                    'type' => $this->detectType($title, 'telegram'),
-                    'risk' => $this->detectRisk($title, 'telegram'),
-                    'district' => $this->detectDistrict($title),
-                    'starts_at' => now()->startOfDay(),
-                    'ends_at' => null,
-                ]
-            );
+            if ($lineEvents === [] && $this->isTelegramStatusMessage($title)) {
+                continue;
+            }
 
-            if ($alert->wasRecentlyCreated) {
-                $created++;
+            $events = $lineEvents ?: [[
+                'title' => $title,
+                'description' => $title,
+                'type' => $this->detectType($title, 'telegram'),
+                'risk' => $this->detectRisk($title, 'telegram'),
+            ]];
+
+            foreach ($events as $event) {
+                $eventTitle = $event['title'];
+                $eventDescription = $event['description'];
+                $eventDate = now()->startOfDay();
+                $hash = $this->canonicalFingerprint(
+                    'telegram',
+                    $eventTitle,
+                    $eventDescription,
+                    $event['type'],
+                    $eventDate->toDateString(),
+                );
+
+                $alert = MobilityAlert::firstOrCreate(
+                    ['external_hash' => $hash],
+                    [
+                        'source' => 'telegram',
+                        'title' => Str::limit($eventTitle, 250, ''),
+                        'description' => $eventDescription,
+                        'url' => $url,
+                        'type' => $event['type'],
+                        'risk' => $event['risk'],
+                        'district' => $event['line'] ?? $this->detectDistrict($title),
+                        'starts_at' => $eventDate,
+                        'ends_at' => null,
+                    ]
+                );
+
+                if ($alert->wasRecentlyCreated) {
+                    $created++;
+                } elseif (mb_strlen($eventDescription) > mb_strlen((string) $alert->description)) {
+                    $alert->forceFill([
+                        'title' => Str::limit($eventTitle, 250, ''),
+                        'description' => $eventDescription,
+                        'url' => $url,
+                        'type' => $event['type'],
+                        'risk' => $event['risk'],
+                        'district' => $event['line'] ?? $this->detectDistrict($title),
+                    ])->saveQuietly();
+                }
             }
         }
 
@@ -203,6 +340,15 @@ class MobilityAlertSyncService
 
             if ($alert->wasRecentlyCreated) {
                 $created++;
+            } elseif (mb_strlen($title) > mb_strlen((string) $alert->description)) {
+                $alert->forceFill([
+                    'title' => Str::limit($title, 250, ''),
+                    'description' => $title,
+                    'url' => $item['url'],
+                    'type' => $forcedType ?? $this->detectType($title, $source),
+                    'risk' => $forcedRisk ?? $this->detectRisk($title, $source),
+                    'district' => $this->detectDistrict($title),
+                ])->saveQuietly();
             }
         }
 
@@ -527,10 +673,7 @@ class MobilityAlertSyncService
 
     protected function fingerprint(string $source, string $title, string $date): string
     {
-        $normalized = mb_strtolower($this->cleanTitle($title));
-        $normalized = preg_replace('/[\p{P}\p{S}\s]+/u', ' ', $normalized);
-
-        return sha1($source . '|' . trim($normalized) . '|' . $date);
+        return $this->canonicalFingerprint($source, $title, null, null, $date);
     }
 
     protected function absoluteUrl(string $baseUrl, string $href): string
