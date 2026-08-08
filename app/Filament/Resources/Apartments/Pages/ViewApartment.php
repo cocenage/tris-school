@@ -10,7 +10,7 @@ use Filament\Actions\EditAction;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Placeholder;
-use Filament\Forms\Get;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Resources\Pages\ViewRecord;
 use Illuminate\Support\HtmlString;
 use Illuminate\Validation\ValidationException;

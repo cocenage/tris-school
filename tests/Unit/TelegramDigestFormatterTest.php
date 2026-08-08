@@ -89,3 +89,47 @@ it('hides empty positive and tomorrow sections in evening digest', function () {
         ->not->toContain('Что прошло хорошо')
         ->not->toContain('Проверить завтра');
 });
+
+it('keeps one freshest state per current line and removes duplicate line prefixes', function () {
+    $text = app(TelegramDigestFormatter::class)->morning([
+        'date' => '2026-08-03',
+        'timezone' => 'Europe/Rome',
+        'staff' => ['working' => [['name' => 'Cleaner']], 'not_working' => [], 'shift' => ['total' => 1]],
+        'calendar' => ['events' => []],
+        'tasks' => ['items' => []],
+        'mobility' => ['items' => [
+            ['risk' => 'medium', 'district' => 'M1', 'type' => 'partial_closure', 'title' => 'M1 partial', 'summary' => 'M1 — частично ограничено движение', 'starts_at' => '2026-08-03'],
+            ['risk' => 'high', 'district' => 'M1', 'type' => 'closure', 'title' => 'M1 closure', 'summary' => 'M1 — линия закрыта', 'starts_at' => '2026-08-03'],
+        ]],
+        'risks' => [],
+        'telegram' => ['messages' => 0],
+        'data_quality' => [],
+    ]);
+
+    expect($text)
+        ->toContain('M1 — линия закрыта')
+        ->not->toContain('частично ограничено движение')
+        ->not->toContain('M1 — M1 —');
+});
+
+it('hides mobility presentation completely when only stale important events remain', function () {
+    $text = app(TelegramDigestFormatter::class)->morning([
+        'date' => '2026-08-03',
+        'timezone' => 'Europe/Rome',
+        'staff' => ['working' => [['name' => 'Cleaner']], 'not_working' => [], 'shift' => ['total' => 1]],
+        'calendar' => ['events' => []],
+        'tasks' => ['items' => []],
+        'mobility' => ['items' => [[
+            'risk' => 'high', 'district' => 'M2', 'summary' => 'Линия закрыта',
+            'starts_at' => '2026-08-01', 'ends_at' => '2026-08-02',
+        ]]],
+        'risks' => [['level' => 'high', 'code' => 'mobility_alert', 'source' => 'mobility', 'message' => 'transport']],
+        'telegram' => ['messages' => 0],
+        'data_quality' => [],
+    ]);
+
+    expect($text)
+        ->not->toContain('Транспорт и ограничения')
+        ->not->toContain('существенных транспортных ограничений')
+        ->not->toContain('Уточнить влияние транспортного ограничения');
+});

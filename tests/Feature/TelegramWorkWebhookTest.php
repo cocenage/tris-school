@@ -14,6 +14,7 @@ beforeEach(function () {
         'services.telegram.bot_token' => 'test-token',
         'services.telegram.work_webhook_secret' => 'test-secret',
         'services.telegram.work_allowed_chat_ids' => ['-100'],
+        'services.telegram.rich_messages_enabled' => true,
     ]);
 
     Cache::flush();
@@ -152,6 +153,10 @@ it('authorizes and applies an access approval callback from a mapped supervisor'
         str_ends_with($request->url(), '/editMessageText')
         && ($request['reply_markup']['inline_keyboard'] ?? null) === []
     );
+    Http::assertNotSent(fn (ClientRequest $request): bool =>
+        ($request['message_id'] ?? null) === 10
+        && array_key_exists('rich_message', $request->data())
+    );
 });
 
 it('rejects a callback from a Telegram user without an approved mapping', function () {
@@ -172,6 +177,21 @@ it('rejects a callback from a Telegram user without an approved mapping', functi
 
     $response->assertOk()->assertJson(['skipped' => 'reviewer_not_allowed']);
     expect($employee->refresh()->status)->toBe('pending');
+});
+
+it('accepts callback updates through the web webhook alias', function () {
+    Http::fake(fn () => Http::response(['ok' => true]));
+
+    $response = $this->postJson('/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-web',
+            'data' => 'unknown:action:1',
+            'from' => ['id' => 999],
+            'message' => ['message_id' => 11, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ]);
+
+    $response->assertOk()->assertJson(['ok' => true, 'skipped' => 'unknown_callback']);
 });
 
 it('applies a day-off callback once and ignores a repeated click', function () {

@@ -140,6 +140,7 @@ class TelegramBotService
         array $richMessage,
         string $fallbackHtml,
         ?array $replyMarkup = null,
+        bool $forceLegacy = false,
     ): bool {
         $token = config('services.telegram.bot_token');
 
@@ -147,7 +148,7 @@ class TelegramBotService
             return false;
         }
 
-        if (! config('services.telegram.rich_messages_enabled', false)) {
+        if ($forceLegacy || ! config('services.telegram.rich_messages_enabled', false)) {
             return $this->editHtmlMessage(
                 token: $token,
                 chatId: $chatId,
