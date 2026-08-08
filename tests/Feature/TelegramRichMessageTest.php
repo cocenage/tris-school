@@ -10,7 +10,57 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 
 beforeEach(function (): void {
-    config(['services.telegram.bot_token' => 'test-token']);
+    config([
+        'services.telegram.bot_token' => 'test-token',
+        'services.telegram.rich_messages_enabled' => true,
+    ]);
+});
+
+it('uses only the legacy HTML transport when Rich Messages are disabled', function (): void {
+    config(['services.telegram.rich_messages_enabled' => false]);
+    Http::fake(fn () => Http::response([
+        'ok' => true,
+        'result' => ['message_id' => 504],
+    ]));
+
+    $messageId = app(TelegramBotService::class)->sendRichMessage(
+        chatId: '-100123',
+        richMessage: ['markdown' => '# Не отправляется в rich endpoint'],
+        fallbackHtml: '<b>Legacy</b>',
+    );
+
+    expect($messageId)->toBe(504);
+    Http::assertSentCount(1);
+    Http::assertSent(fn (Request $request): bool =>
+        str_ends_with($request->url(), '/sendMessage')
+        && $request['text'] === '<b>Legacy</b>'
+    );
+    Http::assertNotSent(fn (Request $request): bool =>
+        str_ends_with($request->url(), '/sendRichMessage')
+    );
+});
+
+it('uses only legacy HTML editing when Rich Messages are disabled', function (): void {
+    config(['services.telegram.rich_messages_enabled' => false]);
+    Http::fake(fn () => Http::response(['ok' => true]));
+
+    expect(app(TelegramBotService::class)->editMessage(
+        chatId: '-100123',
+        messageId: 57,
+        richMessage: ['markdown' => '# Не отправляется в rich endpoint'],
+        fallbackHtml: '<b>Legacy edit</b>',
+        replyMarkup: ['inline_keyboard' => []],
+    ))->toBeTrue();
+
+    Http::assertSentCount(1);
+    Http::assertSent(fn (Request $request): bool =>
+        str_ends_with($request->url(), '/editMessageText')
+        && $request['text'] === '<b>Legacy edit</b>'
+        && ($request['reply_markup']['inline_keyboard'] ?? null) === []
+    );
+    Http::assertNotSent(fn (Request $request): bool =>
+        isset($request['rich_message'])
+    );
 });
 
 it('creates a rich message without changing inline callback data', function (): void {

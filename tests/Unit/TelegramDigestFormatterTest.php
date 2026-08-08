@@ -48,3 +48,44 @@ it('formats conservative evening problem and tomorrow sections', function () {
         ->toContain('Проверить завтра')
         ->toContain('Рабочий форум / Ключи');
 });
+
+it('renders only meaningful normalized mobility events without severity labels', function () {
+    $text = app(TelegramDigestFormatter::class)->morning([
+        'date' => '2026-08-03',
+        'timezone' => 'Europe/Rome',
+        'staff' => ['working' => [], 'not_working' => [], 'shift' => ['total' => 0]],
+        'calendar' => ['events' => []],
+        'tasks' => ['items' => []],
+        'mobility' => ['items' => [
+            ['risk' => 'info', 'district' => 'M1', 'summary' => 'REGOLARE'],
+            ['risk' => 'low', 'district' => 'M2', 'summary' => 'Обычный режим'],
+            ['risk' => 'medium', 'district' => 'M2', 'summary' => 'Частичное ограничение'],
+            ['risk' => 'high', 'district' => 'M3', 'summary' => 'Линия закрыта'],
+        ]],
+        'risks' => [],
+        'telegram' => ['messages' => 0],
+        'data_quality' => [],
+    ]);
+
+    expect($text)
+        ->toContain('M2 — Частичное ограничение')
+        ->toContain('M3 — Линия закрыта')
+        ->not->toContain('M1 — REGOLARE')
+        ->not->toContain('M2 — Обычный режим')
+        ->not->toContain('[HIGH]')
+        ->not->toContain('[MEDIUM]')
+        ->not->toContain('[INFO]');
+});
+
+it('hides empty positive and tomorrow sections in evening digest', function () {
+    $text = app(TelegramDigestFormatter::class)->evening([
+        'date' => '2026-08-03',
+        'timezone' => 'Europe/Rome',
+        'forums' => [],
+        'data_quality' => [],
+    ]);
+
+    expect($text)
+        ->not->toContain('Что прошло хорошо')
+        ->not->toContain('Проверить завтра');
+});

@@ -77,6 +77,16 @@ class TelegramBotService
             return null;
         }
 
+        if (! config('services.telegram.rich_messages_enabled', false)) {
+            return $this->sendMessage(
+                chatId: $chatId,
+                text: $fallbackHtml,
+                threadId: $threadId,
+                replyToMessageId: $replyToMessageId,
+                replyMarkup: $replyMarkup,
+            );
+        }
+
         $payload = [
             'chat_id' => $chatId,
             'rich_message' => $richMessage,
@@ -137,6 +147,16 @@ class TelegramBotService
             return false;
         }
 
+        if (! config('services.telegram.rich_messages_enabled', false)) {
+            return $this->editHtmlMessage(
+                token: $token,
+                chatId: $chatId,
+                messageId: $messageId,
+                html: $fallbackHtml,
+                replyMarkup: $replyMarkup,
+            );
+        }
+
         $richPayload = [
             'chat_id' => $chatId,
             'message_id' => (int) $messageId,
@@ -178,6 +198,31 @@ class TelegramBotService
             ->post("https://api.telegram.org/bot{$token}/editMessageText", $fallbackPayload);
 
         return $fallbackResponse->successful();
+    }
+
+    private function editHtmlMessage(
+        string $token,
+        string $chatId,
+        int|string $messageId,
+        string $html,
+        ?array $replyMarkup = null,
+    ): bool {
+        $payload = [
+            'chat_id' => $chatId,
+            'message_id' => (int) $messageId,
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => true,
+            'text' => $html,
+        ];
+
+        if ($replyMarkup !== null) {
+            $payload['reply_markup'] = $replyMarkup;
+        }
+
+        return Http::timeout(10)
+            ->connectTimeout(3)
+            ->post("https://api.telegram.org/bot{$token}/editMessageText", $payload)
+            ->successful();
     }
 
     private function addMessageOptions(

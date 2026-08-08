@@ -71,6 +71,11 @@ class TelegramDigestFormatter
             ->take(7);
 
         $mobilityItems = collect($context['mobility']['items'] ?? [])
+            ->filter(fn (array $item): bool => in_array(
+                strtolower((string) ($item['risk'] ?? 'info')),
+                ['critical', 'high', 'medium'],
+                true,
+            ))
             ->unique(fn (array $item): string => implode('|', [
                 $item['type'] ?? '',
                 $item['district'] ?? '',
@@ -79,7 +84,7 @@ class TelegramDigestFormatter
             ]))
             ->values();
         $mobilityCriticalCount = $mobilityItems
-            ->filter(fn (array $item): bool => in_array($item['risk'] ?? null, ['critical', 'high'], true))
+            ->filter(fn (array $item): bool => in_array(strtolower((string) ($item['risk'] ?? 'info')), ['critical', 'high'], true))
             ->count();
 
         $risks = collect($context['risks'] ?? [])
@@ -105,8 +110,7 @@ class TelegramDigestFormatter
             $lines[] = 'Требует внимания';
             foreach ($risks->take(7) as $risk) {
                 $lines[] = sprintf(
-                    '- [%s] %s',
-                    mb_strtoupper((string) ($risk['level'] ?? 'info')),
+                    '- %s',
                     $this->value($risk['message'] ?? null),
                 );
             }
@@ -120,15 +124,9 @@ class TelegramDigestFormatter
             $lines[] = '';
             $lines[] = 'Транспорт и ограничения';
             foreach ($mobilityItems as $item) {
-                $impact = ($item['impact'] ?? 'unknown') === 'unknown'
-                    ? 'влияние на сотрудников не определено'
-                    : (string) $item['impact'];
-                $lines[] = sprintf(
-                    '- [%s] %s — %s',
-                    mb_strtoupper((string) ($item['risk'] ?? 'info')),
-                    $this->value($item['district'] ?? $item['title'] ?? null),
-                    $this->value($item['summary'] ?? $impact),
-                );
+                $summary = $this->value($item['summary'] ?? $item['impact'] ?? null);
+                $lines[] = '- ' . $this->value($item['district'] ?? $item['title'] ?? null)
+                    . ' — ' . $summary;
             }
         }
 
@@ -175,7 +173,7 @@ class TelegramDigestFormatter
         $resolved = $topics->filter(fn (array $topic): bool => (bool) ($topic['possible_resolved'] ?? false));
 
         $lines[] = '';
-        $lines[] = 'Что прошло хорошо';
+        $lines[] = 'Положительные моменты';
         if ($positive->isEmpty()) {
             $lines[] = '- Подтверждённых положительных сигналов не обнаружено.';
         } else {
@@ -188,6 +186,10 @@ class TelegramDigestFormatter
                     $suffix,
                 );
             }
+        }
+
+        if ($positive->isEmpty()) {
+            array_splice($lines, -3);
         }
 
         $this->appendTopicSection($lines, 'Проблемы', $problems, fn (array $topic): string => sprintf(
@@ -211,6 +213,10 @@ class TelegramDigestFormatter
             foreach ($unanswered->take(10) as $topic) {
                 $lines[] = '- ' . $this->topicLabel($topic);
             }
+        }
+
+        if ($unanswered->isEmpty()) {
+            array_splice($lines, -3);
         }
 
         $quality = $this->qualityLines($digest['data_quality'] ?? []);
@@ -265,6 +271,8 @@ class TelegramDigestFormatter
     {
         $forum = $this->value($topic['forum_title'] ?? null);
         $title = $this->value($topic['topic_title'] ?? null);
+
+        $title = $title !== '' ? $title : 'Общая тема';
 
         return $forum !== '' ? $forum . ' / ' . $title : $title;
     }

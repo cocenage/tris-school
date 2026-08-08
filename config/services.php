@@ -38,8 +38,10 @@ return [
 
     'telegram' => [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
+        // Disabled by default until Rich Message delivery is proven reliable in production.
+        'rich_messages_enabled' => env('TELEGRAM_RICH_MESSAGES_ENABLED', false),
         'bot_username' => env('TELEGRAM_BOT_USERNAME'),
-
+ 'ip_resolve' => env('TELEGRAM_IP_RESOLVE'),
         'admin_chat_id' => env('TELEGRAM_ADMIN_CHAT_ID'),
         'admin_thread_id' => env('TELEGRAM_ADMIN_THREAD_ID'),
 
