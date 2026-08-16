@@ -133,6 +133,7 @@ it('uses the Filament v5 schema Get utility in the import action', function (): 
     $source = file_get_contents(base_path('app/Filament/Resources/Apartments/Pages/ViewApartment.php'));
 
     expect($source)
+        ->toContain('use App\\Models\\Apartment;')
         ->toContain('use Filament\\Schemas\\Components\\Utilities\\Get;')
         ->not->toContain('use Filament\\Forms\\Get;');
 });

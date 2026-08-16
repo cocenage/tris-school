@@ -59,7 +59,7 @@ class SendRequestResultNotificationJob implements ShouldQueue, ShouldBeUnique
             'service' => $this->serviceClass,
             'model' => $this->modelClass,
             'record_id' => $this->modelId,
-            'error' => $exception->getMessage(),
+            'exception' => class_basename($exception),
         ]);
     }
 }

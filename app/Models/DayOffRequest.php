@@ -104,8 +104,6 @@ class DayOffRequest extends Model
             'status' => $this->status,
             'notified_at' => $this->notified_at,
             'all_reviewed' => $this->allDaysReviewed(),
-            'days_statuses' => $this->days->pluck('status')->toArray(),
-            'telegram_id' => $this->user?->telegram_id,
         ]);
 
         if ($this->notified_at) {

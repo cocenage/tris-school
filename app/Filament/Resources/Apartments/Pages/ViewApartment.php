@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Apartments\Pages;
 
+use App\Models\Apartment;
 use App\Filament\Resources\Apartments\ApartmentResource;
 use App\Services\Apartments\ApartmentAccessService;
 use App\Services\Apartments\TelegramApartmentImportService;

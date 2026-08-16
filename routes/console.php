@@ -19,11 +19,9 @@ Schedule::command('mobility:sync')
 
 Schedule::command('mobility:digest')
     ->dailyAt('08:00')
-     ->hourly()
     ->withoutOverlapping();
 
 
     Schedule::command('tris-mare:sync')
     ->dailyAt('20:15')
     ->timezone('Europe/Rome');
-
