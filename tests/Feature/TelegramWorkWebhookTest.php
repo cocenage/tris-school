@@ -179,6 +179,51 @@ it('rejects a callback from a Telegram user without an approved mapping', functi
     expect($employee->refresh()->status)->toBe('pending');
 });
 
+it('keeps an access decision when Telegram delivery fails after the database write', function () {
+    Http::fake(fn () => throw new RuntimeException('simulated Telegram timeout'));
+
+    $reviewer = \App\Models\User::create([
+        'name' => 'Supervisor', 'telegram_id' => '123', 'status' => 'approved', 'role' => 'supervisor', 'is_active' => true,
+    ]);
+    $employee = \App\Models\User::create([
+        'name' => 'Cleaner', 'telegram_id' => '456', 'status' => 'pending', 'role' => 'cleaner', 'is_active' => true,
+    ]);
+
+    $response = $this->postJson('/api/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-delivery-failure',
+            'data' => 'access:approve:' . $employee->id,
+            'from' => ['id' => (int) $reviewer->telegram_id],
+            'message' => ['message_id' => 19, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ]);
+
+    $response->assertOk()->assertJson(['ok' => true]);
+    expect($employee->refresh()->status)->toBe('approved');
+});
+
+it('applies an access rejection callback for an approved moderator', function () {
+    Http::fake(fn () => Http::response(['ok' => true]));
+
+    $reviewer = \App\Models\User::create([
+        'name' => 'Admin', 'telegram_id' => '321', 'status' => 'approved', 'role' => 'admin', 'is_active' => true,
+    ]);
+    $employee = \App\Models\User::create([
+        'name' => 'Cleaner', 'telegram_id' => '654', 'status' => 'pending', 'role' => 'cleaner', 'is_active' => true,
+    ]);
+
+    $this->postJson('/api/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-reject',
+            'data' => 'access:reject:' . $employee->id,
+            'from' => ['id' => (int) $reviewer->telegram_id],
+            'message' => ['message_id' => 20, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ])->assertOk();
+
+    expect($employee->refresh()->status)->toBe('rejected');
+});
+
 it('accepts callback updates through the web webhook alias', function () {
     Http::fake(fn () => Http::response(['ok' => true]));
 
@@ -227,4 +272,33 @@ it('applies a day-off callback once and ignores a repeated click', function () {
     expect($day->refresh()->status)->toBe('approved')
         ->and($request->refresh()->status)->toBe('approved')
         ->and($day->reviewed_at)->not->toBeNull();
+});
+
+it('applies a day-off rejection callback and updates the aggregate request', function () {
+    Http::fake(fn () => Http::response(['ok' => true, 'result' => ['message_id' => 905]]));
+
+    $reviewer = \App\Models\User::create([
+        'name' => 'Supervisor', 'telegram_id' => '789', 'status' => 'approved', 'role' => 'supervisor', 'is_active' => true,
+    ]);
+    $employee = \App\Models\User::create([
+        'name' => 'Cleaner', 'telegram_id' => '987', 'status' => 'approved', 'role' => 'cleaner', 'is_active' => true,
+    ]);
+    $request = \App\Models\DayOffRequest::create([
+        'user_id' => $employee->id, 'reason' => 'Проверка отказа', 'status' => 'pending',
+    ]);
+    $day = \App\Models\DayOffRequestDay::create([
+        'day_off_request_id' => $request->id, 'user_id' => $employee->id, 'date' => '2026-08-24', 'status' => 'pending',
+    ]);
+
+    $this->postJson('/api/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-dayoff-reject',
+            'data' => 'dayoffday:reject:' . $day->id,
+            'from' => ['id' => (int) $reviewer->telegram_id],
+            'message' => ['message_id' => 21, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ])->assertOk();
+
+    expect($day->refresh()->status)->toBe('rejected')
+        ->and($request->refresh()->status)->toBe('rejected');
 });

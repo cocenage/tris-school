@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 
 class TelegramWorkWebhookController extends Controller
 {
+    private ?int $callbackStartedAt = null;
 
 
     public function __invoke(
@@ -28,15 +29,24 @@ class TelegramWorkWebhookController extends Controller
         TelegramAssistantService $assistantService,
     ) {
 
+        $update = $request->all();
+        $updateType = match (true) {
+            isset($update['callback_query']) => 'callback_query',
+            isset($update['message']) => 'message',
+            isset($update['edited_message']) => 'edited_message',
+            isset($update['channel_post']) => 'channel_post',
+            default => 'unknown',
+        };
+
         Log::debug('Telegram work webhook received', [
-            'has_callback_query' => $request->has('callback_query'),
+            'update_id' => is_numeric($update['update_id'] ?? null) ? (int) $update['update_id'] : null,
+            'update_type' => $updateType,
+            'has_callback_query' => $updateType === 'callback_query',
         ]);
 
         if ($secret !== config('services.telegram.work_webhook_secret')) {
             abort(403);
         }
-
-        $update = $request->all();
 
         if (isset($update['callback_query'])) {
             return $this->handleCallbackQuery($update['callback_query']);
@@ -61,7 +71,7 @@ class TelegramWorkWebhookController extends Controller
                 ]);
             } catch (\Throwable $e) {
                 Log::error('Telegram private message fallback failed', [
-                    'error' => $e->getMessage(),
+                    'exception' => class_basename($e),
                 ]);
 
                 return response()->json(['ok' => false], 500);
@@ -93,7 +103,7 @@ class TelegramWorkWebhookController extends Controller
                 } catch (\Throwable $e) {
                     Log::error('Telegram assistant processing failed after ingest', [
                         'message_id' => $savedMessage->id,
-                        'error' => $e->getMessage(),
+                        'exception' => class_basename($e),
                     ]);
                 }
             }
@@ -104,7 +114,7 @@ class TelegramWorkWebhookController extends Controller
             ]);
         } catch (\Throwable $e) {
             Log::error('Telegram work webhook failed', [
-                'error' => $e->getMessage(),
+                'exception' => class_basename($e),
             ]);
 
             return response()->json(['ok' => false], 500);
@@ -122,6 +132,7 @@ class TelegramWorkWebhookController extends Controller
     private function handleCallbackQuery(array $callbackQuery)
     {
         $data = $callbackQuery['data'] ?? '';
+        $this->callbackStartedAt = hrtime(true);
 
         $parts = explode(':', $data, 3);
         Log::info('Telegram callback received', [
@@ -147,9 +158,12 @@ class TelegramWorkWebhookController extends Controller
                 'application_found' => null,
                 'authorization_passed' => null,
                 'handler_result' => 'error',
+                'duration_ms' => round((hrtime(true) - $this->callbackStartedAt) / 1_000_000, 2),
             ]);
 
             return response()->json(['ok' => false], 500);
+        } finally {
+            $this->callbackStartedAt = null;
         }
 
         $this->logCallbackEvent($data, null, null, null, 'unknown_callback');
@@ -157,7 +171,6 @@ class TelegramWorkWebhookController extends Controller
         return response()->json([
             'ok' => true,
             'skipped' => 'unknown_callback',
-            'data' => $data,
         ]);
     }
 
@@ -231,27 +244,70 @@ class TelegramWorkWebhookController extends Controller
             $action === 'approve' ? 'Обрабатываем одобрение' : 'Обрабатываем отклонение',
         );
 
-        if ($action === 'approve') {
-            $user->forceFill([
-                'status' => 'approved',
-                'approved_at' => now(),
-                'approved_by' => $moderator?->id,
-            ])->save();
+        $decisionApplied = false;
 
-            app(TelegramUserNotificationService::class)->accessApproved($user);
+        DB::transaction(function () use (&$user, $action, $moderator, &$decisionApplied): void {
+            $lockedUser = User::query()->lockForUpdate()->find($user->id);
+
+            if (! $lockedUser || $lockedUser->status !== 'pending') {
+                return;
+            }
+
+            // Bypass the UserObserver here. It sends Telegram synchronously;
+            // a slow/failing API call must never turn a committed approval
+            // into a webhook 500/retry.
+            $lockedUser->forceFill([
+                'status' => $action === 'approve' ? 'approved' : 'rejected',
+                'approved_at' => $action === 'approve' ? now() : $lockedUser->approved_at,
+                'approved_by' => $moderator?->id,
+            ])->saveQuietly();
+
+            $user = $lockedUser;
+            $decisionApplied = true;
+        });
+
+        if (! $decisionApplied) {
+            $this->logCallbackEvent($data, true, true, true, 'access_already_reviewed');
+            $this->answerCallback($callbackQuery, 'Решение уже принято');
+
+            return response()->json(['ok' => true, 'skipped' => 'access_already_reviewed']);
+        }
+
+        if ($action === 'approve') {
+
+            try {
+                app(TelegramUserNotificationService::class)->accessApproved($user);
+            } catch (\Throwable $e) {
+                Log::warning('Telegram access approval notification failed after decision', [
+                    'callback_received' => true,
+                    'callback_type' => 'access',
+                    'callback_action' => 'approve',
+                    'handler_result' => 'decision_saved_notification_failed',
+                    'exception' => class_basename($e),
+                ]);
+            }
 
             $statusText = '✅ <b>Доступ одобрен</b>';
-        } elseif ($action === 'reject') {
-            $user->forceFill([
-                'status' => 'rejected',
-                'approved_by' => $moderator?->id,
-            ])->save();
-
+        } else {
             $statusText = '❌ <b>Доступ отклонён</b>';
         }
 
-        $this->editAccessMessage($callbackQuery, $user, $statusText, $moderatorText);
-        $this->logCallbackEvent($data, $moderator !== null, true, true, 'handled');
+        try {
+            $handlerResult = $this->editAccessMessage($callbackQuery, $user, $statusText, $moderatorText)
+                ? 'handled'
+                : 'decision_saved_edit_failed';
+        } catch (\Throwable $e) {
+            Log::warning('Telegram access callback message edit failed after decision', [
+                'callback_received' => true,
+                'callback_type' => 'access',
+                'callback_action' => $action,
+                'handler_result' => 'decision_saved_edit_failed',
+                'exception' => class_basename($e),
+            ]);
+            $handlerResult = 'decision_saved_edit_failed';
+        }
+
+        $this->logCallbackEvent($data, $moderator !== null, true, true, $handlerResult);
 
         return response()->json(['ok' => true]);
     }
@@ -334,34 +390,70 @@ class TelegramWorkWebhookController extends Controller
             $status === 'approved' ? 'Обрабатываем одобрение' : 'Обрабатываем отклонение',
         );
 
-        DB::transaction(function () use ($day, $dayOffRequest, $status, $reviewer): void {
+        $decisionApplied = false;
+
+        DB::transaction(function () use (&$day, &$dayOffRequest, $status, $reviewer, &$decisionApplied): void {
+            $lockedDay = DayOffRequestDay::query()->lockForUpdate()->find($day->id);
+
+            if (! $lockedDay || $lockedDay->status !== 'pending') {
+                return;
+            }
+
+            $lockedRequest = DayOffRequest::query()->lockForUpdate()->find($lockedDay->day_off_request_id);
+
+            if (! $lockedRequest) {
+                return;
+            }
+
             $reviewedAt = now();
 
-            $day->forceFill([
+            $lockedDay->forceFill([
                 'status' => $status,
                 'reviewed_at' => $reviewedAt,
                 'reviewed_by' => $reviewer->id,
             ])->save();
 
-            $dayOffRequest->forceFill([
+            $lockedRequest->forceFill([
                 'reviewed_at' => $reviewedAt,
                 'reviewed_by' => $reviewer->id,
             ])->save();
 
-            $dayOffRequest->syncStatusAndNotify();
+            $lockedRequest->syncStatusAndNotify();
+            $day = $lockedDay;
+            $dayOffRequest = $lockedRequest;
+            $decisionApplied = true;
         });
+
+        if (! $decisionApplied) {
+            $this->logCallbackEvent($data, true, true, true, 'dayoffday_already_reviewed');
+            $this->answerCallback($callbackQuery, 'Решение уже принято');
+
+            return response()->json(['ok' => true, 'skipped' => 'dayoffday_already_reviewed']);
+        }
 
         $dayOffRequest->refresh();
         $dayOffRequest->load(['user', 'days']);
 
         $moderatorText = $this->telegramUserText($callbackQuery['from'] ?? []);
 
-        $this->editDayOffRequestMessage(
-            callbackQuery: $callbackQuery,
-            dayOffRequest: $dayOffRequest,
-            moderatorText: $moderatorText,
-        );
-        $this->logCallbackEvent($data, $reviewer !== null, true, true, 'handled');
+        try {
+            $handlerResult = $this->editDayOffRequestMessage(
+                callbackQuery: $callbackQuery,
+                dayOffRequest: $dayOffRequest,
+                moderatorText: $moderatorText,
+            ) ? 'handled' : 'decision_saved_edit_failed';
+        } catch (\Throwable $e) {
+            Log::warning('Telegram day-off callback message edit failed after decision', [
+                'callback_received' => true,
+                'callback_type' => 'dayoffday',
+                'callback_action' => $action,
+                'handler_result' => 'decision_saved_edit_failed',
+                'exception' => class_basename($e),
+            ]);
+            $handlerResult = 'decision_saved_edit_failed';
+        }
+
+        $this->logCallbackEvent($data, $reviewer !== null, true, true, $handlerResult);
 
         return response()->json(['ok' => true]);
     }
@@ -391,6 +483,9 @@ class TelegramWorkWebhookController extends Controller
             'application_found' => $applicationFound,
             'authorization_passed' => $authorizationPassed,
             'handler_result' => $handlerResult,
+            'duration_ms' => $this->callbackStartedAt !== null
+                ? round((hrtime(true) - $this->callbackStartedAt) / 1_000_000, 2)
+                : null,
         ]);
     }
 
@@ -399,12 +494,12 @@ class TelegramWorkWebhookController extends Controller
         User $user,
         string $statusText,
         string $moderatorText
-    ): void {
+    ): bool {
         $chatId = data_get($callbackQuery, 'message.chat.id');
         $messageId = data_get($callbackQuery, 'message.message_id');
 
         if (! $chatId || ! $messageId) {
-            return;
+            return false;
         }
 
         $fallbackHtml = implode("\n", [
@@ -418,7 +513,7 @@ class TelegramWorkWebhookController extends Controller
             '<b>Время:</b> ' . now()->format('d.m.Y H:i'),
         ]);
 
-        app(TelegramBotService::class)->editMessage(
+        return app(TelegramBotService::class)->editMessage(
             chatId: (string) $chatId,
             messageId: (int) $messageId,
             forceLegacy: true,
@@ -434,8 +529,6 @@ class TelegramWorkWebhookController extends Controller
             fallbackHtml: $fallbackHtml,
             replyMarkup: ['inline_keyboard' => []],
         );
-
-        return;
 
         Http::post($this->telegramApiUrl('editMessageText'), [
             'chat_id' => $chatId,
@@ -460,12 +553,12 @@ private function editDayOffRequestMessage(
     array $callbackQuery,
     DayOffRequest $dayOffRequest,
     string $moderatorText
-): void {
+): bool {
     $chatId = data_get($callbackQuery, 'message.chat.id');
     $messageId = data_get($callbackQuery, 'message.message_id');
 
     if (! $chatId || ! $messageId) {
-        return;
+        return false;
     }
 
     $user = $dayOffRequest->user;
@@ -560,7 +653,7 @@ private function editDayOffRequestMessage(
         default => 'Статус обновлён',
     };
 
-    app(TelegramBotService::class)->editMessage(
+    return app(TelegramBotService::class)->editMessage(
         chatId: (string) $chatId,
         messageId: (int) $messageId,
         forceLegacy: true,
@@ -588,8 +681,6 @@ private function editDayOffRequestMessage(
         replyMarkup: $payload['reply_markup'],
     );
 
-    return;
-
     Http::post($this->telegramApiUrl('editMessageText'), $payload);
 }
 
@@ -601,10 +692,24 @@ private function editDayOffRequestMessage(
             return;
         }
 
-        Http::post($this->telegramApiUrl('answerCallbackQuery'), [
-            'callback_query_id' => $callbackQueryId,
-            'text' => $text,
-        ]);
+        try {
+            Http::timeout(2)
+                ->connectTimeout(1)
+                ->post($this->telegramApiUrl('answerCallbackQuery'), [
+                    'callback_query_id' => $callbackQueryId,
+                    'text' => $text,
+                ]);
+        } catch (\Throwable $e) {
+            $parts = explode(':', (string) ($callbackQuery['data'] ?? ''), 3);
+
+            Log::warning('Telegram callback answer failed', [
+                'callback_received' => true,
+                'callback_type' => $parts[0] ?? 'unknown',
+                'callback_action' => $parts[1] ?? 'unknown',
+                'handler_result' => 'answer_failed',
+                'exception' => class_basename($e),
+            ]);
+        }
     }
 
     private function sendPrivateFallbackMessageStrict(array $message): void
@@ -623,11 +728,19 @@ private function editDayOffRequestMessage(
             return;
         }
 
-        $response = Http::post($this->telegramApiUrl('sendMessage'), [
+        try {
+            $response = Http::timeout(3)
+                ->connectTimeout(1)
+                ->post($this->telegramApiUrl('sendMessage'), [
             'chat_id' => $chatId,
             'text' => "\u{042F} \u{043D}\u{0435} \u{043E}\u{0431}\u{0440}\u{0430}\u{0431}\u{0430}\u{0442}\u{044B}\u{0432}\u{0430}\u{044E} \u{043B}\u{0438}\u{0447}\u{043D}\u{044B}\u{0435} \u{0441}\u{043E}\u{043E}\u{0431}\u{0449}\u{0435}\u{043D}\u{0438}\u{044F}. \u{0418}\u{0441}\u{043F}\u{043E}\u{043B}\u{044C}\u{0437}\u{0443}\u{0439}\u{0442}\u{0435} \u{0440}\u{0430}\u{0431}\u{043E}\u{0447}\u{0438}\u{0439} \u{0447}\u{0430}\u{0442}.",
             'disable_web_page_preview' => true,
-        ]);
+                ]);
+        } catch (\Throwable $e) {
+            Cache::forget($cacheKey);
+
+            throw $e;
+        }
 
         if (! $response->successful()) {
             Cache::forget($cacheKey);

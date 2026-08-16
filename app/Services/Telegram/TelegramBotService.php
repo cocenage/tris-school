@@ -46,10 +46,12 @@ class TelegramBotService
             ->connectTimeout(3)
             ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
 
+        // Never log the outbound payload or Telegram response body: they may
+        // contain chat identifiers, message text, callback data, or API
+        // details. Keep only transport metadata useful for diagnostics.
         Log::info('Telegram sendMessage response', [
             'status' => $response->status(),
-            'body' => $response->body(),
-            'payload' => $payload,
+            'successful' => $response->successful(),
         ]);
 
         return $response->successful()
@@ -109,7 +111,7 @@ class TelegramBotService
             ]);
         } catch (\Throwable $e) {
             Log::warning('Telegram Rich Message failed; using HTML fallback.', [
-                'message' => $e->getMessage(),
+                'exception' => class_basename($e),
             ]);
         }
 
@@ -178,7 +180,7 @@ class TelegramBotService
             }
         } catch (\Throwable $e) {
             Log::warning('Telegram Rich Message edit failed; using HTML fallback.', [
-                'message' => $e->getMessage(),
+                'exception' => class_basename($e),
             ]);
         }
 
