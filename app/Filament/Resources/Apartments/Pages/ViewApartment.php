@@ -50,13 +50,13 @@ class ViewApartment extends ViewRecord
                         ->label('Предпросмотр')
                         ->content(function (Get $get) {
                             $path = $get('json_path');
-                            if (! is_string($path) || $path === '') {
+                            if ($path === null || $path === '' || $path === []) {
                                 return 'Загрузите JSON, чтобы увидеть предпросмотр.';
                             }
                             try {
                                 $preview = app(TelegramApartmentImportService::class)->preview(
-                                    storage_path('app/'.$path),
-                                    is_string($get('media_path')) ? storage_path('app/'.$get('media_path')) : null,
+                                    $path,
+                                    $get('media_path'),
                                 );
                             } catch (ValidationException $exception) {
                                 return new HtmlString('<span class="text-danger-600">'.e($exception->getMessage()).'</span>');
@@ -71,8 +71,8 @@ class ViewApartment extends ViewRecord
                 ->action(function (Apartment $record, array $data): void {
                     $result = app(TelegramApartmentImportService::class)->import(
                         $record,
-                        storage_path('app/'.$data['json_path']),
-                        isset($data['media_path']) ? storage_path('app/'.$data['media_path']) : null,
+                        $data['json_path'],
+                        $data['media_path'] ?? null,
                         auth()->user(),
                     );
 
