@@ -257,6 +257,9 @@ class ControlResponseInfolist
             $max = (int) ($error['max_points'] ?? 0);
             $isCritical = (bool) ($error['is_critical'] ?? false);
             $media = is_array($error['media'] ?? null) ? $error['media'] : [];
+            $rawAnswer = data_get($responses, "{$error['room_index']}.{$error['question_index']}", []);
+            $rawAnswer = is_array($rawAnswer) ? $rawAnswer : [];
+            $corrective = is_array($rawAnswer['corrective'] ?? null) ? $rawAnswer['corrective'] : [];
 
             $html .= '
                 <div style="
@@ -314,11 +317,26 @@ class ControlResponseInfolist
                         </div>
             ';
 
+            if (filled($corrective['action'] ?? null) || ($corrective['repeats'] ?? null) !== null || ($corrective['recheck'] ?? null) !== null) {
+                $html .= '
+                    <div style="margin-top:12px;border-radius:16px;background:#fffaeb;color:#6b4f12;padding:10px 12px;font-size:13px;line-height:1.45;">
+                        <div style="font-weight:800;">Корректирующие действия</div>
+                        ' . (filled($corrective['action'] ?? null) ? '<div style="margin-top:4px;"><strong>Что сделать:</strong> ' . e((string) $corrective['action']) . '</div>' : '') . '
+                        ' . (($corrective['repeats'] ?? null) !== null ? '<div style="margin-top:3px;">Ошибка повторяется: ' . (($corrective['repeats'] ?? false) ? 'да' : 'нет') . '</div>' : '') . '
+                        ' . (($corrective['recheck'] ?? null) !== null ? '<div style="margin-top:3px;">Повторный контроль: ' . (($corrective['recheck'] ?? false) ? 'нужен' : 'не нужен') . '</div>' : '') . '
+                    </div>
+                ';
+            }
+
             if (! empty($media)) {
                 $html .= '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;">';
 
                 foreach ($media as $photo) {
-                    $url = e((string) ($photo['url'] ?? ''));
+                    if (! is_array($photo)) {
+                        continue;
+                    }
+
+                    $url = e((string) (ControlResponse::resolveMediaUrl($photo) ?? ''));
 
                     if ($url === '') {
                         continue;

@@ -14,7 +14,7 @@ new class extends Component {
         abort_unless(
             $controlResponse->cleaner_id === Auth::id()
             || $controlResponse->supervisor_id === Auth::id()
-            || in_array($user?->role, ['admin', 'supervisor'], true),
+            || $user?->role === 'admin',
             403
         );
 
@@ -56,7 +56,56 @@ new class extends Component {
             ? $this->controlResponse->responses
             : [];
 
-        return ControlResponse::analyzeAnswers($schema, $responses)['errors'] ?? [];
+        $errors = ControlResponse::analyzeAnswers($schema, $responses)['errors'] ?? [];
+
+        return array_map(function (array $error) use ($responses): array {
+            $answer = data_get($responses, "{$error['room_index']}.{$error['question_index']}", []);
+            $answer = is_array($answer) ? $answer : [];
+            $error['corrective'] = is_array($answer['corrective'] ?? null)
+                ? $answer['corrective']
+                : ['repeats' => null, 'action' => '', 'recheck' => null];
+            $error['media'] = array_values(array_filter(array_map(function (mixed $photo): array {
+                if (! is_array($photo)) {
+                    return [];
+                }
+
+                $photo['url'] = ControlResponse::resolveMediaUrl($photo);
+
+                return $photo;
+            }, is_array($error['media'] ?? null) ? $error['media'] : []), fn (array $photo): bool => filled($photo['url'] ?? null)));
+
+            return $error;
+        }, $errors);
+    }
+
+    protected function roomSummary(): array
+    {
+        $schema = is_array($this->controlResponse->schema_snapshot)
+            ? $this->controlResponse->schema_snapshot
+            : [];
+        $errors = $this->errors();
+
+        return collect($schema)
+            ->map(function (mixed $room, int $roomIndex) use ($errors): array {
+                if (! is_array($room)) {
+                    return [
+                        'title' => 'Комната',
+                        'total' => 0,
+                        'errors' => 0,
+                    ];
+                }
+
+                $title = (string) ($room['title'] ?? 'Комната');
+                $roomErrors = collect($errors)->where('room_index', $roomIndex)->values();
+
+                return [
+                    'title' => $title,
+                    'total' => collect($room['items'] ?? [])->count(),
+                    'errors' => $roomErrors->count(),
+                ];
+            })
+            ->values()
+            ->all();
     }
 };
 ?>
@@ -84,6 +133,7 @@ new class extends Component {
     $color = $this->color();
     $zoneLabel = $this->zoneLabel();
     $errors = $this->errors();
+    $roomSummary = $this->roomSummary();
 
     $apartmentName = $record->apartment?->name ?? 'Квартира не указана';
     $comment = trim((string) ($record->comment ?? ''));
@@ -177,6 +227,34 @@ new class extends Component {
                     </div>
                 </div>
 
+                @if(! empty($roomSummary))
+                    <div class="mb-[18px]">
+                        <div class="mb-[10px] text-[16px] font-semibold text-[#111111]">
+                            Комнаты
+                        </div>
+
+                        <div class="space-y-[8px]">
+                            @foreach($roomSummary as $room)
+                                <div class="flex items-center justify-between gap-[12px] rounded-[18px] bg-[#F8F8F8] px-[14px] py-[11px]">
+                                    <span class="min-w-0 truncate text-[14px] font-semibold text-[#111111]">
+                                        {{ $room['title'] }}
+                                    </span>
+
+                                    @if($room['errors'] > 0)
+                                        <span class="shrink-0 rounded-full bg-[#FEE2E2] px-[9px] py-[5px] text-[12px] font-bold text-[#991B1B]">
+                                            {{ $room['errors'] }} {{ $room['errors'] === 1 ? 'проблема' : 'проблем' }}
+                                        </span>
+                                    @else
+                                        <span class="shrink-0 rounded-full bg-[#E7F8EF] px-[9px] py-[5px] text-[12px] font-bold text-[#16834B]">
+                                            без ошибок
+                                        </span>
+                                    @endif
+                                </div>
+                            @endforeach
+                        </div>
+                    </div>
+                @endif
+
                 @if(empty($errors))
                     <div class="rounded-[28px] bg-[#F0FDF4] px-[18px] py-[20px] text-center text-[15px] font-semibold text-[#166534]">
                         Ошибок нет. Контроль в зелёной зоне.
@@ -190,6 +268,7 @@ new class extends Component {
                         @foreach($errors as $error)
                             @php
                                 $media = is_array($error['media'] ?? null) ? $error['media'] : [];
+                                $corrective = is_array($error['corrective'] ?? null) ? $error['corrective'] : [];
                             @endphp
 
                             <div class="overflow-hidden rounded-[26px] border border-[#FECACA] bg-white">
@@ -217,6 +296,21 @@ new class extends Component {
                                     <div class="mt-[8px] text-[15px] font-semibold leading-[1.35] text-[#111111]">
                                         {{ $error['selected_label'] ?? '—' }}
                                     </div>
+
+                                    @if(filled($corrective['action'] ?? null) || ($corrective['repeats'] ?? null) !== null || ($corrective['recheck'] ?? null) !== null)
+                                        <div class="mt-[12px] rounded-[18px] bg-[#FFFAEB] px-[12px] py-[10px] text-[13px] text-[#6B4F12]">
+                                            <div class="font-semibold">Корректирующие действия</div>
+                                            @if(filled($corrective['action'] ?? null))
+                                                <div class="mt-[4px]"><span class="font-semibold">Что сделать:</span> {{ $corrective['action'] }}</div>
+                                            @endif
+                                            @if(($corrective['repeats'] ?? null) !== null)
+                                                <div class="mt-[3px]">Ошибка повторяется: {{ $corrective['repeats'] ? 'да' : 'нет' }}</div>
+                                            @endif
+                                            @if(($corrective['recheck'] ?? null) !== null)
+                                                <div class="mt-[3px]">Повторный контроль: {{ $corrective['recheck'] ? 'нужен' : 'не нужен' }}</div>
+                                            @endif
+                                        </div>
+                                    @endif
 
                                     @if(! empty($media))
                                         <div class="mt-[12px] flex gap-[8px] overflow-x-auto pb-[2px]">
