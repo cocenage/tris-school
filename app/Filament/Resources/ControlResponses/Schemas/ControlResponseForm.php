@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\ControlResponses\Schemas;
 
+use App\Models\ControlResponse;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\TextInput;
@@ -52,7 +53,7 @@ class ControlResponseForm
                 TextInput::make('result_zone'),
                 TextInput::make('status')
                     ->required()
-                    ->default('submitted'),
+                    ->default(ControlResponse::STATUS_SENT),
                 DateTimePicker::make('sent_at'),
             ]);
     }

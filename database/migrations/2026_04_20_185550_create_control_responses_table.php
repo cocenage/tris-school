@@ -1,4 +1,4 @@
-а<?php
+<?php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -32,7 +32,7 @@ return new class extends Migration {
             $table->boolean('has_critical_failure')->default(false);
             $table->string('result_zone', 20)->nullable();
 
-            $table->string('status', 30)->default('submitted');
+            $table->string('status', 30)->default('sent');
             $table->timestamp('sent_at')->nullable();
 
             $table->timestamps();

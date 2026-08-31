@@ -6,11 +6,14 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class ControlResponse extends Model
 {
     use HasFactory;
+
+    public const STATUS_SENT = 'sent';
 
     protected $fillable = [
         'control_id',
@@ -151,6 +154,7 @@ class ControlResponse extends Model
                 }
 
                 $answer = data_get($responses, "{$roomIndex}.{$questionIndex}", []);
+                $answer = is_array($answer) ? $answer : [];
                 $selected = trim((string) ($answer['selected'] ?? ''));
                 $custom = trim((string) ($answer['custom'] ?? ''));
 
@@ -178,6 +182,8 @@ class ControlResponse extends Model
                 }
 
                 $errors[] = [
+                    'room_index' => (int) $roomIndex,
+                    'question_index' => (int) $questionIndex,
                     'room_title' => $roomTitle,
                     'question' => (string) ($question['question'] ?? 'Вопрос'),
                     'selected_label' => self::resolveAnswerText($question, $selected, $custom),
@@ -263,6 +269,10 @@ public static function resolveResultZoneData(int $penaltyPoints, bool $hasCritic
 
     protected static function isCriticalQuestion(string $roomTitle, int $questionIndex, array $question): bool
     {
+        if ((bool) ($question['is_critical'] ?? false)) {
+            return true;
+        }
+
         if ((bool) ($question['is_red_zone_question'] ?? false)) {
             return true;
         }
@@ -307,6 +317,54 @@ public static function resolveResultZoneData(int $penaltyPoints, bool $hasCritic
         }
 
         return $label !== '' ? $label : ($custom !== '' ? $custom : '—');
+    }
+
+    public static function isNegativeAnswer(array $question, string $selected): bool
+    {
+        if (! in_array((string) ($question['answer_type'] ?? 'options'), ['options', 'both'], true)) {
+            return false;
+        }
+
+        $options = $question['answer_options_scored'] ?? [];
+
+        if (! is_array($options) || $options === [] || trim($selected) === '') {
+            return false;
+        }
+
+        [$maxForQuestion, $selectedPoints] = self::resolveSelectedPoints($options, trim($selected));
+
+        return $maxForQuestion > 0 && $selectedPoints < $maxForQuestion;
+    }
+
+    public static function resolveMediaUrl(array $media): ?string
+    {
+        $path = trim((string) ($media['path'] ?? ''));
+
+        if ($path === '') {
+            return null;
+        }
+
+        $diskName = trim((string) ($media['disk'] ?? 'public')) ?: 'public';
+
+        try {
+            $disk = Storage::disk($diskName);
+
+            if (! $disk->exists($path)) {
+                return null;
+            }
+
+            if ($diskName === 'public') {
+                return $disk->url($path);
+            }
+
+            if (method_exists($disk, 'temporaryUrl')) {
+                return $disk->temporaryUrl($path, now()->addMinutes(10));
+            }
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return null;
     }
 
     public function rewardPointEvents(): MorphMany
