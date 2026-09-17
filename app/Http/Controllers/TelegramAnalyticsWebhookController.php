@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\TelegramAttachment;
 use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
@@ -91,6 +92,10 @@ class TelegramAnalyticsWebhookController extends Controller
         );
 
         $this->saveAttachments($telegramMessage, $message);
+
+        if (config('services.telegram.operational_observer_enabled', false)) {
+            ProcessTelegramOperationalMessage::dispatch($telegramMessage->id);
+        }
 
         return response()->json(['ok' => true]);
     }

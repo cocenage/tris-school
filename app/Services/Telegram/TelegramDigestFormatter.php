@@ -21,7 +21,7 @@ class TelegramDigestFormatter
                 '- Работающих сотрудников: %d%s',
                 count($context['staff']['working'] ?? []),
                 is_numeric($context['staff']['shift']['total'] ?? null)
-                    ? ' из ' . (int) $context['staff']['shift']['total'] . ' назначенных'
+                    ? ' из '.(int) $context['staff']['shift']['total'].' назначенных'
                     : '',
             ),
         ];
@@ -44,7 +44,7 @@ class TelegramDigestFormatter
             $lines[] = '';
             $lines[] = 'Отсутствия';
             foreach ($absences as $absence) {
-                $lines[] = '- ' . $absence;
+                $lines[] = '- '.$absence;
             }
         }
 
@@ -56,10 +56,10 @@ class TelegramDigestFormatter
             $lines[] = '';
             $lines[] = 'Календарь';
             foreach ($peakEvents->take(7) as $event) {
-                $lines[] = '- ' . $this->value($event['title'] ?? null) . ' (пиковая дата)';
+                $lines[] = '- '.$this->value($event['title'] ?? null).' (пиковая дата)';
             }
             foreach ($otherEvents as $event) {
-                $lines[] = '- ' . $this->value($event['title'] ?? null);
+                $lines[] = '- '.$this->value($event['title'] ?? null);
             }
         }
 
@@ -88,7 +88,7 @@ class TelegramDigestFormatter
             $risks->prepend([
                 'level' => 'high',
                 'code' => 'mobility_summary',
-                'message' => '🚇 ' . $mobilityCriticalCount . ' существенных транспортных ограничений',
+                'message' => '🚇 '.$mobilityCriticalCount.' существенных транспортных ограничений',
             ]);
         }
 
@@ -102,7 +102,7 @@ class TelegramDigestFormatter
                 );
             }
             foreach ($pending as $item) {
-                $lines[] = '- ' . $this->value($item['type'] ?? 'request') . ': ' . $this->value($item['user'] ?? null) . ' (не закрыто)';
+                $lines[] = '- '.$this->value($item['type'] ?? 'request').': '.$this->value($item['user'] ?? null).' (не закрыто)';
             }
         }
 
@@ -117,8 +117,8 @@ class TelegramDigestFormatter
                     $summary = preg_replace('/^'.preg_quote($line, '/').'\s*[—-]\s*/iu', '', $summary) ?: $summary;
                 }
                 $label = $line ?? $this->value($item['district'] ?? $item['title'] ?? null);
-                $lines[] = '- ' . $label
-                    . ' — ' . $summary;
+                $lines[] = '- '.$label
+                    .' — '.$summary;
             }
         }
 
@@ -127,7 +127,7 @@ class TelegramDigestFormatter
             $lines[] = '';
             $lines[] = 'Действия на утро';
             foreach ($actions as $action) {
-                $lines[] = '- ' . $action;
+                $lines[] = '- '.$action;
             }
         }
 
@@ -203,7 +203,7 @@ class TelegramDigestFormatter
             $lines[] = '- Конкретных нерешённых вопросов не обнаружено.';
         } else {
             foreach ($unanswered->take(10) as $topic) {
-                $lines[] = '- ' . $this->topicLabel($topic);
+                $lines[] = '- '.$this->topicLabel($topic);
             }
         }
 
@@ -216,6 +216,42 @@ class TelegramDigestFormatter
             $lines[] = '';
             $lines[] = 'Качество данных';
             array_push($lines, ...$quality);
+        }
+
+        return implode("\n", $lines);
+    }
+
+    public function eveningIntelligence(array $preview): string
+    {
+        $lines = [
+            '🌙 Вечерняя оперативная сводка',
+            $this->dateLine($preview),
+        ];
+
+        if ($preview['no_material_events'] ?? false) {
+            $lines[] = '';
+            $lines[] = 'За день значимых операционных событий по ledger не обнаружено.';
+        } else {
+            foreach ($preview['sections'] ?? [] as $section) {
+                if (empty($section['items'])) {
+                    continue;
+                }
+
+                $lines[] = '';
+                $lines[] = $this->value($section['label'] ?? $section['key'] ?? '');
+
+                foreach ($section['items'] as $item) {
+                    $lines[] = '- '.$this->value($item['summary'] ?? null)
+                        .' [статус: '.$this->value($item['status'] ?? null)
+                        .'; уверенность: '.$this->value($item['confidence'] ?? null).']';
+                    $lines[] = '  Событие: '.$this->value($item['event_key'] ?? null);
+                    $lines[] = '  Доказательства: '.$this->evidenceReferences($item['evidence'] ?? []);
+
+                    if (filled($item['uncertainty'] ?? null)) {
+                        $lines[] = '  Неопределённость: '.$this->value($item['uncertainty']);
+                    }
+                }
+            }
         }
 
         return implode("\n", $lines);
@@ -243,7 +279,7 @@ class TelegramDigestFormatter
 
         foreach ($context['tasks']['items'] ?? [] as $task) {
             if (empty($task['assignees']) && ! in_array($task['status'] ?? null, ['done', 'cancelled'], true)) {
-                $actions[] = 'Назначить ответственного за задачу: ' . $this->value($task['title'] ?? null);
+                $actions[] = 'Назначить ответственного за задачу: '.$this->value($task['title'] ?? null);
             }
         }
 
@@ -352,7 +388,7 @@ class TelegramDigestFormatter
         $lines[] = '';
         $lines[] = $title;
         foreach ($topics->take(7) as $topic) {
-            $lines[] = '- ' . $formatter($topic);
+            $lines[] = '- '.$formatter($topic);
         }
     }
 
@@ -363,14 +399,14 @@ class TelegramDigestFormatter
 
         $title = $title !== '' ? $title : 'Общая тема';
 
-        return $forum !== '' ? $forum . ' / ' . $title : $title;
+        return $forum !== '' ? $forum.' / '.$title : $title;
     }
 
     protected function qualityLines(array $quality): array
     {
         return collect($quality)
             ->filter(fn (mixed $item): bool => is_array($item) && ($item['status'] ?? null) === 'unavailable')
-            ->map(fn (mixed $item, string $source): string => '- ' . $source . ': ' . $this->value($item['reason'] ?? 'источник недоступен'))
+            ->map(fn (mixed $item, string $source): string => '- '.$source.': '.$this->value($item['reason'] ?? 'источник недоступен'))
             ->values()
             ->all();
     }
@@ -395,12 +431,30 @@ class TelegramDigestFormatter
         );
     }
 
+    protected function evidenceReferences(array $evidence): string
+    {
+        $references = collect($evidence)
+            ->map(fn (array $item): string => sprintf(
+                '#%s/%s',
+                $this->value($item['local_message_id'] ?? null),
+                $this->value($item['telegram_message_id'] ?? null),
+            ))
+            ->filter()
+            ->values();
+
+        if ($references->count() <= 5) {
+            return $references->implode(', ');
+        }
+
+        return $references->take(5)->implode(', ').' +'.($references->count() - 5);
+    }
+
     protected function personLine(array $user): string
     {
         $name = $this->value($user['name'] ?? null);
         $reason = $this->value($user['reason'] ?? null);
 
-        return $reason !== '' ? $name . ' — ' . $reason : $name;
+        return $reason !== '' ? $name.' — '.$reason : $name;
     }
 
     protected function value(mixed $value): string
