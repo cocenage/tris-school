@@ -72,7 +72,12 @@ return [
         'assistant_staff_chat_id' => env('TELEGRAM_ASSISTANT_STAFF_CHAT_ID'),
         'assistant_staff_thread_id' => env('TELEGRAM_ASSISTANT_STAFF_THREAD_ID'),
         'operational_observer_enabled' => env('TELEGRAM_OPERATIONAL_OBSERVER_ENABLED', false),
-
+'operational_chat_ids' => array_values(array_filter(
+    array_map(
+        'trim',
+        explode(',', env('TELEGRAM_OPERATIONAL_CHAT_IDS', ''))
+    )
+)),
 
 
         'analytics_bot_token' => env('TELEGRAM_ANALYTICS_BOT_TOKEN'),
