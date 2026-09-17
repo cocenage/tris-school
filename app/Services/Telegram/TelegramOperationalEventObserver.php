@@ -616,7 +616,7 @@ class TelegramOperationalEventObserver
     {
         $chatType = $message->chat?->type;
         $chatId = (string) ($message->chat?->telegram_chat_id ?? '');
-        $allowedChatIds = array_map('strval', config('services.telegram.work_allowed_chat_ids', []));
+        $allowedChatIds = array_map('strval', config('services.telegram.operational_chat_ids', []));
 
         if ($chatType === 'private' || ($allowedChatIds !== [] && ! in_array($chatId, $allowedChatIds, true))) {
             return 'private_or_disallowed_chat';
