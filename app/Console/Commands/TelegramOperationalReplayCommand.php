@@ -139,7 +139,7 @@ class TelegramOperationalReplayCommand extends Command
 
     private function messages(Carbon $from, Carbon $to): iterable
     {
-        $allowedChatIds = array_map('strval', config('services.telegram.work_allowed_chat_ids', []));
+        $allowedChatIds = array_map('strval', config('services.telegram.operational_chat_ids', []));
         $query = TelegramMessage::query()
             ->with(['chat', 'topic', 'telegramUser', 'attachments'])
             ->whereBetween('sent_at', [$from->copy()->startOfDay(), $to->copy()->endOfDay()])
