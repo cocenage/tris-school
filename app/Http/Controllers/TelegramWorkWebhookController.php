@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\User;
@@ -96,6 +97,10 @@ class TelegramWorkWebhookController extends Controller
                 $update,
                 $activated && $this->isInstructionCommand($message),
             );
+
+            if ($savedMessage && config('services.telegram.operational_observer_enabled', false)) {
+                ProcessTelegramOperationalMessage::dispatch($savedMessage->id);
+            }
 
             if ($savedMessage && $activated) {
                 try {

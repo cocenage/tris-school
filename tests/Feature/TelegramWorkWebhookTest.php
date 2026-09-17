@@ -1,11 +1,14 @@
 <?php
 
+use App\Jobs\ProcessTelegramOperationalMessage;
+use App\Models\TelegramMessage;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
@@ -87,6 +90,68 @@ function privateWebhookPayload(int $messageId = 42): array
         ],
     ];
 }
+
+it('dispatches operational observation only after a persisted work message when enabled', function () {
+    config(['services.telegram.operational_observer_enabled' => true]);
+    Queue::fake();
+    Http::fake();
+
+    $savedMessage = new TelegramMessage;
+    $savedMessage->setConnection('analytics');
+    $savedMessage->setRawAttributes(['id' => 501], true);
+    $savedMessage->exists = true;
+
+    $ingest = Mockery::mock(TelegramUpdateIngestService::class);
+    $ingest->shouldReceive('ingest')->once()->andReturn($savedMessage);
+    $assistant = Mockery::mock(TelegramAssistantService::class);
+    $assistant->shouldReceive('isActivated')->once()->andReturnFalse();
+    $assistant->shouldReceive('handle')->never();
+    $this->app->instance(TelegramUpdateIngestService::class, $ingest);
+    $this->app->instance(TelegramAssistantService::class, $assistant);
+
+    $this->postJson('/telegram/work-webhook/test-secret', [
+        'update_id' => 501,
+        'message' => [
+            'message_id' => 501,
+            'date' => now()->timestamp,
+            'chat' => ['id' => -100, 'type' => 'supergroup'],
+            'from' => ['id' => 777, 'is_bot' => false],
+            'text' => 'Проблема с замком',
+        ],
+    ])->assertOk();
+
+    Queue::assertPushed(ProcessTelegramOperationalMessage::class, fn ($job) =>
+        $job->telegramMessageId === 501 && $job->mode === 'message'
+    );
+    expect(Http::recorded())->toHaveCount(0);
+});
+
+it('keeps work-message observation disabled by default', function () {
+    config(['services.telegram.operational_observer_enabled' => false]);
+    Queue::fake();
+
+    $savedMessage = new TelegramMessage;
+    $savedMessage->setRawAttributes(['id' => 502], true);
+    $savedMessage->exists = true;
+
+    $ingest = Mockery::mock(TelegramUpdateIngestService::class);
+    $ingest->shouldReceive('ingest')->once()->andReturn($savedMessage);
+    $assistant = Mockery::mock(TelegramAssistantService::class);
+    $assistant->shouldReceive('isActivated')->once()->andReturnFalse();
+    $assistant->shouldReceive('handle')->never();
+    $this->app->instance(TelegramUpdateIngestService::class, $ingest);
+    $this->app->instance(TelegramAssistantService::class, $assistant);
+
+    $this->postJson('/telegram/work-webhook/test-secret', [
+        'message' => [
+            'message_id' => 502,
+            'chat' => ['id' => -100, 'type' => 'supergroup'],
+            'text' => 'Обычное сообщение',
+        ],
+    ])->assertOk();
+
+    Queue::assertNothingPushed();
+});
 
 it('answers private messages without ingesting or invoking the assistant', function () {
     Http::fake(fn () => Http::response(['ok' => true, 'result' => ['message_id' => 901]]));
