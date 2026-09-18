@@ -46,7 +46,7 @@ it('emits the JSON contract without changing source or ledger rows', function ()
     ])->all();
 
     expect($output)
-        ->toHaveKeys(['date', 'timezone', 'sections', 'events_considered', 'events_included', 'events_omitted', 'no_material_events', 'data_quality', 'mode'])
+        ->toHaveKeys(['date', 'timezone', 'district', 'events', 'sections', 'events_considered', 'events_included', 'events_omitted', 'no_material_events', 'data_quality', 'mode'])
         ->and($output['date'])->toBe('2026-06-17')
         ->and($output['mode'])->toBe(['read_only' => true, 'telegram_actions' => 0, 'mutations' => 0])
         ->and($output['sections'])->not->toBeEmpty()
@@ -60,13 +60,43 @@ it('renders only non-empty human sections and an explicit read-only footer', fun
     app(TelegramOperationalEventObserver::class)->observe($message);
 
     $this->artisan('telegram:evening-intelligence-preview', ['--date' => '2026-06-17'])
-        ->expectsOutputToContain('Вечерняя оперативная сводка')
+        ->expectsOutputToContain('TRIS — итоги дня')
         ->expectsOutputToContain('Не работает замок')
-        ->expectsOutputToContain('Событие: telegram:')
-        ->expectsOutputToContain('Доказательства: #')
+        ->doesntExpectOutputToContain('Событие:')
+        ->doesntExpectOutputToContain('Доказательства:')
+        ->doesntExpectOutputToContain('статус:')
+        ->doesntExpectOutputToContain('уверенность:')
         ->doesntExpectOutputToContain('Положительный вклад')
-        ->expectsOutputToContain('Режим: только чтение')
+        ->expectsOutputToContain('Предпросмотр: отправка в Telegram отключена')
         ->assertExitCode(0);
+});
+
+it('filters a configured district while keeping complete technical evidence in json', function () {
+    config(['services.telegram.digest_districts' => [
+        'navigli' => [
+            'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11',
+            'latitude' => 45.45, 'longitude' => 9.17,
+        ],
+    ]]);
+
+    app(TelegramOperationalEventObserver::class)->observe(
+        TelegramOperationalTestDatabase::message('Не работает замок в Navigli', chatId: '-1001'),
+    );
+    app(TelegramOperationalEventObserver::class)->observe(
+        TelegramOperationalTestDatabase::message('Не работает замок в Lodi', messageId: '2', chatId: '-1002'),
+    );
+
+    expect(Artisan::call('telegram:evening-intelligence-preview', [
+        '--date' => '2026-06-17', '--district' => 'navigli', '--json' => true,
+    ]))->toBe(0);
+
+    $output = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($output['district'])->toMatchArray(['key' => 'navigli', 'label' => 'Navigli'])
+        ->and($output['events_considered'])->toBe(1)
+        ->and($output['events'])->toHaveCount(1)
+        ->and($output['events'][0])->toHaveKeys(['event_key', 'status', 'confidence', 'evidence'])
+        ->and($output['events'][0]['summary'])->toContain('Navigli');
 });
 
 it('fails cleanly when the required ledger is unavailable', function () {

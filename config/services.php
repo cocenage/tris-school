@@ -41,7 +41,7 @@ return [
         // Disabled by default until Rich Message delivery is proven reliable in production.
         'rich_messages_enabled' => env('TELEGRAM_RICH_MESSAGES_ENABLED', false),
         'bot_username' => env('TELEGRAM_BOT_USERNAME'),
- 'ip_resolve' => env('TELEGRAM_IP_RESOLVE'),
+        'ip_resolve' => env('TELEGRAM_IP_RESOLVE'),
         'admin_chat_id' => env('TELEGRAM_ADMIN_CHAT_ID'),
         'admin_thread_id' => env('TELEGRAM_ADMIN_THREAD_ID'),
 
@@ -63,22 +63,59 @@ return [
             'trim',
             explode(',', env('TELEGRAM_WORK_ALLOWED_CHAT_IDS', ''))
 
-
-
-
         )),
 
         'assistant_enabled' => env('TELEGRAM_ASSISTANT_ENABLED', true),
         'assistant_staff_chat_id' => env('TELEGRAM_ASSISTANT_STAFF_CHAT_ID'),
         'assistant_staff_thread_id' => env('TELEGRAM_ASSISTANT_STAFF_THREAD_ID'),
         'operational_observer_enabled' => env('TELEGRAM_OPERATIONAL_OBSERVER_ENABLED', false),
-'operational_chat_ids' => array_values(array_filter(
-    array_map(
-        'trim',
-        explode(',', env('TELEGRAM_OPERATIONAL_CHAT_IDS', ''))
-    )
-)),
+        'operational_chat_ids' => array_values(array_filter(
+            array_map(
+                'trim',
+                explode(',', env('TELEGRAM_OPERATIONAL_CHAT_IDS', ''))
+            )
+        )),
 
+        // District digest delivery is intentionally disabled until every
+        // forum -> duty topic route has been validated in the target environment.
+        'evening_intelligence_delivery_enabled' => env('TELEGRAM_EVENING_INTELLIGENCE_DELIVERY_ENABLED', false),
+        'digest_districts' => [
+            'navigli' => [
+                'label' => env('TELEGRAM_DISTRICT_NAVIGLI_LABEL', 'Navigli'),
+                'chat_id' => env('TELEGRAM_DISTRICT_NAVIGLI_CHAT_ID'),
+                'duty_thread_id' => env('TELEGRAM_DISTRICT_NAVIGLI_DUTY_THREAD_ID'),
+                'latitude' => env('TELEGRAM_DISTRICT_NAVIGLI_LATITUDE', 45.4514),
+                'longitude' => env('TELEGRAM_DISTRICT_NAVIGLI_LONGITUDE', 9.1749),
+            ],
+            'lodi' => [
+                'label' => env('TELEGRAM_DISTRICT_LODI_LABEL', 'Lodi'),
+                'chat_id' => env('TELEGRAM_DISTRICT_LODI_CHAT_ID'),
+                'duty_thread_id' => env('TELEGRAM_DISTRICT_LODI_DUTY_THREAD_ID'),
+                'latitude' => env('TELEGRAM_DISTRICT_LODI_LATITUDE', 45.4470),
+                'longitude' => env('TELEGRAM_DISTRICT_LODI_LONGITUDE', 9.2107),
+            ],
+            'certosa' => [
+                'label' => env('TELEGRAM_DISTRICT_CERTOSA_LABEL', 'Certosa'),
+                'chat_id' => env('TELEGRAM_DISTRICT_CERTOSA_CHAT_ID'),
+                'duty_thread_id' => env('TELEGRAM_DISTRICT_CERTOSA_DUTY_THREAD_ID'),
+                'latitude' => env('TELEGRAM_DISTRICT_CERTOSA_LATITUDE', 45.5040),
+                'longitude' => env('TELEGRAM_DISTRICT_CERTOSA_LONGITUDE', 9.1357),
+            ],
+            'lambrate' => [
+                'label' => env('TELEGRAM_DISTRICT_LAMBRATE_LABEL', 'Lambrate'),
+                'chat_id' => env('TELEGRAM_DISTRICT_LAMBRATE_CHAT_ID'),
+                'duty_thread_id' => env('TELEGRAM_DISTRICT_LAMBRATE_DUTY_THREAD_ID'),
+                'latitude' => env('TELEGRAM_DISTRICT_LAMBRATE_LATITUDE', 45.4845),
+                'longitude' => env('TELEGRAM_DISTRICT_LAMBRATE_LONGITUDE', 9.2370),
+            ],
+            'como' => [
+                'label' => env('TELEGRAM_DISTRICT_COMO_LABEL', 'Como'),
+                'chat_id' => env('TELEGRAM_DISTRICT_COMO_CHAT_ID'),
+                'duty_thread_id' => env('TELEGRAM_DISTRICT_COMO_DUTY_THREAD_ID'),
+                'latitude' => env('TELEGRAM_DISTRICT_COMO_LATITUDE', 45.8081),
+                'longitude' => env('TELEGRAM_DISTRICT_COMO_LONGITUDE', 9.0852),
+            ],
+        ],
 
         'analytics_bot_token' => env('TELEGRAM_ANALYTICS_BOT_TOKEN'),
         'analytics_webhook_secret' => env('TELEGRAM_ANALYTICS_WEBHOOK_SECRET'),
@@ -88,9 +125,8 @@ return [
         'digest_target_chat_id' => env('TELEGRAM_DIGEST_TARGET_CHAT_ID'),
         'digest_target_thread_id' => env('TELEGRAM_DIGEST_TARGET_THREAD_ID'),
 
-        
-    'mobility_targets' => env('TELEGRAM_MOBILITY_TARGETS'),
-    'mobility_admin_targets' => env('TELEGRAM_MOBILITY_ADMIN_TARGETS'),
+        'mobility_targets' => env('TELEGRAM_MOBILITY_TARGETS'),
+        'mobility_admin_targets' => env('TELEGRAM_MOBILITY_ADMIN_TARGETS'),
     ],
 
     'postmark' => [

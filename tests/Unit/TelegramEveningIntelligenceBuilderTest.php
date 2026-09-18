@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\TelegramOperationalEvent;
 use App\Models\TelegramOperationalEventEvidence;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
@@ -65,11 +66,12 @@ it('uses the weakest evidence confidence and preserves uncertainty', function ()
     ]);
 
     $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
-    $item = eveningItems($preview)->first();
+    $item = collect($preview['events'])->first();
 
     expect($item['confidence'])->toBe('low')
         ->and($item['uncertainty'])->toBe('Требуется подтверждение.')
-        ->and($item['status'])->toBe('open');
+        ->and($item['status'])->toBe('open')
+        ->and($preview['sections'])->toBe([]);
 });
 
 it('ignores unrelated backlog and returns one empty-day result', function () {
@@ -248,14 +250,14 @@ it('builds conservative management sections without cross-event grouping or scor
     $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
     $sections = collect($preview['sections'])->keyBy('key');
     $items = eveningItems($preview)->unique('event_key')->keyBy('event_key');
-    $tomorrow = collect($sections['tomorrow']['items'])->pluck('event_key');
+    $sectionEventKeys = collect($preview['sections'])->flatMap(fn (array $section) => collect($section['items'])->pluck('event_key'));
 
-    expect($sections->keys()->all())->toContain('attention', 'resolved', 'quality', 'risks_delays', 'positive', 'tomorrow')
+    expect($sections->keys()->all())->toContain('attention', 'resolved', 'quality', 'risks_delays', 'positive')
+        ->not->toContain('tomorrow')
         ->and($items[$recurringResult['event_key']]['status'])->toBe('reopened')
         ->and($items[$recurringResult['event_key']]['repeated'])->toBeTrue()
         ->and($items[$resolvedResult['event_key']]['status'])->toBe('resolved')
-        ->and($tomorrow)->toContain($recurringResult['event_key'])
-        ->not->toContain($resolvedResult['event_key'])
+        ->and($sectionEventKeys->duplicates())->toBeEmpty()
         ->and($items->contains(fn (array $item) => in_array('unanswered_question', $item['types'], true)))->toBeTrue()
         ->and($items->contains(fn (array $item) => in_array('positive_contribution', $item['types'], true)))->toBeTrue()
         ->and(json_encode($preview))->not->toContain('score')
@@ -278,8 +280,56 @@ it('caps each management section at seven items', function () {
     $sections = collect($preview['sections'])->keyBy('key');
 
     expect($sections['risks_delays']['items'])->toHaveCount(7)
-        ->and($sections['tomorrow']['items'])->toHaveCount(7)
         ->and($preview['events_considered'])->toBe(9)
         ->and($preview['events_included'])->toBe(7)
         ->and($preview['events_omitted'])->toBe(2);
+});
+
+it('keeps generic resolutions and low confidence noise in technical events only', function () {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $observer->observe(TelegramOperationalTestDatabase::message('Готово', messageId: '1001'));
+    $observer->observe(TelegramOperationalTestDatabase::message(
+        'Похоже, возможно проблема', messageId: '1002', threadId: '12',
+    ));
+    TelegramOperationalEventEvidence::query()
+        ->whereHas('observation.message', fn ($query) => $query->where('message_id', '1002'))
+        ->update(['confidence' => 'low', 'uncertainty' => 'Нужно подтверждение']);
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+
+    expect($preview['events'])->not->toBeEmpty()
+        ->and(eveningItems($preview))->toBeEmpty()
+        ->and($preview['no_material_events'])->toBeTrue();
+});
+
+it('filters events by the configured external forum id', function () {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $observer->observe(TelegramOperationalTestDatabase::message(
+        'Не работает замок в Navigli', messageId: '1101', chatId: '-1001',
+    ));
+    $observer->observe(TelegramOperationalTestDatabase::message(
+        'Не работает замок в Lodi', messageId: '1102', chatId: '-1002',
+    ));
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17', [
+        'district' => ['key' => 'navigli', 'label' => 'Navigli', 'chat_id' => '-1001'],
+    ]);
+
+    expect($preview['events_considered'])->toBe(1)
+        ->and($preview['events'])->toHaveCount(1)
+        ->and($preview['events'][0]['summary'])->toContain('Navigli');
+});
+
+it('keeps generic gratitude from a stale ledger in technical json only', function () {
+    app(TelegramOperationalEventObserver::class)->observe(
+        TelegramOperationalTestDatabase::message('Спасибо, быстро помог с ключами', messageId: '1201'),
+    );
+    TelegramOperationalEvent::query()->update(['summary' => 'Спасибо и хорошего дня 🌺']);
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+
+    expect($preview['events'])->toHaveCount(1)
+        ->and($preview['events'][0]['summary'])->toBe('Спасибо и хорошего дня 🌺')
+        ->and($preview['sections'])->toBe([])
+        ->and($preview['no_material_events'])->toBeTrue();
 });

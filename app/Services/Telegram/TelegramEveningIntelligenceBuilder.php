@@ -64,7 +64,7 @@ class TelegramEveningIntelligenceBuilder
         'positive_contribution',
     ];
 
-    public function build(Carbon|string $date): array
+    public function build(Carbon|string $date, array $options = []): array
     {
         $timezone = config('app.timezone', 'Europe/Rome');
         $day = $date instanceof Carbon
@@ -73,11 +73,17 @@ class TelegramEveningIntelligenceBuilder
         $start = $day->copy()->startOfDay();
         $end = $day->copy()->endOfDay();
 
+        $district = is_array($options['district'] ?? null) ? $options['district'] : null;
         $events = TelegramOperationalEvent::query()
+            ->when(filled($district['chat_id'] ?? null), fn ($query) => $query
+                ->whereHas('chat', fn ($chat) => $chat
+                    ->where('telegram_chat_id', (string) $district['chat_id'])))
             ->whereHas('evidence', fn ($query) => $query
                 ->where('is_current_revision', true)
                 ->whereBetween('occurred_at', [$start, $end]))
             ->with([
+                'chat:id,telegram_chat_id,title',
+                'topic:id,title',
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
                     ->where('occurred_at', '<=', $end)
@@ -87,9 +93,11 @@ class TelegramEveningIntelligenceBuilder
             ])
             ->get();
 
-        $items = $events
+        $projected = $events
             ->map(fn (TelegramOperationalEvent $event) => $this->project($event))
             ->filter()
+            ->values();
+        $items = $projected
             ->filter(fn (array $item) => $this->shouldInclude($item))
             ->values()
             ->all();
@@ -105,6 +113,12 @@ class TelegramEveningIntelligenceBuilder
         return [
             'date' => $day->toDateString(),
             'timezone' => $timezone,
+            'district' => $district === null ? null : [
+                'key' => $district['key'] ?? null,
+                'label' => $district['label'] ?? null,
+                'source_chat_id' => $district['chat_id'] ?? null,
+            ],
+            'events' => $projected->all(),
             'sections' => $sections,
             'events_considered' => $events->count(),
             'events_included' => $included,
@@ -139,6 +153,7 @@ class TelegramEveningIntelligenceBuilder
         }
 
         $types = collect([$event->primary_type])
+            ->merge($event->types ?? [])
             ->merge($evidence->map(function (TelegramOperationalEventEvidence $item): ?string {
                 $reason = $item->observation?->reason_code;
 
@@ -172,6 +187,7 @@ class TelegramEveningIntelligenceBuilder
         return [
             'event_key' => $event->event_key,
             'summary' => $this->compact((string) $event->summary, 280),
+            'context_label' => $this->contextLabel($event->topic?->title),
             'types' => $types,
             'status' => $status,
             'confidence' => $confidence,
@@ -194,12 +210,22 @@ class TelegramEveningIntelligenceBuilder
             return false;
         }
 
-        if ($item['confidence'] !== 'low') {
-            return true;
+        if ($item['confidence'] === 'low') {
+            return false;
         }
 
-        return $item['status'] !== 'resolved'
-            && collect($item['types'])->intersect(self::LOW_CONFIDENCE_TYPES)->isNotEmpty();
+        if ($item['status'] === 'resolved'
+            && $this->isGenericResolution($item['summary'])
+            && collect($item['types'])->diff(['resolution'])->isEmpty()) {
+            return false;
+        }
+
+        if (collect($item['types'])->diff(['positive_contribution'])->isEmpty()
+            && $this->isGenericPositiveSummary($item['summary'])) {
+            return false;
+        }
+
+        return true;
     }
 
     private function weakestConfidence(Collection $evidence): string
@@ -218,44 +244,70 @@ class TelegramEveningIntelligenceBuilder
     private function sections(array $items): array
     {
         $collection = collect($items);
-        $resolved = $collection->where('status', 'resolved')->values();
-        $unresolved = $collection->whereIn('status', ['open', 'reopened'])->values();
-        $positive = $unresolved
-            ->filter(fn (array $item) => in_array('positive_contribution', $item['types'], true))
-            ->values();
-        $quality = $unresolved
-            ->filter(fn (array $item) => in_array('quality_issue', $item['types'], true))
-            ->values();
-        $risksDelays = $unresolved
-            ->filter(fn (array $item) => collect($item['types'])->intersect(['risk', 'delay'])->isNotEmpty())
-            ->reject(fn (array $item) => in_array('quality_issue', $item['types'], true))
-            ->values();
-        $attention = $unresolved
+        $resolved = $collection->where('status', 'resolved')->take(7)->values();
+        $remaining = $collection->whereIn('status', ['open', 'reopened'])->values();
+        $qualityMatches = $remaining
+            ->filter(fn (array $item) => in_array('quality_issue', $item['types'], true));
+        $quality = $qualityMatches->take(7)->values();
+        $remaining = $this->withoutEvents($remaining, $qualityMatches);
+        $riskMatches = $remaining
+            ->filter(fn (array $item) => collect($item['types'])->intersect(['risk', 'delay'])->isNotEmpty());
+        $risksDelays = $riskMatches->take(7)->values();
+        $remaining = $this->withoutEvents($remaining, $riskMatches);
+        $positiveMatches = $remaining
+            ->filter(fn (array $item) => in_array('positive_contribution', $item['types'], true));
+        $positive = $positiveMatches->take(7)->values();
+        $remaining = $this->withoutEvents($remaining, $positiveMatches);
+        $attention = $remaining
             ->filter(fn (array $item) => collect($item['types'])->intersect(self::ATTENTION_TYPES)->isNotEmpty())
-            ->reject(fn (array $item) => in_array('positive_contribution', $item['types'], true))
-            ->reject(fn (array $item) => in_array('quality_issue', $item['types'], true))
-            ->reject(fn (array $item) => collect($item['types'])->intersect(['risk', 'delay'])->isNotEmpty())
-            ->values();
-        $tomorrow = $unresolved
-            ->filter(fn (array $item) => collect($item['types'])->intersect([
-                'problem',
-                'risk',
-                'delay',
-                'unanswered_question',
-                'quality_issue',
-                'request',
-                'commitment',
-            ])->isNotEmpty())
+            ->take(7)
             ->values();
 
         return collect([
-            ['key' => 'attention', 'label' => 'Требует внимания', 'items' => $attention->take(7)->all()],
-            ['key' => 'resolved', 'label' => 'Решено за день', 'items' => $resolved->take(7)->all()],
-            ['key' => 'quality', 'label' => 'Вопросы качества', 'items' => $quality->take(7)->all()],
-            ['key' => 'risks_delays', 'label' => 'Риски и задержки', 'items' => $risksDelays->take(7)->all()],
-            ['key' => 'positive', 'label' => 'Значимый положительный вклад', 'items' => $positive->take(7)->all()],
-            ['key' => 'tomorrow', 'label' => 'Обратить внимание завтра', 'items' => $tomorrow->take(7)->all()],
+            ['key' => 'attention', 'label' => 'Требует внимания', 'items' => $attention->all()],
+            ['key' => 'quality', 'label' => 'Качество', 'items' => $quality->all()],
+            ['key' => 'risks_delays', 'label' => 'Риски и задержки', 'items' => $risksDelays->all()],
+            ['key' => 'resolved', 'label' => 'Решено', 'items' => $resolved->all()],
+            ['key' => 'positive', 'label' => 'Положительный вклад', 'items' => $positive->all()],
         ])->filter(fn (array $section) => $section['items'] !== [])->values()->all();
+    }
+
+    private function withoutEvents(Collection $source, Collection $selected): Collection
+    {
+        $keys = $selected->pluck('event_key');
+
+        return $source
+            ->reject(fn (array $item) => $keys->contains($item['event_key']))
+            ->values();
+    }
+
+    private function isGenericResolution(string $summary): bool
+    {
+        $normalized = mb_strtolower(trim($summary, " \t\n\r\0\x0B.!?,"));
+
+        return in_array($normalized, [
+            'готово', 'сделано', 'решено', 'исправлено', 'всё готово', 'все готово',
+            'done', 'fixed', 'resolved', 'ok', 'ок',
+        ], true);
+    }
+
+    private function isGenericPositiveSummary(string $summary): bool
+    {
+        $normalized = mb_strtolower(trim($summary));
+        $normalized = preg_replace('/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/u', '', $normalized) ?: '';
+
+        return preg_match('/^(?:спасибо(?:\s+(?:большое|огромное|всем|за\s+помощь|и\s+хорошего\s+дня))?|благодарю|молодец|супер|отлично|хорошего дня)$/u', $normalized) === 1;
+    }
+
+    private function contextLabel(?string $value): ?string
+    {
+        $value = $this->compact((string) $value, 80);
+
+        if ($value === '' || preg_match('/^(?:тема\s*#?\d+|operations|общая тема)$/iu', $value)) {
+            return null;
+        }
+
+        return $value;
     }
 
     private function sortItems(array &$items): void

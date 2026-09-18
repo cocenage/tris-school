@@ -49,27 +49,40 @@ class MilanWeatherService
         '🙂 С погодой сегодня повезло',
     ];
 
-    public function today(): array
-    {
+    public function today(
+        float $latitude = 45.4642,
+        float $longitude = 9.1900,
+        string $timezone = 'Europe/Rome',
+    ): array {
+        if ($latitude < -90 || $latitude > 90 || $longitude < -180 || $longitude > 180) {
+            Log::warning('Weather request skipped: invalid coordinates.');
+
+            return $this->fallback();
+        }
+
         try {
             $response = Http::timeout(15)
                 ->retry(2, 1000)
                 ->get('https://api.open-meteo.com/v1/forecast', [
-                    'latitude' => 45.4642,
-                    'longitude' => 9.1900,
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
                     'hourly' => 'temperature_2m,precipitation_probability,rain,weather_code,wind_speed_10m',
-                    'timezone' => 'Europe/Rome',
+                    'timezone' => $timezone,
                     'forecast_days' => 1,
                 ]);
         } catch (\Throwable $e) {
-            Log::warning('Milan weather request failed', [
-                'error' => $e->getMessage(),
+            Log::warning('Weather request failed', [
+                'exception' => class_basename($e),
             ]);
 
             return $this->fallback();
         }
 
         if (! $response->successful()) {
+            Log::warning('Weather provider returned an unsuccessful response.', [
+                'status' => $response->status(),
+            ]);
+
             return $this->fallback();
         }
 

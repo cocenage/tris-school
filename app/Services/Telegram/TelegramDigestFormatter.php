@@ -223,38 +223,82 @@ class TelegramDigestFormatter
 
     public function eveningIntelligence(array $preview): string
     {
+        $district = $this->value($preview['district']['label'] ?? null);
         $lines = [
-            '🌙 Вечерняя оперативная сводка',
-            $this->dateLine($preview),
+            '🌙 TRIS — итоги дня'.($district !== '' ? ' · '.$district : ''),
+            'Дата: '.$this->value($preview['date'] ?? null),
         ];
 
         if ($preview['no_material_events'] ?? false) {
             $lines[] = '';
-            $lines[] = 'За день значимых операционных событий по ledger не обнаружено.';
+            $lines[] = 'Значимых операционных событий за день не обнаружено.';
         } else {
+            $rendered = [];
+
             foreach ($preview['sections'] ?? [] as $section) {
-                if (empty($section['items'])) {
+                $items = collect($section['items'] ?? [])
+                    ->reject(function (array $item) use (&$rendered): bool {
+                        $key = (string) ($item['event_key'] ?? sha1(json_encode($item)));
+
+                        if (isset($rendered[$key])) {
+                            return true;
+                        }
+
+                        $rendered[$key] = true;
+
+                        return false;
+                    })
+                    ->take(7);
+
+                if ($items->isEmpty()) {
                     continue;
                 }
 
                 $lines[] = '';
-                $lines[] = $this->value($section['label'] ?? $section['key'] ?? '');
+                $lines[] = $this->eveningSectionLabel((string) ($section['key'] ?? ''), (string) ($section['label'] ?? ''));
 
-                foreach ($section['items'] as $item) {
-                    $lines[] = '- '.$this->value($item['summary'] ?? null)
-                        .' [статус: '.$this->value($item['status'] ?? null)
-                        .'; уверенность: '.$this->value($item['confidence'] ?? null).']';
-                    $lines[] = '  Событие: '.$this->value($item['event_key'] ?? null);
-                    $lines[] = '  Доказательства: '.$this->evidenceReferences($item['evidence'] ?? []);
+                foreach ($items as $item) {
+                    $summary = $this->humanEveningSummary($item);
+                    $context = $this->value($item['context_label'] ?? null);
 
-                    if (filled($item['uncertainty'] ?? null)) {
-                        $lines[] = '  Неопределённость: '.$this->value($item['uncertainty']);
+                    if ($summary !== '') {
+                        $lines[] = '• '.($context !== '' ? $context.' — ' : '').$summary;
                     }
                 }
             }
         }
 
         return implode("\n", $lines);
+    }
+
+    private function eveningSectionLabel(string $key, string $fallback): string
+    {
+        return match ($key) {
+            'attention' => '⚠️ Требует внимания',
+            'quality' => '🧹 Качество',
+            'risks_delays' => '⏱ Риски и задержки',
+            'resolved' => '✅ Решено',
+            'positive' => '🌟 Положительный вклад',
+            'tomorrow' => '📌 На завтра',
+            default => $this->value($fallback !== '' ? $fallback : $key),
+        };
+    }
+
+    private function humanEveningSummary(array $item): string
+    {
+        $summary = preg_replace('/\s+/u', ' ', strip_tags((string) ($item['summary'] ?? ''))) ?: '';
+        $summary = preg_replace('/^#\S+\s+/u', '', trim($summary)) ?: '';
+        $summary = trim(mb_strimwidth($summary, 0, 140, '…'));
+
+        if ($summary === '') {
+            return '';
+        }
+
+        if (($item['confidence'] ?? null) === 'medium' || filled($item['uncertainty'] ?? null)) {
+            $summary = 'Возможно: '.mb_lcfirst($summary);
+        }
+
+        return $summary;
     }
 
     protected function morningActions(array $context): array
