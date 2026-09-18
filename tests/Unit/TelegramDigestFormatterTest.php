@@ -133,3 +133,68 @@ it('hides mobility presentation completely when only stale important events rema
         ->not->toContain('существенных транспортных ограничений')
         ->not->toContain('Уточнить влияние транспортного ограничения');
 });
+
+it('formats evening intelligence for humans without technical fields or duplicate events', function () {
+    $item = [
+        'event_key' => 'telegram:internal-key',
+        'summary' => str_repeat('Длинное описание проблемы с замком. ', 12),
+        'types' => ['problem'],
+        'status' => 'open',
+        'confidence' => 'high',
+        'uncertainty' => null,
+        'evidence' => [[
+            'local_message_id' => 10,
+            'telegram_message_id' => '20',
+            'transition' => 'created',
+            'occurred_at' => '2026-08-03T10:00:00+02:00',
+        ]],
+    ];
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-08-03',
+        'timezone' => 'Europe/Rome',
+        'district' => ['key' => 'navigli', 'label' => 'Navigli'],
+        'no_material_events' => false,
+        'sections' => [
+            ['key' => 'attention', 'label' => 'Требует внимания', 'items' => [$item]],
+            ['key' => 'tomorrow', 'label' => 'На завтра', 'items' => [$item]],
+        ],
+    ]);
+
+    expect($text)
+        ->toContain('🌙 TRIS — итоги дня · Navigli')
+        ->toContain('⚠️ Требует внимания')
+        ->not->toContain('event_key')
+        ->not->toContain('telegram:internal-key')
+        ->not->toContain('Событие:')
+        ->not->toContain('Доказательства:')
+        ->not->toContain('статус')
+        ->not->toContain('уверенность')
+        ->not->toContain('transition')
+        ->and(substr_count($text, '• '))->toBe(1)
+        ->and(mb_strlen($text))->toBeLessThan(400);
+});
+
+it('removes a leading operational hashtag and keeps the human evening bullet concise', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-07-23',
+        'timezone' => 'Europe/Rome',
+        'district' => ['key' => 'navigli', 'label' => 'Navigli'],
+        'no_material_events' => false,
+        'sections' => [[
+            'key' => 'quality',
+            'label' => 'Качество',
+            'items' => [[
+                'event_key' => 'telegram:quality',
+                'summary' => '#сильныйбардак '.str_repeat('При осмотре квартиры обнаружен беспорядок. ', 8),
+                'confidence' => 'high',
+                'uncertainty' => null,
+            ]],
+        ]],
+    ]);
+
+    $bullet = collect(explode("\n", $text))->first(fn (string $line) => str_starts_with($line, '• '));
+
+    expect($bullet)
+        ->not->toContain('#сильныйбардак')
+        ->and(mb_strlen($bullet))->toBeLessThanOrEqual(142);
+});

@@ -21,7 +21,11 @@ Schedule::command('mobility:digest')
     ->dailyAt('08:00')
     ->withoutOverlapping();
 
+Schedule::command('telegram:evening-intelligence-send')
+    ->dailyAt('20:30')
+    ->timezone('Europe/Rome')
+    ->withoutOverlapping();
 
-    Schedule::command('tris-mare:sync')
+Schedule::command('tris-mare:sync')
     ->dailyAt('20:15')
     ->timezone('Europe/Rome');

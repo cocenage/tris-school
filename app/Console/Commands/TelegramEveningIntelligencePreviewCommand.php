@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\Telegram\TelegramDigestFormatter;
+use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
@@ -12,6 +13,7 @@ class TelegramEveningIntelligencePreviewCommand extends Command
 {
     protected $signature = 'telegram:evening-intelligence-preview
         {--date= : Required calendar date in the application timezone}
+        {--district= : Optional configured district key}
         {--json : Emit the evidence-backed machine-readable preview}';
 
     protected $description = 'Preview read-only evening intelligence from the operational event ledger';
@@ -19,6 +21,7 @@ class TelegramEveningIntelligencePreviewCommand extends Command
     public function handle(
         TelegramEveningIntelligenceBuilder $builder,
         TelegramDigestFormatter $formatter,
+        TelegramDistrictRouteRegistry $districts,
     ): int {
         $date = $this->dateOption();
 
@@ -26,8 +29,19 @@ class TelegramEveningIntelligencePreviewCommand extends Command
             return self::FAILURE;
         }
 
+        $route = null;
+        if (filled($this->option('district'))) {
+            $route = $districts->find((string) $this->option('district'));
+
+            if ($route === null) {
+                $this->error('District route is not configured or is incomplete.');
+
+                return self::FAILURE;
+            }
+        }
+
         try {
-            $preview = $builder->build($date);
+            $preview = $builder->build($date, ['district' => $route]);
         } catch (Throwable) {
             $this->error('Operational event ledger is unavailable.');
 
@@ -47,7 +61,7 @@ class TelegramEveningIntelligencePreviewCommand extends Command
             $this->line($line);
         }
         $this->newLine();
-        $this->line('Режим: только чтение. Telegram не отправляется, записи не изменяются.');
+        $this->line('Предпросмотр: отправка в Telegram отключена.');
 
         return self::SUCCESS;
     }

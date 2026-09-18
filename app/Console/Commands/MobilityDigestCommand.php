@@ -4,16 +4,16 @@ namespace App\Console\Commands;
 
 use App\Models\MobilityAlert;
 use App\Services\Mobility\MobilityAlertSyncService;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Weather\MilanWeatherService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 
 class MobilityDigestCommand extends Command
 {
-    protected $signature = 'mobility:digest {--date=} {--dry-run}';
+    protected $signature = 'mobility:digest {--date=} {--district=} {--dry-run}';
 
     protected $description = 'Send daily shift assistant digest to Telegram forum topics';
 
@@ -36,8 +36,10 @@ class MobilityDigestCommand extends Command
         'Пусть день пройдет спокойно 🤝',
     ];
 
-    public function handle(): int
-    {
+    public function handle(
+        TelegramDistrictRouteRegistry $districts,
+        TelegramBotService $bot,
+    ): int {
         $date = $this->option('date')
             ? Carbon::parse($this->option('date'))->startOfDay()
             : now()->startOfDay();
@@ -58,46 +60,139 @@ class MobilityDigestCommand extends Command
             ->filter(fn (MobilityAlert $alert) => $this->shouldShowInWorkerDigest($alert))
             ->values();
 
+        $routes = $districts->routes();
+
+        if ($routes->isNotEmpty()) {
+            if (filled($this->option('district'))) {
+                $route = $districts->find((string) $this->option('district'));
+
+                if ($route === null) {
+                    $this->error('District route is not configured or is incomplete.');
+
+                    return self::FAILURE;
+                }
+
+                $routes = collect([$route]);
+            }
+
+            $failed = false;
+
+            foreach ($routes as $route) {
+                $message = $this->buildMessage(
+                    $date,
+                    $this->alertsForDistrict($alerts, $route, $routes),
+                    $route,
+                );
+
+                if ($this->option('dry-run')) {
+                    $this->renderDryRun($route['label'], $message);
+
+                    continue;
+                }
+
+                $messageId = $bot->sendMessage(
+                    (string) $route['chat_id'],
+                    $message,
+                    (string) $route['duty_thread_id'],
+                );
+                $failed = $failed || $messageId === null;
+            }
+
+            if ($this->option('dry-run')) {
+                return self::SUCCESS;
+            }
+
+            $failed ? $this->error('One or more district morning digests failed.') : $this->info('District morning digests sent.');
+
+            return $failed ? self::FAILURE : self::SUCCESS;
+        }
+
+        if (filled($this->option('district'))) {
+            $this->error('District routes are not configured.');
+
+            return self::FAILURE;
+        }
+
         $message = $this->buildMessage($date, $alerts);
 
         if ($this->option('dry-run')) {
-            $this->line('');
-            $this->line('===== DRY RUN MOBILITY DIGEST =====');
-            $this->line($message);
-            $this->line('===================================');
-            $this->line('');
+            $this->renderDryRun('Milan', $message);
 
             return self::SUCCESS;
         }
 
-        $this->sendTelegram($message);
+        $this->sendTelegram($message, $bot);
 
         $this->info('Daily shift digest sent.');
 
         return self::SUCCESS;
     }
 
-    protected function buildMessage(Carbon $date, $alerts): string
+    protected function buildMessage(Carbon $date, $alerts, ?array $route = null): string
     {
-        $weather = app(MilanWeatherService::class)->today();
+        $weather = app(MilanWeatherService::class)->today(
+            (float) ($route['latitude'] ?? 45.4642),
+            (float) ($route['longitude'] ?? 9.1900),
+            config('app.timezone', 'Europe/Rome'),
+        );
 
         $alerts = $this->deduplicateAlerts($alerts);
-        $text = "🚦 <b>Передвижение</b>\n\n";
-        $text .= "Сегодня: " . e((string) ($weather['summary'] ?? 'данные о погоде недоступны')) . "\n";
+        $label = trim((string) ($route['label'] ?? ''));
+        $text = Arr::random($this->greetings).($label !== '' ? ' · <b>'.e($label).'</b>' : '')."\n\n";
+        $text .= "🌤 <b>Погода</b>\n";
+        $text .= e((string) ($weather['emoji'] ?? '🌤')).' '.e((string) ($weather['summary'] ?? 'погода временно недоступна'))."\n";
 
         if (! empty($weather['advice'])) {
-            $text .= e((string) $weather['advice']) . "\n";
+            $text .= e((string) $weather['advice'])."\n";
         }
+
+        $text .= "\n🚦 <b>Передвижение</b>\n";
 
         if ($alerts->isEmpty()) {
             $text .= "\nСущественных ограничений на транспорте не обнаружено.\n";
         } else {
             foreach ($alerts->take(6) as $alert) {
-                $text .= "\n" . $this->workerAlertLine($alert);
+                $text .= "\n".$this->workerAlertLine($alert);
             }
         }
 
+        $text .= "\n".Arr::random($this->endings);
+
         return trim($text);
+    }
+
+    protected function alertsForDistrict($alerts, array $route, $routes)
+    {
+        return collect($alerts)->filter(function (MobilityAlert $alert) use ($route, $routes): bool {
+            $value = $this->normalizedDistrict($alert->district);
+
+            if ($value === '') {
+                return true;
+            }
+
+            $matchedRoute = collect($routes)->first(fn (array $candidate): bool => in_array($value, [
+                $this->normalizedDistrict($candidate['key'] ?? null),
+                $this->normalizedDistrict($candidate['label'] ?? null),
+            ], true));
+
+            return $matchedRoute === null || $matchedRoute['key'] === $route['key'];
+        })->values();
+    }
+
+    protected function normalizedDistrict(mixed $value): string
+    {
+        return mb_strtolower(trim((string) $value));
+    }
+
+    protected function renderDryRun(string $label, string $message): void
+    {
+        $this->newLine();
+        $this->line('===== DRY RUN MORNING DIGEST · '.$label.' =====');
+        foreach (explode("\n", $message) as $line) {
+            $this->line($line);
+        }
+        $this->line('===================================');
+        $this->newLine();
     }
 
     protected function deduplicateAlerts($alerts)
@@ -132,7 +227,7 @@ class MobilityDigestCommand extends Command
                     'starts_at' => optional($alert->starts_at)->toDateString(),
                 ])->all();
             })
-            ->reject(fn (array $alert): bool => str_contains(mb_strtolower(($alert['title'] ?? '') . ' ' . ($alert['description'] ?? '')), 'regolare'))
+            ->reject(fn (array $alert): bool => str_contains(mb_strtolower(($alert['title'] ?? '').' '.($alert['description'] ?? '')), 'regolare'))
             ->unique(fn (array $alert): string => $normalizer->canonicalFingerprint(
                 $alert['source'] ?? 'mobility',
                 $alert['title'] ?? '',
@@ -230,7 +325,7 @@ class MobilityDigestCommand extends Command
         };
         $icon = in_array($alert['risk'] ?? null, ['critical', 'high'], true) ? '⚠️' : 'ℹ️';
 
-        return $icon . ' <b>' . e($label) . "</b>\n" . e($summary) . "\n";
+        return $icon.' <b>'.e($label)."</b>\n".e($summary)."\n";
 
     }
 
@@ -278,73 +373,14 @@ class MobilityDigestCommand extends Command
             ->all();
     }
 
-protected function sendTelegram(string $message): void
-{
-    $token = config('services.telegram.analytics_bot_token');
-    $targets = $this->telegramTargets();
-
-    if (! $token || empty($targets)) {
-        Log::warning('Daily shift digest skipped: missing Telegram config', [
-            'token_exists' => filled($token),
-            'targets_count' => count($targets),
-        ]);
-
-        return;
+    protected function sendTelegram(string $message, TelegramBotService $bot): void
+    {
+        foreach ($this->telegramTargets() as $target) {
+            $bot->sendMessage(
+                (string) $target['chat_id'],
+                $message,
+                filled($target['thread_id'] ?? null) ? (string) $target['thread_id'] : null,
+            );
+        }
     }
-
-    foreach ($targets as $target) {
-        $payload = [
-            'chat_id' => $target['chat_id'],
-            'text' => $message,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-        ];
-
-        if (! empty($target['thread_id'])) {
-            $payload['message_thread_id'] = $target['thread_id'];
-        }
-
-        try {
-            $response = Http::timeout(30)
-                ->retry(3, 2000)
-                ->withoutVerifying()
-                ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
-        } catch (\Throwable $e) {
-            Log::warning('Daily shift digest telegram connection failed', [
-                'chat_id' => $target['chat_id'],
-                'thread_id' => $target['thread_id'] ?? null,
-                'error' => $e->getMessage(),
-            ]);
-
-            continue;
-        }
-
-        if (! $response->successful()) {
-            Log::warning('Daily shift digest telegram failed', [
-                'chat_id' => $target['chat_id'],
-                'thread_id' => $target['thread_id'] ?? null,
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
-
-            continue;
-        }
-
-        $telegramMessageId = data_get($response->json(), 'result.message_id');
-
-        if ($telegramMessageId) {
-            MobilityAlertMessage::create([
-                'mobility_alert_id' => null,
-                'message_type' => 'worker_digest',
-                'chat_id' => (string) $target['chat_id'],
-                'thread_id' => $target['thread_id'] ? (string) $target['thread_id'] : null,
-                'telegram_message_id' => (string) $telegramMessageId,
-                'text' => $message,
-                'sent_at' => now(),
-            ]);
-        }
-
-        usleep(500000);
-    }
-}
 }
