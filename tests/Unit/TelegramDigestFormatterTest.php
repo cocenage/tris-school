@@ -371,3 +371,20 @@ it('turns the reported Navigli handoff into natural events and one concrete foll
         ->and(substr_count($text, '• '))->toBe(5)
         ->and(mb_strlen($text))->toBeLessThan(600);
 });
+
+it('uses a safe open-question fallback when no specific follow-up is supported', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => [[
+            'event_key' => 'question',
+            'summary' => 'Что делать с найденной вещью? @Duty_Manager',
+            'types' => ['request'],
+            'status' => 'open',
+            'evidence' => [['role' => 'question']],
+        ]]]],
+    ]);
+
+    expect($text)->toContain('Есть открытый вопрос, требующий уточнения.')
+        ->not->toContain('@Duty_Manager')
+        ->not->toContain('Открытых вопросов на конец дня нет.');
+});

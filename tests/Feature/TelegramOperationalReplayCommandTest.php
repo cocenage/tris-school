@@ -4,6 +4,7 @@ use App\Models\TelegramMessage;
 use App\Models\TelegramOperationalEvent;
 use App\Models\TelegramOperationalObservation;
 use App\Services\Telegram\TelegramOperationalEventObserver;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Tests\Support\TelegramOperationalTestDatabase;
@@ -12,7 +13,60 @@ beforeEach(function () {
     TelegramOperationalTestDatabase::refresh();
     Http::fake();
 });
-afterEach(fn () => TelegramOperationalTestDatabase::purge());
+afterEach(function () {
+    Carbon::setTestNow();
+    TelegramOperationalTestDatabase::purge();
+});
+
+it('catches up the frozen current day through the captured clock without duplicating live work', function () {
+    Carbon::setTestNow(Carbon::parse('2026-07-23 12:00:00', 'Europe/Rome'));
+    config(['services.telegram.operational_chat_ids' => ['-1001']]);
+
+    $live = TelegramOperationalTestDatabase::message('Не работает замок в квартире', '2026-07-23 08:00:00', '901');
+    $missed = TelegramOperationalTestDatabase::message('В ванной грязно, качество уборки плохое', '2026-07-23 09:00:00', '902', threadId: '12');
+    $future = TelegramOperationalTestDatabase::message('Не работает дверь в квартире', '2026-07-23 13:00:00', '903', threadId: '13');
+    $otherChat = TelegramOperationalTestDatabase::message('Не работает свет в квартире', '2026-07-23 10:00:00', '904', chatId: '-1002');
+    app(TelegramOperationalEventObserver::class)->observe($live);
+
+    expect(Artisan::call('telegram:operational-replay', ['--through-now' => true, '--json' => true]))->toBe(0);
+    $first = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($first)->toMatchArray([
+        'from' => '2026-07-23', 'to' => '2026-07-23',
+        'examined' => 2, 'idempotent_reused' => 1, 'failed' => 0, 'telegram_actions' => 0,
+    ])->and($first['cutoff_at'])->toContain('2026-07-23T12:00:00')
+        ->and(TelegramOperationalObservation::query()->where('evaluation_kind', 'message')->count())->toBe(2)
+        ->and(TelegramOperationalEvent::query()->count())->toBe(2)
+        ->and($missed->operationalObservations()->exists())->toBeTrue()
+        ->and($future->operationalObservations()->exists())->toBeFalse()
+        ->and($otherChat->operationalObservations()->exists())->toBeFalse()
+        ->and(Http::recorded())->toHaveCount(0);
+
+    expect(Artisan::call('telegram:operational-replay', ['--date' => '2026-07-23', '--through-now' => true, '--json' => true]))->toBe(0);
+    $second = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($second['examined'])->toBe(2)
+        ->and($second['idempotent_reused'])->toBe(2)
+        ->and(TelegramOperationalObservation::query()->where('evaluation_kind', 'message')->count())->toBe(2)
+        ->and(TelegramOperationalEvent::query()->count())->toBe(2)
+        ->and(Http::recorded())->toHaveCount(0);
+});
+
+it('keeps the current-day guard unless through-now is explicit and rejects other through-now selectors', function () {
+    Carbon::setTestNow(Carbon::parse('2026-07-23 12:00:00', 'Europe/Rome'));
+    TelegramOperationalTestDatabase::message('Не работает замок в квартире', '2026-07-23 08:00:00', '911');
+
+    foreach ([
+        ['--date' => '2026-07-23'],
+        ['--date' => '2026-07-22', '--through-now' => true],
+        ['--from' => '2026-07-23', '--to' => '2026-07-23', '--through-now' => true],
+    ] as $arguments) {
+        expect(Artisan::call('telegram:operational-replay', $arguments))->toBe(1);
+    }
+
+    expect(TelegramOperationalObservation::query()->count())->toBe(0)
+        ->and(TelegramOperationalEvent::query()->count())->toBe(0);
+});
 
 it('replays one historical day chronologically and remains idempotent and silent', function () {
     TelegramOperationalTestDatabase::message('Проблема с замком, он не работает', '2026-06-17 08:00:00', '2');

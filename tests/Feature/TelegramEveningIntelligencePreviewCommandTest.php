@@ -74,6 +74,29 @@ it('renders only non-empty human sections and an explicit read-only footer', fun
         ->assertExitCode(0);
 });
 
+it('keeps an open operational question visible with evidence and a concrete human follow-up', function () {
+    $message = TelegramOperationalTestDatabase::message('Очки сломаны выбрасывать? @Tris_Anastasiia_Radevych');
+    app(TelegramOperationalEventObserver::class)->observe($message);
+
+    expect(Artisan::call('telegram:evening-intelligence-preview', [
+        '--date' => '2026-06-17', '--json' => true,
+    ]))->toBe(0);
+    $preview = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($preview['events_included'])->toBe(1)
+        ->and($preview['sections'][0]['items'][0]['status'])->toBe('open')
+        ->and($preview['sections'][0]['items'][0]['evidence'][0]['telegram_message_id'])->toBe('1');
+
+    expect(Artisan::call('telegram:evening-intelligence-preview', [
+        '--date' => '2026-06-17',
+    ]))->toBe(0);
+    expect(Artisan::output())
+        ->toContain('Уточняли, что делать со сломанными очками.')
+        ->toContain('Уточнить, нужно ли выбрасывать сломанные очки.')
+        ->not->toContain('@Tris_Anastasiia_Radevych')
+        ->not->toContain('Открытых вопросов на конец дня нет.');
+});
+
 it('filters a configured district while keeping complete technical evidence in json', function () {
     config(['services.telegram.digest_districts' => [
         'navigli' => [

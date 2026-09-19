@@ -74,6 +74,24 @@ it('uses the weakest evidence confidence and preserves uncertainty', function ()
         ->and($preview['sections'])->toBe([]);
 });
 
+it('keeps an uncertain open question visible without hiding its low confidence in json', function () {
+    $message = TelegramOperationalTestDatabase::message('Во сколько заезд?');
+    app(TelegramOperationalEventObserver::class)->observe($message);
+    TelegramOperationalEventEvidence::query()->update([
+        'confidence' => 'low',
+        'uncertainty' => 'Требуется уточнение.',
+    ]);
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+    $item = eveningItems($preview)->first();
+
+    expect($item)->not->toBeNull()
+        ->and($item['status'])->toBe('open')
+        ->and($item['confidence'])->toBe('low')
+        ->and($item['uncertainty'])->toBe('Требуется уточнение.')
+        ->and($item['evidence'][0]['role'])->toBe('question');
+});
+
 it('ignores unrelated backlog and returns one empty-day result', function () {
     $message = TelegramOperationalTestDatabase::message(
         'Не работает замок в квартире',

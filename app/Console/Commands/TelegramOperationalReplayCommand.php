@@ -14,19 +14,21 @@ class TelegramOperationalReplayCommand extends Command
         {--date= : One past calendar date in the application timezone}
         {--from= : Inclusive start date; requires --to}
         {--to= : Inclusive end date; requires --from}
+        {--through-now : Catch up the current date only, stopping at the command-start clock}
         {--json : Emit machine-readable result}';
 
     protected $description = 'Replay a bounded period of stored work Telegram messages into the operational event ledger';
 
     public function handle(TelegramOperationalEventObserver $observer): int
     {
-        $boundaries = $this->boundaries();
+        $capturedNow = now(config('app.timezone', 'Europe/Rome'));
+        $boundaries = $this->boundaries($capturedNow);
 
         if ($boundaries === null) {
             return self::FAILURE;
         }
 
-        [$from, $to] = $boundaries;
+        [$from, $to, $cutoff] = $boundaries;
         $result = [
             'from' => $from->toDateString(),
             'to' => $to->toDateString(),
@@ -47,11 +49,15 @@ class TelegramOperationalReplayCommand extends Command
             'telegram_actions' => 0,
         ];
 
+        if ($this->option('through-now')) {
+            $result['cutoff_at'] = $cutoff->toIso8601String();
+        }
+
         $pending = [];
         $bucket = [];
         $bucketTimestamp = null;
 
-        foreach ($this->messages($from, $to) as $message) {
+        foreach ($this->messages($from, $cutoff) as $message) {
             $timestamp = $message->sent_at?->toIso8601String() ?? $message->created_at?->toIso8601String();
 
             if ($bucket !== [] && $timestamp !== $bucketTimestamp) {
@@ -67,7 +73,7 @@ class TelegramOperationalReplayCommand extends Command
             $this->processBucket($bucket, $bucketTimestamp, $observer, $pending, $result);
         }
 
-        $this->maturePending($pending, $to->copy()->endOfDay(), $observer, $result);
+        $this->maturePending($pending, $cutoff, $observer, $result);
         $result['event_keys'] = array_values(array_unique($result['event_keys']));
         $result['failure_message_ids'] = array_values(array_unique($result['failure_message_ids']));
 
@@ -82,10 +88,10 @@ class TelegramOperationalReplayCommand extends Command
             $this->line('Telegram actions: 0');
         }
 
-        return self::SUCCESS;
+        return $this->option('through-now') && $result['failed'] > 0 ? self::FAILURE : self::SUCCESS;
     }
 
-    private function boundaries(): ?array
+    private function boundaries(Carbon $capturedNow): ?array
     {
         $timezone = config('app.timezone', 'Europe/Rome');
         $date = $this->option('date');
@@ -93,6 +99,16 @@ class TelegramOperationalReplayCommand extends Command
         $toOption = $this->option('to');
         $hasDate = filled($date);
         $hasRange = filled($fromOption) || filled($toOption);
+
+        if ($this->option('through-now')) {
+            if ($hasRange || ($hasDate && $date !== $capturedNow->toDateString())) {
+                $this->error('--through-now accepts only the current --date and no range.');
+
+                return null;
+            }
+
+            return [$capturedNow->copy()->startOfDay(), $capturedNow->copy()->startOfDay(), $capturedNow];
+        }
 
         if (($hasDate && $hasRange) || (! $hasDate && ! $hasRange) || ($hasRange && (! filled($fromOption) || ! filled($toOption)))) {
             $this->error('Provide exactly --date or both --from and --to.');
@@ -128,21 +144,21 @@ class TelegramOperationalReplayCommand extends Command
             return null;
         }
 
-        if ($to->gte(now($timezone)->startOfDay())) {
+        if ($to->gte($capturedNow->copy()->startOfDay())) {
             $this->error('Replay boundaries must be in the past.');
 
             return null;
         }
 
-        return [$from, $to];
+        return [$from, $to, $to->copy()->endOfDay()];
     }
 
-    private function messages(Carbon $from, Carbon $to): iterable
+    private function messages(Carbon $from, Carbon $cutoff): iterable
     {
         $allowedChatIds = array_map('strval', config('services.telegram.operational_chat_ids', []));
         $query = TelegramMessage::query()
             ->with(['chat', 'topic', 'telegramUser', 'attachments'])
-            ->whereBetween('sent_at', [$from->copy()->startOfDay(), $to->copy()->endOfDay()])
+            ->whereBetween('sent_at', [$from->copy()->startOfDay(), $cutoff])
             ->whereHas('chat', function ($query) use ($allowedChatIds) {
                 $query->whereIn('type', ['group', 'supergroup', 'channel']);
 

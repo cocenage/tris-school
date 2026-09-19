@@ -206,11 +206,14 @@ class TelegramEveningIntelligenceBuilder
 
         $hasSummaryType = collect($item['types'])->intersect(self::SUMMARY_TYPES)->isNotEmpty();
 
-        if ($item['status'] !== 'resolved' && ! $hasSummaryType) {
+        $isOpenQuestion = in_array($item['status'], ['open', 'reopened'], true)
+            && collect($item['evidence'])->contains(fn (array $evidence): bool => ($evidence['role'] ?? null) === 'question');
+
+        if ($item['status'] !== 'resolved' && ! $hasSummaryType && ! $isOpenQuestion) {
             return false;
         }
 
-        if ($item['confidence'] === 'low') {
+        if ($item['confidence'] === 'low' && ! $isOpenQuestion) {
             return false;
         }
 
