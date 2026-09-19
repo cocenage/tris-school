@@ -230,10 +230,17 @@ class TelegramDigestFormatter
             ->filter(fn (array $item): bool => $this->isHumanEveningEvent($item))
             ->values();
         $items = $this->selectEveningItems($eligibleItems, 6);
-        $openItems = $this->selectEveningItems($items
+        $openLines = $items
             ->filter(fn (array $item): bool => in_array($item['status'] ?? null, ['open', 'reopened'], true))
-            ->filter(fn (array $item): bool => $this->needsEveningFollowUp($item))
-            ->values(), 4);
+            ->map(function (array $item): ?string {
+                $followUp = $this->humanEveningFollowUp($item);
+
+                return $followUp === null ? null : $this->withEveningContext($item, $followUp);
+            })
+            ->filter()
+            ->unique()
+            ->take(4)
+            ->values();
         $lines = [
             '🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня',
             '',
@@ -249,12 +256,12 @@ class TelegramDigestFormatter
         }
 
         $lines[] = '';
-        if ($openItems->isEmpty()) {
+        if ($openLines->isEmpty()) {
             $lines[] = 'Открытых вопросов на конец дня нет.';
         } else {
             $lines[] = 'Осталось на контроле:';
-            foreach ($openItems as $item) {
-                $lines[] = '• '.$this->withEveningContext($item, $this->humanEveningFollowUp($item));
+            foreach ($openLines as $line) {
+                $lines[] = '• '.$line;
             }
         }
 
@@ -323,38 +330,37 @@ class TelegramDigestFormatter
         $types = collect($item['types'] ?? []);
 
         $text = match (true) {
+            $this->isAccessProblem($summary) => $this->problemSummary($summary),
+            $this->bathroomIssue($summary) !== null => $this->bathroomIssue($summary),
+            $this->isLinenStorageIssue($summary) => 'Возник вопрос с хранением грязного и чистого белья.',
             $types->contains('delay') => $this->delaySummary($summary),
             $types->contains('quality_issue') => $this->qualitySummary($summary),
             $types->contains('unanswered_question') => $this->questionSummary($summary),
             $types->contains('risk') => 'Отмечен риск: '.$this->sentence($summary),
             $types->contains('problem') => $this->problemSummary($summary),
             $types->contains('positive_contribution') => 'Отмечен полезный вклад: '.$this->sentence($summary),
-            default => $this->sentence($summary),
+            default => mb_ucfirst($this->sentence($summary)),
         };
 
         return trim(mb_strimwidth($text, 0, 160, '…'));
     }
 
-    private function needsEveningFollowUp(array $item): bool
-    {
-        return collect($item['types'] ?? [])->intersect([
-            'problem', 'risk', 'unanswered_question', 'quality_issue', 'request', 'commitment', 'action',
-        ])->isNotEmpty();
-    }
-
-    private function humanEveningFollowUp(array $item): string
+    private function humanEveningFollowUp(array $item): ?string
     {
         $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
         $types = collect($item['types'] ?? []);
 
         $text = match (true) {
+            $this->isAccessProblem($summary) => 'Проверить, решён ли вопрос с доступом в квартиру.',
+            $this->bathroomIssue($summary) !== null => null,
+            $this->isLinenStorageIssue($summary) => null,
             $types->contains('unanswered_question') => $this->questionFollowUp($summary),
             $types->contains('quality_issue') => $this->qualityFollowUp($summary),
-            $types->contains('risk') => 'Уточнить, сохраняется ли риск.',
-            default => $this->problemFollowUp($summary),
+            $types->contains('problem') => $this->problemFollowUp($summary),
+            default => null,
         };
 
-        return trim(mb_strimwidth($text, 0, 160, '…'));
+        return $text === null ? null : trim(mb_strimwidth($text, 0, 160, '…'));
     }
 
     private function withEveningContext(array $item, string $text): string
@@ -387,7 +393,7 @@ class TelegramDigestFormatter
         return 'Уточняли: '.$this->sentence($summary);
     }
 
-    private function questionFollowUp(string $summary): string
+    private function questionFollowUp(string $summary): ?string
     {
         if (preg_match('/^во сколько заезд/iu', $summary)) {
             return 'Нужно уточнить время заезда.';
@@ -397,7 +403,7 @@ class TelegramDigestFormatter
             return 'Нужно уточнить, сколько времени потребуется.';
         }
 
-        return 'Нужно получить ответ: '.$this->sentence($summary);
+        return null;
     }
 
     private function delaySummary(string $summary): string
@@ -419,22 +425,24 @@ class TelegramDigestFormatter
             return 'Обнаружен брак '.rtrim($this->sentence($matches[1]), '.').'.';
         }
 
-        return $this->sentence($summary);
+        return mb_ucfirst($this->sentence($summary));
     }
 
-    private function qualityFollowUp(string $summary): string
+    private function qualityFollowUp(string $summary): ?string
     {
         if (preg_match('/полотенц/iu', $summary)) {
             return 'Проверить замену бракованного полотенца.';
         }
 
-        return 'Проверить, устранено ли замечание по качеству.';
+        return null;
     }
 
     private function problemSummary(string $summary): string
     {
         if ($this->isAccessProblem($summary)) {
-            return 'Возникла проблема с доступом в квартиру: дверь была закрыта, никто не открыл.';
+            $scope = preg_match('/квартир/iu', $summary) ? ' с доступом в квартиру' : ' с доступом';
+
+            return 'Возникла проблема'.$scope.': дверь была закрыта, никто не открыл.';
         }
 
         if (preg_match('/вытяжка не работает на кухне/iu', $summary)) {
@@ -454,7 +462,7 @@ class TelegramDigestFormatter
         return mb_ucfirst($this->sentence($summary));
     }
 
-    private function problemFollowUp(string $summary): string
+    private function problemFollowUp(string $summary): ?string
     {
         if ($this->isAccessProblem($summary)) {
             return 'Проверить, решён ли вопрос с доступом в квартиру.';
@@ -472,14 +480,37 @@ class TelegramDigestFormatter
             return 'Нужно подтвердить, что чистые комплекты доставлены.';
         }
 
-        return 'Проверить, устранена ли проблема.';
+        return null;
     }
 
     private function isAccessProblem(string $summary): bool
     {
-        return preg_match('/двер[ьи].*закрыт/iu', $summary) === 1
-            && preg_match('/никто\s+не\s+откр(?:ыл|ывает)/iu', $summary) === 1
-            && preg_match('/квартир|доступ/iu', $summary) === 1;
+        return preg_match('/(?:двер[ьи].*закрыт|закрыт.*двер[ьи])/iu', $summary) === 1
+            && preg_match('/никто\s+не\s+откр(?:ыл|ывает)/iu', $summary) === 1;
+    }
+
+    private function bathroomIssue(string $summary): ?string
+    {
+        if (! preg_match('/ванн/iu', $summary)) {
+            return null;
+        }
+
+        $damage = preg_match('/поврежден|повреждён|сломано|поломк/iu', $summary) === 1;
+        $dirt = preg_match('/гряз|загрязн/iu', $summary) === 1;
+
+        return match (true) {
+            $damage && $dirt => 'В ванной обнаружили повреждение или загрязнение.',
+            $damage => 'В ванной обнаружили повреждение.',
+            $dirt => 'В ванной обнаружили загрязнение.',
+            default => null,
+        };
+    }
+
+    private function isLinenStorageIssue(string $summary): bool
+    {
+        return preg_match('/грязн/iu', $summary) === 1
+            && preg_match('/чист/iu', $summary) === 1
+            && preg_match('/шкаф/iu', $summary) === 1;
     }
 
     private function sentence(string $value): string
