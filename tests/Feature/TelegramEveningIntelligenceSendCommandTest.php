@@ -42,7 +42,7 @@ it('dry-runs one district without calling telegram or leaking another forum', fu
 
     expect($exit)->toBe(0)
         ->and($output)->toContain('Navigli')
-        ->toContain('Возникла проблема: не работает замок в Navigli')
+        ->toContain('Не работает замок в Navigli')
         ->not->toContain('Не работает замок в Lodi');
 });
 

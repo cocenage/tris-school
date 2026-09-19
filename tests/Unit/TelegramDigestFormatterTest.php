@@ -233,10 +233,10 @@ it('renders a shift handoff with context, human wording and only open follow-ups
     ]);
 
     expect($text)
-        ->toContain('Via Roma 10 — Возникла проблема: не работает замок.')
+        ->toContain('Via Roma 10 — Не работает замок.')
         ->toContain('Via Torino 5 — Сотрудник сообщил о задержке примерно на 10 минут.')
-        ->toContain('Via Roma 10 — Нужно проверить решение: возникла проблема: не работает замок.')
-        ->not->toContain('Via Torino 5 — Нужно проверить решение')
+        ->toContain('Via Roma 10 — Проверить, устранена ли проблема.')
+        ->not->toContain('Via Torino 5 — Проверить')
         ->not->toContain('Возможно:');
 });
 
@@ -283,6 +283,33 @@ it('keeps a representative multi-type handoff concise without collapsing to one 
         ->toContain('Сотрудник сообщил о задержке.')
         ->toContain('Уточняли время заезда.')
         ->and(substr_count($text, '• '))->toBe(10)
+        ->and(mb_strlen($text))->toBeLessThan(600);
+});
+
+it('describes an unresolved access issue once and does not turn a routine delay into follow-up', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => [
+            [
+                'event_key' => 'access',
+                'summary' => 'Доступ в квартиру: дверь закрыта, никто не открывает',
+                'types' => ['problem'],
+                'status' => 'open',
+            ],
+            [
+                'event_key' => 'delay',
+                'summary' => 'Я задержусь на 10 минут',
+                'types' => ['delay'],
+                'status' => 'open',
+            ],
+        ]]],
+    ]);
+
+    expect($text)
+        ->toContain('Возникла проблема с доступом в квартиру: дверь была закрыта, никто не открыл.')
+        ->toContain('Проверить, решён ли вопрос с доступом в квартиру.')
+        ->toContain('Сотрудник сообщил о задержке примерно на 10 минут.')
+        ->and(substr_count($text, '• '))->toBe(3)
         ->and(mb_strlen($text))->toBeLessThan(600);
 });
 

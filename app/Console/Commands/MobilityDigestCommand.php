@@ -136,7 +136,9 @@ class MobilityDigestCommand extends Command
             config('app.timezone', 'Europe/Rome'),
         );
 
-        $alerts = $this->deduplicateAlerts($alerts);
+        $alerts = $this->deduplicateAlerts($alerts)
+            ->filter(fn (array $alert): bool => $this->isImportantWorkerAlert($alert))
+            ->values();
         $label = trim((string) ($route['label'] ?? ''));
         $text = Arr::random($this->greetings).($label !== '' ? ' · <b>'.e($label).'</b>' : '')."\n\n";
         $text .= "🌤 <b>Погода</b>\n";
@@ -146,13 +148,10 @@ class MobilityDigestCommand extends Command
             $text .= e((string) $weather['advice'])."\n";
         }
 
-        $text .= "\n🚦 <b>Передвижение</b>\n";
-
-        if ($alerts->isEmpty()) {
-            $text .= "\nСущественных ограничений на транспорте не обнаружено.\n";
-        } else {
-            foreach ($alerts->take(6) as $alert) {
-                $text .= "\n".$this->workerAlertLine($alert);
+        if ($alerts->isNotEmpty()) {
+            $text .= "\n⚠️ <b>Сегодня важно</b>\n";
+            foreach ($alerts->take(3) as $alert) {
+                $text .= '• '.$this->workerAlertLine($alert)."\n";
             }
         }
 
@@ -316,17 +315,50 @@ class MobilityDigestCommand extends Command
 
     protected function workerAlertLine(array $alert): string
     {
-        $label = $alert['district'] ?? 'transport';
-        $type = $alert['type'] ?? 'info';
-        $summary = match ($type) {
-            'partial_closure' => 'частично ограничено движение между Gobba и Cologno Nord, работают автобусы BM2.',
-            'closure' => 'линия закрыта.',
-            default => $this->shortText($alert['description'] ?? $alert['title'] ?? ''),
-        };
-        $icon = in_array($alert['risk'] ?? null, ['critical', 'high'], true) ? '⚠️' : 'ℹ️';
+        $title = trim((string) ($alert['title'] ?? ''));
+        $description = trim((string) ($alert['description'] ?? ''));
+        $sourceText = $title.' '.$description;
 
-        return $icon.' <b>'.e($label)."</b>\n".e($summary)."\n";
+        if ((str_contains(mb_strtolower((string) ($alert['type'] ?? '')), 'strike')
+                || preg_match('/sciopero|забаст|\bstrike\b/iu', $sourceText))
+            && preg_match('/dalle\s*(\d{1,2}:\d{2})\s*a\s*fine\s*servizio/iu', $description, $matches)) {
+            $scope = preg_match('/trasporto|transport|общественн/iu', $sourceText)
+                ? 'общественного транспорта'
+                : 'транспорта';
 
+            return 'Забастовка '.$scope.' с '.$matches[1].' до конца движения.';
+        }
+
+        $summary = $description !== '' && mb_strlen($description) > mb_strlen($title)
+            ? $description
+            : $title;
+        $summary = preg_replace('/https?:\/\/\S+/iu', '', strip_tags($summary)) ?: '';
+        $summary = preg_replace('/\s+/u', ' ', $summary) ?: '';
+
+        return e(trim(mb_strimwidth($summary, 0, 160, '…')));
+    }
+
+    protected function isImportantWorkerAlert(array $alert): bool
+    {
+        $text = mb_strtolower(implode(' ', [
+            (string) ($alert['title'] ?? ''),
+            (string) ($alert['description'] ?? ''),
+        ]));
+        $type = mb_strtolower((string) ($alert['type'] ?? ''));
+
+        if (str_contains($type, 'strike') || preg_match('/sciopero|забаст|\bstrike\b/iu', $text)) {
+            return true;
+        }
+
+        if (($alert['risk'] ?? null) !== 'critical'
+            || preg_match('/\bM[1-5]\b/iu', implode(' ', [
+                (string) ($alert['district'] ?? ''),
+                (string) ($alert['title'] ?? ''),
+            ]))) {
+            return false;
+        }
+
+        return preg_match('/interruzione totale|sospensione totale|blocco (?:totale|della circolazione)|servizio (?:completamente )?sospeso|полная остановка движения/iu', $text) === 1;
     }
 
     protected function normalizedText(?string $value): string

@@ -338,7 +338,7 @@ class TelegramDigestFormatter
     private function needsEveningFollowUp(array $item): bool
     {
         return collect($item['types'] ?? [])->intersect([
-            'problem', 'risk', 'delay', 'unanswered_question', 'quality_issue', 'request', 'commitment', 'action',
+            'problem', 'risk', 'unanswered_question', 'quality_issue', 'request', 'commitment', 'action',
         ])->isNotEmpty();
     }
 
@@ -349,9 +349,8 @@ class TelegramDigestFormatter
 
         $text = match (true) {
             $types->contains('unanswered_question') => $this->questionFollowUp($summary),
-            $types->contains('quality_issue') => 'Нужно проверить устранение: '.mb_lcfirst($this->qualitySummary($summary)),
-            $types->contains('delay') => 'Нужно подтвердить, что задержка больше не влияет на работу.',
-            $types->contains('risk') => 'Риск остаётся на контроле.',
+            $types->contains('quality_issue') => $this->qualityFollowUp($summary),
+            $types->contains('risk') => 'Уточнить, сохраняется ли риск.',
             default => $this->problemFollowUp($summary),
         };
 
@@ -417,14 +416,27 @@ class TelegramDigestFormatter
         }
 
         if (preg_match('/^брак[\s\x{2011}\x{2013}\x{2014}-]*(.+)$/iu', $summary, $matches)) {
-            return 'Обнаружен брак: '.$this->sentence($matches[1]);
+            return 'Обнаружен брак '.rtrim($this->sentence($matches[1]), '.').'.';
         }
 
-        return 'Зафиксировано замечание по качеству: '.$this->sentence($summary);
+        return $this->sentence($summary);
+    }
+
+    private function qualityFollowUp(string $summary): string
+    {
+        if (preg_match('/полотенц/iu', $summary)) {
+            return 'Проверить замену бракованного полотенца.';
+        }
+
+        return 'Проверить, устранено ли замечание по качеству.';
     }
 
     private function problemSummary(string $summary): string
     {
+        if ($this->isAccessProblem($summary)) {
+            return 'Возникла проблема с доступом в квартиру: дверь была закрыта, никто не открыл.';
+        }
+
         if (preg_match('/вытяжка не работает на кухне/iu', $summary)) {
             return 'На кухне не работала вытяжка.';
         }
@@ -437,15 +449,17 @@ class TelegramDigestFormatter
             return 'Оставался один чистый комплект; доставка ещё не приехала.';
         }
 
-        if (preg_match('/^(?:возникла?\s+)?проблема\s*[:\-]?\s*/iu', $summary)) {
-            return $this->sentence($summary);
-        }
+        $summary = preg_replace('/^(?:возникла?\s+)?проблема\s*[:\-]?\s*/iu', '', $summary) ?: $summary;
 
-        return 'Возникла проблема: '.$this->sentence($summary);
+        return mb_ucfirst($this->sentence($summary));
     }
 
     private function problemFollowUp(string $summary): string
     {
+        if ($this->isAccessProblem($summary)) {
+            return 'Проверить, решён ли вопрос с доступом в квартиру.';
+        }
+
         if (preg_match('/вытяжка не работает на кухне/iu', $summary)) {
             return 'Нужно проверить, работает ли вытяжка на кухне.';
         }
@@ -458,7 +472,14 @@ class TelegramDigestFormatter
             return 'Нужно подтвердить, что чистые комплекты доставлены.';
         }
 
-        return 'Нужно проверить решение: '.mb_lcfirst($this->problemSummary($summary));
+        return 'Проверить, устранена ли проблема.';
+    }
+
+    private function isAccessProblem(string $summary): bool
+    {
+        return preg_match('/двер[ьи].*закрыт/iu', $summary) === 1
+            && preg_match('/никто\s+не\s+откр(?:ыл|ывает)/iu', $summary) === 1
+            && preg_match('/квартир|доступ/iu', $summary) === 1;
     }
 
     private function sentence(string $value): string
