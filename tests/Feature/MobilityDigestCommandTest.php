@@ -37,7 +37,7 @@ afterEach(function () {
     Schema::dropIfExists('mobility_alerts');
 });
 
-it('deduplicates mobility events and never treats a regular status as a high alert', function () {
+it('keeps routine metro closures out of the human morning digest', function () {
     config([
         'services.telegram.mobility_targets' => null,
         'services.telegram.analytics_bot_token' => null,
@@ -83,15 +83,15 @@ it('deduplicates mobility events and never treats a regular status as a high ale
     );
 
     expect($message)
-        ->toContain('Передвижение')
-        ->toContain('Gobba')
-        ->toContain('автобусы')
+        ->not->toContain('Сегодня важно')
+        ->not->toContain('Передвижение')
+        ->not->toContain('Gobba')
         ->not->toContain('HIGH')
         ->not->toContain('REGOLARE');
 
     $this->artisan('mobility:digest', ['--date' => '2026-08-03', '--dry-run' => true])
         ->assertExitCode(0)
-        ->expectsOutputToContain('Передвижение');
+        ->doesntExpectOutputToContain('Сегодня важно');
 });
 
 it('splits metro line statuses and canonicalizes the Crescenzago cluster', function () {
@@ -226,8 +226,8 @@ it('builds two regional dry-runs with distinct weather coordinates and evidence-
         ],
     ])]);
     foreach ([
-        ['district' => 'Navigli', 'title' => 'Chiusura Navigli', 'description' => 'Navigli only'],
-        ['district' => 'Lodi', 'title' => 'Chiusura Lodi', 'description' => 'Lodi only'],
+        ['district' => 'Navigli', 'title' => 'Sciopero Navigli', 'description' => 'Sciopero del trasporto dalle 18:00'],
+        ['district' => 'Lodi', 'title' => 'Sciopero Lodi', 'description' => 'Sciopero del trasporto dalle 19:00'],
         ['district' => 'M2', 'title' => 'M2 chiusura', 'description' => 'M2 shared'],
     ] as $index => $item) {
         MobilityAlert::create($item + [
@@ -242,9 +242,10 @@ it('builds two regional dry-runs with distinct weather coordinates and evidence-
     $output = mb_strtolower(Artisan::output());
 
     expect($output)->toContain('navigli')->toContain('lodi')
-        ->and(substr_count($output, '⚠️ <b>navigli</b>'))->toBe(1)
-        ->and(substr_count($output, '⚠️ <b>lodi</b>'))->toBe(1)
-        ->and(substr_count($output, '⚠️ <b>m2</b>'))->toBe(2);
+        ->and(substr_count($output, 'sciopero del trasporto dalle 18:00'))->toBe(1)
+        ->and(substr_count($output, 'sciopero del trasporto dalle 19:00'))->toBe(1)
+        ->and(substr_count($output, 'сегодня важно'))->toBe(2)
+        ->and($output)->not->toContain('m2 chiusura');
     Http::assertSentCount(2);
     $coordinates = collect(Http::recorded())->map(fn (array $pair): string => $pair[0]['latitude'].'|'.$pair[0]['longitude']
     )->sort()->values()->all();
@@ -267,9 +268,72 @@ it('keeps a regional morning digest useful when weather is unavailable', functio
     expect($message)
         ->toContain('Navigli')
         ->toContain('погода временно недоступна')
-        ->toContain('Передвижение')
-        ->toContain('линия закрыта')
+        ->not->toContain('Передвижение')
+        ->not->toContain('Сегодня важно')
         ->toMatch('/Хорошей смены|Удачного дня|Отличной смены|Легкого рабочего дня|Пусть день пройдет спокойно/');
+});
+
+it('shows a city-wide strike once in each district and omits routine M1-M5 statuses', function () {
+    config(['services.telegram.digest_districts' => [
+        'navigli' => [
+            'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11',
+            'latitude' => 45.45, 'longitude' => 9.17,
+        ],
+        'como' => [
+            'label' => 'Como', 'chat_id' => '-1002', 'duty_thread_id' => '22',
+            'latitude' => 45.80, 'longitude' => 9.08,
+        ],
+    ]]);
+    MobilityAlert::create([
+        'source' => 'test', 'title' => 'Sciopero del trasporto pubblico',
+        'description' => 'Sciopero dalle 18:00 a fine servizio',
+        'type' => 'strike', 'risk' => 'high', 'district' => null,
+        'starts_at' => '2026-09-18', 'external_hash' => 'city-strike',
+    ]);
+    foreach (range(1, 5) as $line) {
+        MobilityAlert::create([
+            'source' => 'test', 'title' => "M{$line} chiusura",
+            'type' => 'closure', 'risk' => 'high', 'district' => "M{$line}",
+            'starts_at' => '2026-09-18', 'external_hash' => "metro-{$line}",
+        ]);
+    }
+    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
+        ->shouldNotReceive('sendMessage'));
+
+    expect(Artisan::call('mobility:digest', ['--date' => '2026-09-18', '--dry-run' => true]))->toBe(0);
+    $output = Artisan::output();
+
+    expect(substr_count($output, 'Забастовка общественного транспорта с 18:00 до конца движения.'))->toBe(2)
+        ->and(substr_count($output, 'Сегодня важно'))->toBe(2)
+        ->and($output)->not->toContain('M1 chiusura')->not->toContain('M5 chiusura');
+});
+
+it('shows a confirmed critical network disruption but not a critical single-line closure', function () {
+    $command = app(MobilityDigestCommand::class);
+    $method = new ReflectionMethod($command, 'buildMessage');
+    $method->setAccessible(true);
+    $alerts = collect([
+        MobilityAlert::make([
+            'source' => 'test', 'title' => 'Blocco totale della circolazione',
+            'description' => 'Servizio sospeso su tutta la rete',
+            'type' => 'disruption', 'risk' => 'critical',
+            'starts_at' => '2026-09-18',
+        ]),
+        MobilityAlert::make([
+            'source' => 'test', 'title' => 'M3 chiusura',
+            'type' => 'closure', 'risk' => 'critical', 'district' => 'M3',
+            'starts_at' => '2026-09-18',
+        ]),
+    ]);
+
+    $message = $method->invoke($command, Carbon::parse('2026-09-18'), $alerts, [
+        'key' => 'navigli', 'label' => 'Navigli', 'latitude' => 45.45, 'longitude' => 9.17,
+    ]);
+
+    expect($message)
+        ->toContain('Сегодня важно')
+        ->toContain('Servizio sospeso su tutta la rete')
+        ->not->toContain('M3 chiusura');
 });
 
 it('uses the existing sender and matching duty topics for regional morning delivery', function () {
