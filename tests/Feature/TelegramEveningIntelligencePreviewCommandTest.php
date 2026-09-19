@@ -63,7 +63,7 @@ it('renders only non-empty human sections and an explicit read-only footer', fun
         ->expectsOutputToContain('TRIS — итоги дня')
         ->expectsOutputToContain('За день:')
         ->expectsOutputToContain('Не работает замок')
-        ->expectsOutputToContain('Осталось на контроле:')
+        ->expectsOutputToContain('Открытых вопросов на конец дня нет.')
         ->doesntExpectOutputToContain('Требует внимания')
         ->doesntExpectOutputToContain('Событие:')
         ->doesntExpectOutputToContain('Доказательства:')

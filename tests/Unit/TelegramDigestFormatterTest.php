@@ -163,7 +163,7 @@ it('formats evening intelligence for humans without technical fields or duplicat
     expect($text)
         ->toContain('🌙 Navigli — итоги дня')
         ->toContain('За день:')
-        ->toContain('Осталось на контроле:')
+        ->toContain('Открытых вопросов на конец дня нет.')
         ->not->toContain('Требует внимания')
         ->not->toContain('Качество')
         ->not->toContain('Риски и задержки')
@@ -175,7 +175,7 @@ it('formats evening intelligence for humans without technical fields or duplicat
         ->not->toContain('статус')
         ->not->toContain('уверенность')
         ->not->toContain('transition')
-        ->and(substr_count($text, '• '))->toBe(2)
+        ->and(substr_count($text, '• '))->toBe(1)
         ->and(mb_strlen($text))->toBeLessThan(600);
 });
 
@@ -235,8 +235,8 @@ it('renders a shift handoff with context, human wording and only open follow-ups
     expect($text)
         ->toContain('Via Roma 10 — Не работает замок.')
         ->toContain('Via Torino 5 — Сотрудник сообщил о задержке примерно на 10 минут.')
-        ->toContain('Via Roma 10 — Проверить, устранена ли проблема.')
-        ->not->toContain('Via Torino 5 — Проверить')
+        ->toContain('Открытых вопросов на конец дня нет.')
+        ->not->toContain('Проверить, устранена ли проблема')
         ->not->toContain('Возможно:');
 });
 
@@ -313,6 +313,19 @@ it('describes an unresolved access issue once and does not turn a routine delay 
         ->and(mb_strlen($text))->toBeLessThan(600);
 });
 
+it('deduplicates identical concrete follow-ups without deduplicating distinct events', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => [
+            ['event_key' => 'access-one', 'summary' => 'Дверь закрыта, никто не открывает.', 'types' => ['problem'], 'status' => 'open'],
+            ['event_key' => 'access-two', 'summary' => 'Дверь была закрыта, никто не открыл.', 'types' => ['problem'], 'status' => 'open'],
+        ]]],
+    ]);
+
+    expect(substr_count($text, 'Возникла проблема с доступом:'))->toBe(2)
+        ->and(substr_count($text, 'Проверить, решён ли вопрос с доступом в квартиру.'))->toBe(1);
+});
+
 it('omits templates, guidance and standalone resolutions from the human handoff', function () {
     $items = [
         ['event_key' => 'template', 'summary' => '#сильныйбардак При осмотре квартиры делаем 10-15 фото', 'types' => ['quality_issue'], 'status' => 'open'],
@@ -331,4 +344,30 @@ it('omits templates, guidance and standalone resolutions from the human handoff'
         ->not->toContain('10-15 фото')
         ->not->toContain('промыла водой')
         ->not->toContain('Готово');
+});
+
+it('turns the reported Navigli handoff into natural events and one concrete follow-up', function () {
+    $items = [
+        ['event_key' => 'access', 'summary' => 'Дверь закрыта, никто не открывает.', 'types' => ['problem'], 'status' => 'open'],
+        ['event_key' => 'bathroom', 'summary' => 'есть повреждения в ванной, выглядит как грязное.', 'types' => ['quality_issue'], 'status' => 'open'],
+        ['event_key' => 'delay', 'summary' => 'Я чуть задержусь', 'types' => ['delay'], 'status' => 'open'],
+        ['event_key' => 'linen', 'summary' => 'он не забрал грязное и чистое я сложила еще в другой шкаф, а то в маленьком места нет.', 'types' => ['quality_issue'], 'status' => 'open'],
+    ];
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => $items]],
+    ]);
+
+    expect($text)
+        ->toContain('Возникла проблема с доступом: дверь была закрыта, никто не открыл.')
+        ->toContain('В ванной обнаружили повреждение или загрязнение.')
+        ->toContain('Сотрудник сообщил о задержке.')
+        ->toContain('Возник вопрос с хранением грязного и чистого белья.')
+        ->toContain('Проверить, решён ли вопрос с доступом в квартиру.')
+        ->not->toContain('Проверить, устранена ли проблема')
+        ->not->toContain('Проверить, устранено ли замечание по качеству')
+        ->not->toContain('он не забрал')
+        ->and(substr_count($text, '• '))->toBe(5)
+        ->and(mb_strlen($text))->toBeLessThan(600);
 });
