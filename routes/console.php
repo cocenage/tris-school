@@ -21,6 +21,11 @@ Schedule::command('mobility:digest')
     ->dailyAt('08:00')
     ->withoutOverlapping();
 
+Schedule::command('telegram:operational-replay --through-now')
+    ->dailyAt('20:25')
+    ->timezone('Europe/Rome')
+    ->withoutOverlapping();
+
 Schedule::command('telegram:evening-intelligence-send')
     ->dailyAt('20:30')
     ->timezone('Europe/Rome')

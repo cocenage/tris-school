@@ -8,6 +8,7 @@ use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Artisan;
 use Throwable;
 
 class TelegramEveningIntelligenceSendCommand extends Command
@@ -45,6 +46,13 @@ class TelegramEveningIntelligenceSendCommand extends Command
         $dryRun = (bool) $this->option('dry-run');
         if (! $dryRun && ! (bool) config('services.telegram.evening_intelligence_delivery_enabled', false)) {
             $this->error('Evening intelligence delivery is disabled. Use --dry-run for preview.');
+
+            return self::FAILURE;
+        }
+
+        if (! $dryRun && $date->isSameDay(now(config('app.timezone', 'Europe/Rome')))
+            && Artisan::call('telegram:operational-replay', ['--through-now' => true, '--json' => true]) !== self::SUCCESS) {
+            $this->error('Current-day operational catch-up failed; evening delivery was not attempted.');
 
             return self::FAILURE;
         }
