@@ -61,7 +61,10 @@ it('renders only non-empty human sections and an explicit read-only footer', fun
 
     $this->artisan('telegram:evening-intelligence-preview', ['--date' => '2026-06-17'])
         ->expectsOutputToContain('TRIS — итоги дня')
-        ->expectsOutputToContain('Не работает замок')
+        ->expectsOutputToContain('За день:')
+        ->expectsOutputToContain('Возникла проблема: не работает замок')
+        ->expectsOutputToContain('Осталось на контроле:')
+        ->doesntExpectOutputToContain('Требует внимания')
         ->doesntExpectOutputToContain('Событие:')
         ->doesntExpectOutputToContain('Доказательства:')
         ->doesntExpectOutputToContain('статус:')

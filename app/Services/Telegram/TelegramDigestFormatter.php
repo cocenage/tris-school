@@ -224,81 +224,248 @@ class TelegramDigestFormatter
     public function eveningIntelligence(array $preview): string
     {
         $district = $this->value($preview['district']['label'] ?? null);
+        $eligibleItems = collect($preview['sections'] ?? [])
+            ->flatMap(fn (array $section) => $section['items'] ?? [])
+            ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
+            ->filter(fn (array $item): bool => $this->isHumanEveningEvent($item))
+            ->values();
+        $items = $this->selectEveningItems($eligibleItems, 6);
+        $openItems = $this->selectEveningItems($items
+            ->filter(fn (array $item): bool => in_array($item['status'] ?? null, ['open', 'reopened'], true))
+            ->filter(fn (array $item): bool => $this->needsEveningFollowUp($item))
+            ->values(), 4);
         $lines = [
-            '🌙 TRIS — итоги дня'.($district !== '' ? ' · '.$district : ''),
-            'Дата: '.$this->value($preview['date'] ?? null),
+            '🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня',
+            '',
+            'За день:',
         ];
 
-        if ($preview['no_material_events'] ?? false) {
-            $lines[] = '';
-            $lines[] = 'Значимых операционных событий за день не обнаружено.';
+        if ($items->isEmpty()) {
+            $lines[] = '• Значимых операционных событий не зафиксировано.';
         } else {
-            $rendered = [];
+            foreach ($items as $item) {
+                $lines[] = '• '.$this->withEveningContext($item, $this->humanEveningSummary($item));
+            }
+        }
 
-            foreach ($preview['sections'] ?? [] as $section) {
-                $items = collect($section['items'] ?? [])
-                    ->reject(function (array $item) use (&$rendered): bool {
-                        $key = (string) ($item['event_key'] ?? sha1(json_encode($item)));
-
-                        if (isset($rendered[$key])) {
-                            return true;
-                        }
-
-                        $rendered[$key] = true;
-
-                        return false;
-                    })
-                    ->take(7);
-
-                if ($items->isEmpty()) {
-                    continue;
-                }
-
-                $lines[] = '';
-                $lines[] = $this->eveningSectionLabel((string) ($section['key'] ?? ''), (string) ($section['label'] ?? ''));
-
-                foreach ($items as $item) {
-                    $summary = $this->humanEveningSummary($item);
-                    $context = $this->value($item['context_label'] ?? null);
-
-                    if ($summary !== '') {
-                        $lines[] = '• '.($context !== '' ? $context.' — ' : '').$summary;
-                    }
-                }
+        $lines[] = '';
+        if ($openItems->isEmpty()) {
+            $lines[] = 'Открытых вопросов на конец дня нет.';
+        } else {
+            $lines[] = 'Осталось на контроле:';
+            foreach ($openItems as $item) {
+                $lines[] = '• '.$this->withEveningContext($item, $this->humanEveningFollowUp($item));
             }
         }
 
         return implode("\n", $lines);
     }
 
-    private function eveningSectionLabel(string $key, string $fallback): string
+    private function selectEveningItems(Collection $items, int $limit): Collection
     {
-        return match ($key) {
-            'attention' => '⚠️ Требует внимания',
-            'quality' => '🧹 Качество',
-            'risks_delays' => '⏱ Риски и задержки',
-            'resolved' => '✅ Решено',
-            'positive' => '🌟 Положительный вклад',
-            'tomorrow' => '📌 На завтра',
-            default => $this->value($fallback !== '' ? $fallback : $key),
-        };
+        $remaining = $items->values();
+        $selected = collect();
+        $typeOrder = [
+            'problem', 'quality_issue', 'delay', 'unanswered_question', 'risk',
+            'request', 'commitment', 'action', 'positive_contribution', 'resolution',
+        ];
+
+        while ($remaining->isNotEmpty() && $selected->count() < $limit) {
+            $selectedInRound = false;
+
+            foreach ($typeOrder as $type) {
+                $index = $remaining->search(fn (array $item): bool => in_array($type, $item['types'] ?? [], true));
+
+                if ($index === false) {
+                    continue;
+                }
+
+                $selected->push($remaining->get($index));
+                $remaining->forget($index);
+                $selectedInRound = true;
+
+                if ($selected->count() >= $limit) {
+                    break 2;
+                }
+            }
+
+            if (! $selectedInRound) {
+                $selected->push($remaining->shift());
+            }
+
+            $remaining = $remaining->values();
+        }
+
+        return $selected->values();
+    }
+
+    private function isHumanEveningEvent(array $item): bool
+    {
+        $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
+
+        if ($summary === '') {
+            return false;
+        }
+
+        if (preg_match('/^(?:готово|сделано|решено|исправлено|ok|ок)[.!]*$/iu', $summary)) {
+            return false;
+        }
+
+        return ! preg_match(
+            '/(?:\bинструкция\b|\bшаблон\b|\bалгоритм\b|\bделаем\s+\d+(?:-\d+)?\s+фото\b|^\s*при осмотре .+\b(?:делаем|сделайте|необходимо)\b|\?\s*(?:нужно|необходимо)\b.+\bчтобы\b)/iu',
+            $summary,
+        );
     }
 
     private function humanEveningSummary(array $item): string
     {
-        $summary = preg_replace('/\s+/u', ' ', strip_tags((string) ($item['summary'] ?? ''))) ?: '';
+        $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
+        $types = collect($item['types'] ?? []);
+
+        $text = match (true) {
+            $types->contains('delay') => $this->delaySummary($summary),
+            $types->contains('quality_issue') => $this->qualitySummary($summary),
+            $types->contains('unanswered_question') => $this->questionSummary($summary),
+            $types->contains('risk') => 'Отмечен риск: '.$this->sentence($summary),
+            $types->contains('problem') => $this->problemSummary($summary),
+            $types->contains('positive_contribution') => 'Отмечен полезный вклад: '.$this->sentence($summary),
+            default => $this->sentence($summary),
+        };
+
+        return trim(mb_strimwidth($text, 0, 160, '…'));
+    }
+
+    private function needsEveningFollowUp(array $item): bool
+    {
+        return collect($item['types'] ?? [])->intersect([
+            'problem', 'risk', 'delay', 'unanswered_question', 'quality_issue', 'request', 'commitment', 'action',
+        ])->isNotEmpty();
+    }
+
+    private function humanEveningFollowUp(array $item): string
+    {
+        $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
+        $types = collect($item['types'] ?? []);
+
+        $text = match (true) {
+            $types->contains('unanswered_question') => $this->questionFollowUp($summary),
+            $types->contains('quality_issue') => 'Нужно проверить устранение: '.mb_lcfirst($this->qualitySummary($summary)),
+            $types->contains('delay') => 'Нужно подтвердить, что задержка больше не влияет на работу.',
+            $types->contains('risk') => 'Риск остаётся на контроле.',
+            default => $this->problemFollowUp($summary),
+        };
+
+        return trim(mb_strimwidth($text, 0, 160, '…'));
+    }
+
+    private function withEveningContext(array $item, string $text): string
+    {
+        $context = $this->value($item['context_label'] ?? null);
+
+        return $context !== '' ? $context.' — '.$text : $text;
+    }
+
+    private function cleanEveningSummary(string $summary): string
+    {
+        $summary = preg_replace('/\s+/u', ' ', strip_tags($summary)) ?: '';
         $summary = preg_replace('/^#\S+\s+/u', '', trim($summary)) ?: '';
-        $summary = trim(mb_strimwidth($summary, 0, 140, '…'));
+        $summary = str_ireplace(['клмплект', 'прогоамме'], ['комплект', 'программе'], $summary);
+        $summary = preg_replace('/^(?:девочки|коллеги)[,!]?\s*(?:подскажите|скажите)(?:,?\s*пожалуйста)?[,]?\s*/iu', '', $summary) ?: $summary;
 
-        if ($summary === '') {
-            return '';
+        return trim($summary);
+    }
+
+    private function questionSummary(string $summary): string
+    {
+        if (preg_match('/^во сколько заезд/iu', $summary)) {
+            return 'Уточняли время заезда.';
         }
 
-        if (($item['confidence'] ?? null) === 'medium' || filled($item['uncertainty'] ?? null)) {
-            $summary = 'Возможно: '.mb_lcfirst($summary);
+        if (preg_match('/^сколько (?:им )?времени нужно/iu', $summary)) {
+            return 'Уточняли, сколько времени потребуется.';
         }
 
-        return $summary;
+        return 'Уточняли: '.$this->sentence($summary);
+    }
+
+    private function questionFollowUp(string $summary): string
+    {
+        if (preg_match('/^во сколько заезд/iu', $summary)) {
+            return 'Нужно уточнить время заезда.';
+        }
+
+        if (preg_match('/^сколько (?:им )?времени нужно/iu', $summary)) {
+            return 'Нужно уточнить, сколько времени потребуется.';
+        }
+
+        return 'Нужно получить ответ: '.$this->sentence($summary);
+    }
+
+    private function delaySummary(string $summary): string
+    {
+        if (preg_match('/(?:на|\b)\s*(\d{1,3})\s*мин/iu', $summary, $matches)) {
+            return 'Сотрудник сообщил о задержке примерно на '.(int) $matches[1].' минут.';
+        }
+
+        return 'Сотрудник сообщил о задержке.';
+    }
+
+    private function qualitySummary(string $summary): string
+    {
+        if (preg_match('/^брак был в прошлой уборке/iu', $summary)) {
+            return 'Обнаружен брак, ранее отмеченный как загрязнение.';
+        }
+
+        if (preg_match('/^брак[\s\x{2011}\x{2013}\x{2014}-]*(.+)$/iu', $summary, $matches)) {
+            return 'Обнаружен брак: '.$this->sentence($matches[1]);
+        }
+
+        return 'Зафиксировано замечание по качеству: '.$this->sentence($summary);
+    }
+
+    private function problemSummary(string $summary): string
+    {
+        if (preg_match('/вытяжка не работает на кухне/iu', $summary)) {
+            return 'На кухне не работала вытяжка.';
+        }
+
+        if (preg_match('/в спальне не откры\S* ставн/iu', $summary)) {
+            return 'В спальне не открывалась ставня.';
+        }
+
+        if (preg_match('/чистый только один комплект.+курьера? ещ[\x{0451}е] не было/iu', $summary)) {
+            return 'Оставался один чистый комплект; доставка ещё не приехала.';
+        }
+
+        if (preg_match('/^(?:возникла?\s+)?проблема\s*[:\-]?\s*/iu', $summary)) {
+            return $this->sentence($summary);
+        }
+
+        return 'Возникла проблема: '.$this->sentence($summary);
+    }
+
+    private function problemFollowUp(string $summary): string
+    {
+        if (preg_match('/вытяжка не работает на кухне/iu', $summary)) {
+            return 'Нужно проверить, работает ли вытяжка на кухне.';
+        }
+
+        if (preg_match('/в спальне не откры\S* ставн/iu', $summary)) {
+            return 'Нужно проверить, открывается ли ставня в спальне.';
+        }
+
+        if (preg_match('/чистый только один комплект/iu', $summary)) {
+            return 'Нужно подтвердить, что чистые комплекты доставлены.';
+        }
+
+        return 'Нужно проверить решение: '.mb_lcfirst($this->problemSummary($summary));
+    }
+
+    private function sentence(string $value): string
+    {
+        $value = trim($value);
+
+        return rtrim(mb_lcfirst($value), " \t\n\r\0\x0B.!?").'.';
     }
 
     protected function morningActions(array $context): array
