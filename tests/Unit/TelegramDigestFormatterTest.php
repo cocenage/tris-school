@@ -161,8 +161,13 @@ it('formats evening intelligence for humans without technical fields or duplicat
     ]);
 
     expect($text)
-        ->toContain('🌙 TRIS — итоги дня · Navigli')
-        ->toContain('⚠️ Требует внимания')
+        ->toContain('🌙 Navigli — итоги дня')
+        ->toContain('За день:')
+        ->toContain('Осталось на контроле:')
+        ->not->toContain('Требует внимания')
+        ->not->toContain('Качество')
+        ->not->toContain('Риски и задержки')
+        ->not->toContain('Возможно:')
         ->not->toContain('event_key')
         ->not->toContain('telegram:internal-key')
         ->not->toContain('Событие:')
@@ -170,8 +175,8 @@ it('formats evening intelligence for humans without technical fields or duplicat
         ->not->toContain('статус')
         ->not->toContain('уверенность')
         ->not->toContain('transition')
-        ->and(substr_count($text, '• '))->toBe(1)
-        ->and(mb_strlen($text))->toBeLessThan(400);
+        ->and(substr_count($text, '• '))->toBe(2)
+        ->and(mb_strlen($text))->toBeLessThan(600);
 });
 
 it('removes a leading operational hashtag and keeps the human evening bullet concise', function () {
@@ -196,5 +201,107 @@ it('removes a leading operational hashtag and keeps the human evening bullet con
 
     expect($bullet)
         ->not->toContain('#сильныйбардак')
-        ->and(mb_strlen($bullet))->toBeLessThanOrEqual(142);
+        ->and(mb_strlen($bullet))->toBeLessThanOrEqual(162);
+});
+
+it('renders a shift handoff with context, human wording and only open follow-ups', function () {
+    $open = [
+        'event_key' => 'open-problem',
+        'summary' => 'Не работает замок',
+        'context_label' => 'Via Roma 10',
+        'types' => ['problem'],
+        'status' => 'open',
+        'confidence' => 'medium',
+        'uncertainty' => 'нужно проверить',
+    ];
+    $resolved = [
+        'event_key' => 'resolved-delay',
+        'summary' => 'Я задержусь на 10 минут',
+        'context_label' => 'Via Torino 5',
+        'types' => ['delay', 'resolution'],
+        'status' => 'resolved',
+        'confidence' => 'high',
+        'uncertainty' => null,
+    ];
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [
+            ['key' => 'attention', 'items' => [$open]],
+            ['key' => 'resolved', 'items' => [$resolved]],
+        ],
+    ]);
+
+    expect($text)
+        ->toContain('Via Roma 10 — Возникла проблема: не работает замок.')
+        ->toContain('Via Torino 5 — Сотрудник сообщил о задержке примерно на 10 минут.')
+        ->toContain('Via Roma 10 — Нужно проверить решение: возникла проблема: не работает замок.')
+        ->not->toContain('Via Torino 5 — Нужно проверить решение')
+        ->not->toContain('Возможно:');
+});
+
+it('normalizes representative replay wording without inventing an apartment', function () {
+    $items = [
+        ['event_key' => 'arrival', 'summary' => 'Во сколько заезд?', 'types' => ['unanswered_question'], 'status' => 'open'],
+        ['event_key' => 'hood', 'summary' => 'Вытяжка не работает на кухне', 'types' => ['problem'], 'status' => 'open'],
+        ['event_key' => 'shutter', 'summary' => 'И в спальне не открываться ставня', 'types' => ['problem'], 'status' => 'open'],
+    ];
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => $items]],
+    ]);
+
+    expect($text)
+        ->toContain('Уточняли время заезда.')
+        ->toContain('На кухне не работала вытяжка.')
+        ->toContain('В спальне не открывалась ставня.')
+        ->toContain('Нужно уточнить время заезда.')
+        ->toContain('Нужно проверить, работает ли вытяжка на кухне.')
+        ->not->toContain('Via ');
+});
+
+it('keeps a representative multi-type handoff concise without collapsing to one event type', function () {
+    $items = [
+        ['event_key' => 'question-1', 'summary' => 'Во сколько заезд?', 'types' => ['unanswered_question'], 'status' => 'open'],
+        ['event_key' => 'question-2', 'summary' => 'Сколько им времени нужно?', 'types' => ['unanswered_question'], 'status' => 'open'],
+        ['event_key' => 'problem-1', 'summary' => 'Вытяжка не работает на кухне', 'types' => ['problem'], 'status' => 'open'],
+        ['event_key' => 'problem-2', 'summary' => 'И в спальне не открываться ставня', 'types' => ['problem'], 'status' => 'open'],
+        ['event_key' => 'quality-1', 'summary' => 'Брак большого полотенца', 'types' => ['quality_issue'], 'status' => 'open'],
+        ['event_key' => 'quality-2', 'summary' => 'Брак был в прошлой уборке', 'types' => ['quality_issue'], 'status' => 'open'],
+        ['event_key' => 'delay', 'summary' => 'Я чуть задержусь', 'types' => ['delay'], 'status' => 'open'],
+    ];
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => $items]],
+    ]);
+
+    expect($text)
+        ->toContain('На кухне не работала вытяжка.')
+        ->toContain('Обнаружен брак')
+        ->toContain('Сотрудник сообщил о задержке.')
+        ->toContain('Уточняли время заезда.')
+        ->and(substr_count($text, '• '))->toBe(10)
+        ->and(mb_strlen($text))->toBeLessThan(600);
+});
+
+it('omits templates, guidance and standalone resolutions from the human handoff', function () {
+    $items = [
+        ['event_key' => 'template', 'summary' => '#сильныйбардак При осмотре квартиры делаем 10-15 фото', 'types' => ['quality_issue'], 'status' => 'open'],
+        ['event_key' => 'guidance', 'summary' => 'И промыла водой? Нужно всё хорошо промыть, чтобы средство не осталось', 'types' => ['problem'], 'status' => 'open'],
+        ['event_key' => 'done', 'summary' => 'Готово', 'types' => ['resolution'], 'status' => 'resolved'],
+    ];
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => $items]],
+    ]);
+
+    expect($text)
+        ->toContain('• Значимых операционных событий не зафиксировано.')
+        ->toContain('Открытых вопросов на конец дня нет.')
+        ->not->toContain('10-15 фото')
+        ->not->toContain('промыла водой')
+        ->not->toContain('Готово');
 });
