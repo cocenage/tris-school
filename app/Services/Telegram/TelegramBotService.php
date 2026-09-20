@@ -13,12 +13,38 @@ class TelegramBotService
         ?string $threadId = null,
         ?string $replyToMessageId = null,
         ?array $replyMarkup = null,
-    ): ?int
-    {
-        $token = config('services.telegram.bot_token');
+    ): ?int {
+        return $this->sendMessageUsingToken(
+            config('services.telegram.bot_token'),
+            $chatId,
+            $text,
+            $threadId,
+            $replyToMessageId,
+            $replyMarkup,
+        );
+    }
 
-        if (!$token) {
+    public function sendAnalyticsMessage(string $chatId, string $text, string $threadId): ?int
+    {
+        return $this->sendMessageUsingToken(
+            config('services.telegram.analytics_bot_token'),
+            $chatId,
+            $text,
+            $threadId,
+        );
+    }
+
+    private function sendMessageUsingToken(
+        ?string $token,
+        string $chatId,
+        string $text,
+        ?string $threadId = null,
+        ?string $replyToMessageId = null,
+        ?array $replyMarkup = null,
+    ): ?int {
+        if (! $token) {
             Log::warning('Telegram bot token is not configured.');
+
             return null;
         }
 
@@ -30,8 +56,8 @@ class TelegramBotService
         ];
 
         if ($threadId) {
-    $payload['message_thread_id'] = (int) $threadId;
-}
+            $payload['message_thread_id'] = (int) $threadId;
+        }
 
         if ($replyToMessageId) {
             $payload['reply_to_message_id'] = (int) $replyToMessageId;
@@ -73,7 +99,7 @@ class TelegramBotService
     ): ?int {
         $token = config('services.telegram.bot_token');
 
-        if (!$token) {
+        if (! $token) {
             Log::warning('Telegram bot token is not configured.');
 
             return null;
@@ -146,7 +172,7 @@ class TelegramBotService
     ): bool {
         $token = config('services.telegram.bot_token');
 
-        if (!$token) {
+        if (! $token) {
             return false;
         }
 

@@ -53,6 +53,7 @@ class TelegramTopicResource extends Resource
                 ->label('Квартира')
                 ->options(fn (): array => Apartment::query()->orderBy('name')->pluck('name', 'id')->all())
                 ->searchable()
+                ->placeholder('Без квартиры (дежурный / служебный topic)')
                 ->nullable(),
 
             Select::make('purpose')
@@ -83,23 +84,31 @@ class TelegramTopicResource extends Resource
             ->defaultSort('updated_at', 'desc')
             ->columns([
                 TextColumn::make('chat.title')
-                    ->label('Чат')
+                    ->label('Район / Telegram chat')
                     ->searchable()
                     ->placeholder('—'),
+
+                TextColumn::make('title')
+                    ->label('Topic')
+                    ->searchable()
+                    ->placeholder('Не подписан'),
 
                 TextColumn::make('telegram_thread_id')
                     ->label('Thread ID')
                     ->searchable()
                     ->sortable(),
 
-                TextColumn::make('title')
-                    ->label('Название')
-                    ->searchable()
-                    ->placeholder('Не подписан'),
-
                 TextColumn::make('apartment.name')
                     ->label('Квартира')
                     ->placeholder('—'),
+
+                TextColumn::make('mapping_status')
+                    ->label('Mapping')
+                    ->state(fn (TelegramTopic $record): string => $record->apartment_id === null
+                        ? '— не назначена'
+                        : '✅ квартира назначена')
+                    ->badge()
+                    ->color(fn (TelegramTopic $record): string => $record->apartment_id === null ? 'gray' : 'success'),
 
                 TextColumn::make('purpose')
                     ->label('Назначение')

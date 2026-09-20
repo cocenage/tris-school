@@ -76,9 +76,11 @@ return [
             )
         )),
 
-        // District digest delivery is intentionally disabled until every
-        // forum -> duty topic route has been validated in the target environment.
+        // Delivery stays disabled until its selected target has been validated.
         'evening_intelligence_delivery_enabled' => env('TELEGRAM_EVENING_INTELLIGENCE_DELIVERY_ENABLED', false),
+        'evening_intelligence_delivery_mode' => env('TELEGRAM_EVENING_INTELLIGENCE_DELIVERY_MODE', 'centralized'),
+        'evening_intelligence_central_chat_id' => env('TELEGRAM_EVENING_INTELLIGENCE_CENTRAL_CHAT_ID'),
+        'evening_intelligence_central_thread_id' => env('TELEGRAM_EVENING_INTELLIGENCE_CENTRAL_THREAD_ID'),
         'digest_districts' => [
             'navigli' => [
                 'label' => env('TELEGRAM_DISTRICT_NAVIGLI_LABEL', 'Navigli'),
