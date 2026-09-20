@@ -15,6 +15,7 @@ class TelegramOperationalEvent extends Model
         'root_message_id',
         'telegram_chat_id',
         'telegram_topic_id',
+        'apartment_id',
         'primary_type',
         'types',
         'summary',
@@ -47,6 +48,11 @@ class TelegramOperationalEvent extends Model
     public function topic(): BelongsTo
     {
         return $this->belongsTo(TelegramTopic::class, 'telegram_topic_id');
+    }
+
+    public function apartment(): BelongsTo
+    {
+        return $this->belongsTo(Apartment::class);
     }
 
     public function evidence(): HasMany

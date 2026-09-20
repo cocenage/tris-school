@@ -92,3 +92,31 @@ it('gives defect language precedence over an action verb', function () {
         ->and($decision['primary_type'])->toBeIn(['problem', 'quality_issue'])
         ->and($decision['primary_type'])->not->toBe('action');
 });
+
+it('recognizes concrete helpful actions without requiring praise', function (string $text) {
+    $decision = operationalInterpreter()->interpret($text);
+
+    expect($decision['primary_type'])->toBe('positive_contribution')
+        ->and($decision['confidence'])->toBe('high')
+        ->and($decision['role'])->toBe('positive');
+})->with([
+    'defect before arrival' => ['Я заметила дефект белья до заезда и сразу сообщила об этом'],
+    'early warning' => ['Я заранее сообщила о проблеме с бельём'],
+    'self resolution' => ['Я сама решила проблему с доступом'],
+    'helped colleague' => ['Я помогла коллеге решить проблему с ключами'],
+    'prevented error' => ['Я предотвратила ошибку с ключами'],
+    'documented issue' => ['Я подробно задокументировала проблему с замком'],
+]);
+
+it('does not mistake routine work or ungrounded praise for a positive contribution', function (string $text) {
+    $decision = operationalInterpreter()->interpret($text);
+
+    expect($decision['primary_type'])->not->toBe('positive_contribution');
+})->with([
+    'routine cleaning' => ['Я убрала квартиру'],
+    'routine check-in' => ['Я пришла на смену'],
+    'bare completion' => ['Готово'],
+    'generic praise' => ['Анна молодец, спасибо!'],
+    'routine praise' => ['Спасибо Анне, отлично убрала квартиру'],
+    'negated help' => ['Я не помогла коллеге с ключами'],
+]);

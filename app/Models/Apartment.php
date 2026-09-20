@@ -12,6 +12,12 @@ class Apartment extends Model
 {
     use HasFactory;
 
+    public function getConnectionName(): ?string
+    {
+        // Telegram analytics parents must not move Apartment relations onto analytics.
+        return parent::getConnectionName() ?? config('database.default');
+    }
+
     protected static function booted(): void
     {
         static::deleting(function (self $apartment): void {

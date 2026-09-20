@@ -256,7 +256,7 @@ it('normalizes representative replay wording without inventing an apartment', fu
         ->toContain('Уточняли время заезда.')
         ->toContain('На кухне не работала вытяжка.')
         ->toContain('В спальне не открывалась ставня.')
-        ->toContain('Нужно уточнить время заезда.')
+        ->toContain('Уточнить время заезда.')
         ->toContain('Нужно проверить, работает ли вытяжка на кухне.')
         ->not->toContain('Via ');
 });
@@ -387,4 +387,62 @@ it('uses a safe open-question fallback when no specific follow-up is supported',
     expect($text)->toContain('Есть открытый вопрос, требующий уточнения.')
         ->not->toContain('@Duty_Manager')
         ->not->toContain('Открытых вопросов на конец дня нет.');
+});
+
+it('turns concrete open questions into short apartment-specific handoff lines', function () {
+    $items = [
+        ['event_key' => 'arrival', 'summary' => 'Привет, Настя, во сколько здесь заезд? @Duty_Manager', 'context_label' => 'Via X', 'types' => ['request'], 'status' => 'open', 'evidence' => [['role' => 'question']]],
+        ['event_key' => 'linen', 'summary' => 'Девочки, подскажите пожалуйста, для дивана постельное есть в шкафу?', 'context_label' => 'Via Y', 'types' => ['request'], 'status' => 'open', 'evidence' => [['role' => 'question']]],
+        ['event_key' => 'glasses', 'summary' => 'Очки сломаны, выбрасывать? @Duty_Manager', 'context_label' => 'Via Z', 'types' => ['problem'], 'status' => 'open'],
+        ['event_key' => 'paper', 'summary' => 'Здесь 2 или 3 запасных бумаги, не могу найти', 'context_label' => 'Via W', 'types' => ['problem'], 'status' => 'open'],
+    ];
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Lambrate'],
+        'sections' => [['key' => 'attention', 'items' => $items]],
+    ]);
+
+    expect($text)->toContain('• Via X — Уточняли время заезда.')
+        ->toContain('• Via X — Уточнить время заезда.')
+        ->toContain('• Via Y — Уточнить наличие постельного белья для дивана.')
+        ->toContain('• Via Z — Уточнить, нужно ли выбрасывать сломанные очки.')
+        ->toContain('• Via W — Проверить наличие запасной бумаги.')
+        ->not->toContain('Настя')
+        ->not->toContain('Девочки')
+        ->not->toContain('Привет')
+        ->not->toContain('@Duty_Manager')
+        ->not->toContain('Есть открытый вопрос, требующий уточнения.');
+});
+
+it('does not invent an access problem from a vague cannot-open message', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Lambrate'],
+        'sections' => [['key' => 'attention', 'items' => [[
+            'event_key' => 'vague',
+            'summary' => 'Чет не открывается',
+            'context_label' => 'Via X',
+            'types' => ['problem'],
+            'status' => 'open',
+        ]]]],
+    ]);
+
+    expect($text)->toContain('• Via X — Возникла проблема: что-то не открывается.')
+        ->not->toContain('проблема с доступом');
+});
+
+it('does not move a mixed historical problem into the good-work block', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'sections' => [[
+            'key' => 'attention',
+            'items' => [[
+                'event_key' => 'historical-mixed',
+                'summary' => 'Не работает замок в квартире.',
+                'types' => ['problem', 'positive_contribution'],
+                'status' => 'open',
+            ]],
+        ]],
+    ]);
+
+    expect($text)->toContain('• Не работает замок в квартире.')
+        ->not->toContain('⭐ Хорошая работа:');
 });

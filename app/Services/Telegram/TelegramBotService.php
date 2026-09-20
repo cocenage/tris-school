@@ -30,8 +30,8 @@ class TelegramBotService
         ];
 
         if ($threadId) {
-            $payload['message_thread_id'] = $threadId;
-        }
+    $payload['message_thread_id'] = (int) $threadId;
+}
 
         if ($replyToMessageId) {
             $payload['reply_to_message_id'] = (int) $replyToMessageId;

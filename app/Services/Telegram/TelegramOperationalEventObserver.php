@@ -93,16 +93,26 @@ class TelegramOperationalEventObserver
                 $decision = $this->interpreter->interpret($text);
 
                 if (! $decision['meaningful']) {
+                    $decision = $this->delayContinuationDecision($message, $text) ?? $decision;
+                }
+
+                if (! $decision['meaningful']) {
                     return $this->completeNoEventWithCorrection($message, $observation, $decision['reason_code'], $clock);
                 }
 
                 $previousEvent = $this->previousRevisionEvents($message, $observation)->first();
                 $candidates = $previousEvent
                     ? collect([$previousEvent])
-                    : $this->correlationCandidates($message, $decision, $raw);
+                    : ($decision['primary_type'] === 'positive_contribution'
+                        ? collect()
+                        : $this->correlationCandidates($message, $decision, $raw));
 
                 if (! $previousEvent && $candidates->count() > 1 && $this->requiresExistingSituation($decision)) {
                     return $this->completeAmbiguous($observation, $clock);
+                }
+
+                if (! $previousEvent && $candidates->isEmpty() && $decision['transition'] === 'resolved') {
+                    return $this->completeNoEventWithCorrection($message, $observation, 'uncorrelated_resolution', $clock);
                 }
 
                 $this->markPreviousRevisionSuperseded($message, $observation);
@@ -161,6 +171,7 @@ class TelegramOperationalEventObserver
             'root_message_id' => $message->id,
             'telegram_chat_id' => $message->telegram_chat_id,
             'telegram_topic_id' => $message->telegram_topic_id,
+            'apartment_id' => $message->topic?->apartment_id,
             'primary_type' => $decision['primary_type'],
             'types' => $decision['types'],
             'summary' => $decision['summary'],
@@ -202,10 +213,14 @@ class TelegramOperationalEventObserver
         if ($decision['transition'] === 'resolved') {
             $transition = 'resolved';
             $after = 'resolved';
-        } elseif ($before === 'resolved') {
+        } elseif ($before === 'resolved' && $decision['role'] === 'report'
+            && $decision['primary_type'] === $event->primary_type
+            && ! $decision['is_question']
+            && $decision['confidence'] !== 'low') {
             $transition = 'reopened';
             $after = 'reopened';
-        } elseif (in_array($decision['role'], ['action', 'commitment', 'request', 'question'], true)) {
+        } elseif (in_array($decision['role'], ['action', 'commitment', 'request', 'question'], true)
+            || ($event->primary_type === 'delay' && $this->delayMinutes($decision['summary']) !== null)) {
             $transition = 'updated';
             $after = $before;
         } else {
@@ -215,13 +230,18 @@ class TelegramOperationalEventObserver
 
         $event->forceFill([
             'types' => collect($event->types)->push($decision['primary_type'])->unique()->values()->all(),
+            'summary' => $event->primary_type === 'delay' && $this->delayMinutes((string) $decision['summary']) !== null
+                ? 'Задержка примерно на '.$this->delayMinutes((string) $decision['summary']).' минут.'
+                : $event->summary,
             'status' => $after,
             'confidence' => $event->confidence === 'low' || $decision['confidence'] === 'low'
                 ? 'low'
                 : $decision['confidence'],
             'uncertainty' => $decision['uncertainty'] ?: $event->uncertainty,
             'last_observed_at' => $occurredAt,
-            'resolved_at' => $after === 'resolved' ? $occurredAt : null,
+            'resolved_at' => $after === 'resolved'
+                ? ($transition === 'resolved' ? $occurredAt : $event->resolved_at)
+                : null,
         ])->save();
 
         TelegramOperationalEventEvidence::query()->create([
@@ -247,6 +267,7 @@ class TelegramOperationalEventObserver
         if ($replyTo !== null) {
             $replyEvents = TelegramOperationalEvent::query()
                 ->where('telegram_chat_id', $message->telegram_chat_id)
+                ->where('telegram_topic_id', $message->telegram_topic_id)
                 ->whereHas('evidence', fn ($query) => $query
                     ->where('is_current_revision', true)
                     ->whereHas('observation.message', fn ($messageQuery) => $messageQuery
@@ -257,6 +278,17 @@ class TelegramOperationalEventObserver
             if ($replyEvents->isNotEmpty()) {
                 return $replyEvents;
             }
+        }
+
+        // Separate questions need an explicit reply link; a shared topic is not an answer thread.
+        if ($decision['role'] === 'question') {
+            return collect();
+        }
+
+        $delayCandidate = $this->delayCandidate($message, $decision);
+
+        if ($delayCandidate !== null) {
+            return collect([$delayCandidate]);
         }
 
         $subjectParts = array_values(array_filter(explode('|', (string) $decision['subject_key'])));
@@ -282,7 +314,7 @@ class TelegramOperationalEventObserver
             $query->where('primary_type', $decision['primary_type']);
         }
 
-        return $query->lockForUpdate()->get()->filter(function (TelegramOperationalEvent $event) use ($subjectParts, $decision): bool {
+        return $query->lockForUpdate()->get()->filter(function (TelegramOperationalEvent $event) use ($subjectParts, $decision, $message): bool {
             $candidateParts = array_values(array_filter(explode('|', (string) $event->subject_key)));
             $shared = array_values(array_intersect($subjectParts, $candidateParts));
 
@@ -290,7 +322,7 @@ class TelegramOperationalEventObserver
                 return false;
             }
 
-            $specificSubjects = ['lock', 'keys', 'payment', 'technical'];
+            $specificSubjects = ['lock', 'keys', 'payment', 'technical', 'hood_light'];
             $hasSpecificSubject = array_intersect($shared, $specificSubjects) !== [];
             $hasDetailedSubject = count($shared) >= 2
                 && collect($subjectParts)->sort()->values()->all() === collect($candidateParts)->sort()->values()->all();
@@ -299,10 +331,105 @@ class TelegramOperationalEventObserver
                 return false;
             }
 
+            if ($decision['role'] === 'report' && $decision['transition'] === 'created') {
+                $confirmedRecurrence = $event->status === 'resolved'
+                    && preg_match('/\bснова\b/ui', (string) $decision['summary']) === 1;
+
+                if (! $confirmedRecurrence && ($message->telegram_user_id === null
+                    || $event->rootMessage?->telegram_user_id !== $message->telegram_user_id)) {
+                    return false;
+                }
+
+                if (in_array('hood_light', $shared, true)
+                    && $event->last_observed_at->lt($this->messageTime($message)->subMinutes(45))
+                    && ! $confirmedRecurrence) {
+                    return false;
+                }
+            }
+
             return $decision['role'] !== 'report'
                 || $decision['transition'] !== 'created'
                 || $event->primary_type === $decision['primary_type'];
         })->values();
+    }
+
+    private function delayContinuationDecision(TelegramMessage $message, string $text): ?array
+    {
+        if (preg_match('/^(?:буду\s+)?минут\s+через\s+\d{1,3}[.!]?$/ui', $text) !== 1
+            && preg_match('/^минут\s+на\s+\d{1,3}[.!]?$/ui', $text) !== 1) {
+            return null;
+        }
+
+        $decision = [
+            'meaningful' => true,
+            'reason_code' => 'operational_delay',
+            'primary_type' => 'delay',
+            'types' => ['delay'],
+            'role' => 'action',
+            'transition' => 'updated',
+            'summary' => $text,
+            'confidence' => 'medium',
+            'uncertainty' => null,
+            'subject_key' => null,
+            'is_question' => false,
+        ];
+
+        return $this->delayCandidate($message, $decision) !== null ? $decision : null;
+    }
+
+    private function delayCandidate(TelegramMessage $message, array $decision): ?TelegramOperationalEvent
+    {
+        if ($message->telegram_user_id === null || $decision['primary_type'] !== 'delay'
+            && ! ($decision['primary_type'] === 'action'
+                && preg_match('/^уже\s+еду[.!]?$/ui', (string) $decision['summary']) === 1)) {
+            return null;
+        }
+
+        // A repeated generic delay is not enough evidence that it is the same occurrence.
+        if ($decision['primary_type'] === 'delay' && $this->delayMinutes((string) $decision['summary']) === null) {
+            return null;
+        }
+
+        if ($decision['role'] === 'report' && ! $this->isPersonalDelayText((string) $decision['summary'])) {
+            return null;
+        }
+
+        $candidates = TelegramOperationalEvent::query()
+            ->where('telegram_chat_id', $message->telegram_chat_id)
+            ->where('primary_type', 'delay')
+            ->whereIn('status', ['open', 'reopened'])
+            ->whereBetween('last_observed_at', [
+                $this->messageTime($message)->subMinutes(45),
+                $this->messageTime($message),
+            ])
+            ->where(function ($query) use ($message): void {
+                $message->telegram_topic_id === null
+                    ? $query->whereNull('telegram_topic_id')
+                    : $query->where('telegram_topic_id', $message->telegram_topic_id);
+            })
+            ->whereHas('rootMessage', fn ($query) => $query->where('telegram_user_id', $message->telegram_user_id))
+            ->lockForUpdate()
+            ->get()
+            ->filter(fn (TelegramOperationalEvent $event): bool => $this->isPersonalDelayText(
+                (string) ($event->rootMessage?->text ?: $event->rootMessage?->caption ?: '')
+            ));
+
+        return $candidates->count() === 1 ? $candidates->first() : null;
+    }
+
+    private function isPersonalDelayText(string $text): bool
+    {
+        return preg_match('/^(?:я\s+(?:скоро\s+)?(?:опозд|задерж|не\s+успе)|опозд|задержусь|не\s+успе)/ui', trim($text)) === 1;
+    }
+
+    private function delayMinutes(string $text): ?int
+    {
+        if (preg_match('/(?:минут\s+через\s+|через\s+|на\s+)(\d{1,3})\s*(?:мин(?:ут[ыу]?)?)?/ui', $text, $matches) === 1
+            && preg_match('/минут|мин\b/ui', $text) === 1) {
+            return (int) $matches[1];
+        }
+
+        return null;
     }
 
     private function requiresExistingSituation(array $decision): bool
@@ -556,11 +683,18 @@ class TelegramOperationalEventObserver
         $uncertainty = $decisions->pluck('uncertainty')->filter()->unique()->implode(' ');
         $lastEvidence = $evidence->last();
         $status = $lastEvidence?->status_after ?: $event->status;
+        $delayDetail = $event->primary_type === 'delay'
+            ? $support->map(fn (TelegramOperationalEventEvidence $item): ?int => $this->delayMinutes(
+                (string) ($item->observation->message?->text ?: $item->observation->message?->caption ?: '')
+            ))->filter(fn (?int $minutes): bool => $minutes !== null)->last()
+            : null;
 
         $event->forceFill([
             'primary_type' => $firstDecision['primary_type'] ?? $event->primary_type,
             'types' => $types->isNotEmpty() ? $types->unique()->values()->all() : $event->types,
-            'summary' => $firstDecision['summary'] ?? $event->summary,
+            'summary' => $delayDetail !== null
+                ? 'Задержка примерно на '.$delayDetail.' минут.'
+                : ($firstDecision['summary'] ?? $event->summary),
             'status' => $status,
             'confidence' => $confidence,
             'uncertainty' => $uncertainty !== '' ? $uncertainty : null,

@@ -4,6 +4,7 @@ namespace App\Services\Telegram;
 
 use App\Models\TelegramOperationalEvent;
 use App\Models\TelegramOperationalEventEvidence;
+use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
@@ -84,10 +85,11 @@ class TelegramEveningIntelligenceBuilder
             ->with([
                 'chat:id,telegram_chat_id,title',
                 'topic:id,title',
+                'apartment:id,name',
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
                     ->where('occurred_at', '<=', $end)
-                    ->with('observation.message')
+                    ->with('observation.message.telegramUser')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
             ])
@@ -183,11 +185,42 @@ class TelegramEveningIntelligenceBuilder
         $reportCount = $evidence
             ->whereIn('role', ['report', 'recurrence'])
             ->count();
+        $actor = null;
+
+        if (in_array('positive_contribution', $types, true)) {
+            $positiveMessage = $evidence->first(
+                fn (TelegramOperationalEventEvidence $item): bool => $item->role === 'positive'
+            )?->observation?->message;
+            $text = trim((string) ($positiveMessage?->text ?: $positiveMessage?->caption ?: ''));
+            $linkedUserId = $positiveMessage?->telegramUser?->linked_user_id;
+
+            // A third-person report is evidence of the action, not evidence that its sender did it.
+            if ($linkedUserId && preg_match('/^я\s+/ui', $text) === 1) {
+                $actor = User::query()->find($linkedUserId, ['id', 'name']);
+            }
+        } elseif (in_array('delay', $types, true)) {
+            $senders = $evidence->pluck('observation.message.telegram_user_id')->filter()->unique();
+
+            if ($senders->count() === 1) {
+                $report = $evidence->first(fn (TelegramOperationalEventEvidence $item): bool => $item->role === 'report')
+                    ?->observation?->message;
+                $linkedUserId = $report?->telegramUser?->linked_user_id;
+
+                if ($linkedUserId && preg_match('/^(?:я\s+(?:скоро\s+)?(?:опозд|задерж|не\s+успе)|опозд|задержусь|не\s+успе)/ui', (string) $report->text) === 1) {
+                    $actor = User::query()->find($linkedUserId, ['id', 'name']);
+                }
+            }
+        }
 
         return [
             'event_key' => $event->event_key,
+            'apartment_id' => $event->apartment_id,
             'summary' => $this->compact((string) $event->summary, 280),
-            'context_label' => $this->contextLabel($event->topic?->title),
+            'context_label' => $event->apartment?->name
+                ? $this->compact($event->apartment->name, 80)
+                : null,
+            'actor_user_id' => $actor?->id,
+            'actor_name' => $actor?->name,
             'types' => $types,
             'status' => $status,
             'confidence' => $confidence,
@@ -258,7 +291,8 @@ class TelegramEveningIntelligenceBuilder
         $risksDelays = $riskMatches->take(7)->values();
         $remaining = $this->withoutEvents($remaining, $riskMatches);
         $positiveMatches = $remaining
-            ->filter(fn (array $item) => in_array('positive_contribution', $item['types'], true));
+            ->filter(fn (array $item) => in_array('positive_contribution', $item['types'], true)
+                && collect($item['types'])->diff(['positive_contribution'])->isEmpty());
         $positive = $positiveMatches->take(7)->values();
         $remaining = $this->withoutEvents($remaining, $positiveMatches);
         $attention = $remaining

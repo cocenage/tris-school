@@ -87,6 +87,9 @@ class TelegramOperationalTestDatabase
 
         $migration = require base_path('database/migrations/2026_09_16_000000_create_telegram_operational_event_ledger.php');
         $migration->up();
+
+        $apartmentContextMigration = require base_path('database/migrations/2026_09_20_000000_add_apartment_context_to_telegram_operational_events.php');
+        $apartmentContextMigration->up();
     }
 
     public static function message(
