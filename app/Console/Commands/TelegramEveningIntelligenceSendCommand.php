@@ -110,15 +110,22 @@ class TelegramEveningIntelligenceSendCommand extends Command
             }
 
             try {
-                $messageId = $bot->sendAnalyticsMessage(
-                    $deliveryMode === 'centralized' ? $centralChatId : (string) $route['chat_id'],
-                    $text,
-                    $deliveryMode === 'centralized' ? $centralThreadId : (string) $route['duty_thread_id'],
-                );
-            } catch (Throwable) {
-                $messageId = null;
-            }
-
+    if ($deliveryMode === 'centralized') {
+        $messageId = $bot->sendMessage(
+            $centralChatId,
+            $text,
+            $centralThreadId,
+        );
+    } else {
+        $messageId = $bot->sendAnalyticsMessage(
+            (string) $route['chat_id'],
+            $text,
+            (string) $route['duty_thread_id'],
+        );
+    }
+} catch (Throwable) {
+    $messageId = null;
+}
             $results[] = $this->result(
                 $route,
                 $date,
