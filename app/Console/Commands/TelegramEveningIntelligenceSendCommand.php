@@ -19,7 +19,7 @@ class TelegramEveningIntelligenceSendCommand extends Command
         {--dry-run : Render district summaries without calling Telegram}
         {--json : Emit machine-readable per-district results}';
 
-    protected $description = 'Preview or safely deliver district evening intelligence to duty topics';
+    protected $description = 'Preview or safely deliver district evening intelligence to the configured duty topic';
 
     public function handle(
         TelegramDistrictRouteRegistry $districts,
@@ -33,12 +33,21 @@ class TelegramEveningIntelligenceSendCommand extends Command
             return self::FAILURE;
         }
 
+        $deliveryMode = (string) config('services.telegram.evening_intelligence_delivery_mode', 'centralized');
+
+        if (! in_array($deliveryMode, ['centralized', 'per-district'], true)) {
+            $this->error('Invalid evening intelligence delivery mode.');
+
+            return self::FAILURE;
+        }
+
+        $sourceRoutes = $deliveryMode === 'centralized' ? $districts->sourceRoutes() : $districts->routes();
         $routes = filled($this->option('district'))
-            ? collect([$districts->find((string) $this->option('district'))])->filter()
-            : $districts->routes();
+            ? $sourceRoutes->filter(fn (array $route): bool => $route['key'] === mb_strtolower(trim((string) $this->option('district'))))
+            : $sourceRoutes;
 
         if ($routes->isEmpty()) {
-            $this->error('No complete district duty routes are configured.');
+            $this->error('No complete district source routes are configured.');
 
             return self::FAILURE;
         }
@@ -46,6 +55,15 @@ class TelegramEveningIntelligenceSendCommand extends Command
         $dryRun = (bool) $this->option('dry-run');
         if (! $dryRun && ! (bool) config('services.telegram.evening_intelligence_delivery_enabled', false)) {
             $this->error('Evening intelligence delivery is disabled. Use --dry-run for preview.');
+
+            return self::FAILURE;
+        }
+
+        $centralChatId = trim((string) config('services.telegram.evening_intelligence_central_chat_id'));
+        $centralThreadId = trim((string) config('services.telegram.evening_intelligence_central_thread_id'));
+
+        if (! $dryRun && $deliveryMode === 'centralized' && ($centralChatId === '' || $centralThreadId === '')) {
+            $this->error('Central evening intelligence chat and duty thread must be configured.');
 
             return self::FAILURE;
         }
@@ -92,10 +110,10 @@ class TelegramEveningIntelligenceSendCommand extends Command
             }
 
             try {
-                $messageId = $bot->sendMessage(
-                    (string) $route['chat_id'],
+                $messageId = $bot->sendAnalyticsMessage(
+                    $deliveryMode === 'centralized' ? $centralChatId : (string) $route['chat_id'],
                     $text,
-                    (string) $route['duty_thread_id'],
+                    $deliveryMode === 'centralized' ? $centralThreadId : (string) $route['duty_thread_id'],
                 );
             } catch (Throwable) {
                 $messageId = null;

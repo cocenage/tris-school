@@ -1,10 +1,15 @@
 <?php
 
+use App\Filament\Resources\TelegramTopics\Pages\ListTelegramTopics;
+use App\Filament\Resources\TelegramTopics\TelegramTopicResource;
 use App\Models\Apartment;
 use App\Models\TelegramOperationalEvent;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
+use Filament\Forms\Components\Select;
+use Filament\Schemas\Schema as FilamentSchema;
+use Filament\Tables\Table;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -88,6 +93,47 @@ it('backfills an existing event when its topic receives an explicit apartment ma
 
     expect($event->fresh()->apartment_id)->toBe($apartment->id)
         ->and($event->fresh()->apartment->name)->toBe('Via X');
+});
+
+it('maps apartments per topic in one district while leaving its duty topic unmapped', function () {
+    $viaX = Apartment::create(['name' => 'Via X']);
+    $viaY = Apartment::create(['name' => 'Via Y']);
+    $viaZ = Apartment::create(['name' => 'Via Z']);
+    $observer = app(TelegramOperationalEventObserver::class);
+    $first = TelegramOperationalTestDatabase::message('Не работает замок.', messageId: '51', threadId: '11');
+    $second = TelegramOperationalTestDatabase::message('Не работает кран.', messageId: '52', threadId: '12');
+    $duty = TelegramOperationalTestDatabase::message('Дежурный topic.', messageId: '53', threadId: '99');
+    $first->topic->update(['apartment_id' => $viaX->id]);
+    $second->topic->update(['apartment_id' => $viaY->id]);
+    $observer->observe($first->fresh(['chat', 'topic', 'telegramUser', 'attachments']));
+    $observer->observe($second->fresh(['chat', 'topic', 'telegramUser', 'attachments']));
+
+    $first->topic->update(['apartment_id' => $viaZ->id]);
+    $events = TelegramOperationalEvent::query()->orderBy('id')->get();
+
+    expect($events[0]->apartment_id)->toBe($viaZ->id)
+        ->and($events[1]->apartment_id)->toBe($viaY->id)
+        ->and($duty->topic->fresh()->apartment_id)->toBeNull()
+        ->and($first->topic->fresh()->apartment_id)->toBe($viaZ->id)
+        ->and($second->topic->fresh()->apartment_id)->toBe($viaY->id);
+});
+
+it('offers only existing apartments in the searchable nullable topic editor', function () {
+    $viaX = Apartment::create(['name' => 'Via X']);
+    $viaY = Apartment::create(['name' => 'Via Y']);
+    $schema = TelegramTopicResource::form(FilamentSchema::make());
+    $select = collect($schema->getComponents())->first(fn ($component): bool => $component->getName() === 'apartment_id');
+
+    expect($select)->toBeInstanceOf(Select::class)
+        ->and($select->getOptions())->toBe([$viaX->id => 'Via X', $viaY->id => 'Via Y'])
+        ->and($select->isSearchable())->toBeTrue();
+});
+
+it('shows the source chat, topic, thread, apartment and mapping status in the topic table', function () {
+    $table = TelegramTopicResource::table(Table::make(new ListTelegramTopics));
+    $columns = $table->getColumns();
+
+    expect(array_keys($columns))->toContain('chat.title', 'title', 'telegram_thread_id', 'apartment.name', 'mapping_status');
 });
 
 it('resolves a replied access problem with evidence and shows it as resolved instead of pending', function () {

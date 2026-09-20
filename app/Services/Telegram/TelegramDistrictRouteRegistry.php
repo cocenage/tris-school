@@ -15,6 +15,15 @@ class TelegramDistrictRouteRegistry
             ->values();
     }
 
+    /** District source forums can be previewed without a per-district duty topic. */
+    public function sourceRoutes(): Collection
+    {
+        return collect(config('services.telegram.digest_districts', []))
+            ->map(fn (mixed $route, mixed $key): array => $this->normalize((string) $key, $route))
+            ->filter(fn (array $route): bool => array_diff($route['errors'], ['missing_duty_thread_id']) === [])
+            ->values();
+    }
+
     /** @return Collection<int, array<string, mixed>> */
     public function diagnostics(): Collection
     {

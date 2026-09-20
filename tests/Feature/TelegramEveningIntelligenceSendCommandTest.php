@@ -5,6 +5,7 @@ use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOperationalEventObserver;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Http;
 use Mockery\MockInterface;
 use Tests\Support\TelegramOperationalTestDatabase;
 
@@ -12,6 +13,9 @@ beforeEach(function () {
     TelegramOperationalTestDatabase::refresh();
     config([
         'services.telegram.evening_intelligence_delivery_enabled' => false,
+        'services.telegram.evening_intelligence_delivery_mode' => 'centralized',
+        'services.telegram.evening_intelligence_central_chat_id' => '-9000',
+        'services.telegram.evening_intelligence_central_thread_id' => '99',
         'services.telegram.digest_districts' => [
             'navigli' => [
                 'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11',
@@ -31,6 +35,10 @@ afterEach(function () {
 });
 
 it('dry-runs one district without calling telegram or leaking another forum', function () {
+    config([
+        'services.telegram.evening_intelligence_central_chat_id' => null,
+        'services.telegram.evening_intelligence_central_thread_id' => null,
+    ]);
     app(TelegramOperationalEventObserver::class)->observe(
         TelegramOperationalTestDatabase::message('Не работает замок в Navigli', chatId: '-1001'),
     );
@@ -38,7 +46,7 @@ it('dry-runs one district without calling telegram or leaking another forum', fu
         TelegramOperationalTestDatabase::message('Не работает замок в Lodi', messageId: '2', chatId: '-1002'),
     );
     $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldNotReceive('sendMessage'));
+        ->shouldNotReceive('sendAnalyticsMessage'));
 
     $exit = Artisan::call('telegram:evening-intelligence-send', [
         '--date' => '2026-06-17', '--district' => 'navigli', '--dry-run' => true,
@@ -53,7 +61,7 @@ it('dry-runs one district without calling telegram or leaking another forum', fu
 
 it('blocks real delivery while the feature flag is off', function () {
     $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldNotReceive('sendMessage'));
+        ->shouldNotReceive('sendAnalyticsMessage'));
 
     $this->artisan('telegram:evening-intelligence-send', [
         '--date' => '2026-06-17', '--district' => 'navigli',
@@ -65,7 +73,7 @@ it('blocks real delivery while the feature flag is off', function () {
 it('skips an empty district digest even when delivery is enabled', function () {
     config(['services.telegram.evening_intelligence_delivery_enabled' => true]);
     $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldNotReceive('sendMessage'));
+        ->shouldNotReceive('sendAnalyticsMessage'));
 
     expect(Artisan::call('telegram:evening-intelligence-send', [
         '--date' => '2026-06-17', '--district' => 'navigli', '--json' => true,
@@ -86,9 +94,9 @@ it('sends one non-empty summary to the configured duty topic through the existin
         TelegramOperationalTestDatabase::message('Не работает замок в Navigli', chatId: '-1001'),
     );
     $this->mock(TelegramBotService::class, function (MockInterface $mock): void {
-        $mock->shouldReceive('sendMessage')
+        $mock->shouldReceive('sendAnalyticsMessage')
             ->once()
-            ->with('-1001', Mockery::on(fn (string $text): bool => str_contains($text, 'Navigli')), '11')
+            ->with('-9000', Mockery::on(fn (string $text): bool => str_contains($text, 'Navigli')), '99')
             ->andReturn(123);
     });
 
@@ -105,6 +113,121 @@ it('sends one non-empty summary to the configured duty topic through the existin
     ]);
 });
 
+it('routes five independently filtered district summaries to one central duty topic', function () {
+    config([
+        'services.telegram.evening_intelligence_delivery_enabled' => true,
+        'services.telegram.digest_districts' => collect(['navigli', 'lodi', 'como', 'certosa', 'lambrate'])
+            ->mapWithKeys(fn (string $key, int $index): array => [$key => [
+                'label' => ucfirst($key),
+                'chat_id' => (string) (-1001 - $index),
+                'duty_thread_id' => null,
+                'latitude' => 45.45,
+                'longitude' => 9.17,
+            ]])->all(),
+    ]);
+
+    foreach (['navigli', 'lodi', 'como', 'certosa', 'lambrate'] as $index => $district) {
+        app(TelegramOperationalEventObserver::class)->observe(
+            TelegramOperationalTestDatabase::message(
+                'Не работает замок в '.ucfirst($district),
+                messageId: (string) (201 + $index),
+                chatId: (string) (-1001 - $index),
+            )
+        );
+    }
+
+    $sent = [];
+    $this->mock(TelegramBotService::class, function (MockInterface $mock) use (&$sent): void {
+        $mock->shouldReceive('sendAnalyticsMessage')
+            ->times(5)
+            ->withArgs(function (string $chatId, string $text, string $threadId) use (&$sent): bool {
+                $sent[] = compact('chatId', 'text', 'threadId');
+
+                return true;
+            })
+            ->andReturn(123);
+    });
+
+    expect(Artisan::call('telegram:evening-intelligence-send', ['--date' => '2026-06-17', '--json' => true]))->toBe(0);
+    $results = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR)['results'];
+
+    expect($results)->toHaveCount(5)
+        ->and(array_column($results, 'status'))->toBe(['sent', 'sent', 'sent', 'sent', 'sent'])
+        ->and(array_sum(array_column($results, 'telegram_actions')))->toBe(5)
+        ->and(collect($sent)->pluck('chatId')->unique()->all())->toBe(['-9000'])
+        ->and(collect($sent)->pluck('threadId')->unique()->all())->toBe(['99']);
+
+    foreach (['Navigli', 'Lodi', 'Como', 'Certosa', 'Lambrate'] as $index => $label) {
+        expect($sent[$index]['text'])->toContain('🌙 '.$label.' — итоги дня')
+            ->toContain('Не работает замок в '.$label);
+    }
+});
+
+it('requires a configured central target before any real delivery', function () {
+    config([
+        'services.telegram.evening_intelligence_delivery_enabled' => true,
+        'services.telegram.evening_intelligence_central_thread_id' => null,
+    ]);
+    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
+        ->shouldNotReceive('sendAnalyticsMessage'));
+
+    expect(Artisan::call('telegram:evening-intelligence-send', ['--date' => '2026-06-17']))->toBe(1);
+});
+
+it('counts no Telegram action when the analytics bot cannot deliver', function () {
+    config(['services.telegram.evening_intelligence_delivery_enabled' => true]);
+    app(TelegramOperationalEventObserver::class)->observe(
+        TelegramOperationalTestDatabase::message('Не работает замок в Navigli', chatId: '-1001'),
+    );
+    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
+        ->shouldReceive('sendAnalyticsMessage')
+        ->once()
+        ->andReturn(null));
+
+    expect(Artisan::call('telegram:evening-intelligence-send', [
+        '--date' => '2026-06-17', '--district' => 'navigli', '--json' => true,
+    ]))->toBe(1);
+
+    $result = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR)['results'][0];
+    expect($result['status'])->toBe('failed')
+        ->and($result['telegram_actions'])->toBe(0);
+});
+
+it('can switch back to preserved per-district delivery without changing source routes', function () {
+    config([
+        'services.telegram.evening_intelligence_delivery_enabled' => true,
+        'services.telegram.evening_intelligence_delivery_mode' => 'per-district',
+    ]);
+    app(TelegramOperationalEventObserver::class)->observe(
+        TelegramOperationalTestDatabase::message('Не работает замок в Navigli', chatId: '-1001'),
+    );
+    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
+        ->shouldReceive('sendAnalyticsMessage')
+        ->once()
+        ->with('-1001', Mockery::on(fn (string $text): bool => str_contains($text, 'Navigli')), '11')
+        ->andReturn(123));
+
+    expect(Artisan::call('telegram:evening-intelligence-send', [
+        '--date' => '2026-06-17', '--district' => 'navigli', '--json' => true,
+    ]))->toBe(0);
+});
+
+it('uses the analytics bot token for operational evening transport', function () {
+    config([
+        'services.telegram.bot_token' => 'main-test-token',
+        'services.telegram.analytics_bot_token' => 'analytics-test-token',
+    ]);
+    Http::fake(['*' => Http::response(['result' => ['message_id' => 123]], 200)]);
+
+    expect(app(TelegramBotService::class)->sendAnalyticsMessage('-9000', 'Test summary', '99'))->toBe(123);
+
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), '/botanalytics-test-token/sendMessage')
+        && ! str_contains($request->url(), 'main-test-token')
+        && $request['chat_id'] === '-9000'
+        && $request['message_thread_id'] === 99);
+    Http::assertSentCount(1);
+});
+
 it('catches up the frozen current day before attempting evening delivery', function () {
     Carbon::setTestNow(Carbon::parse('2026-07-23 20:30:00', 'Europe/Rome'));
     config([
@@ -113,9 +236,9 @@ it('catches up the frozen current day before attempting evening delivery', funct
     ]);
     TelegramOperationalTestDatabase::message('Не работает замок в квартире', '2026-07-23 08:00:00');
     $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldReceive('sendMessage')
+        ->shouldReceive('sendAnalyticsMessage')
         ->once()
-        ->with('-1001', Mockery::on(fn (string $text): bool => str_contains($text, 'Не работает замок')), '11')
+        ->with('-9000', Mockery::on(fn (string $text): bool => str_contains($text, 'Не работает замок')), '99')
         ->andReturn(123));
 
     expect(Artisan::call('telegram:evening-intelligence-send', [
@@ -132,7 +255,7 @@ it('stops current-day delivery if catch-up has message failures', function () {
     $observer->shouldReceive('observe')->once()->andThrow(new RuntimeException('fixture failure'));
     $this->app->instance(TelegramOperationalEventObserver::class, $observer);
     $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldNotReceive('sendMessage'));
+        ->shouldNotReceive('sendAnalyticsMessage'));
 
     expect(Artisan::call('telegram:evening-intelligence-send', [
         '--date' => '2026-07-23', '--district' => 'navigli', '--json' => true,
