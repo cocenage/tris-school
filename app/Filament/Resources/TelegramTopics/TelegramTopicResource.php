@@ -4,6 +4,7 @@ namespace App\Filament\Resources\TelegramTopics;
 
 use App\Filament\Resources\TelegramTopics\Pages\EditTelegramTopic;
 use App\Filament\Resources\TelegramTopics\Pages\ListTelegramTopics;
+use App\Models\Apartment;
 use App\Models\TelegramTopic;
 use BackedEnum;
 use Filament\Actions\EditAction;
@@ -48,6 +49,12 @@ class TelegramTopicResource extends Resource
                 ->placeholder('Например: Жалобы / Фотоотчеты / Заявки')
                 ->maxLength(255),
 
+            Select::make('apartment_id')
+                ->label('Квартира')
+                ->options(fn (): array => Apartment::query()->orderBy('name')->pluck('name', 'id')->all())
+                ->searchable()
+                ->nullable(),
+
             Select::make('purpose')
                 ->label('Назначение')
                 ->options([
@@ -89,6 +96,10 @@ class TelegramTopicResource extends Resource
                     ->label('Название')
                     ->searchable()
                     ->placeholder('Не подписан'),
+
+                TextColumn::make('apartment.name')
+                    ->label('Квартира')
+                    ->placeholder('—'),
 
                 TextColumn::make('purpose')
                     ->label('Назначение')

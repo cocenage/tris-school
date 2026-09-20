@@ -229,8 +229,24 @@ class TelegramDigestFormatter
             ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
             ->filter(fn (array $item): bool => $this->isHumanEveningEvent($item))
             ->values();
-        $items = $this->selectEveningItems($eligibleItems, 6);
-        $openQuestions = $eligibleItems
+        $positiveItems = $eligibleItems
+            ->filter(fn (array $item): bool => $this->isPositiveEveningEvent($item))
+            ->take(7)
+            ->values();
+        $otherItems = $eligibleItems
+            ->reject(fn (array $item): bool => $this->isPositiveEveningEvent($item))
+            ->filter(fn (array $item): bool => ($item['status'] ?? null) !== 'resolved'
+                || $this->hasEveningTransitionOnDay($item, 'resolved', $preview))
+            ->values();
+        $items = $this->selectEveningItems($otherItems
+            ->filter(fn (array $item): bool => ($item['status'] ?? null) !== 'resolved'
+                || $this->hasEveningTransitionOnDay($item, 'created', $preview))
+            ->values(), 6);
+        $resolvedItems = $otherItems
+            ->filter(fn (array $item): bool => ($item['status'] ?? null) === 'resolved')
+            ->take(4)
+            ->values();
+        $openQuestions = $otherItems
             ->filter(fn (array $item): bool => $this->isOpenEveningQuestion($item));
         $openLines = $openQuestions->concat($items)
             ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
@@ -246,15 +262,35 @@ class TelegramDigestFormatter
             ->values();
         $lines = [
             '🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня',
-            '',
-            'За день:',
         ];
 
-        if ($items->isEmpty()) {
-            $lines[] = '• Значимых операционных событий не зафиксировано.';
-        } else {
+        if ($items->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = 'За день:';
             foreach ($items as $item) {
                 $lines[] = '• '.$this->withEveningContext($item, $this->humanEveningSummary($item));
+            }
+        } elseif ($resolvedItems->isEmpty() && $positiveItems->isEmpty()) {
+            $lines[] = '';
+            $lines[] = 'За день:';
+            $lines[] = '• Значимых операционных событий не зафиксировано.';
+        }
+
+        if ($resolvedItems->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = '✅ Решено сегодня:';
+
+            foreach ($resolvedItems as $item) {
+                $lines[] = '• '.$this->withEveningContext($item, $this->humanEveningResolution($item));
+            }
+        }
+
+        if ($positiveItems->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = '⭐ Хорошая работа:';
+
+            foreach ($positiveItems as $item) {
+                $lines[] = '• '.$this->withEveningContext($item, $this->humanPositiveSummary($item));
             }
         }
 
@@ -269,6 +305,47 @@ class TelegramDigestFormatter
         }
 
         return implode("\n", $lines);
+    }
+
+    private function hasEveningTransitionOnDay(array $item, string $transition, array $preview): bool
+    {
+        $date = (string) ($preview['date'] ?? '');
+
+        if ($date === '') {
+            return true;
+        }
+
+        return collect($item['evidence'] ?? [])->contains(function (array $evidence) use ($transition, $date, $preview): bool {
+            if (($evidence['transition'] ?? null) !== $transition || blank($evidence['occurred_at'] ?? null)) {
+                return false;
+            }
+
+            return Carbon::parse($evidence['occurred_at'])
+                ->setTimezone($preview['timezone'] ?? config('app.timezone', 'Europe/Rome'))
+                ->toDateString() === $date;
+        });
+    }
+
+    private function isPositiveEveningEvent(array $item): bool
+    {
+        $types = collect($item['types'] ?? []);
+
+        return $types->contains('positive_contribution')
+            && $types->diff(['positive_contribution'])->isEmpty();
+    }
+
+    private function humanPositiveSummary(array $item): string
+    {
+        $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
+        $actor = $this->value($item['actor_name'] ?? null);
+
+        if ($actor !== '' && preg_match('/^я\s+/ui', $summary) === 1) {
+            $summary = preg_replace('/^я\s+/ui', '', $summary) ?: $summary;
+
+            return trim(mb_strimwidth($actor.' '.$this->sentence($summary), 0, 160, '…'));
+        }
+
+        return trim(mb_strimwidth(mb_ucfirst($this->sentence($summary)), 0, 160, '…'));
     }
 
     private function selectEveningItems(Collection $items, int $limit): Collection
@@ -334,10 +411,11 @@ class TelegramDigestFormatter
 
         $text = match (true) {
             $this->isOpenEveningQuestion($item) => $this->questionSummary($summary),
+            $this->isDoorNotOpening($summary) => 'Возникла проблема с доступом.',
             $this->isAccessProblem($summary) => $this->problemSummary($summary),
             $this->bathroomIssue($summary) !== null => $this->bathroomIssue($summary),
             $this->isLinenStorageIssue($summary) => 'Возник вопрос с хранением грязного и чистого белья.',
-            $types->contains('delay') => $this->delaySummary($summary),
+            $types->contains('delay') => $this->delaySummary($summary, $this->value($item['actor_name'] ?? null)),
             $types->contains('quality_issue') => $this->qualitySummary($summary),
             $types->contains('unanswered_question') => $this->questionSummary($summary),
             $types->contains('risk') => 'Отмечен риск: '.$this->sentence($summary),
@@ -356,6 +434,7 @@ class TelegramDigestFormatter
 
         $text = match (true) {
             $this->isOpenEveningQuestion($item) => $this->questionFollowUp($summary) ?? 'Есть открытый вопрос, требующий уточнения.',
+            $this->isDoorNotOpening($summary) => 'Проверить, решён ли вопрос с доступом в квартиру.',
             $this->isAccessProblem($summary) => 'Проверить, решён ли вопрос с доступом в квартиру.',
             $this->bathroomIssue($summary) !== null => null,
             $this->isLinenStorageIssue($summary) => null,
@@ -366,6 +445,26 @@ class TelegramDigestFormatter
         };
 
         return $text === null ? null : trim(mb_strimwidth($text, 0, 160, '…'));
+    }
+
+    private function humanEveningResolution(array $item): string
+    {
+        $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
+        $types = collect($item['types'] ?? []);
+
+        return match (true) {
+            $this->isDoorNotOpening($summary), $this->isAccessProblem($summary) => 'проблема с доступом решена.',
+            preg_match('/замок/iu', $summary) === 1 => 'проблема с замком решена.',
+            $types->contains('quality_issue') => 'замечание по качеству устранено.',
+            $types->contains('unanswered_question') => 'вопрос закрыт.',
+            $types->contains('delay') => 'ситуация с задержкой закрыта.',
+            default => 'ситуация решена.',
+        };
+    }
+
+    private function isDoorNotOpening(string $summary): bool
+    {
+        return preg_match('/(?:не\s+открыва\S*\s+двер|двер\S*\s+не\s+открыва)/iu', $summary) === 1;
     }
 
     private function withEveningContext(array $item, string $text): string
@@ -381,9 +480,13 @@ class TelegramDigestFormatter
         $summary = preg_replace('/(?:^|\s)@[\p{L}\p{N}_]+\b/u', '', $summary) ?: $summary;
         $summary = preg_replace('/^#\S+\s+/u', '', trim($summary)) ?: '';
         $summary = str_ireplace(['клмплект', 'прогоамме'], ['комплект', 'программе'], $summary);
+        $summary = preg_replace('/^(?:привет|здравствуйте|доброе\s+утро|добрый\s+день|добрый\s+вечер)[,!\.\s]+/iu', '', $summary) ?: $summary;
         $summary = preg_replace('/^(?:девочки|коллеги)[,!]?\s*(?:подскажите|скажите)(?:,?\s*пожалуйста)?[,]?\s*/iu', '', $summary) ?: $summary;
+        $summary = preg_replace('/^[\p{Lu}][\p{Ll}]{2,20}[,!:]\s*(?=(?:во\s+сколько|где|когда|есть\s+ли|для\s+\S+|можно\s+ли|сколько|что\s+делать|подскажи))/u', '', $summary) ?: $summary;
+        $summary = preg_replace('/^(?:подскажите|скажите)(?:,?\s*пожалуйста)?[,]?\s*/iu', '', $summary) ?: $summary;
+        $summary = preg_replace('/^(?:ну|эм|ээ)[,!\.]+\s*/iu', '', $summary) ?: $summary;
 
-        return trim($summary);
+        return trim(preg_replace('/\s+/u', ' ', $summary) ?: $summary);
     }
 
     private function questionSummary(string $summary): string
@@ -392,7 +495,17 @@ class TelegramDigestFormatter
             return 'Уточняли, что делать со сломанными очками.';
         }
 
-        if (preg_match('/^во сколько заезд/iu', $summary)) {
+        if ($this->isSofaBeddingQuestion($summary)) {
+            return 'Уточняли наличие постельного белья для дивана.';
+        }
+
+        if ($this->isSparePaperQuestion($summary)) {
+            return preg_match('/не\s+могу\s+найти|не\s+наш/iu', $summary)
+                ? 'Не смогли найти запасную бумагу.'
+                : 'Уточняли наличие запасной бумаги.';
+        }
+
+        if ($this->isArrivalTimeQuestion($summary)) {
             return 'Уточняли время заезда.';
         }
 
@@ -409,8 +522,16 @@ class TelegramDigestFormatter
             return 'Уточнить, нужно ли выбрасывать сломанные очки.';
         }
 
-        if (preg_match('/^во сколько заезд/iu', $summary)) {
-            return 'Нужно уточнить время заезда.';
+        if ($this->isSofaBeddingQuestion($summary)) {
+            return 'Уточнить наличие постельного белья для дивана.';
+        }
+
+        if ($this->isSparePaperQuestion($summary)) {
+            return 'Проверить наличие запасной бумаги.';
+        }
+
+        if ($this->isArrivalTimeQuestion($summary)) {
+            return 'Уточнить время заезда.';
         }
 
         if (preg_match('/^сколько (?:им )?времени нужно/iu', $summary)) {
@@ -422,10 +543,31 @@ class TelegramDigestFormatter
 
     private function isOpenEveningQuestion(array $item): bool
     {
+        $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
+
         return in_array($item['status'] ?? null, ['open', 'reopened'], true)
             && (in_array('unanswered_question', $item['types'] ?? [], true)
                 || collect($item['evidence'] ?? [])->contains(fn (array $evidence): bool => ($evidence['role'] ?? null) === 'question')
-                || str_contains($this->cleanEveningSummary((string) ($item['summary'] ?? '')), '?'));
+                || str_contains($summary, '?')
+                || $this->isSparePaperQuestion($summary));
+    }
+
+    private function isArrivalTimeQuestion(string $summary): bool
+    {
+        return preg_match('/\bво\s+сколько\b.{0,40}\bзаезд\b|\bзаезд\b.{0,40}\bво\s+сколько\b/iu', $summary) === 1;
+    }
+
+    private function isSofaBeddingQuestion(string $summary): bool
+    {
+        return preg_match('/диван/iu', $summary) === 1
+            && preg_match('/постельн|бель[еёя]/iu', $summary) === 1
+            && preg_match('/\?|есть|налич|шкаф/iu', $summary) === 1;
+    }
+
+    private function isSparePaperQuestion(string $summary): bool
+    {
+        return preg_match('/запасн.{0,20}бумаг|бумаг.{0,20}запасн/iu', $summary) === 1
+            && preg_match('/не\s+могу\s+найти|не\s+наш|есть|налич|\d+\s+или\s+\d+|\?/iu', $summary) === 1;
     }
 
     private function isBrokenGlassesQuestion(string $summary): bool
@@ -435,13 +577,15 @@ class TelegramDigestFormatter
             && preg_match('/выбрасыва|выкидыва|что\s+делать/iu', $summary) === 1;
     }
 
-    private function delaySummary(string $summary): string
+    private function delaySummary(string $summary, string $actor = ''): string
     {
         if (preg_match('/(?:на|\b)\s*(\d{1,3})\s*мин/iu', $summary, $matches)) {
-            return 'Сотрудник сообщил о задержке примерно на '.(int) $matches[1].' минут.';
+            return $actor !== ''
+                ? $actor.': задержка примерно на '.(int) $matches[1].' минут.'
+                : 'Сотрудник сообщил о задержке примерно на '.(int) $matches[1].' минут.';
         }
 
-        return 'Сотрудник сообщил о задержке.';
+        return $actor !== '' ? $actor.': задержка.' : 'Сотрудник сообщил о задержке.';
     }
 
     private function qualitySummary(string $summary): string
@@ -468,6 +612,10 @@ class TelegramDigestFormatter
 
     private function problemSummary(string $summary): string
     {
+        if (preg_match('/^ч[её]т\s+не\s+открыва/iu', $summary)) {
+            return 'Возникла проблема: что-то не открывается.';
+        }
+
         if ($this->isAccessProblem($summary)) {
             $scope = preg_match('/квартир/iu', $summary) ? ' с доступом в квартиру' : ' с доступом';
 

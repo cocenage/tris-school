@@ -74,9 +74,19 @@ class TelegramOperationalInterpreter
 
     private function detectSignal(string $text, string $assistantCategory, bool $isQuestion): ?array
     {
+        if (! $isQuestion && $this->isConcretePositiveContribution($text)) {
+            return [
+                'type' => 'positive_contribution',
+                'role' => 'positive',
+                'transition' => 'created',
+                'reason_code' => 'positive_contribution',
+                'confidence' => 'high',
+            ];
+        }
+
         $signals = [
             [
-                'pattern' => '/(исправ(?:лен|или|лено)|решен[оа]?|решили|готово|закрыли|починили|устранили|вопрос\s+закрыт)/ui',
+                'pattern' => '/(исправ(?:лен|или|лено)|решен[оа]?|решили|готово|закрыли|починили|устранили|вопрос\s+закрыт|(?:открыли|нашли|заменили)\s*[.!]?\s*$)/ui',
                 'type' => 'resolution',
                 'role' => 'resolution',
                 'transition' => 'resolved',
@@ -89,14 +99,6 @@ class TelegramOperationalInterpreter
                 'role' => 'report',
                 'transition' => 'created',
                 'reason_code' => 'quality_issue',
-                'confidence' => 'high',
-            ],
-            [
-                'pattern' => '/(?:(?:спасибо|молодец|отлично|здорово).{0,80}(?:помог|сделал|исправ|решил|убрал|привез|забрал|проверил|закрыл|подменил|выручил)|(?:помог|сделал|исправ|решил|убрал|привез|забрал|проверил|закрыл|подменил|выручил).{0,80}(?:спасибо|молодец|отлично|здорово))/ui',
-                'type' => 'positive_contribution',
-                'role' => 'positive',
-                'transition' => 'created',
-                'reason_code' => 'positive_contribution',
                 'confidence' => 'high',
             ],
             [
@@ -140,7 +142,7 @@ class TelegramOperationalInterpreter
                 'confidence' => 'high',
             ],
             [
-                'pattern' => '/(проблем|не\s+работает|слом|нет\s+ключ|не\s+откры|ошибк|не\s+могу)/ui',
+                'pattern' => '/(проблем|не\s+работает|слом|нет\s+ключ|не\s+откры|не\s+включа\S*\s+подсветк|ошибк|не\s+могу)/ui',
                 'type' => 'problem',
                 'role' => 'report',
                 'transition' => 'created',
@@ -150,6 +152,11 @@ class TelegramOperationalInterpreter
         ];
 
         foreach ($signals as $signal) {
+            if ($signal['type'] === 'resolution'
+                && preg_match('/\bне\s+(?:исправ|реш|готово|закрыли|починили|устранили|открыли|нашли|заменили)/ui', $text) === 1) {
+                continue;
+            }
+
             if (preg_match($signal['pattern'], $text) === 1) {
                 return $signal;
             }
@@ -170,6 +177,30 @@ class TelegramOperationalInterpreter
         }
 
         return null;
+    }
+
+    private function isConcretePositiveContribution(string $text): bool
+    {
+        if (preg_match('/\bне\s+(?:заметил|обнаружил|выявил|сообщил|предупредил|помог|выручил|предотвратил|задокументировал|исправил|устранил|решил)/ui', $text) === 1) {
+            return false;
+        }
+
+        $patterns = [
+            '/(?:заметил[аи]?|обнаружил[аи]?|выявил[аи]?).{0,100}(?:брак|дефект|поломк|поврежден|повреждён|ошибк|проблем).{0,100}(?:до\s+(?:заезд|заселен)|заранее|сразу\s+(?:сообщ|предупред|напис|передал))/ui',
+            '/(?:заранее|до\s+(?:заезд|заселен)).{0,80}(?:сообщил[аи]?|предупредил[аи]?|написал[аи]?).{0,100}(?:проблем|брак|дефект|поломк|ошибк|не\s+работает|недоста)/ui',
+            '/(?:сам[а]?\s+(?:решил[аи]?|исправил[аи]?|устранил[аи]?)).{0,100}(?:проблем|ошибк|поломк|неисправн|вопрос\s+с\s+доступом)/ui',
+            '/(?:помог(?:ла|ли)?|выручил[аи]?).{0,80}(?:коллег|сотрудн|ключ|доступ|проблем|поломк|ошибк)/ui',
+            '/(?:предотвратил[аи]?|не\s+допустил[аи]?).{0,80}(?:ошибк|срыв|потер|проблем)/ui',
+            '/(?:подробно|качественно|с\s+фото).{0,60}(?:задокументировал[аи]?|описал[аи]?|зафиксировал[аи]?).{0,100}(?:проблем|дефект|брак|ошибк)/ui',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $text) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function assistantSignal(string $category, bool $isQuestion): array
@@ -218,6 +249,11 @@ class TelegramOperationalInterpreter
 
     private function subjectKey(string $text): ?string
     {
+        if (preg_match('/вытяж/iu', $text) === 1
+            && preg_match('/свет|подсвет/iu', $text) === 1) {
+            return 'hood_light';
+        }
+
         $subjects = [
             'lock' => '/(замок|двер)/ui',
             'keys' => '/ключ/ui',

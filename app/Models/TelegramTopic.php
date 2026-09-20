@@ -10,9 +10,21 @@ class TelegramTopic extends Model
 {
     protected $connection = 'analytics';
 
+    protected static function booted(): void
+    {
+        static::updated(function (self $topic): void {
+            if ($topic->wasChanged('apartment_id')) {
+                TelegramOperationalEvent::query()
+                    ->where('telegram_topic_id', $topic->id)
+                    ->update(['apartment_id' => $topic->apartment_id]);
+            }
+        });
+    }
+
     protected $fillable = [
         'telegram_chat_id',
         'telegram_thread_id',
+        'apartment_id',
         'title',
         'purpose',
         'is_enabled',
@@ -30,5 +42,10 @@ class TelegramTopic extends Model
     public function messages(): HasMany
     {
         return $this->hasMany(TelegramMessage::class);
+    }
+
+    public function apartment(): BelongsTo
+    {
+        return $this->belongsTo(Apartment::class);
     }
 }
