@@ -1,137 +1,69 @@
 # TRIS Academy — Agent Instructions
 
-This repository is TRIS Academy, an internal Laravel application for staff and supervisors.
-
-These rules apply to every AI coding task in this repository unless the user explicitly overrides them.
+TRIS Academy is a mature internal Laravel application for staff and supervisors. Preserve existing behavior and make the smallest coherent change.
 
 ## Stack
 
-- PHP ^8.2
-- Laravel 12.56
-- Filament 5.4
-- Livewire 4.2
-- Blade + Livewire Volt
-- Tailwind CSS 4
-- Alpine.js 3
+- PHP 8.2+ (local runtime currently reports PHP 8.4)
+- Laravel 12, Filament 5, Livewire 4/Volt
+- Tailwind CSS 4, Alpine.js 3, Vite 7
 - Pest 4
 
-Do not use APIs or examples intended for old Filament / Livewire versions without verifying compatibility with the installed versions.
+Verify examples against the installed major versions; do not copy patterns from older Filament or Livewire releases.
 
 ## Project map
 
-Important areas:
+- `app/Models`, `app/Services`, `app/Jobs`, `app/Console/Commands` — domain and background work
+- `app/Filament` — Admin, Education, and Finance panels
+- `resources/views/components` — user-facing Volt components; some filenames contain `⚡`
+- `routes/web.php`, `routes/api.php`, `routes/console.php` — HTTP and scheduled entry points
+- `database/migrations` — primary and explicitly connection-scoped migrations
+- `tests/Unit`, `tests/Feature`, `tests/Support` — Pest suites and isolated fixtures
+- `specs`, `.specify`, `.agents/skills` — existing Spec Kit artifacts; use only when requested
+- `docs` — architecture, development, and operational safety notes
 
-- `app/Models` — Eloquent models
-- `app/Services` — domain/business services
-- `app/Jobs` — queued jobs
-- `app/Console/Commands` — Artisan commands
-- `app/Filament` — Filament resources/pages
-- `app/Policies` — authorization
-- `resources/views/components` — user-facing Livewire Volt components
-- `resources/views/layouts` — application layout
-- `routes/web.php`
-- `routes/api.php`
-- `routes/console.php`
-- `database/migrations`
+See [docs/architecture.md](docs/architecture.md), [docs/development.md](docs/development.md), and [docs/operations.md](docs/operations.md).
 
-Some Volt component filenames contain special characters such as `⚡`.
+## Before editing
 
-## Read project memory first
+1. Read the request and only the directly relevant code.
+2. Read the relevant parts of `.ai/STATE.md`, `.ai/DECISIONS.md`, `.ai/WORKFLOW.md`, and `.ai/KNOWN-ISSUES.md`.
+3. Run `git status --short`; preserve unrelated and user-owned changes.
+4. Reproduce the exact acceptance scenario when technically possible.
 
-Before doing non-trivial work, read only the relevant files:
-
-- `.ai/STATE.md`
-- `.ai/DECISIONS.md`
-- `.ai/WORKFLOW.md`
-- `.ai/KNOWN-ISSUES.md`
-
-Do not perform a broad repository audit unless the task actually requires one.
+Do not perform a repository-wide audit or start a new Spec Kit cycle unless the task explicitly requires it.
 
 ## Safety
 
-Never:
+- Never print or modify `.env`, tokens, Telegram IDs, personal data, or production data.
+- Telegram analytics uses the separate `analytics` connection. Never silently move it to the primary database.
+- Do not run migrations, replay commands that write the ledger, queue workers, scheduler commands, real Telegram sends, deploys, pushes, or external writes without explicit permission.
+- Do not delete or overwrite database copies, uploads, or runtime storage.
+- Preserve roles, policies, server-side authorization, model relationships, Livewire state, storage semantics, and integrations.
+- Treat any unclear database or external side effect as approval-required. The GREEN/YELLOW/RED matrix is in [docs/operations.md](docs/operations.md).
 
-- print or expose `.env` values;
-- print tokens, secrets, Telegram IDs or personal data;
-- modify `.env` without explicit permission;
-- delete or overwrite production SQLite copies;
-- modify user uploads/runtime storage unnecessarily;
-- run migrations without explicit permission;
-- run queue workers without explicit permission;
-- run scheduler commands without explicit permission;
-- send real Telegram messages without explicit permission;
-- invoke commands that perform external writes without explicit permission;
-- bypass server-side roles, policies or access checks.
+## Working loop
 
-Telegram analytics uses a separate `analytics` database connection.
+Understand → reproduce → trace the failing dependency chain → make the smallest fix → rerun the same scenario → add focused regression coverage → run verification.
 
-Do not silently move analytics data/models to the main database.
+Report unrelated defects instead of fixing them opportunistically. Do not replace working architecture merely because another design looks cleaner.
 
-## Scope discipline
+## Verification
 
-Modify only what is necessary for the requested task.
+Run the task's exact acceptance scenario first, then the repository verification level appropriate to the risk. Commands and selection rules are in [docs/development.md](docs/development.md).
 
-If the task is UI-only:
+For Blade, Livewire, or Alpine work, compile after structural edits and perform browser smoke testing when browser access is available. Never claim browser verification that was not performed.
 
-- do not change database schema;
-- do not change scoring;
-- do not change domain rules;
-- do not change authorization;
-- do not change Telegram;
-- do not change unrelated components.
+## Definition of Done
 
-If an unrelated bug is discovered, report it separately instead of expanding scope.
+A task is done only when:
 
-Do not start architectural refactors unless the requested task requires them.
+- the requested acceptance scenario passes;
+- relevant regression tests pass;
+- formatting/build checks required by the changed scope pass;
+- `git diff --check` passes;
+- no unrelated files or behavior were changed;
+- database, queue, scheduler, Telegram, and deployment side effects are disclosed;
+- the final report lists verification performed and any remaining gap.
 
-## Existing behavior
-
-Preserve existing:
-
-- `wire:model` semantics;
-- Livewire actions/events;
-- validation;
-- autosave/drafts;
-- storage semantics;
-- permissions;
-- model relationships;
-- external integrations.
-
-Do not replace working behavior merely because another implementation looks cleaner.
-
-## Verification rule
-
-A task is NOT complete because:
-
-- the code looks correct;
-- unit tests pass;
-- a synthetic fixture passes;
-- the agent believes the fix should work.
-
-The reported acceptance scenario itself must pass.
-
-Follow `.ai/WORKFLOW.md`.
-
-## UI work
-
-For Blade / Livewire / Alpine changes:
-
-- inspect the real component before editing;
-- determine the real scroll container/layout hierarchy;
-- preserve Livewire state;
-- compile Blade after structural edits;
-- do not make a huge Blade rewrite before checking syntax;
-- use browser smoke testing when browser access is available;
-- never claim visual/browser verification if it was not actually performed.
-
-## Quality gates
-
-Use targeted checks first.
-
-Typical full checks:
-
-```bash
-php artisan test
-vendor/bin/pint --test
-npm run build
-git diff --check
+A code review, synthetic fixture, or green unit test alone is not completion when the reported real scenario can be exercised.
