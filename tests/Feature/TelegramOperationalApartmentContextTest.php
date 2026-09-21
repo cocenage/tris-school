@@ -133,7 +133,15 @@ it('shows the source chat, topic, thread, apartment and mapping status in the to
     $table = TelegramTopicResource::table(Table::make(new ListTelegramTopics));
     $columns = $table->getColumns();
 
-    expect(array_keys($columns))->toContain('chat.title', 'title', 'telegram_thread_id', 'apartment.name', 'mapping_status');
+    expect(array_keys($columns))->toContain(
+        'chat.title',
+        'title',
+        'context_preview',
+        'telegram_thread_id',
+        'apartment_id',
+        'topic_role',
+        'mapping_status',
+    );
 });
 
 it('resolves a replied access problem with evidence and shows it as resolved instead of pending', function () {

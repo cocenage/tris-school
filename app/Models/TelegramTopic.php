@@ -44,6 +44,14 @@ class TelegramTopic extends Model
         return $this->hasMany(TelegramMessage::class);
     }
 
+    public function recentMessages(): HasMany
+    {
+        return $this->messages()
+            ->latest('sent_at')
+            ->latest('id')
+            ->limit(3);
+    }
+
     public function apartment(): BelongsTo
     {
         return $this->belongsTo(Apartment::class);
