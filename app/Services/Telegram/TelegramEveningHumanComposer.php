@@ -1,0 +1,282 @@
+<?php
+
+namespace App\Services\Telegram;
+
+use App\Models\TelegramMessage;
+use Illuminate\Support\Collection;
+use Throwable;
+
+class TelegramEveningHumanComposer
+{
+    /** @return array{include: bool, handled: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
+    public function compose(array $item): array
+    {
+        $summary = $this->clean((string) ($item['summary'] ?? ''));
+        $evidence = $this->evidenceTexts($item);
+        $context = $evidence->concat([$summary])->filter()->unique()->implode(' ');
+        $types = collect($item['types'] ?? []);
+        $isOpen = in_array($item['status'] ?? null, ['open', 'reopened'], true);
+
+        // Technical previews and legacy fixtures may contain references that
+        // are unavailable locally. Keep the existing formatter as the safe fallback.
+        if ($evidence->isEmpty()) {
+            return ['include' => true, 'handled' => false, 'summary' => null, 'follow_up' => null];
+        }
+
+        if (($item['status'] ?? null) === 'resolved' && preg_match('/закрыли\s+двер/iu', $context) === 1) {
+            return $this->result('Дверь закрыли.', null, 'Дверь закрыли.', false);
+        }
+
+        if ($this->isAccessIssue($context)) {
+            $detail = preg_match('/консьерж/iu', $context) === 1
+                ? 'Возникла проблема с доступом: консьержа не было, дверь не открывали.'
+                : 'Возникла проблема с доступом.';
+
+            return $this->result($detail, $isOpen ? 'Проверить, решён ли вопрос с доступом в квартиру.' : null);
+        }
+
+        if ($this->isLinenCourierIssue($context)) {
+            $broughtClean = preg_match('/(?:прив[её]з|прин[её]с).{0,50}(?:чист|бель)|(?:чист|бель).{0,50}(?:прив[её]з|прин[её]с)/iu', $context) === 1;
+            $didNotTakeDirty = preg_match('/(?:не\s+забрал|забрал\s+не\s+вс[её]).{0,60}(?:гряз|бель)|(?:гряз|бель).{0,60}(?:не\s+забрал|забрал\s+не\s+вс[её])/iu', $context) === 1;
+            $mentionsDirty = preg_match('/гряз/iu', $context) === 1;
+
+            if ($broughtClean && $didNotTakeDirty) {
+                return $this->result(
+                    'Курьер привёз чистое бельё, но не забрал грязное.',
+                    $isOpen ? 'Уточнить, когда курьер заберёт грязное бельё.' : null,
+                );
+            }
+
+            if ($didNotTakeDirty) {
+                return $this->result(
+                    $mentionsDirty ? 'Курьер забрал не всё грязное бельё.' : 'Курьер забрал не всё бельё.',
+                    $isOpen
+                        ? ($mentionsDirty
+                            ? 'Уточнить, когда курьер заберёт оставшееся грязное бельё.'
+                            : 'Уточнить, когда курьер заберёт оставшееся бельё.')
+                        : null,
+                );
+            }
+        }
+
+        if ($this->isLightIssue($context)) {
+            $detail = preg_match('/вытяж/iu', $context) === 1
+                ? 'У вытяжки не работает свет.'
+                : 'Не работает свет.';
+
+            return $this->result($detail, null);
+        }
+
+        if (preg_match('/пульт/iu', $context) === 1
+            && preg_match('/кондиционер|конд[её]р/iu', $context) === 1
+            && preg_match('/не\s+работает|слом/iu', $context) === 1) {
+            return $this->result(
+                'Не работает пульт кондиционера.',
+                $isOpen ? 'Проверить пульт кондиционера.' : null,
+            );
+        }
+
+        if (preg_match('/договорил\S*.{0,35}выезд\S*\s+позже|выезд\S*\s+позже/iu', $context) === 1) {
+            return $this->result('Гости договорились о более позднем выезде.', null);
+        }
+
+        if ($this->isKitchenDustIssue($context)) {
+            return $this->result('Гости сообщили о грязи на кухне и пыли.', null);
+        }
+
+        if ($this->isApartmentQualityReview($context)) {
+            return $this->result('В квартире отметили пыль на светильнике и небольшие недочёты на кухне и в ванной.', null);
+        }
+
+        if ($this->isLinenDefect($context)) {
+            $objects = collect([
+                preg_match('/полотен/iu', $context) === 1 ? 'полотенца' : null,
+                preg_match('/пододеяльник/iu', $context) === 1 ? 'пододеяльника' : null,
+            ])->filter()->values();
+
+            if ($objects->isNotEmpty()) {
+                return $this->result('Обнаружен брак '.$objects->join(' и ').'.', null);
+            }
+        }
+
+        if ($this->isConcreteQuestion($context)) {
+            return $this->question($context, $isOpen);
+        }
+
+        if ($this->isMeaninglessFragment($summary)
+            && $evidence->every(fn (string $text): bool => $this->isMeaninglessFragment($text))) {
+            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        }
+
+        if ($types->intersect(['request', 'unanswered_question'])->isNotEmpty()
+            && $this->isConversationalQuestion($context)) {
+            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        }
+
+        return ['include' => true, 'handled' => false, 'summary' => null, 'follow_up' => null];
+    }
+
+    /** @return array{include: true, handled: true, summary: string, follow_up: ?string, resolution: ?string, show_in_day: bool} */
+    private function result(
+        string $summary,
+        ?string $followUp,
+        ?string $resolution = null,
+        bool $showInDay = true,
+    ): array {
+        return [
+            'include' => true,
+            'handled' => true,
+            'summary' => $summary,
+            'follow_up' => $followUp,
+            'resolution' => $resolution,
+            'show_in_day' => $showInDay,
+        ];
+    }
+
+    /** @return array{include: true, handled: true, summary: string, follow_up: ?string} */
+    private function question(string $context, bool $isOpen): array
+    {
+        if (preg_match('/диван/iu', $context) === 1 && preg_match('/постельн|бель[еёя]/iu', $context) === 1) {
+            return $this->result(
+                'Уточняли наличие постельного белья для дивана.',
+                $isOpen ? 'Уточнить наличие постельного белья для дивана.' : null,
+            );
+        }
+
+        if (preg_match('/очк/iu', $context) === 1 && preg_match('/слом|поврежд/iu', $context) === 1) {
+            return $this->result(
+                'Уточняли, что делать со сломанными очками.',
+                $isOpen ? 'Уточнить, нужно ли выбрасывать сломанные очки.' : null,
+            );
+        }
+
+        if (preg_match('/запасн.{0,25}бумаг|бумаг.{0,25}запасн/iu', $context) === 1) {
+            return $this->result(
+                'Уточняли наличие запасной бумаги.',
+                $isOpen ? 'Проверить наличие запасной бумаги.' : null,
+            );
+        }
+
+        if (preg_match('/(?:два|2)\s+пульт/iu', $context) === 1) {
+            return $this->result(
+                'Уточняли наличие второго пульта.',
+                $isOpen ? 'Уточнить наличие второго пульта.' : null,
+            );
+        }
+
+        if (preg_match('/комплект/iu', $context) === 1 && preg_match('/программ/iu', $context) === 1) {
+            return $this->result(
+                'Уточняли, как отметить комплект в программе.',
+                $isOpen ? 'Уточнить, как отметить комплект в программе.' : null,
+            );
+        }
+
+        if (preg_match('/сколько.{0,20}времени|времени.{0,20}сколько/iu', $context) === 1) {
+            return $this->result(
+                'Уточняли, сколько времени потребуется.',
+                $isOpen ? 'Уточнить, сколько времени потребуется.' : null,
+            );
+        }
+
+        return $this->result(
+            'Уточняли время заезда.',
+            $isOpen ? 'Уточнить время заезда.' : null,
+        );
+    }
+
+    /** @return Collection<int, string> */
+    private function evidenceTexts(array $item): Collection
+    {
+        $ids = collect($item['evidence'] ?? [])
+            ->pluck('local_message_id')
+            ->filter(fn (mixed $id): bool => is_numeric($id))
+            ->take(8)
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return collect();
+        }
+
+        try {
+            $messages = TelegramMessage::query()
+                ->whereKey($ids)
+                ->get(['id', 'text', 'caption'])
+                ->keyBy('id');
+
+            return $ids->map(function (mixed $id) use ($messages): string {
+                $message = $messages->get((int) $id);
+
+                return $this->clean(mb_strimwidth((string) ($message?->text ?: $message?->caption ?: ''), 0, 500, ''));
+            })->filter()->values();
+        } catch (Throwable) {
+            return collect();
+        }
+    }
+
+    private function clean(string $text): string
+    {
+        $text = preg_replace('/(?:^|\s)@[\p{L}\p{N}_]+\b/u', '', strip_tags($text)) ?: '';
+        $text = preg_replace('/[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}]/u', '', $text) ?: $text;
+        $text = preg_replace('/^(?:привет|здравствуйте|девочки|коллеги)[,!\.\s]+/iu', '', trim($text)) ?: $text;
+        $text = preg_replace('/^[\p{Lu}][\p{Ll}]{2,20}[,!:]\s*/u', '', $text) ?: $text;
+
+        return trim(preg_replace('/\s+/u', ' ', $text) ?: $text);
+    }
+
+    private function isAccessIssue(string $text): bool
+    {
+        return preg_match('/(?:двер|доступ|консьерж|открыть\s+удал[её]нно)/iu', $text) === 1
+            && preg_match('/(?:не\s+открыва|не\s+открывают|закрыт|консьерж|доступ|открыть\s+удал[её]нно)/iu', $text) === 1;
+    }
+
+    private function isLinenCourierIssue(string $text): bool
+    {
+        return preg_match('/курьер/iu', $text) === 1 && preg_match('/бель|грязн|чист/iu', $text) === 1;
+    }
+
+    private function isLightIssue(string $text): bool
+    {
+        return preg_match('/(?:свет|подсвет)/iu', $text) === 1
+            && preg_match('/не\s+работает|не\s+включа|слом/iu', $text) === 1;
+    }
+
+    private function isKitchenDustIssue(string $text): bool
+    {
+        return preg_match('/(?:гост|отзыв)/iu', $text) === 1
+            && preg_match('/кухн/iu', $text) === 1
+            && preg_match('/гряз|пыл/iu', $text) === 1;
+    }
+
+    private function isLinenDefect(string $text): bool
+    {
+        return preg_match('/(?:брак|слом|поврежд)/iu', $text) === 1
+            && preg_match('/полотен|пододеяльник/iu', $text) === 1;
+    }
+
+    private function isApartmentQualityReview(string $text): bool
+    {
+        return preg_match('/пыл.{0,40}светильник|светильник.{0,40}пыл/iu', $text) === 1
+            && preg_match('/кухн/iu', $text) === 1
+            && preg_match('/ванн/iu', $text) === 1
+            && preg_match('/недоч[её]т|гряз/iu', $text) === 1;
+    }
+
+    private function isConcreteQuestion(string $text): bool
+    {
+        return preg_match('/(?:во\s+сколько.{0,40}заезд|заезд.{0,40}во\s+сколько|диван.{0,50}(?:постельн|бель)|очк.{0,50}(?:слом|поврежд)|запасн.{0,25}бумаг|бумаг.{0,25}запасн|(?:два|2)\s+пульт|комплект.{0,80}программ|программ.{0,80}комплект|сколько.{0,20}времени|времени.{0,20}сколько)/iu', $text) === 1;
+    }
+
+    private function isConversationalQuestion(string $text): bool
+    {
+        return str_contains($text, '?')
+            && preg_match('/(?:это\s+гости\s+или\s+ты|и\s+сколько\s+осталось|я\s+не\s+понимаю|это\s+с\s+.+\s+или\s+они|как\s+я\s+помню)/iu', $text) === 1;
+    }
+
+    private function isMeaninglessFragment(string $text): bool
+    {
+        $normalized = mb_strtolower(trim($text, " \t\n\r\0\x0B.!?(),"));
+
+        return $normalized === ''
+            || preg_match('/^(?:сломана|сломано|это\s+ошибка|есть\s+грязные\s+моменты)$/iu', $normalized) === 1;
+    }
+}

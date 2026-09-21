@@ -10,6 +10,10 @@ use Illuminate\Support\Collection;
  */
 class TelegramDigestFormatter
 {
+    public function __construct(
+        private readonly TelegramEveningHumanComposer $eveningHumanComposer,
+    ) {}
+
     public function morning(array $context): string
     {
         $lines = [
@@ -227,6 +231,12 @@ class TelegramDigestFormatter
         $eligibleItems = collect($preview['sections'] ?? [])
             ->flatMap(fn (array $section) => $section['items'] ?? [])
             ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
+            ->map(function (array $item): array {
+                $item['_human'] = $this->eveningHumanComposer->compose($item);
+
+                return $item;
+            })
+            ->filter(fn (array $item): bool => ($item['_human']['include'] ?? true) === true)
             ->filter(fn (array $item): bool => $this->isHumanEveningEvent($item))
             ->values();
         $positiveItems = $eligibleItems
@@ -240,7 +250,8 @@ class TelegramDigestFormatter
             ->values();
         $items = $this->selectEveningItems($otherItems
             ->filter(fn (array $item): bool => ($item['status'] ?? null) !== 'resolved'
-                || $this->hasEveningTransitionOnDay($item, 'created', $preview))
+                || ($item['_human']['show_in_day'] ?? true)
+                    && $this->hasEveningTransitionOnDay($item, 'created', $preview))
             ->values(), 6);
         $resolvedItems = $otherItems
             ->filter(fn (array $item): bool => ($item['status'] ?? null) === 'resolved')
@@ -406,6 +417,10 @@ class TelegramDigestFormatter
 
     private function humanEveningSummary(array $item): string
     {
+        if (filled($item['_human']['summary'] ?? null)) {
+            return (string) $item['_human']['summary'];
+        }
+
         $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
         $types = collect($item['types'] ?? []);
 
@@ -429,6 +444,10 @@ class TelegramDigestFormatter
 
     private function humanEveningFollowUp(array $item): ?string
     {
+        if (($item['_human']['handled'] ?? false) === true) {
+            return $item['_human']['follow_up'] ?? null;
+        }
+
         $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
         $types = collect($item['types'] ?? []);
 
@@ -449,6 +468,10 @@ class TelegramDigestFormatter
 
     private function humanEveningResolution(array $item): string
     {
+        if (filled($item['_human']['resolution'] ?? null)) {
+            return (string) $item['_human']['resolution'];
+        }
+
         $summary = $this->cleanEveningSummary((string) ($item['summary'] ?? ''));
         $types = collect($item['types'] ?? []);
 
