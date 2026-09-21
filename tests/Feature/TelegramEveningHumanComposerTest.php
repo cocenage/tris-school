@@ -72,6 +72,20 @@ it('keeps concrete question follow-up and drops contextless chat questions', fun
         ->toMatchArray(['include' => false]);
 });
 
+it('suppresses acknowledgement-only chatter without losing an operational fact after it', function () {
+    $acknowledgement = TelegramOperationalTestDatabase::message('Да, хорошо, спасибо.', messageId: '503');
+    $fact = TelegramOperationalTestDatabase::message('Да, курьер забрал грязное бельё.', messageId: '504');
+    $composer = app(TelegramEveningHumanComposer::class);
+
+    expect($composer->compose(humanItem($acknowledgement->text, [$acknowledgement->id], ['request'])))
+        ->toMatchArray(['include' => false])
+        ->and($composer->compose(humanItem($fact->text, [$fact->id], ['action'])))
+        ->toMatchArray([
+            'include' => true,
+            'summary' => 'Курьер забрал грязное бельё.',
+        ]);
+});
+
 it('keeps apartment context and falls back deterministically when evidence is unavailable', function () {
     $preview = [
         'date' => '2026-09-20',
@@ -96,10 +110,17 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
         'Navigli' => [
             ['Стою здесь, консьержа нет. Не открывают пока. Если сможешь открыть удалённо.', 'Via N1', ['problem']],
             ['Курьер бельё принёс, но грязное не забрал.', 'Via N2', ['problem']],
+            ['Я немного задерживаюсь.', 'Via N3', ['delay'], 'Анна'],
+            ['Буду через 10 минут.', 'Via N3', ['delay'], 'Анна'],
+            ['Мне же не нужно ПМ ждать?', 'Via N4', ['request']],
+            ['Не знаю, было ли это сломано раньше.', 'Via N5', ['problem']],
         ],
         'Lodi' => [
             ['Не работает свет.', 'Via L1', ['problem']],
             ['Да, это гости или ты?☺️ И сколько осталось.', 'Via L2', ['request']],
+            ['Хорошо, поняла, спасибо.', 'Via L3', ['request']],
+            ['Я немного задерживаюсь.', 'Via L4', ['delay'], 'Мария'],
+            ['Одеяла возьми из шкафа и разложи по кроватям.', 'Via L5', ['action']],
         ],
         'Como' => [
             ['Гости оставили отзыв: на кухне грязно и много пыли.', 'Via C1', ['quality_issue']],
@@ -107,11 +128,17 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
         'Certosa' => [
             ['Стою у двери, не открывают.', 'Via T1', ['problem']],
             ['Курьер забрал не всё бельё.', 'Via T2', ['problem']],
+            ['Немного задерживаюсь.', 'Via T3', ['delay'], 'Ольга'],
+            ['Что это за звук?', 'Via T4', ['request']],
+            ['Скачай видео и закрой уборку.', 'Via T5', ['action']],
         ],
         'Lambrate' => [
             ['Сломана.', 'Via B1', ['problem']],
             ['Это ошибка(.', 'Via B2', ['problem']],
-            ['Брак полотенца и пододеяльника.', 'Via B3', ['quality_issue']],
+            ['Брак полотенца.', 'Via B3', ['quality_issue']],
+            ['Брак пододеяльника.', 'Via B4', ['quality_issue']],
+            ['Одеяла здесь есть?', 'Via B5', ['unanswered_question']],
+            ['Да, хорошо, спасибо.', 'Via B6', ['request']],
         ],
     ];
     $previews = [];
@@ -120,7 +147,9 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
     foreach ($fixtures as $district => $events) {
         $items = [];
 
-        foreach ($events as [$text, $apartment, $types]) {
+        foreach ($events as $event) {
+            [$text, $apartment, $types] = $event;
+            $actor = $event[3] ?? null;
             $message = TelegramOperationalTestDatabase::message(
                 $text,
                 sentAt: '2026-09-20 10:00:00',
@@ -130,6 +159,7 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
             $items[] = [
                 ...humanItem($text, [$message->id], $types),
                 'context_label' => $apartment,
+                'actor_name' => $actor,
             ];
         }
 
@@ -144,14 +174,28 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
     expect($previews['Navigli'])
         ->toContain('Via N1 — Возникла проблема с доступом: консьержа не было, дверь не открывали.')
         ->toContain('Via N2 — Курьер привёз чистое бельё, но не забрал грязное.')
+        ->toContain('Via N3 — Анна: задержка примерно на 10 минут.')
+        ->and(substr_count($previews['Navigli'], 'Via N3 —'))->toBe(1)
+        ->and($previews['Navigli'])->not->toContain('ПМ ждать')
+        ->not->toContain('сломано раньше')
         ->and($previews['Lodi'])->toContain('Via L1 — Не работает свет.')
+        ->toContain('Via L4 — Мария: небольшая задержка.')
         ->not->toContain('это гости или ты')
+        ->not->toContain('поняла, спасибо')
+        ->not->toContain('Одеяла возьми')
         ->and($previews['Como'])->toContain('Via C1 — Гости сообщили о грязи на кухне и пыли.')
         ->and($previews['Certosa'])->toContain('Via T1 — Возникла проблема с доступом.')
         ->toContain('Via T2 — Курьер забрал не всё бельё.')
-        ->and($previews['Lambrate'])->toContain('Via B3 — Обнаружен брак полотенца и пододеяльника.')
+        ->toContain('Via T3 — Ольга: небольшая задержка.')
+        ->not->toContain('Что это за звук')
+        ->not->toContain('Скачай видео')
+        ->and($previews['Lambrate'])->toContain('Via B3 — Обнаружен брак полотенца.')
+        ->toContain('Via B4 — Обнаружен брак пододеяльника.')
+        ->toContain('Via B5 — Уточняли наличие одеял в квартире.')
+        ->toContain('Via B5 — Уточнить наличие одеял в квартире.')
         ->not->toContain('Сломана')
         ->not->toContain('Это ошибка')
+        ->not->toContain('Да, хорошо, спасибо')
         ->and(collect($previews)->implode("\n"))->not->toContain('@')
         ->not->toContain('☺️')
         ->not->toContain('Есть открытый вопрос, требующий уточнения.');

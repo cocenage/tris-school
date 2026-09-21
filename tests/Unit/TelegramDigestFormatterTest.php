@@ -372,7 +372,7 @@ it('turns the reported Navigli handoff into natural events and one concrete foll
         ->and(mb_strlen($text))->toBeLessThan(600);
 });
 
-it('uses a safe open-question fallback when no specific follow-up is supported', function () {
+it('suppresses an open question when no specific follow-up is supported', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'district' => ['label' => 'Navigli'],
         'sections' => [['key' => 'attention', 'items' => [[
@@ -384,9 +384,10 @@ it('uses a safe open-question fallback when no specific follow-up is supported',
         ]]]],
     ]);
 
-    expect($text)->toContain('Есть открытый вопрос, требующий уточнения.')
+    expect($text)->not->toContain('Что делать с найденной вещью')
+        ->not->toContain('Есть открытый вопрос, требующий уточнения.')
         ->not->toContain('@Duty_Manager')
-        ->not->toContain('Открытых вопросов на конец дня нет.');
+        ->toContain('Открытых вопросов на конец дня нет.');
 });
 
 it('turns concrete open questions into short apartment-specific handoff lines', function () {
