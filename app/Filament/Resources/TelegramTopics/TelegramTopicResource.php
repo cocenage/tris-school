@@ -6,7 +6,9 @@ use App\Filament\Resources\TelegramTopics\Pages\EditTelegramTopic;
 use App\Filament\Resources\TelegramTopics\Pages\ListTelegramTopics;
 use App\Models\Apartment;
 use App\Models\TelegramTopic;
+use App\Services\Telegram\TelegramTopicPresenter;
 use BackedEnum;
+use Filament\Actions\Action;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -14,8 +16,13 @@ use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
+use Filament\Tables\Columns\SelectColumn;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
+use Filament\Tables\Filters\TernaryFilter;
+use Filament\Tables\Grouping\Group;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 use UnitEnum;
 
 class TelegramTopicResource extends Resource
@@ -54,6 +61,9 @@ class TelegramTopicResource extends Resource
                 ->options(fn (): array => Apartment::query()->orderBy('name')->pluck('name', 'id')->all())
                 ->searchable()
                 ->placeholder('Без квартиры (дежурный / служебный topic)')
+                ->helperText(fn (?TelegramTopic $record): ?string => $record && app(TelegramTopicPresenter::class)->isServiceTopic($record)
+                    ? 'Это служебный topic: квартира не требуется. Если mapping уже есть, его можно очистить вручную.'
+                    : null)
                 ->nullable(),
 
             Select::make('purpose')
@@ -68,6 +78,7 @@ class TelegramTopicResource extends Resource
                     'salary' => 'Зарплата',
                     'vacation' => 'Отпуск',
                     'day_off' => 'Выходные',
+                    'mobility' => 'Транспорт',
                     'other' => 'Другое',
                 ])
                 ->searchable(),
@@ -81,34 +92,66 @@ class TelegramTopicResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
-            ->defaultSort('updated_at', 'desc')
+            ->modifyQueryUsing(fn (Builder $query): Builder => $query->with([
+                'chat',
+                'apartment',
+                'recentMessages',
+            ]))
+            ->groups([
+                Group::make('chat.title')
+                    ->label('Район / Telegram chat')
+                    ->getTitleFromRecordUsing(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->chatLabel($record->chat))
+                    ->collapsible(),
+            ])
+            ->defaultGroup('chat.title')
+            ->defaultSort('telegram_thread_id')
             ->columns([
                 TextColumn::make('chat.title')
                     ->label('Район / Telegram chat')
+                    ->formatStateUsing(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->chatLabel($record->chat))
                     ->searchable()
                     ->placeholder('—'),
 
                 TextColumn::make('title')
                     ->label('Topic')
+                    ->state(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->title($record))
+                    ->description(fn (TelegramTopic $record): ?string => app(TelegramTopicPresenter::class)->hasHumanTitle($record)
+                        ? null
+                        : 'Название Telegram не сохранено')
                     ->searchable()
                     ->placeholder('Не подписан'),
+
+                TextColumn::make('context_preview')
+                    ->label('Контекст последних сообщений')
+                    ->state(fn (TelegramTopic $record): ?string => app(TelegramTopicPresenter::class)->contextPreview($record))
+                    ->placeholder('Контекст не найден')
+                    ->wrap()
+                    ->limit(230),
 
                 TextColumn::make('telegram_thread_id')
                     ->label('Thread ID')
                     ->searchable()
-                    ->sortable(),
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
 
-                TextColumn::make('apartment.name')
+                SelectColumn::make('apartment_id')
                     ->label('Квартира')
-                    ->placeholder('—'),
+                    ->options(fn (): array => Apartment::query()->orderBy('name')->pluck('name', 'id')->all())
+                    ->searchableOptions()
+                    ->native(false)
+                    ->placeholder('Без квартиры'),
+
+                TextColumn::make('topic_role')
+                    ->label('Роль topic')
+                    ->state(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->roleLabel($record))
+                    ->badge()
+                    ->color(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->isServiceTopic($record) ? 'info' : 'gray'),
 
                 TextColumn::make('mapping_status')
                     ->label('Mapping')
-                    ->state(fn (TelegramTopic $record): string => $record->apartment_id === null
-                        ? '— не назначена'
-                        : '✅ квартира назначена')
+                    ->state(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->mappingLabel($record))
                     ->badge()
-                    ->color(fn (TelegramTopic $record): string => $record->apartment_id === null ? 'gray' : 'success'),
+                    ->color(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->mappingColor($record)),
 
                 TextColumn::make('purpose')
                     ->label('Назначение')
@@ -123,15 +166,40 @@ class TelegramTopicResource extends Resource
                         'salary' => 'Зарплата',
                         'vacation' => 'Отпуск',
                         'day_off' => 'Выходные',
+                        'mobility' => 'Транспорт',
                         'other' => 'Другое',
                         default => '—',
-                    }),
+                    })
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 IconColumn::make('is_enabled')
                     ->label('Активен')
                     ->boolean(),
             ])
+            ->filters([
+                SelectFilter::make('telegram_chat_id')
+                    ->label('Район / Telegram chat')
+                    ->options(fn (): array => app(TelegramTopicPresenter::class)->chatOptions())
+                    ->searchable(),
+
+                TernaryFilter::make('without_apartment')
+                    ->label('Квартира')
+                    ->placeholder('Все topics')
+                    ->trueLabel('Только без квартиры')
+                    ->falseLabel('Только с квартирой')
+                    ->queries(
+                        true: fn (Builder $query): Builder => $query->whereNull('apartment_id'),
+                        false: fn (Builder $query): Builder => $query->whereNotNull('apartment_id'),
+                        blank: fn (Builder $query): Builder => $query,
+                    ),
+            ])
             ->recordActions([
+                Action::make('open_telegram')
+                    ->label('Открыть в Telegram')
+                    ->icon('heroicon-o-arrow-top-right-on-square')
+                    ->url(fn (TelegramTopic $record): ?string => app(TelegramTopicPresenter::class)->telegramUrl($record))
+                    ->openUrlInNewTab()
+                    ->visible(fn (TelegramTopic $record): bool => app(TelegramTopicPresenter::class)->telegramUrl($record) !== null),
                 EditAction::make(),
             ]);
     }
