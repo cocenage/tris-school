@@ -11,11 +11,17 @@ class TelegramEveningHumanComposer
     /** @return array{include: bool, handled: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
     public function compose(array $item): array
     {
-        $summary = $this->clean((string) ($item['summary'] ?? ''));
+        $rawSummary = (string) ($item['summary'] ?? '');
+        $summary = $this->clean($rawSummary);
         $evidence = $this->evidenceTexts($item);
         $context = $evidence->concat([$summary])->filter()->unique()->implode(' ');
         $types = collect($item['types'] ?? []);
         $isOpen = in_array($item['status'] ?? null, ['open', 'reopened'], true);
+        $actor = $this->clean((string) ($item['actor_name'] ?? ''));
+
+        if ($summary === '' && $evidence->isEmpty()) {
+            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        }
 
         // Technical previews and legacy fixtures may contain references that
         // are unavailable locally. Keep the existing formatter as the safe fallback.
@@ -57,6 +63,10 @@ class TelegramEveningHumanComposer
                         : null,
                 );
             }
+        }
+
+        if ($types->contains('delay')) {
+            return $this->result($this->delaySummary($context, $actor), null);
         }
 
         if ($this->isLightIssue($context)) {
@@ -103,14 +113,22 @@ class TelegramEveningHumanComposer
             return $this->question($context, $isOpen);
         }
 
+        if ($this->isInstructionOrRoutine($context)) {
+            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        }
+
         if ($this->isMeaninglessFragment($summary)
             && $evidence->every(fn (string $text): bool => $this->isMeaninglessFragment($text))) {
             return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
         }
 
         if ($types->intersect(['request', 'unanswered_question'])->isNotEmpty()
-            && $this->isConversationalQuestion($context)) {
+            && (str_contains($context, '?') || $this->isConversationalQuestion($context))) {
             return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        }
+
+        if ($summary !== '' && $this->startsWithAcknowledgementFraming($rawSummary)) {
+            return $this->result(mb_ucfirst(rtrim($summary, " .!?\t\n\r\0\x0B")).'.', null);
         }
 
         return ['include' => true, 'handled' => false, 'summary' => null, 'follow_up' => null];
@@ -178,10 +196,14 @@ class TelegramEveningHumanComposer
             );
         }
 
-        return $this->result(
-            'Уточняли время заезда.',
-            $isOpen ? 'Уточнить время заезда.' : null,
-        );
+        if ($this->isBlanketQuestion($context)) {
+            return $this->result(
+                'Уточняли наличие одеял в квартире.',
+                $isOpen ? 'Уточнить наличие одеял в квартире.' : null,
+            );
+        }
+
+        return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
     }
 
     /** @return Collection<int, string> */
@@ -219,6 +241,7 @@ class TelegramEveningHumanComposer
         $text = preg_replace('/[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}]/u', '', $text) ?: $text;
         $text = preg_replace('/^(?:привет|здравствуйте|девочки|коллеги)[,!\.\s]+/iu', '', trim($text)) ?: $text;
         $text = preg_replace('/^[\p{Lu}][\p{Ll}]{2,20}[,!:]\s*/u', '', $text) ?: $text;
+        $text = preg_replace('/^(?:(?:да|хорошо|понял(?:а)?|спасибо|ок(?:ей)?)[,;.!?)\s]*)+/iu', '', $text) ?? $text;
 
         return trim(preg_replace('/\s+/u', ' ', $text) ?: $text);
     }
@@ -263,7 +286,7 @@ class TelegramEveningHumanComposer
 
     private function isConcreteQuestion(string $text): bool
     {
-        return preg_match('/(?:во\s+сколько.{0,40}заезд|заезд.{0,40}во\s+сколько|диван.{0,50}(?:постельн|бель)|очк.{0,50}(?:слом|поврежд)|запасн.{0,25}бумаг|бумаг.{0,25}запасн|(?:два|2)\s+пульт|комплект.{0,80}программ|программ.{0,80}комплект|сколько.{0,20}времени|времени.{0,20}сколько)/iu', $text) === 1;
+        return preg_match('/(?:во\s+сколько.{0,40}заезд|заезд.{0,40}во\s+сколько|диван.{0,50}(?:постельн|бель)|очк.{0,50}(?:слом|поврежд)|запасн.{0,25}бумаг|бумаг.{0,25}запасн|(?:два|2)\s+пульт|комплект.{0,80}программ|программ.{0,80}комплект|сколько.{0,20}времени|времени.{0,20}сколько|одеял.{0,50}(?:есть|где|сколько|налич)|(?:есть|где|сколько|налич).{0,50}одеял)/iu', $text) === 1;
     }
 
     private function isConversationalQuestion(string $text): bool
@@ -277,6 +300,45 @@ class TelegramEveningHumanComposer
         $normalized = mb_strtolower(trim($text, " \t\n\r\0\x0B.!?(),"));
 
         return $normalized === ''
-            || preg_match('/^(?:сломана|сломано|это\s+ошибка|есть\s+грязные\s+моменты)$/iu', $normalized) === 1;
+            || preg_match('/^(?:сломана|сломано|это\s+ошибка|есть\s+грязные\s+моменты|хорошо|поняла|понял|спасибо|ок)$/iu', $normalized) === 1
+            || preg_match('/^(?:(?:хорошо|поняла|понял|спасибо|ок)[,.\s]*)+$/iu', $normalized) === 1
+            || preg_match('/не\s+знаю.{0,40}было\s+ли.{0,30}сломан.{0,30}раньше/iu', $normalized) === 1;
+    }
+
+    private function startsWithAcknowledgementFraming(string $text): bool
+    {
+        return preg_match('/^\s*(?:да|хорошо|понял(?:а)?|спасибо|ок(?:ей)?)(?:\b|[,.!?)])/iu', $text) === 1;
+    }
+
+    private function delaySummary(string $context, string $actor): string
+    {
+        if (preg_match('/(?:следующ|втор).{0,35}квартир|квартир.{0,35}(?:следующ|втор)/iu', $context) === 1
+            && preg_match('/немного|небольш|чуть/iu', $context) === 1) {
+            return $actor !== ''
+                ? $actor.': небольшая задержка перед следующей квартирой.'
+                : 'Сотрудник предупредил о небольшой задержке перед следующей квартирой.';
+        }
+
+        if (preg_match('/(?:на|через|примерно)?\s*(\d{1,3})\s*мин/iu', $context, $matches) === 1) {
+            return $actor !== ''
+                ? $actor.': задержка примерно на '.(int) $matches[1].' минут.'
+                : 'Сотрудник сообщил о задержке примерно на '.(int) $matches[1].' минут.';
+        }
+
+        return $actor !== '' ? $actor.': небольшая задержка.' : 'Сотрудник сообщил о задержке.';
+    }
+
+    private function isBlanketQuestion(string $text): bool
+    {
+        return preg_match('/одеял/iu', $text) === 1
+            && preg_match('/\?|есть|где|сколько|налич/iu', $text) === 1;
+    }
+
+    private function isInstructionOrRoutine(string $text): bool
+    {
+        return preg_match(
+            '/(?:мне\s+же\s+не\s+нужно.{0,20}ждать|когда\s+я\s+была\s+уже\s+на\s+другой\s+квартире|скача\S*\s+видео|загруз\S*.{0,30}сайт|закр\S*.{0,20}уборк|одеял.{0,30}(?:возьми|положи|разложи)|(?:возьми|положи|разложи).{0,30}одеял)/iu',
+            $text,
+        ) === 1;
     }
 }

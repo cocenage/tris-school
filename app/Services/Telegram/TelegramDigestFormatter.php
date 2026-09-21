@@ -239,6 +239,7 @@ class TelegramDigestFormatter
             ->filter(fn (array $item): bool => ($item['_human']['include'] ?? true) === true)
             ->filter(fn (array $item): bool => $this->isHumanEveningEvent($item))
             ->values();
+        $eligibleItems = $this->consolidateEveningItems($eligibleItems);
         $positiveItems = $eligibleItems
             ->filter(fn (array $item): bool => $this->isPositiveEveningEvent($item))
             ->take(7)
@@ -409,10 +410,91 @@ class TelegramDigestFormatter
             return false;
         }
 
+        if ($this->isOpenEveningQuestion($item)
+            && blank($item['_human']['follow_up'] ?? $this->questionFollowUp($summary))) {
+            return false;
+        }
+
         return ! preg_match(
             '/(?:\bинструкция\b|\bшаблон\b|\bалгоритм\b|\bделаем\s+\d+(?:-\d+)?\s+фото\b|^\s*при осмотре .+\b(?:делаем|сделайте|необходимо)\b|\?\s*(?:нужно|необходимо)\b.+\bчтобы\b)/iu',
             $summary,
         );
+    }
+
+    private function consolidateEveningItems(Collection $items): Collection
+    {
+        $result = collect();
+
+        foreach ($items as $item) {
+            if (! in_array('delay', $item['types'] ?? [], true)) {
+                $result->push($item);
+
+                continue;
+            }
+
+            $actor = $this->value($item['actor_name'] ?? null);
+            $context = $this->value($item['context_label'] ?? null);
+            $occurredAt = $this->eveningItemOccurredAt($item);
+
+            if (($actor === '' && $context === '') || $occurredAt === null) {
+                $result->push($item);
+
+                continue;
+            }
+
+            $matchingIndex = $result->search(function (array $candidate) use ($actor, $context, $item, $occurredAt): bool {
+                $candidateOccurredAt = $this->eveningItemOccurredAt($candidate);
+
+                return in_array('delay', $candidate['types'] ?? [], true)
+                    && ($candidate['status'] ?? null) === ($item['status'] ?? null)
+                    && $this->value($candidate['actor_name'] ?? null) === $actor
+                    && $this->value($candidate['context_label'] ?? null) === $context
+                    && $candidateOccurredAt !== null
+                    && abs($candidateOccurredAt->diffInMinutes($occurredAt, false)) <= 90;
+            });
+
+            if ($matchingIndex === false) {
+                $result->push($item);
+
+                continue;
+            }
+
+            $candidate = $result->get($matchingIndex);
+
+            if ($this->eveningItemRichness($item) > $this->eveningItemRichness($candidate)) {
+                $result->put($matchingIndex, $item);
+            }
+        }
+
+        return $result->values();
+    }
+
+    private function eveningItemOccurredAt(array $item): ?Carbon
+    {
+        $value = collect($item['evidence'] ?? [])->pluck('occurred_at')->filter()->first()
+            ?? ($item['latest_activity_at'] ?? null);
+
+        if (blank($value)) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function eveningItemRichness(array $item): int
+    {
+        $summary = (string) ($item['_human']['summary'] ?? $item['summary'] ?? '');
+        $score = mb_strlen($summary) + count($item['evidence'] ?? []);
+
+        if (preg_match('/\d+\s*мин|следующ|втор.{0,20}квартир/iu', $summary) === 1) {
+            $score += 100;
+        }
+
+        return $score;
     }
 
     private function humanEveningSummary(array $item): string
@@ -452,7 +534,7 @@ class TelegramDigestFormatter
         $types = collect($item['types'] ?? []);
 
         $text = match (true) {
-            $this->isOpenEveningQuestion($item) => $this->questionFollowUp($summary) ?? 'Есть открытый вопрос, требующий уточнения.',
+            $this->isOpenEveningQuestion($item) => $this->questionFollowUp($summary),
             $this->isDoorNotOpening($summary) => 'Проверить, решён ли вопрос с доступом в квартиру.',
             $this->isAccessProblem($summary) => 'Проверить, решён ли вопрос с доступом в квартиру.',
             $this->bathroomIssue($summary) !== null => null,
