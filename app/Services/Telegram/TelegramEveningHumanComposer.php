@@ -2,12 +2,70 @@
 
 namespace App\Services\Telegram;
 
+use App\Models\Apartment;
 use App\Models\TelegramMessage;
+use App\Models\User;
 use Illuminate\Support\Collection;
 use Throwable;
 
 class TelegramEveningHumanComposer
 {
+    public function enrich(array $item): array
+    {
+        $ids = collect($item['evidence'] ?? [])
+            ->pluck('local_message_id')
+            ->filter(fn (mixed $id): bool => is_numeric($id))
+            ->take(8)
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return $item;
+        }
+
+        try {
+            $messages = TelegramMessage::query()
+                ->with(['telegramUser', 'topic'])
+                ->whereKey($ids)
+                ->get()
+                ->keyBy('id');
+
+            if (in_array('delay', $item['types'] ?? [], true)
+                && blank($item['actor_user_id'] ?? null)
+                && blank($item['actor_name'] ?? null)) {
+                $reportIds = collect($item['evidence'] ?? [])
+                    ->whereIn('role', ['report', 'recurrence', 'positive'])
+                    ->pluck('local_message_id');
+                $actorIds = $reportIds
+                    ->map(fn (mixed $id) => $messages->get((int) $id)?->telegramUser?->linked_user_id)
+                    ->filter()
+                    ->unique()
+                    ->values();
+
+                if ($actorIds->count() === 1 && $actor = User::query()->find($actorIds->first(), ['id', 'name'])) {
+                    $item['actor_user_id'] = $actor->id;
+                    $item['actor_name'] = $actor->name;
+                }
+            }
+
+            if (blank($item['apartment_id'] ?? null) && blank($item['context_label'] ?? null)) {
+                $apartmentIds = $messages
+                    ->map(fn (TelegramMessage $message) => $message->topic?->apartment_id)
+                    ->filter()
+                    ->unique()
+                    ->values();
+
+                if ($apartmentIds->count() === 1 && $apartment = Apartment::query()->find($apartmentIds->first(), ['id', 'name'])) {
+                    $item['apartment_id'] = $apartment->id;
+                    $item['context_label'] = $apartment->name;
+                }
+            }
+        } catch (Throwable) {
+            return $item;
+        }
+
+        return $item;
+    }
+
     /** @return array{include: bool, handled: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
     public function compose(array $item): array
     {
@@ -63,6 +121,31 @@ class TelegramEveningHumanComposer
                         : null,
                 );
             }
+        }
+
+        if (preg_match('/гостев.{0,20}локер|локер.{0,20}гостев/iu', $context) === 1
+            && preg_match('/программ/iu', $context) === 1
+            && preg_match('/ошиб|неверн/iu', $context) === 1
+            && preg_match('/(?:должен\s+быть|правильн\S*\s+код)\D{0,10}(\d{3,8})/iu', $context, $matches) === 1) {
+            return $this->result(
+                'В программе указан неверный код гостевого локера; правильный код — '.$matches[1].'.',
+                $isOpen ? 'Исправить код гостевого локера в программе.' : null,
+            );
+        }
+
+        if (preg_match('/гост\S*\s+забыл\S*.{0,40}конверт|конверт.{0,40}забыл/iu', $context) === 1) {
+            return $this->result(
+                'Гость забыл конверт; нужно найти его и сообщить о находке.',
+                $isOpen ? 'Найти конверт и сообщить о находке.' : null,
+            );
+        }
+
+        if (preg_match('/посудомоеч/iu', $context) === 1
+            && preg_match('/вытек|теч|вод/iu', $context) === 1) {
+            return $this->result(
+                'Из посудомоечной машины вытекала вода; нужно проверить её состояние.',
+                $isOpen ? 'Проверить состояние посудомоечной машины.' : null,
+            );
         }
 
         if ($types->contains('delay')) {
@@ -302,6 +385,7 @@ class TelegramEveningHumanComposer
         return $normalized === ''
             || preg_match('/^(?:сломана|сломано|это\s+ошибка|есть\s+грязные\s+моменты|хорошо|поняла|понял|спасибо|ок)$/iu', $normalized) === 1
             || preg_match('/^(?:(?:хорошо|поняла|понял|спасибо|ок)[,.\s]*)+$/iu', $normalized) === 1
+            || preg_match('/^они\s+(?:вообще\s+)?не\s+открыва\S*(?:\s+почему-то)?$/iu', $normalized) === 1
             || preg_match('/не\s+знаю.{0,40}было\s+ли.{0,30}сломан.{0,30}раньше/iu', $normalized) === 1;
     }
 
@@ -337,7 +421,7 @@ class TelegramEveningHumanComposer
     private function isInstructionOrRoutine(string $text): bool
     {
         return preg_match(
-            '/(?:мне\s+же\s+не\s+нужно.{0,20}ждать|когда\s+я\s+была\s+уже\s+на\s+другой\s+квартире|скача\S*\s+видео|загруз\S*.{0,30}сайт|закр\S*.{0,20}уборк|одеял.{0,30}(?:возьми|положи|разложи)|(?:возьми|положи|разложи).{0,30}одеял)/iu',
+            '/(?:я\s+возьму\s+с\s+нового\s+комплект.{0,30}сделаю\s+его\s+грязн|мне\s+же\s+не\s+нужно.{0,20}ждать|когда\s+я\s+была\s+уже\s+на\s+другой\s+квартире|скача\S*\s+видео|загруз\S*.{0,30}сайт|закр\S*.{0,20}уборк|одеял.{0,30}(?:возьми|положи|разложи)|(?:возьми|положи|разложи).{0,30}одеял)/iu',
             $text,
         ) === 1;
     }

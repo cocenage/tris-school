@@ -1,11 +1,35 @@
 <?php
 
+use App\Models\Apartment;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramEveningHumanComposer;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\Support\TelegramOperationalTestDatabase;
 
-beforeEach(fn () => TelegramOperationalTestDatabase::refresh());
-afterEach(fn () => TelegramOperationalTestDatabase::purge());
+beforeEach(function () {
+    config([
+        'database.default' => 'sqlite',
+        'database.connections.sqlite.database' => ':memory:',
+    ]);
+    DB::purge('sqlite');
+    TelegramOperationalTestDatabase::refresh();
+    Schema::create('users', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+        $table->timestamps();
+    });
+    Schema::create('apartments', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+        $table->timestamps();
+    });
+});
+afterEach(function () {
+    TelegramOperationalTestDatabase::purge();
+    DB::purge('sqlite');
+});
 
 it('uses several evidence messages to explain one access situation', function () {
     $first = TelegramOperationalTestDatabase::message('Стою здесь, консьержа нет.', messageId: '101');
@@ -103,6 +127,86 @@ it('keeps apartment context and falls back deterministically when evidence is un
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
 
     expect($text)->toContain('• Via X — Не работает свет.');
+});
+
+it('enriches a delay actor and apartment from its source message without changing the ledger item', function () {
+    $employeeId = DB::table('users')->insertGetId([
+        'name' => 'Анна',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    $apartment = Apartment::create(['name' => 'Via Enriched']);
+    $message = TelegramOperationalTestDatabase::message('Я задержусь на 10 минут.', messageId: '601');
+    $message->telegramUser->update(['linked_user_id' => $employeeId]);
+    $message->topic->update(['apartment_id' => $apartment->id]);
+    $item = humanItem('Сотрудник сообщил о задержке.', [$message->id], ['delay']);
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => [$item]]],
+    ]);
+
+    expect($item['actor_name'])->toBeNull()
+        ->and($item['context_label'])->toBeNull()
+        ->and($text)->toContain('• Via Enriched — Анна: задержка примерно на 10 минут.');
+});
+
+it('humanizes production-shaped operational facts and suppresses contextless fragments', function () {
+    $cases = [
+        ['Если что, в гостевом локере на улице у нас в программе ошибка должен быть 1291', ['problem']],
+        ['Гость забыл конверт, как найдешь, сообщи о находке.', ['request']],
+        ['Гость говорит, что включил посудомоечную машину, но из неё стала вытекать вода.', ['problem']],
+        ['Я возьму с нового комплекта и сделаю его грязным.', ['action']],
+        ['Они вообще не открываются почему-то.', ['problem']],
+    ];
+    $items = [];
+
+    foreach ($cases as $index => [$text, $types]) {
+        $message = TelegramOperationalTestDatabase::message($text, messageId: (string) (620 + $index));
+        $items[] = humanItem($text, [$message->id], $types);
+    }
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Lambrate'],
+        'sections' => [['key' => 'attention', 'items' => $items]],
+    ]);
+
+    expect($text)
+        ->toContain('В программе указан неверный код гостевого локера; правильный код — 1291.')
+        ->toContain('Гость забыл конверт; нужно найти его и сообщить о находке.')
+        ->toContain('Из посудомоечной машины вытекала вода; нужно проверить её состояние.')
+        ->toContain('Исправить код гостевого локера в программе.')
+        ->toContain('Найти конверт и сообщить о находке.')
+        ->toContain('Проверить состояние посудомоечной машины.')
+        ->not->toContain('Я возьму с нового комплекта')
+        ->not->toContain('Они вообще не открываются');
+});
+
+it('consolidates one apartment courier situation only in the human digest', function () {
+    $messages = collect([
+        'После курьера осталось грязное бельё.',
+        'Курьер забрал не всё грязное бельё.',
+        'Нужно фото грязного белья.',
+    ])->map(fn (string $text, int $index) => TelegramOperationalTestDatabase::message(
+        $text,
+        sentAt: '2026-09-20 10:0'.$index.':00',
+        messageId: (string) (650 + $index),
+    ));
+    $items = $messages->map(fn ($message): array => [
+        ...humanItem($message->text, [$message->id], ['problem']),
+        'context_label' => 'Baiamonti 2',
+    ])->all();
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Certosa'],
+        'sections' => [['key' => 'attention', 'items' => $items]],
+    ]);
+
+    expect($items)->toHaveCount(3)
+        ->and($text)->toContain('• Baiamonti 2 — Курьер забрал не всё грязное бельё.')
+        ->and(substr_count($text, 'Курьер забрал не всё грязное бельё.'))->toBe(1)
+        ->and($text)->not->toContain('После курьера осталось')
+        ->not->toContain('Нужно фото грязного белья');
 });
 
 it('renders the supplied September 20 five-district scenarios as shift handoffs', function () {
