@@ -232,6 +232,7 @@ class TelegramDigestFormatter
             ->flatMap(fn (array $section) => $section['items'] ?? [])
             ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
             ->map(function (array $item): array {
+                $item = $this->eveningHumanComposer->enrich($item);
                 $item['_human'] = $this->eveningHumanComposer->compose($item);
 
                 return $item;
@@ -426,7 +427,9 @@ class TelegramDigestFormatter
         $result = collect();
 
         foreach ($items as $item) {
-            if (! in_array('delay', $item['types'] ?? [], true)) {
+            $kind = $this->eveningConsolidationKind($item);
+
+            if ($kind === null) {
                 $result->push($item);
 
                 continue;
@@ -442,12 +445,18 @@ class TelegramDigestFormatter
                 continue;
             }
 
-            $matchingIndex = $result->search(function (array $candidate) use ($actor, $context, $item, $occurredAt): bool {
+            $matchingIndex = $result->search(function (array $candidate) use ($actor, $context, $item, $kind, $occurredAt): bool {
                 $candidateOccurredAt = $this->eveningItemOccurredAt($candidate);
+                $sameKind = $this->eveningConsolidationKind($candidate) === $kind;
+                $sameTypes = collect($candidate['types'] ?? [])->sort()->values()->all()
+                    === collect($item['types'] ?? [])->sort()->values()->all();
+                $sameActor = $kind !== 'delay'
+                    || $this->value($candidate['actor_name'] ?? null) === $actor;
 
-                return in_array('delay', $candidate['types'] ?? [], true)
+                return $sameKind
+                    && $sameTypes
                     && ($candidate['status'] ?? null) === ($item['status'] ?? null)
-                    && $this->value($candidate['actor_name'] ?? null) === $actor
+                    && $sameActor
                     && $this->value($candidate['context_label'] ?? null) === $context
                     && $candidateOccurredAt !== null
                     && abs($candidateOccurredAt->diffInMinutes($occurredAt, false)) <= 90;
@@ -467,6 +476,21 @@ class TelegramDigestFormatter
         }
 
         return $result->values();
+    }
+
+    private function eveningConsolidationKind(array $item): ?string
+    {
+        if (in_array('delay', $item['types'] ?? [], true)) {
+            return 'delay';
+        }
+
+        $text = mb_strtolower((string) ($item['_human']['summary'] ?? '').' '.(string) ($item['summary'] ?? ''));
+
+        if (preg_match('/(?:курьер|фото).{0,80}(?:грязн|бель)|(?:грязн|бель).{0,80}(?:курьер|фото)/iu', $text) === 1) {
+            return 'courier_linen';
+        }
+
+        return null;
     }
 
     private function eveningItemOccurredAt(array $item): ?Carbon
@@ -492,6 +516,10 @@ class TelegramDigestFormatter
 
         if (preg_match('/\d+\s*мин|следующ|втор.{0,20}квартир/iu', $summary) === 1) {
             $score += 100;
+        }
+
+        if (preg_match('/курьер/iu', $summary) === 1 && preg_match('/не\s+забрал|забрал\s+не\s+вс/iu', $summary) === 1) {
+            $score += 200;
         }
 
         return $score;
