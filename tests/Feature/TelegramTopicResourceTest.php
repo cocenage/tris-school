@@ -3,7 +3,6 @@
 use App\Filament\Resources\TelegramTopics\Pages\ListTelegramTopics;
 use App\Filament\Resources\TelegramTopics\TelegramTopicResource;
 use App\Models\Apartment;
-use App\Models\TelegramTopic;
 use App\Services\Telegram\TelegramTopicPresenter;
 use Filament\Tables\Columns\SelectColumn;
 use Filament\Tables\Table;
@@ -41,7 +40,7 @@ afterEach(function () {
     DB::purge('sqlite');
 });
 
-it('uses a stored or recoverable title and otherwise previews recent messages', function () {
+it('uses a meaningful stored title and otherwise previews recent messages', function () {
     $first = TelegramOperationalTestDatabase::message(
         'Не работает свет у вытяжки.',
         '2026-06-17 08:00:00',
@@ -68,19 +67,6 @@ it('uses a stored or recoverable title and otherwise previews recent messages', 
     expect($presenter->title($topic))->toBe('Via Savona 12')
         ->and($presenter->contextPreview($topic))->toBeNull();
 
-    $rawTitle = TelegramOperationalTestDatabase::message(
-        '',
-        '2026-06-17 09:00:00',
-        '3',
-        ['message' => ['forum_topic_created' => ['name' => 'Via Tortona 8']]],
-        threadId: '12',
-        messageType: 'forum_topic_created',
-    )->topic;
-    $rawTitle->update(['title' => 'Тема #12']);
-    $rawTitle->load('recentMessages');
-
-    expect($presenter->title($rawTitle))->toBe('Via Tortona 8')
-        ->and($presenter->contextPreview($rawTitle))->toBeNull();
 });
 
 it('builds an internal Telegram topic link only from supported existing ids', function () {

@@ -266,6 +266,7 @@ class TelegramDigestFormatter
                 || $this->hasEveningTransitionOnDay($item, 'resolved', $preview))
             ->values();
         $items = $this->selectEveningItems($otherItems
+            ->reject(fn (array $item): bool => ($item['carry_over'] ?? false) === true)
             ->filter(fn (array $item): bool => ($item['status'] ?? null) !== 'resolved'
                 || ($item['_human']['show_in_day'] ?? true)
                     && $this->hasEveningTransitionOnDay($item, 'created', $preview))
@@ -274,9 +275,14 @@ class TelegramDigestFormatter
             ->filter(fn (array $item): bool => ($item['status'] ?? null) === 'resolved')
             ->take(4)
             ->values();
+        $carryOverItems = $otherItems
+            ->filter(fn (array $item): bool => ($item['carry_over'] ?? false) === true)
+            ->filter(fn (array $item): bool => in_array($item['status'] ?? null, ['open', 'reopened'], true))
+            ->take(6)
+            ->values();
         $openQuestions = $otherItems
             ->filter(fn (array $item): bool => $this->isOpenEveningQuestion($item));
-        $openLines = $openQuestions->concat($items)
+        $openLines = $openQuestions->concat($items)->concat($carryOverItems)
             ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
             ->filter(fn (array $item): bool => in_array($item['status'] ?? null, ['open', 'reopened'], true))
             ->map(function (array $item): ?string {
@@ -322,6 +328,18 @@ class TelegramDigestFormatter
             }
         }
 
+        if ($carryOverItems->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = '🔄 Переходящие проблемы:';
+
+            foreach ($carryOverItems as $item) {
+                $lines[] = '• '.$this->withEveningContext(
+                    $item,
+                    $this->humanEveningSummary($item).' '.$this->openAgeLabel($item),
+                );
+            }
+        }
+
         $lines[] = '';
         if ($openLines->isEmpty()) {
             $lines[] = 'Открытых вопросов на конец дня нет.';
@@ -333,6 +351,23 @@ class TelegramDigestFormatter
         }
 
         return implode("\n", $lines);
+    }
+
+    private function openAgeLabel(array $item): string
+    {
+        $days = (int) ($item['open_age_days'] ?? 0);
+
+        if ($days === 2) {
+            return 'Открыто со вчера.';
+        }
+
+        $suffix = match (true) {
+            $days % 10 === 1 && $days % 100 !== 11 => 'день',
+            in_array($days % 10, [2, 3, 4], true) && ! in_array($days % 100, [12, 13, 14], true) => 'дня',
+            default => 'дней',
+        };
+
+        return 'Открыто '.$days.' '.$suffix.'.';
     }
 
     private function hasEveningTransitionOnDay(array $item, string $transition, array $preview): bool

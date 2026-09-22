@@ -2,6 +2,7 @@
 
 namespace App\Services\Telegram;
 
+use App\Jobs\ProcessTelegramInstructionAutoReply;
 use App\Models\TelegramAttachment;
 use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
@@ -11,6 +12,10 @@ use Carbon\Carbon;
 
 class TelegramUpdateIngestService
 {
+    public function __construct(
+        private readonly TelegramTopicTitleResolver $topicTitleResolver,
+    ) {}
+
     public function ingest(array $update, bool $processInstructionAutoReply = false): ?TelegramMessage
     {
         $message = $update['message']
@@ -18,7 +23,7 @@ class TelegramUpdateIngestService
             ?? $update['channel_post']
             ?? null;
 
-        if (!$message) {
+        if (! $message) {
             return null;
         }
 
@@ -43,17 +48,21 @@ class TelegramUpdateIngestService
         $topic = null;
 
         if (isset($message['message_thread_id'])) {
-            $topic = TelegramTopic::firstOrCreate(
+            $topic = TelegramTopic::firstOrNew(
                 [
                     'telegram_chat_id' => $chat->id,
                     'telegram_thread_id' => (string) $message['message_thread_id'],
-                ],
-                [
-                    'title' => null,
-                    'purpose' => null,
-                    'is_enabled' => true,
                 ]
             );
+
+            $explicitTitle = $this->topicTitleResolver->explicitTitle($message);
+
+            if ($explicitTitle !== null) {
+                $topic->title = $explicitTitle;
+            }
+
+            $topic->is_enabled = true;
+            $topic->save();
         }
 
         $telegramUser = null;
@@ -61,7 +70,7 @@ class TelegramUpdateIngestService
         if ($fromData && isset($fromData['id'])) {
             $firstName = $fromData['first_name'] ?? null;
             $lastName = $fromData['last_name'] ?? null;
-            $fullName = trim(($firstName ?? '') . ' ' . ($lastName ?? ''));
+            $fullName = trim(($firstName ?? '').' '.($lastName ?? ''));
 
             $telegramUser = TelegramUser::updateOrCreate(
                 ['telegram_user_id' => (string) $fromData['id']],
@@ -104,11 +113,11 @@ class TelegramUpdateIngestService
         $this->syncAttachments($messageModel, $message);
 
         if ($processInstructionAutoReply) {
-            \App\Jobs\ProcessTelegramInstructionAutoReply::dispatch($messageModel->id);
+            ProcessTelegramInstructionAutoReply::dispatch($messageModel->id);
         }
 
-return $messageModel;
-        
+        return $messageModel;
+
     }
 
     protected function detectType(array $message): string
@@ -120,6 +129,8 @@ return $messageModel;
             isset($message['voice']) => 'voice',
             isset($message['video']) => 'video',
             isset($message['sticker']) => 'sticker',
+            isset($message['forum_topic_edited']) => 'forum_topic_edited',
+            isset($message['forum_topic_created']) => 'forum_topic_created',
             default => 'unknown',
         };
     }
@@ -143,7 +154,7 @@ return $messageModel;
         }
 
         foreach (['document', 'voice', 'video', 'sticker'] as $type) {
-            if (!isset($message[$type])) {
+            if (! isset($message[$type])) {
                 continue;
             }
 
