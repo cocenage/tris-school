@@ -77,6 +77,7 @@ class TelegramEveningIntelligenceBuilder
             : Carbon::parse($date, $timezone)->startOfDay();
         $start = $day->copy()->startOfDay();
         $end = $day->copy()->endOfDay();
+        $cutoff = $day->isSameDay(now($timezone)) ? now($timezone) : $end;
 
         $district = is_array($options['district'] ?? null) ? $options['district'] : null;
         $events = TelegramOperationalEvent::query()
@@ -85,7 +86,7 @@ class TelegramEveningIntelligenceBuilder
                     ->where('telegram_chat_id', (string) $district['chat_id'])))
             ->whereHas('evidence', fn ($query) => $query
                 ->where('is_current_revision', true)
-                ->whereBetween('occurred_at', [$start, $end]))
+                ->where('occurred_at', '<=', $cutoff))
             ->with([
                 'chat:id,telegram_chat_id,title',
                 'topic:id,telegram_chat_id,telegram_thread_id,title,purpose',
@@ -93,7 +94,7 @@ class TelegramEveningIntelligenceBuilder
                 'apartment:id,name',
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
-                    ->where('occurred_at', '<=', $end)
+                    ->where('occurred_at', '<=', $cutoff)
                     ->with('observation.message.telegramUser')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
@@ -101,7 +102,7 @@ class TelegramEveningIntelligenceBuilder
             ->get();
 
         $projected = $events
-            ->map(fn (TelegramOperationalEvent $event) => $this->project($event))
+            ->map(fn (TelegramOperationalEvent $event) => $this->project($event, $start, $cutoff))
             ->filter()
             ->values();
         $items = $projected
@@ -142,7 +143,7 @@ class TelegramEveningIntelligenceBuilder
         ];
     }
 
-    private function project(TelegramOperationalEvent $event): ?array
+    private function project(TelegramOperationalEvent $event, Carbon $start, Carbon $cutoff): ?array
     {
         /** @var Collection<int, TelegramOperationalEventEvidence> $evidence */
         $evidence = $event->evidence
@@ -156,6 +157,18 @@ class TelegramEveningIntelligenceBuilder
         $status = (string) ($evidence->last()->status_after ?: 'open');
 
         if ($status === 'dismissed') {
+            return null;
+        }
+
+        $hasActivityOnDay = $evidence->contains(
+            fn (TelegramOperationalEventEvidence $item): bool => $item->occurred_at !== null
+                && $item->occurred_at->betweenIncluded($start, $cutoff)
+        );
+        $openSince = $this->currentOpenPeriodStart($evidence, $status);
+        $carryOver = in_array($status, ['open', 'reopened'], true)
+            && $openSince?->lt($start) === true;
+
+        if (! $hasActivityOnDay && ! $carryOver) {
             return null;
         }
 
@@ -229,9 +242,40 @@ class TelegramEveningIntelligenceBuilder
             'confidence' => $confidence,
             'uncertainty' => $uncertainty !== '' ? $this->compact($uncertainty, 400) : null,
             'repeated' => $reportCount > 1 || $evidence->contains('transition', 'reopened'),
+            'carry_over' => $carryOver,
+            'open_since' => $carryOver ? $openSince?->toIso8601String() : null,
+            'open_age_days' => $carryOver ? $this->openAgeDays($openSince, $cutoff) : null,
             'latest_activity_at' => $evidence->last()->occurred_at?->toIso8601String(),
             'evidence' => $references,
         ];
+    }
+
+    private function currentOpenPeriodStart(Collection $evidence, string $status): ?Carbon
+    {
+        if (! in_array($status, ['open', 'reopened'], true)) {
+            return null;
+        }
+
+        return $evidence
+            ->reverse()
+            ->first(fn (TelegramOperationalEventEvidence $item): bool => in_array(
+                $item->transition,
+                ['created', 'reopened'],
+                true,
+            ))?->occurred_at?->copy();
+    }
+
+    private function openAgeDays(?Carbon $openSince, Carbon $cutoff): ?int
+    {
+        if ($openSince === null) {
+            return null;
+        }
+
+        $timezone = config('app.timezone', 'Europe/Rome');
+        $openedDay = $openSince->copy()->setTimezone($timezone)->startOfDay();
+        $cutoffDay = $cutoff->copy()->setTimezone($timezone)->startOfDay();
+
+        return $openedDay->diffInDays($cutoffDay) + 1;
     }
 
     private function shouldInclude(array $item): bool

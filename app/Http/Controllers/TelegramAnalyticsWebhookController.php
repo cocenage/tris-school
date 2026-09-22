@@ -8,12 +8,17 @@ use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
 use App\Models\TelegramTopic;
 use App\Models\TelegramUser;
+use App\Services\Telegram\TelegramTopicTitleResolver;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class TelegramAnalyticsWebhookController extends Controller
 {
+    public function __construct(
+        private readonly TelegramTopicTitleResolver $topicTitleResolver,
+    ) {}
+
     public function __invoke(Request $request, string $secret): JsonResponse
     {
         if ($secret !== config('services.telegram.analytics_webhook_secret')) {
@@ -52,8 +57,8 @@ class TelegramAnalyticsWebhookController extends Controller
             [
                 'title' => $chatData['title']
                     ?? $chatData['username']
-                    ?? trim(($chatData['first_name'] ?? '') . ' ' . ($chatData['last_name'] ?? ''))
-                    ?: 'Чат ' . $telegramChatId,
+                    ?? trim(($chatData['first_name'] ?? '').' '.($chatData['last_name'] ?? ''))
+                    ?: 'Чат '.$telegramChatId,
 
                 'type' => $chatData['type'] ?? 'unknown',
                 'is_enabled' => true,
@@ -100,35 +105,35 @@ class TelegramAnalyticsWebhookController extends Controller
         return response()->json(['ok' => true]);
     }
 
-private function resolveTopic(TelegramChat $chat, array $message): ?TelegramTopic
-{
-    $threadId = $message['message_thread_id'] ?? null;
+    private function resolveTopic(TelegramChat $chat, array $message): ?TelegramTopic
+    {
+        $threadId = $message['message_thread_id'] ?? null;
 
-    // сообщение не из темы форума
-    if (empty($threadId)) {
-        return null;
+        // сообщение не из темы форума
+        if (empty($threadId)) {
+            return null;
+        }
+
+        $topic = TelegramTopic::firstOrNew(
+            [
+                'telegram_chat_id' => $chat->id,
+                'telegram_thread_id' => (string) $threadId,
+            ]
+        );
+
+        $explicitTitle = $this->topicTitleResolver->explicitTitle($message);
+
+        if ($explicitTitle !== null) {
+            $topic->title = $explicitTitle;
+        } elseif (! $topic->exists) {
+            $topic->title = 'Тема #'.$threadId;
+        }
+
+        $topic->is_enabled = true;
+        $topic->save();
+
+        return $topic;
     }
-
-    $title = null;
-
-    if (
-        isset($message['forum_topic_created']) &&
-        isset($message['forum_topic_created']['name'])
-    ) {
-        $title = $message['forum_topic_created']['name'];
-    }
-
-    return TelegramTopic::updateOrCreate(
-        [
-            'telegram_chat_id' => $chat->id,
-            'telegram_thread_id' => (string)$threadId,
-        ],
-        [
-            'title' => $title ?: 'Тема #' . $threadId,
-            'is_enabled' => true,
-        ]
-    );
-}
 
     private function resolveUser(array $message): ?TelegramUser
     {
@@ -165,6 +170,7 @@ private function resolveTopic(TelegramChat $chat, array $message): ?TelegramTopi
             isset($message['location']) => 'location',
             isset($message['contact']) => 'contact',
             isset($message['poll']) => 'poll',
+            isset($message['forum_topic_edited']) => 'forum_topic_edited',
             isset($message['forum_topic_created']) => 'forum_topic_created',
             default => 'unknown',
         };

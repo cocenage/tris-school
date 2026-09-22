@@ -9,22 +9,24 @@ use Illuminate\Support\Str;
 
 class TelegramTopicPresenter
 {
+    public function __construct(
+        private readonly TelegramTopicTitleResolver $titleResolver,
+    ) {}
+
     public function title(TelegramTopic $topic): string
     {
         $stored = trim((string) $topic->title);
 
-        if (! $this->isPlaceholderTitle($stored)) {
+        if ($this->titleResolver->isMeaningful($stored)) {
             return $stored;
         }
 
-        return $this->titleFromLoadedRaw($topic)
-            ?? 'Topic #'.$topic->telegram_thread_id;
+        return 'Topic #'.$topic->telegram_thread_id;
     }
 
     public function hasHumanTitle(TelegramTopic $topic): bool
     {
-        return ! $this->isPlaceholderTitle(trim((string) $topic->title))
-            || $this->titleFromLoadedRaw($topic) !== null;
+        return $this->titleResolver->isMeaningful($topic->title);
     }
 
     public function contextPreview(TelegramTopic $topic): ?string
@@ -134,42 +136,5 @@ class TelegramTopicPresenter
             ->get()
             ->mapWithKeys(fn (TelegramChat $chat): array => [$chat->id => $this->chatLabel($chat)])
             ->all();
-    }
-
-    private function isPlaceholderTitle(string $title): bool
-    {
-        return $title === '' || preg_match('/^(?:Тема|Topic)\s*#?\d+$/iu', $title) === 1;
-    }
-
-    private function titleFromLoadedRaw(TelegramTopic $topic): ?string
-    {
-        if (! $topic->relationLoaded('recentMessages')) {
-            return null;
-        }
-
-        foreach ($topic->recentMessages as $message) {
-            $raw = $message->raw;
-
-            if (is_string($raw)) {
-                $raw = json_decode($raw, true);
-            }
-
-            if (! is_array($raw)) {
-                continue;
-            }
-
-            $payload = $raw['message']
-                ?? $raw['edited_message']
-                ?? $raw['channel_post']
-                ?? $raw['edited_channel_post']
-                ?? [];
-            $title = trim((string) data_get($payload, 'forum_topic_created.name'));
-
-            if ($title !== '') {
-                return $title;
-            }
-        }
-
-        return null;
     }
 }

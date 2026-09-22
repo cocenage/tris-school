@@ -1,6 +1,7 @@
 <?php
 
 use App\Jobs\ProcessTelegramOperationalMessage;
+use App\Models\TelegramTopic;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\Support\TelegramOperationalTestDatabase;
@@ -62,4 +63,28 @@ it('does not dispatch analytics observation when the independent flag is disable
         ->assertOk();
 
     Queue::assertNothingPushed();
+});
+
+it('persists topic create and edit titles without ordinary messages overwriting them', function () {
+    $created = analyticsWebhookPayload('611');
+    $created['message']['message_thread_id'] = 611;
+    unset($created['message']['text']);
+    $created['message']['forum_topic_created'] = ['name' => 'Via Originale 7'];
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $created)->assertOk();
+
+    $ordinary = analyticsWebhookPayload('612');
+    $ordinary['message']['message_thread_id'] = 611;
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $ordinary)->assertOk();
+
+    expect(TelegramTopic::query()->sole()->title)->toBe('Via Originale 7');
+
+    $edited = analyticsWebhookPayload('613');
+    $edited['message']['message_thread_id'] = 611;
+    unset($edited['message']['text']);
+    $edited['message']['forum_topic_edited'] = ['name' => 'Via Rinominata 7'];
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $edited)->assertOk();
+
+    expect(TelegramTopic::query()->sole()->title)->toBe('Via Rinominata 7');
 });
