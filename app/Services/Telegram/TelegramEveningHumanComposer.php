@@ -2,70 +2,12 @@
 
 namespace App\Services\Telegram;
 
-use App\Models\Apartment;
 use App\Models\TelegramMessage;
-use App\Models\User;
 use Illuminate\Support\Collection;
 use Throwable;
 
 class TelegramEveningHumanComposer
 {
-    public function enrich(array $item): array
-    {
-        $ids = collect($item['evidence'] ?? [])
-            ->pluck('local_message_id')
-            ->filter(fn (mixed $id): bool => is_numeric($id))
-            ->take(8)
-            ->values();
-
-        if ($ids->isEmpty()) {
-            return $item;
-        }
-
-        try {
-            $messages = TelegramMessage::query()
-                ->with(['telegramUser', 'topic'])
-                ->whereKey($ids)
-                ->get()
-                ->keyBy('id');
-
-            if (in_array('delay', $item['types'] ?? [], true)
-                && blank($item['actor_user_id'] ?? null)
-                && blank($item['actor_name'] ?? null)) {
-                $reportIds = collect($item['evidence'] ?? [])
-                    ->whereIn('role', ['report', 'recurrence', 'positive'])
-                    ->pluck('local_message_id');
-                $actorIds = $reportIds
-                    ->map(fn (mixed $id) => $messages->get((int) $id)?->telegramUser?->linked_user_id)
-                    ->filter()
-                    ->unique()
-                    ->values();
-
-                if ($actorIds->count() === 1 && $actor = User::query()->find($actorIds->first(), ['id', 'name'])) {
-                    $item['actor_user_id'] = $actor->id;
-                    $item['actor_name'] = $actor->name;
-                }
-            }
-
-            if (blank($item['apartment_id'] ?? null) && blank($item['context_label'] ?? null)) {
-                $apartmentIds = $messages
-                    ->map(fn (TelegramMessage $message) => $message->topic?->apartment_id)
-                    ->filter()
-                    ->unique()
-                    ->values();
-
-                if ($apartmentIds->count() === 1 && $apartment = Apartment::query()->find($apartmentIds->first(), ['id', 'name'])) {
-                    $item['apartment_id'] = $apartment->id;
-                    $item['context_label'] = $apartment->name;
-                }
-            }
-        } catch (Throwable) {
-            return $item;
-        }
-
-        return $item;
-    }
-
     /** @return array{include: bool, handled: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
     public function compose(array $item): array
     {
@@ -93,7 +35,7 @@ class TelegramEveningHumanComposer
 
         if ($this->isAccessIssue($context)) {
             $detail = preg_match('/консьерж/iu', $context) === 1
-                ? 'Возникла проблема с доступом: консьержа не было, дверь не открывали.'
+                ? 'Возникла проблема с доступом: консьержа не было на месте, дверь не открывали.'
                 : 'Возникла проблема с доступом.';
 
             return $this->result($detail, $isOpen ? 'Проверить, решён ли вопрос с доступом в квартиру.' : null);
@@ -152,12 +94,33 @@ class TelegramEveningHumanComposer
             return $this->result($this->delaySummary($context, $actor), null);
         }
 
-        if ($this->isLightIssue($context)) {
-            $detail = preg_match('/вытяж/iu', $context) === 1
-                ? 'У вытяжки не работает свет.'
-                : 'Не работает свет.';
+        if (preg_match('/ручк/iu', $context) === 1
+            && preg_match('/отвал|слом/iu', $context) === 1
+            && preg_match('/окн|двер/iu', $context) === 1) {
+            $label = preg_match('/окн/iu', $context) === 1 ? 'окна' : 'двери';
 
-            return $this->result($detail, null);
+            return $this->result(
+                'Отвалилась ручка '.$label.'.',
+                $isOpen ? 'Проверить крепление ручки '.$label.'.' : null,
+            );
+        }
+
+        if ($this->isLightIssue($context)) {
+            if (preg_match('/комнат\S*\s*(\d+)/iu', $context, $room) === 1) {
+                $detail = 'Не работает свет в комнате '.$room[1].'.';
+                $followUp = 'Проверить неисправность света в комнате '.$room[1].'.';
+            } elseif (preg_match('/вытяж/iu', $context) === 1) {
+                $detail = 'У вытяжки не работает свет.';
+                $followUp = 'Проверить свет у вытяжки.';
+            } else {
+                $detail = 'Не работает свет.';
+                $followUp = 'Проверить неисправность света.';
+            }
+
+            return $this->result(
+                $detail,
+                $isOpen ? $followUp : null,
+            );
         }
 
         if (preg_match('/пульт/iu', $context) === 1
@@ -237,6 +200,13 @@ class TelegramEveningHumanComposer
     /** @return array{include: true, handled: true, summary: string, follow_up: ?string} */
     private function question(string $context, bool $isOpen): array
     {
+        if (preg_match('/во\s+сколько.{0,40}заезд|заезд.{0,40}во\s+сколько/iu', $context) === 1) {
+            return $this->result(
+                'Уточняли время заезда.',
+                $isOpen ? 'Уточнить время заезда.' : null,
+            );
+        }
+
         if (preg_match('/диван/iu', $context) === 1 && preg_match('/постельн|бель[еёя]/iu', $context) === 1) {
             return $this->result(
                 'Уточняли наличие постельного белья для дивана.',
@@ -399,17 +369,17 @@ class TelegramEveningHumanComposer
         if (preg_match('/(?:следующ|втор).{0,35}квартир|квартир.{0,35}(?:следующ|втор)/iu', $context) === 1
             && preg_match('/немного|небольш|чуть/iu', $context) === 1) {
             return $actor !== ''
-                ? $actor.': небольшая задержка перед следующей квартирой.'
+                ? $actor.' задерживается перед следующей квартирой.'
                 : 'Сотрудник предупредил о небольшой задержке перед следующей квартирой.';
         }
 
         if (preg_match('/(?:на|через|примерно)?\s*(\d{1,3})\s*мин/iu', $context, $matches) === 1) {
             return $actor !== ''
-                ? $actor.': задержка примерно на '.(int) $matches[1].' минут.'
+                ? $actor.' задерживается примерно на '.(int) $matches[1].' минут.'
                 : 'Сотрудник сообщил о задержке примерно на '.(int) $matches[1].' минут.';
         }
 
-        return $actor !== '' ? $actor.': небольшая задержка.' : 'Сотрудник сообщил о задержке.';
+        return $actor !== '' ? $actor.' задерживается.' : 'Сотрудник сообщил о задержке.';
     }
 
     private function isBlanketQuestion(string $text): bool

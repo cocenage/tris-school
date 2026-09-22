@@ -4,6 +4,7 @@ namespace App\Services\Telegram;
 
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
+use Throwable;
 
 /**
  * Formats deterministic operational contracts without inventing facts.
@@ -232,8 +233,22 @@ class TelegramDigestFormatter
             ->flatMap(fn (array $section) => $section['items'] ?? [])
             ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
             ->map(function (array $item): array {
-                $item = $this->eveningHumanComposer->enrich($item);
-                $item['_human'] = $this->eveningHumanComposer->compose($item);
+                try {
+                    $item['_human'] = $this->eveningHumanComposer->compose($item);
+                } catch (Throwable $exception) {
+                    if (app()->bound('log')) {
+                        app('log')->warning('Evening digest composer failed; deterministic formatter fallback used.', [
+                            'event_key' => $item['event_key'] ?? null,
+                            'exception' => $exception::class,
+                        ]);
+                    }
+                    $item['_human'] = [
+                        'include' => true,
+                        'handled' => false,
+                        'summary' => null,
+                        'follow_up' => null,
+                    ];
+                }
 
                 return $item;
             })
@@ -504,7 +519,7 @@ class TelegramDigestFormatter
 
         try {
             return Carbon::parse($value);
-        } catch (\Throwable) {
+        } catch (Throwable) {
             return null;
         }
     }
@@ -922,7 +937,7 @@ class TelegramDigestFormatter
 
             return ($startsAt === null || $startsAt->lte($day->endOfDay()))
                 && ($endsAt === null || $endsAt->gte($day));
-        } catch (\Throwable) {
+        } catch (Throwable) {
             return true;
         }
     }

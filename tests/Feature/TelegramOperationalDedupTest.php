@@ -64,8 +64,8 @@ it('merges one employees delay updates and retains its duration, apartment and e
         ->and($preview['events_included'])->toBe(1)
         ->and($preview['events'][0]['actor_name'])->toBe('Анна')
         ->and($preview['events'][0]['evidence'])->toHaveCount(3)
-        ->and($text)->toContain('• Via X — Анна: задержка примерно на 10 минут.')
-        ->and(substr_count($text, 'задержка примерно на 10 минут'))->toBe(1);
+        ->and($text)->toContain('• Via X — Анна задерживается примерно на 10 минут.')
+        ->and(substr_count($text, 'задерживается примерно на 10 минут'))->toBe(1);
 });
 
 it('does not merge a delay update from another employee or after a long gap', function () {

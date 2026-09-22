@@ -10,6 +10,10 @@ use Illuminate\Support\Collection;
 
 class TelegramEveningIntelligenceBuilder
 {
+    public function __construct(
+        private readonly TelegramTopicPresenter $topicPresenter,
+    ) {}
+
     private const REASON_TYPES = [
         'operational_problem' => 'problem',
         'operational_risk' => 'risk',
@@ -84,7 +88,8 @@ class TelegramEveningIntelligenceBuilder
                 ->whereBetween('occurred_at', [$start, $end]))
             ->with([
                 'chat:id,telegram_chat_id,title',
-                'topic:id,title',
+                'topic:id,telegram_chat_id,telegram_thread_id,title,purpose',
+                'topic.chat:id,telegram_chat_id,title',
                 'apartment:id,name',
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
@@ -216,9 +221,7 @@ class TelegramEveningIntelligenceBuilder
             'event_key' => $event->event_key,
             'apartment_id' => $event->apartment_id,
             'summary' => $this->compact((string) $event->summary, 280),
-            'context_label' => $event->apartment?->name
-                ? $this->compact($event->apartment->name, 80)
-                : null,
+            'context_label' => $this->eventContextLabel($event),
             'actor_user_id' => $actor?->id,
             'actor_name' => $actor?->name,
             'types' => $types,
@@ -345,6 +348,21 @@ class TelegramEveningIntelligenceBuilder
         }
 
         return $value;
+    }
+
+    private function eventContextLabel(TelegramOperationalEvent $event): ?string
+    {
+        if (filled($event->apartment?->name)) {
+            return $this->contextLabel($event->apartment->name);
+        }
+
+        if ($event->topic === null
+            || $this->topicPresenter->isServiceTopic($event->topic)
+            || ! $this->topicPresenter->hasHumanTitle($event->topic)) {
+            return null;
+        }
+
+        return $this->contextLabel($this->topicPresenter->title($event->topic));
     }
 
     private function sortItems(array &$items): void

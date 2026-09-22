@@ -1,35 +1,11 @@
 <?php
 
-use App\Models\Apartment;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramEveningHumanComposer;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 use Tests\Support\TelegramOperationalTestDatabase;
 
-beforeEach(function () {
-    config([
-        'database.default' => 'sqlite',
-        'database.connections.sqlite.database' => ':memory:',
-    ]);
-    DB::purge('sqlite');
-    TelegramOperationalTestDatabase::refresh();
-    Schema::create('users', function (Blueprint $table): void {
-        $table->id();
-        $table->string('name');
-        $table->timestamps();
-    });
-    Schema::create('apartments', function (Blueprint $table): void {
-        $table->id();
-        $table->string('name');
-        $table->timestamps();
-    });
-});
-afterEach(function () {
-    TelegramOperationalTestDatabase::purge();
-    DB::purge('sqlite');
-});
+beforeEach(fn () => TelegramOperationalTestDatabase::refresh());
+afterEach(fn () => TelegramOperationalTestDatabase::purge());
 
 it('uses several evidence messages to explain one access situation', function () {
     $first = TelegramOperationalTestDatabase::message('Стою здесь, консьержа нет.', messageId: '101');
@@ -43,7 +19,7 @@ it('uses several evidence messages to explain one access situation', function ()
 
     expect($human)->toMatchArray([
         'include' => true,
-        'summary' => 'Возникла проблема с доступом: консьержа не было, дверь не открывали.',
+        'summary' => 'Возникла проблема с доступом: консьержа не было на месте, дверь не открывали.',
         'follow_up' => 'Проверить, решён ли вопрос с доступом в квартиру.',
     ]);
 });
@@ -129,26 +105,55 @@ it('keeps apartment context and falls back deterministically when evidence is un
     expect($text)->toContain('• Via X — Не работает свет.');
 });
 
-it('enriches a delay actor and apartment from its source message without changing the ledger item', function () {
-    $employeeId = DB::table('users')->insertGetId([
-        'name' => 'Анна',
-        'created_at' => now(),
-        'updated_at' => now(),
-    ]);
-    $apartment = Apartment::create(['name' => 'Via Enriched']);
+it('uses only a structurally confirmed actor and location in the human delay', function () {
     $message = TelegramOperationalTestDatabase::message('Я задержусь на 10 минут.', messageId: '601');
-    $message->telegramUser->update(['linked_user_id' => $employeeId]);
-    $message->topic->update(['apartment_id' => $apartment->id]);
-    $item = humanItem('Сотрудник сообщил о задержке.', [$message->id], ['delay']);
+    $item = [
+        ...humanItem('Сотрудник сообщил о задержке.', [$message->id], ['delay']),
+        'actor_user_id' => 10,
+        'actor_name' => 'Анна',
+        'apartment_id' => 20,
+        'context_label' => 'Via Confirmed',
+    ];
 
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'district' => ['label' => 'Navigli'],
         'sections' => [['key' => 'attention', 'items' => [$item]]],
     ]);
 
-    expect($item['actor_name'])->toBeNull()
-        ->and($item['context_label'])->toBeNull()
-        ->and($text)->toContain('• Via Enriched — Анна: задержка примерно на 10 минут.');
+    expect($text)->toContain('• Via Confirmed — Анна задерживается примерно на 10 минут.');
+});
+
+it('does not attribute an ordinary apartment question to its message author', function () {
+    $message = TelegramOperationalTestDatabase::message('Во сколько здесь заезд?', messageId: '602');
+    $item = [
+        ...humanItem($message->text, [$message->id], ['unanswered_question']),
+        'actor_user_id' => null,
+        'actor_name' => null,
+        'context_label' => 'Via Question',
+    ];
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Navigli'],
+        'sections' => [['key' => 'attention', 'items' => [$item]]],
+    ]);
+
+    expect($text)->toContain('• Via Question — Уточняли время заезда.')
+        ->not->toContain('Worker 101');
+});
+
+it('restores a broken handle object from bounded evidence without mutating source data', function () {
+    $context = TelegramOperationalTestDatabase::message('Ручка окна опять отвалилась.', messageId: '603');
+    $fragment = TelegramOperationalTestDatabase::message('Сломана.', messageId: '604');
+    $item = humanItem('Сломана.', [$context->id, $fragment->id], ['problem']);
+    $before = [$context->fresh()->toArray(), $fragment->fresh()->toArray()];
+
+    $result = app(TelegramEveningHumanComposer::class)->compose($item);
+
+    expect($result)->toMatchArray([
+        'include' => true,
+        'summary' => 'Отвалилась ручка окна.',
+        'follow_up' => 'Проверить крепление ручки окна.',
+    ])->and([$context->fresh()->toArray(), $fragment->fresh()->toArray()])->toBe($before);
 });
 
 it('humanizes production-shaped operational facts and suppresses contextless fragments', function () {
@@ -276,21 +281,21 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
     }
 
     expect($previews['Navigli'])
-        ->toContain('Via N1 — Возникла проблема с доступом: консьержа не было, дверь не открывали.')
+        ->toContain('Via N1 — Возникла проблема с доступом: консьержа не было на месте, дверь не открывали.')
         ->toContain('Via N2 — Курьер привёз чистое бельё, но не забрал грязное.')
-        ->toContain('Via N3 — Анна: задержка примерно на 10 минут.')
+        ->toContain('Via N3 — Анна задерживается примерно на 10 минут.')
         ->and(substr_count($previews['Navigli'], 'Via N3 —'))->toBe(1)
         ->and($previews['Navigli'])->not->toContain('ПМ ждать')
         ->not->toContain('сломано раньше')
         ->and($previews['Lodi'])->toContain('Via L1 — Не работает свет.')
-        ->toContain('Via L4 — Мария: небольшая задержка.')
+        ->toContain('Via L4 — Мария задерживается.')
         ->not->toContain('это гости или ты')
         ->not->toContain('поняла, спасибо')
         ->not->toContain('Одеяла возьми')
         ->and($previews['Como'])->toContain('Via C1 — Гости сообщили о грязи на кухне и пыли.')
         ->and($previews['Certosa'])->toContain('Via T1 — Возникла проблема с доступом.')
         ->toContain('Via T2 — Курьер забрал не всё бельё.')
-        ->toContain('Via T3 — Ольга: небольшая задержка.')
+        ->toContain('Via T3 — Ольга задерживается.')
         ->not->toContain('Что это за звук')
         ->not->toContain('Скачай видео')
         ->and($previews['Lambrate'])->toContain('Via B3 — Обнаружен брак полотенца.')

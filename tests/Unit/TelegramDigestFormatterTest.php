@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\Telegram\TelegramDigestFormatter;
+use App\Services\Telegram\TelegramEveningHumanComposer;
 
 it('formats an empty morning using only the supplied contract', function () {
     $text = app(TelegramDigestFormatter::class)->morning([
@@ -446,4 +447,27 @@ it('does not move a mixed historical problem into the good-work block', function
 
     expect($text)->toContain('• Не работает замок в квартире.')
         ->not->toContain('⭐ Хорошая работа:');
+});
+
+it('falls back to deterministic formatting when the evidence composer fails', function () {
+    $composer = new class extends TelegramEveningHumanComposer
+    {
+        public function compose(array $item): array
+        {
+            throw new RuntimeException('provider unavailable');
+        }
+    };
+    $formatter = new TelegramDigestFormatter($composer);
+
+    $text = $formatter->eveningIntelligence([
+        'district' => ['label' => 'Lodi'],
+        'sections' => [['key' => 'attention', 'items' => [[
+            'event_key' => 'fallback',
+            'summary' => 'Не работает свет в комнате 1.',
+            'types' => ['problem'],
+            'status' => 'open',
+        ]]]],
+    ]);
+
+    expect($text)->toContain('• Не работает свет в комнате 1.');
 });
