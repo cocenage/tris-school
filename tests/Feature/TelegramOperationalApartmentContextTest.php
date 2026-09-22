@@ -73,12 +73,38 @@ it('carries mapped apartment topics into events and both evening handoff section
         ->and($navigliItems->get('Не работает кран в ванной.')['apartment_id'])->toBeNull()
         ->and($navigliText)->toContain('• Via Y — У вытяжки не работает свет.')
         ->toContain('• Via X — Проверить, решён ли вопрос с доступом в квартиру.')
-        ->toContain('• Не работает кран в ванной.')
-        ->not->toContain('Via Unknown')
+        ->toContain('• Via Unknown — Не работает кран в ванной.')
         ->not->toContain('Via Z')
         ->and($lodiText)->toContain('Via Z — Не работает замок в квартире.')
         ->not->toContain('Via X')
         ->not->toContain('Via Y');
+});
+
+it('prefers a mapped apartment over topic title and hides duty topic titles', function () {
+    config(['services.telegram.digest_districts.navigli' => [
+        'label' => 'Navigli',
+        'chat_id' => '-1001',
+        'duty_thread_id' => '99',
+        'latitude' => 45.4514,
+        'longitude' => 9.1749,
+    ]]);
+    $apartment = Apartment::create(['name' => 'Via Mapped']);
+    $mapped = TelegramOperationalTestDatabase::message('Не работает свет.', messageId: '21', threadId: '21');
+    $mapped->topic->update(['title' => 'Via Topic', 'apartment_id' => $apartment->id]);
+    $duty = TelegramOperationalTestDatabase::message('Не работает свет.', messageId: '22', threadId: '99');
+    $duty->topic->update(['title' => 'Дежурный район']);
+    $observer = app(TelegramOperationalEventObserver::class);
+    $observer->observe($mapped->fresh(['chat', 'topic', 'telegramUser', 'attachments']));
+    $observer->observe($duty->fresh(['chat', 'topic', 'telegramUser', 'attachments']));
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+    $items = collect($preview['events'])->keyBy('event_key')->values();
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+
+    expect($items->pluck('context_label'))->toContain('Via Mapped', null)
+        ->and($text)->toContain('Via Mapped — Не работает свет.')
+        ->not->toContain('Via Topic')
+        ->not->toContain('Дежурный район');
 });
 
 it('backfills an existing event when its topic receives an explicit apartment mapping', function () {
