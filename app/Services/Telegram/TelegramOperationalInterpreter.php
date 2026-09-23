@@ -24,6 +24,11 @@ class TelegramOperationalInterpreter
 
         $isQuestion = str_contains($text, '?')
             || preg_match('/^(кто|что|где|когда|как|почему|можно\s+ли|есть\s+ли)\b/ui', $normalized) === 1;
+
+        if ($this->isConnectivitySendingExplanation($normalized)) {
+            return $this->noEvent('communication_connectivity_chatter', $assistant['category'], $isQuestion);
+        }
+
         $isUncertain = preg_match(self::UNCERTAIN_PATTERN, $normalized) === 1;
 
         $signal = $this->detectSignal($normalized, $assistant['category'], $isQuestion);
@@ -256,7 +261,7 @@ class TelegramOperationalInterpreter
 
         $subjects = [
             'lock' => '/(замок|двер)/ui',
-            'keys' => '/ключ/ui',
+            'keys' => '/(?<![\p{L}\p{N}_])ключ(?:и|ик(?:а|и|ом|е)?|а|ей|ом|у|ам|ами|ах)?(?![\p{L}])/ui',
             'apartment' => '/(квартир|апартамент)/ui',
             'cleaning' => '/(уборк|гряз|качеств)/ui',
             'shift' => '/(смен|график)/ui',
@@ -288,5 +293,11 @@ class TelegramOperationalInterpreter
             '/(замок|ключ|квартир|апартамент|уборк|смен|гост|заезд|выезд|график|оплат|двер|пульт|таймер|кондиционер|полотен|бель|капсул|бумаг|мусор|духовк|ванн|кухн|кроват|шкаф|свет|вод|канализац|труб|стирк)/ui',
             $text,
         ) === 1;
+    }
+
+    private function isConnectivitySendingExplanation(string $text): bool
+    {
+        return preg_match('/(?:вай\s*-?\s*фай?\p{L}*|wi\s*-?\s*fi|интернет|сеть)/ui', $text) === 1
+            && preg_match('/(?:не\s+могу|не\s+получается).{0,70}(?:подключ|соедин).{0,100}(?:поэтому|так)\s+(?:отправ|высыла|загружа|пишу)/ui', $text) === 1;
     }
 }

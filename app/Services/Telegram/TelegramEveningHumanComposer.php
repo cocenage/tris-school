@@ -38,6 +38,16 @@ class TelegramEveningHumanComposer
             return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
         }
 
+        if ($this->isDirtyReferentFragment($summary)) {
+            $objectSummary = $this->dirtyReferentSummary($evidence->implode(' '));
+
+            if ($objectSummary === null) {
+                return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            }
+
+            return $this->result($objectSummary, null);
+        }
+
         if (($item['status'] ?? null) === 'resolved' && preg_match('/закрыли\s+двер/iu', $context) === 1) {
             return $this->result('Дверь закрыли.', null, 'Дверь закрыли.', false);
         }
@@ -380,6 +390,31 @@ class TelegramEveningHumanComposer
             || preg_match('/^они\s+(?:вообще\s+)?не\s+открыва\S*(?:\s+почему-то)?$/iu', $normalized) === 1
             || preg_match('/не\s+знаю.{0,40}было\s+ли.{0,30}сломан.{0,30}раньше/iu', $normalized) === 1
             || preg_match('/^(?:отмечен\s+риск:\s*)?на\s+более\s+быстрый$/iu', $normalized) === 1;
+    }
+
+    private function isDirtyReferentFragment(string $text): bool
+    {
+        return preg_match('/(?:^|[—–-]\s*)нет[\s.…,-]*это\s+грязн(?:ое|ая|ый|ые)[.!?]*$/iu', trim($text)) === 1;
+    }
+
+    private function dirtyReferentSummary(string $evidence): ?string
+    {
+        if (preg_match('/постельн.{0,35}владельц|владельц.{0,35}постельн/iu', $evidence) === 1) {
+            return 'Постельное бельё владельца оказалось грязным.';
+        }
+
+        foreach ([
+            '/постельн|бель[еёя]/iu' => 'Постельное бельё оказалось грязным.',
+            '/полотен/iu' => 'Полотенце оказалось грязным.',
+            '/посуд/iu' => 'Посуда оказалась грязной.',
+            '/одеял/iu' => 'Одеяло оказалось грязным.',
+        ] as $pattern => $object) {
+            if (preg_match($pattern, $evidence) === 1) {
+                return $object;
+            }
+        }
+
+        return null;
     }
 
     private function startsWithAcknowledgementFraming(string $text): bool

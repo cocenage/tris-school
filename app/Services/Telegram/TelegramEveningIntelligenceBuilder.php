@@ -190,22 +190,12 @@ class TelegramEveningIntelligenceBuilder
                 'topic.chat:id,telegram_chat_id,title',
                 'evidence' => fn ($query) => $query
                     ->select([
-                        'id', 'operational_event_id', 'role', 'transition', 'status_before',
+                        'id', 'operational_event_id', 'observation_id', 'role', 'transition', 'status_before',
                         'status_after', 'confidence', 'uncertainty', 'occurred_at', 'is_current_revision',
                     ])
                     ->where('is_current_revision', true)
                     ->whereBetween('occurred_at', [$start, $cutoff])
-                    ->where(function ($occurrences): void {
-                        $occurrences->where(function ($created): void {
-                            $created->where('transition', 'created')
-                                ->where('status_after', 'open');
-                        })->orWhere(function ($reopened): void {
-                            $reopened->where('transition', 'reopened')
-                                ->where('status_before', 'resolved')
-                                ->where('status_after', 'reopened')
-                                ->where('role', 'recurrence');
-                        });
-                    })
+                    ->with('observation.message')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
             ])

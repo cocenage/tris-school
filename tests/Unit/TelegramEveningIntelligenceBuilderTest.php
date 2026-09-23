@@ -339,6 +339,92 @@ it('carries only durable unresolved issues from a previous day', function () {
         ->not->toContain('Оформи пожалуйста');
 });
 
+it('keeps matured problem-classified questions available the same day but excludes them from later carry-over', function () {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $questions = [
+        ['Здесь 2 или 3 запасных бумаги не могу найти?', '1801', '181'],
+        ['Очки сломаны выбрасывать?', '1802', '182'],
+    ];
+
+    foreach ($questions as [$text, $messageId, $threadId]) {
+        $message = TelegramOperationalTestDatabase::message(
+            $text,
+            '2026-06-16 08:00:00',
+            $messageId,
+            threadId: $threadId,
+        );
+        $observer->observe($message, 'message', Carbon::parse('2026-06-16 08:00:00', 'Europe/Rome'));
+        $observer->observe($message, 'unanswered', Carbon::parse('2026-06-16 12:00:00', 'Europe/Rome'));
+    }
+
+    $eventsBefore = TelegramOperationalEvent::query()->count();
+    $evidenceBefore = TelegramOperationalEventEvidence::query()->count();
+    $sameDay = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-16');
+    $followingDay = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+    $sameDayText = app(TelegramDigestFormatter::class)->eveningIntelligence($sameDay);
+    $followingDayText = app(TelegramDigestFormatter::class)->eveningIntelligence($followingDay);
+
+    expect(collect($sameDay['events'])->whereIn('summary', collect($questions)->pluck(0))->count())->toBe(2)
+        ->and(collect($sameDay['events'])->every(fn (array $item): bool => $item['carry_over'] === false))->toBeTrue()
+        ->and($sameDayText)->toContain('Проверить наличие запасной бумаги.')
+        ->toContain('Уточнить, нужно ли выбрасывать сломанные очки.')
+        ->and($followingDay['events'])->toBeEmpty()
+        ->and($followingDayText)->not->toContain('Открыто 2 дня.')
+        ->not->toContain('Уточняли наличие запасной бумаги.')
+        ->not->toContain('Уточняли, что делать со сломанными очками.')
+        ->and(TelegramOperationalEvent::query()->count())->toBe($eventsBefore)
+        ->and(TelegramOperationalEventEvidence::query()->count())->toBe($evidenceBefore)
+        ->and($sameDay['mode']['mutations'])->toBe(0)
+        ->and($followingDay['mode']['mutations'])->toBe(0);
+});
+
+it('allows a question-classified problem to carry over after independent evidence confirms a durable defect', function () {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $question = TelegramOperationalTestDatabase::message(
+        'У вытяжки сломана подсветка?',
+        '2026-06-16 08:00:00',
+        '1811',
+        threadId: '191',
+    );
+    $created = $observer->observe($question, 'message', Carbon::parse('2026-06-16 08:00:00', 'Europe/Rome'));
+    $observer->observe($question, 'unanswered', Carbon::parse('2026-06-16 12:00:00', 'Europe/Rome'));
+    $confirmation = TelegramOperationalTestDatabase::message(
+        'У вытяжки не работает подсветка.',
+        '2026-06-16 13:00:00',
+        '1812',
+        threadId: '191',
+    );
+    $observation = TelegramOperationalObservation::query()->create([
+        'telegram_message_id' => $confirmation->id,
+        'source_revision_hash' => str_repeat('b', 64),
+        'evaluation_kind' => 'message',
+        'state' => 'completed',
+        'outcome' => 'evidence',
+        'reason_code' => 'operational_problem',
+        'confidence' => 'high',
+        'is_current_revision' => true,
+        'processed_at' => '2026-06-16 13:00:00',
+    ]);
+    $event = TelegramOperationalEvent::query()->where('event_key', $created['event_key'])->firstOrFail();
+    $event->evidence()->create([
+        'observation_id' => $observation->id,
+        'role' => 'report',
+        'transition' => 'evidence',
+        'status_before' => 'open',
+        'status_after' => 'open',
+        'confidence' => 'high',
+        'occurred_at' => '2026-06-16 13:00:00',
+        'is_current_revision' => true,
+    ]);
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+    $item = collect($preview['events'])->firstWhere('event_key', $created['event_key']);
+
+    expect($item)->not->toBeNull()
+        ->and($item['carry_over'])->toBeTrue()
+        ->and(collect($item['evidence'])->pluck('local_message_id'))->toContain($question->id, $confirmation->id);
+});
+
 it('orders the same preview deterministically', function () {
     $observer = app(TelegramOperationalEventObserver::class);
     $observer->observe(TelegramOperationalTestDatabase::message(
