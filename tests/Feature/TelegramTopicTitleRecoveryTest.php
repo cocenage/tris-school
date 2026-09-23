@@ -199,6 +199,14 @@ it('keeps dry-run read only and apply updates only deterministic placeholder top
     expect($recoverable->fresh()->title)->toBe('Via Recoverable 1')
         ->and($meaningful->fresh()->title)->toBe('Human title')
         ->and($unresolved->fresh()->title)->toBeNull();
+
+    $this->artisan('telegram:topics-backfill-titles')
+        ->expectsOutputToContain('Dry-run complete. No database writes were performed.')
+        ->assertSuccessful();
+
+    expect($recoverable->fresh()->title)->toBe('Via Recoverable 1')
+        ->and($meaningful->fresh()->title)->toBe('Human title')
+        ->and($unresolved->fresh()->title)->toBeNull();
 });
 
 it('does not write contradictory evidence for the same service event', function () {

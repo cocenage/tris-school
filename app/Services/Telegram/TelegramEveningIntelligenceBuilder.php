@@ -7,11 +7,14 @@ use App\Models\TelegramOperationalEventEvidence;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Schema;
+use RuntimeException;
 
 class TelegramEveningIntelligenceBuilder
 {
     public function __construct(
         private readonly TelegramTopicPresenter $topicPresenter,
+        private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
     ) {}
 
     private const REASON_TYPES = [
@@ -71,13 +74,20 @@ class TelegramEveningIntelligenceBuilder
 
     public function build(Carbon|string $date, array $options = []): array
     {
+        if (! Schema::connection('analytics')->hasColumn('telegram_topics', 'apartment_id')
+            || ! Schema::connection('analytics')->hasColumn('telegram_operational_events', 'apartment_id')) {
+            throw new RuntimeException('Analytics apartment-context schema is unavailable.');
+        }
+
         $timezone = config('app.timezone', 'Europe/Rome');
         $day = $date instanceof Carbon
             ? $date->copy()->setTimezone($timezone)->startOfDay()
             : Carbon::parse($date, $timezone)->startOfDay();
         $start = $day->copy()->startOfDay();
         $end = $day->copy()->endOfDay();
-        $cutoff = $day->isSameDay(now($timezone)) ? now($timezone) : $end;
+        $now = now($timezone);
+        $cutoff = $day->isSameDay($now) ? $now : $end;
+        $recurrenceStart = $start->copy()->subDays(6);
 
         $district = is_array($options['district'] ?? null) ? $options['district'] : null;
         $events = TelegramOperationalEvent::query()
@@ -112,6 +122,7 @@ class TelegramEveningIntelligenceBuilder
         $this->sortItems($items);
 
         $sections = $this->sections($items);
+        $recurrences = $this->recurrences($recurrenceStart, $cutoff, $district);
         $included = collect($sections)
             ->flatMap(fn (array $section) => $section['items'])
             ->pluck('event_key')
@@ -128,6 +139,7 @@ class TelegramEveningIntelligenceBuilder
             ],
             'events' => $projected->all(),
             'sections' => $sections,
+            'recurrences' => $recurrences,
             'events_considered' => $events->count(),
             'events_included' => $included,
             'events_omitted' => max(0, $events->count() - $included),
@@ -141,6 +153,148 @@ class TelegramEveningIntelligenceBuilder
                 'mutations' => 0,
             ],
         ];
+    }
+
+    /**
+     * Find repeated durable problems from distinct ledger occurrence transitions.
+     * Evidence updates and resolutions are intentionally not counted as occurrences.
+     */
+    private function recurrences(Carbon $start, Carbon $cutoff, ?array $district): array
+    {
+        $events = TelegramOperationalEvent::query()
+            ->select([
+                'id', 'event_key', 'telegram_chat_id', 'telegram_topic_id', 'apartment_id',
+                'primary_type', 'types', 'summary', 'subject_key',
+            ])
+            ->whereIn('primary_type', ['problem', 'quality_issue'])
+            ->when(filled($district['chat_id'] ?? null), fn ($query) => $query
+                ->whereHas('chat', fn ($chat) => $chat
+                    ->where('telegram_chat_id', (string) $district['chat_id'])))
+            ->whereHas('evidence', fn ($query) => $query
+                ->where('is_current_revision', true)
+                ->whereBetween('occurred_at', [$start, $cutoff])
+                ->where(function ($occurrences): void {
+                    $occurrences->where(function ($created): void {
+                        $created->where('transition', 'created')
+                            ->where('status_after', 'open');
+                    })->orWhere(function ($reopened): void {
+                        $reopened->where('transition', 'reopened')
+                            ->where('status_before', 'resolved')
+                            ->where('status_after', 'reopened')
+                            ->where('role', 'recurrence');
+                    });
+                }))
+            ->with([
+                'apartment:id,name',
+                'topic:id,telegram_chat_id,telegram_thread_id,title,purpose',
+                'topic.chat:id,telegram_chat_id,title',
+                'evidence' => fn ($query) => $query
+                    ->select([
+                        'id', 'operational_event_id', 'role', 'transition', 'status_before',
+                        'status_after', 'confidence', 'uncertainty', 'occurred_at', 'is_current_revision',
+                    ])
+                    ->where('is_current_revision', true)
+                    ->whereBetween('occurred_at', [$start, $cutoff])
+                    ->where(function ($occurrences): void {
+                        $occurrences->where(function ($created): void {
+                            $created->where('transition', 'created')
+                                ->where('status_after', 'open');
+                        })->orWhere(function ($reopened): void {
+                            $reopened->where('transition', 'reopened')
+                                ->where('status_before', 'resolved')
+                                ->where('status_after', 'reopened')
+                                ->where('role', 'recurrence');
+                        });
+                    })
+                    ->orderBy('occurred_at')
+                    ->orderBy('id'),
+            ])
+            ->get();
+
+        $groups = [];
+
+        foreach ($events as $event) {
+            $family = $this->recurrenceFamily((string) $event->subject_key);
+            $location = $event->apartment_id !== null
+                ? 'apartment:'.$event->apartment_id
+                : ($event->telegram_topic_id !== null
+                    ? 'topic:'.$event->telegram_chat_id.':'.$event->telegram_topic_id
+                    : null);
+
+            if ($family === null || $location === null) {
+                continue;
+            }
+
+            $occurrences = $event->evidence
+                ->filter(fn (TelegramOperationalEventEvidence $item): bool => $item->occurred_at !== null)
+                ->filter(function (TelegramOperationalEventEvidence $item): bool {
+                    return ($item->transition === 'created' && $item->status_after === 'open')
+                        || ($item->transition === 'reopened'
+                            && $item->status_before === 'resolved'
+                            && $item->status_after === 'reopened'
+                            && $item->role === 'recurrence');
+                });
+            $types = collect([$event->primary_type])->merge($event->types ?? [])->unique()->values()->all();
+
+            if (! $this->lifecyclePolicy->mayCarryOver($types, (string) $event->summary, $occurrences)) {
+                continue;
+            }
+
+            $groupKey = implode('|', [$location, $event->primary_type, $family]);
+            $label = $this->eventContextLabel($event);
+
+            foreach ($occurrences as $occurrence) {
+                $occurrenceKey = $event->id.':'.($occurrence->transition === 'created' ? 'created' : 'reopened:'.$occurrence->occurred_at->toIso8601String());
+                $groups[$groupKey]['occurrences'][$occurrenceKey] = [
+                    'event_key' => $event->event_key,
+                    'transition' => $occurrence->transition,
+                    'occurred_at' => $occurrence->occurred_at->toIso8601String(),
+                ];
+                $groups[$groupKey]['location_key'] = $location;
+                $groups[$groupKey]['primary_type'] = $event->primary_type;
+                $groups[$groupKey]['family'] = $family;
+                $groups[$groupKey]['context_label'] ??= $label;
+            }
+        }
+
+        return collect($groups)
+            ->map(function (array $group) use ($start): array {
+                $occurrences = collect($group['occurrences'])->sortBy('occurred_at')->values();
+
+                return [
+                    'location_key' => $group['location_key'],
+                    'primary_type' => $group['primary_type'],
+                    'family' => $group['family'],
+                    'context_label' => $group['context_label'],
+                    'count' => $occurrences->count(),
+                    'window_start' => $start->toDateString(),
+                    'occurrences' => $occurrences->all(),
+                ];
+            })
+            ->filter(fn (array $group): bool => $group['count'] >= 3)
+            ->sortBy(fn (array $group): string => ($group['context_label'] ?? '').'|'.$group['family'])
+            ->values()
+            ->all();
+    }
+
+    private function recurrenceFamily(string $subjectKey): ?string
+    {
+        $parts = array_values(array_filter(explode('|', $subjectKey)));
+        $specific = array_values(array_intersect($parts, ['lock', 'keys', 'hood_light', 'cleaning', 'shift', 'payment', 'technical']));
+
+        if (in_array('hood_light', $specific, true) && count($specific) === 1) {
+            return 'hood_light';
+        }
+
+        if (count($specific) === 1 && $specific[0] === 'lock') {
+            return 'access_lock';
+        }
+
+        if (count($specific) === 1 && $specific[0] === 'keys') {
+            return 'access_keys';
+        }
+
+        return null;
     }
 
     private function project(TelegramOperationalEvent $event, Carbon $start, Carbon $cutoff): ?array
@@ -164,14 +318,6 @@ class TelegramEveningIntelligenceBuilder
             fn (TelegramOperationalEventEvidence $item): bool => $item->occurred_at !== null
                 && $item->occurred_at->betweenIncluded($start, $cutoff)
         );
-        $openSince = $this->currentOpenPeriodStart($evidence, $status);
-        $carryOver = in_array($status, ['open', 'reopened'], true)
-            && $openSince?->lt($start) === true;
-
-        if (! $hasActivityOnDay && ! $carryOver) {
-            return null;
-        }
-
         $types = collect([$event->primary_type])
             ->merge($event->types ?? [])
             ->merge($evidence->map(function (TelegramOperationalEventEvidence $item): ?string {
@@ -183,6 +329,14 @@ class TelegramEveningIntelligenceBuilder
             ->unique()
             ->values()
             ->all();
+        $openSince = $this->currentOpenPeriodStart($evidence, $status);
+        $carryOver = in_array($status, ['open', 'reopened'], true)
+            && $openSince?->lt($start) === true
+            && $this->lifecyclePolicy->mayCarryOver($types, (string) $event->summary, $evidence);
+
+        if (! $hasActivityOnDay && ! $carryOver) {
+            return null;
+        }
         $confidence = $this->weakestConfidence($evidence);
         $uncertainty = $evidence
             ->pluck('uncertainty')
