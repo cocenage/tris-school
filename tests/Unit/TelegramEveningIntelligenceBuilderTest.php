@@ -803,3 +803,53 @@ it('uses the captured application clock as the current-day cutoff', function () 
         Carbon::setTestNow();
     }
 });
+
+it('filters legacy unusable and contextless events from the final built and formatted digest', function () {
+    Carbon::setTestNow(Carbon::parse('2026-09-23 22:00:00', 'Europe/Rome'));
+
+    try {
+        $observer = app(TelegramOperationalEventObserver::class);
+        $legacyEvent = function (string $summary, string $sentAt, string $messageId, string $threadId, ?string $subjectKey = null) use ($observer): void {
+            $message = TelegramOperationalTestDatabase::message(
+                'Не работает свет в комнате 1.',
+                sentAt: $sentAt,
+                messageId: $messageId,
+                threadId: $threadId,
+            );
+            $result = $observer->observe($message);
+            $event = TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->firstOrFail();
+
+            $message->update(['text' => $summary]);
+            $event->update([
+                'primary_type' => 'problem',
+                'types' => ['problem'],
+                'summary' => $summary,
+                'subject_key' => $subjectKey,
+                'status' => 'open',
+            ]);
+        };
+
+        $legacyEvent('Не могу тут к вай фаю подключиться, поэтому так отправляется 🥲', '2026-09-23 08:00:00', '2301', '2301', 'keys');
+        $legacyEvent('Не работает.', '2026-09-23 08:05:00', '2302', '2302');
+        $legacyEvent('Он давно не работает.', '2026-09-23 08:10:00', '2303', '2303');
+        $legacyEvent('Сфоткать не могу гости на диване.', '2026-09-15 08:00:00', '2304', '2304');
+        $legacyEvent('Не могу дозвониться.', '2026-09-22 08:00:00', '2305', '2305');
+        $legacyEvent('У вытяжки не работает свет.', '2026-09-23 08:15:00', '2306', '2306');
+        $legacyEvent('На кухне вытяжка не работает.', '2026-09-23 08:20:00', '2307', '2307');
+
+        $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-09-23');
+        $rendered = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+
+        expect($preview['sections'])->not->toBeEmpty()
+            ->and($rendered)
+            ->not->toContain('Не могу тут к вай фаю подключиться')
+            ->not->toContain('Не работает.')
+            ->not->toContain('Он давно не работает.')
+            ->not->toContain('Сфоткать не могу гости на диване.')
+            ->not->toContain('Не могу дозвониться.')
+            ->toContain('У вытяжки не работает свет.')
+            ->toContain('На кухне не работает вытяжка.');
+    } finally {
+        Carbon::setTestNow();
+    }
+});
