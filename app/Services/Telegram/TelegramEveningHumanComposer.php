@@ -4,7 +4,6 @@ namespace App\Services\Telegram;
 
 use App\Models\TelegramMessage;
 use Illuminate\Support\Collection;
-use Throwable;
 
 class TelegramEveningHumanComposer
 {
@@ -12,7 +11,7 @@ class TelegramEveningHumanComposer
         private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
     ) {}
 
-    /** @return array{include: bool, handled: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
+    /** @return array{include: bool, handled: bool, technical_failure?: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
     public function compose(array $item): array
     {
         $rawSummary = (string) ($item['summary'] ?? '');
@@ -27,10 +26,22 @@ class TelegramEveningHumanComposer
             return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
         }
 
-        // Technical previews and legacy fixtures may contain references that
-        // are unavailable locally. Keep the existing formatter as the safe fallback.
-        if ($evidence->isEmpty()) {
-            return ['include' => true, 'handled' => false, 'summary' => null, 'follow_up' => null];
+        // A preview item with no evidence references cannot be semantically
+        // judged. Preserve the legacy formatter only for this incomplete input.
+        if (collect($item['evidence'] ?? [])->pluck('local_message_id')->filter(fn (mixed $id): bool => is_numeric($id))->isEmpty()) {
+            return [
+                'include' => true,
+                'handled' => false,
+                'technical_failure' => true,
+                'summary' => null,
+                'follow_up' => null,
+            ];
+        }
+
+        if ($types->contains('positive_contribution')
+            && $types->diff(['positive_contribution'])->isEmpty()
+            && $summary !== '') {
+            return $this->result(mb_ucfirst(rtrim($summary, " .!?\t\n\r\0\x0B")).'.', null);
         }
 
         if ($this->lifecyclePolicy->isStandaloneInstruction($summary)
@@ -151,6 +162,14 @@ class TelegramEveningHumanComposer
             );
         }
 
+        if (preg_match('/вытяжк/iu', $context) === 1
+            && preg_match('/не\s+работает|слом/iu', $context) === 1) {
+            return $this->result(
+                'На кухне не работает вытяжка.',
+                $isOpen ? 'Проверить, работает ли вытяжка на кухне.' : null,
+            );
+        }
+
         if (preg_match('/пульт/iu', $context) === 1
             && preg_match('/кондиционер|конд[её]р/iu', $context) === 1
             && preg_match('/не\s+работает|слом/iu', $context) === 1) {
@@ -209,7 +228,7 @@ class TelegramEveningHumanComposer
             return $this->result(mb_ucfirst(rtrim($summary, " .!?\t\n\r\0\x0B")).'.', null);
         }
 
-        return ['include' => true, 'handled' => false, 'summary' => null, 'follow_up' => null];
+        return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
     }
 
     /** @return array{include: true, handled: true, summary: string, follow_up: ?string, resolution: ?string, show_in_day: bool} */
@@ -304,20 +323,16 @@ class TelegramEveningHumanComposer
             return collect();
         }
 
-        try {
-            $messages = TelegramMessage::query()
-                ->whereKey($ids)
-                ->get(['id', 'text', 'caption'])
-                ->keyBy('id');
+        $messages = TelegramMessage::query()
+            ->whereKey($ids)
+            ->get(['id', 'text', 'caption'])
+            ->keyBy('id');
 
-            return $ids->map(function (mixed $id) use ($messages): string {
-                $message = $messages->get((int) $id);
+        return $ids->map(function (mixed $id) use ($messages): string {
+            $message = $messages->get((int) $id);
 
-                return $this->clean(mb_strimwidth((string) ($message?->text ?: $message?->caption ?: ''), 0, 500, ''));
-            })->filter()->values();
-        } catch (Throwable) {
-            return collect();
-        }
+            return $this->clean(mb_strimwidth((string) ($message?->text ?: $message?->caption ?: ''), 0, 500, ''));
+        })->filter()->values();
     }
 
     private function clean(string $text): string

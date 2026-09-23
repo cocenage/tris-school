@@ -245,6 +245,7 @@ class TelegramDigestFormatter
                     $item['_human'] = [
                         'include' => true,
                         'handled' => false,
+                        'technical_failure' => true,
                         'summary' => null,
                         'follow_up' => null,
                     ];
@@ -253,6 +254,8 @@ class TelegramDigestFormatter
                 return $item;
             })
             ->filter(fn (array $item): bool => ($item['_human']['include'] ?? true) === true)
+            ->filter(fn (array $item): bool => ($item['_human']['handled'] ?? false) === true
+                || ($item['_human']['technical_failure'] ?? false) === true)
             ->filter(fn (array $item): bool => $this->isHumanEveningEvent($item))
             ->values();
         $eligibleItems = $this->consolidateEveningItems($eligibleItems);
