@@ -85,6 +85,30 @@ it('requires operational context for a high-confidence request', function () {
         ->and($contextual['confidence'])->toBe('high');
 });
 
+it('matches key subjects as Russian key words, not inside unrelated connection words', function (string $text, ?string $expected) {
+    expect(operationalInterpreter()->interpret($text)['subject_key'])->toBe($expected);
+})->with([
+    'ключ' => ['Где ключ?', 'keys'],
+    'ключи' => ['Где ключи?', 'keys'],
+    'ключик' => ['Где ключик?', 'keys'],
+    'ключа' => ['Где ключа?', 'keys'],
+    'ключей' => ['Где ключей?', 'keys'],
+    'подключиться' => ['Не могу подключиться к сети.', null],
+    'подключение' => ['Проблема с подключением к сети.', null],
+    'отключиться' => ['Не могу отключиться от сети.', null],
+]);
+
+it('ignores a connectivity explanation about message sending but keeps a real apartment Wi-Fi defect', function () {
+    $chatter = operationalInterpreter()->interpret('Не могу тут к вай фаю подключиться, поэтому так отправляется 🥲');
+    $defect = operationalInterpreter()->interpret('В квартире не работает Wi-Fi у гостей');
+
+    expect($chatter)->toMatchArray([
+        'meaningful' => false,
+        'reason_code' => 'communication_connectivity_chatter',
+    ])->and($defect['meaningful'])->toBeTrue()
+        ->and($defect['types'])->toContain('problem');
+});
+
 it('gives defect language precedence over an action verb', function () {
     $decision = operationalInterpreter()->interpret('Начала проверять: мусор и сильная вонь в квартире');
 

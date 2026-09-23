@@ -175,6 +175,50 @@ it('restores a broken handle object from bounded evidence without mutating sourc
     ])->and([$context->fresh()->toArray(), $fragment->fresh()->toArray()])->toBe($before);
 });
 
+it('suppresses a dirty referent fragment unless bounded evidence establishes its object', function () {
+    $fragment = TelegramOperationalTestDatabase::message('Нет..это грязное.', messageId: '605');
+    $composer = app(TelegramEveningHumanComposer::class);
+    $withoutObject = $composer->compose(humanItem('Нет..это грязное.', [$fragment->id], ['quality_issue']));
+    $topicTitleOnly = $composer->compose(humanItem(
+        'Imbonati 88 DEER постельное владельца — Нет..это грязное.',
+        [$fragment->id],
+        ['quality_issue'],
+    ));
+
+    $object = TelegramOperationalTestDatabase::message('Постельное владельца.', messageId: '606');
+    $withObject = $composer->compose(humanItem(
+        'Imbonati 88 DEER постельное владельца — Нет..это грязное.',
+        [$object->id, $fragment->id],
+        ['quality_issue'],
+    ));
+    $formatter = app(TelegramDigestFormatter::class);
+    $withoutObjectPreview = $formatter->eveningIntelligence([
+        'district' => ['label' => 'Certosa'],
+        'sections' => [['key' => 'quality', 'items' => [[
+            ...humanItem('Нет..это грязное.', [$fragment->id], ['quality_issue']),
+            'context_label' => 'Imbonati 88 DEER постельное владельца',
+        ]]]],
+    ]);
+    $withObjectPreview = $formatter->eveningIntelligence([
+        'district' => ['label' => 'Certosa'],
+        'sections' => [['key' => 'quality', 'items' => [[
+            ...humanItem('Нет..это грязное.', [$object->id, $fragment->id], ['quality_issue']),
+            'context_label' => 'Imbonati 88 DEER',
+        ]]]],
+    ]);
+
+    expect($withoutObject)->toMatchArray(['include' => false, 'handled' => true])
+        ->and($topicTitleOnly)->toMatchArray(['include' => false, 'handled' => true])
+        ->and($withObject)->toMatchArray([
+            'include' => true,
+            'summary' => 'Постельное бельё владельца оказалось грязным.',
+            'follow_up' => null,
+        ])
+        ->and($withoutObjectPreview)->not->toContain('Нет..это грязное.', 'Постельное владельца')
+        ->and($withObjectPreview)->toContain('Imbonati 88 DEER — Постельное бельё владельца оказалось грязным.')
+        ->not->toContain('Нет..это грязное.');
+});
+
 it('humanizes production-shaped operational facts and suppresses contextless fragments', function () {
     $cases = [
         ['Если что, в гостевом локере на улице у нас в программе ошибка должен быть 1291', ['problem']],

@@ -39,6 +39,19 @@ it('stores explainable no-event decisions without an event', function () {
         ->and(TelegramOperationalObservation::query()->where('state', 'completed')->count())->toBe(1);
 });
 
+it('does not create an operational event for a connectivity explanation about message sending', function () {
+    $message = TelegramOperationalTestDatabase::message(
+        'Не могу тут к вай фаю подключиться, поэтому так отправляется 🥲',
+    );
+
+    $result = app(TelegramOperationalEventObserver::class)->observe($message);
+
+    expect($result)->toMatchArray([
+        'outcome' => 'no_event',
+        'reason_code' => 'communication_connectivity_chatter',
+    ])->and(TelegramOperationalEvent::query()->count())->toBe(0);
+});
+
 it('rejects private bot service and empty messages', function (array $case) {
     $message = TelegramOperationalTestDatabase::message(
         text: $case['text'],
