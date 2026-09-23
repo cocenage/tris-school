@@ -69,12 +69,14 @@ function recurrenceProblem(string $messageId, string $sentAt, string $threadId, 
     return $result;
 }
 
-it('shows recurrence only for three distinct durable same-location access occurrences in the selected seven-day window', function () {
+it('retains recurrence data internally but hides it from the human evening digest', function () {
     recurrenceProblem('rec-1', '2026-06-17 08:00:00', '31');
     recurrenceProblem('rec-2', '2026-06-19 08:00:00', '32');
     recurrenceProblem('rec-3', '2026-06-22 08:00:00', '33');
 
     $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-22');
+    $recurrencesBeforeFormatting = $preview['recurrences'];
+    $rendered = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
 
     expect($preview['recurrences'])->toHaveCount(1)
         ->and($preview['recurrences'][0])->toMatchArray([
@@ -84,10 +86,8 @@ it('shows recurrence only for three distinct durable same-location access occurr
             'count' => 3,
             'window_start' => '2026-06-16',
         ])
-        ->and(app(TelegramDigestFormatter::class)->eveningIntelligence($preview))->toContain(
-            '⚠️ Повторяется:',
-            'Via Test 77 — Проблема с доступом возникала 3 раза за последние 7 дней.',
-        );
+        ->and($rendered)->not->toContain('⚠️ Повторяется:')
+        ->and($preview['recurrences'])->toBe($recurrencesBeforeFormatting);
 });
 
 it('does not show recurrence below threshold or when the third occurrence is outside the window', function () {
@@ -809,12 +809,13 @@ it('filters legacy unusable and contextless events from the final built and form
 
     try {
         $observer = app(TelegramOperationalEventObserver::class);
-        $legacyEvent = function (string $summary, string $sentAt, string $messageId, string $threadId, ?string $subjectKey = null) use ($observer): void {
+        $legacyEvent = function (string $summary, string $sentAt, string $messageId, string $threadId, ?string $subjectKey = null, string $chatId = '-1001') use ($observer): void {
             $message = TelegramOperationalTestDatabase::message(
                 'Не работает свет в комнате 1.',
                 sentAt: $sentAt,
                 messageId: $messageId,
                 threadId: $threadId,
+                chatId: $chatId,
             );
             $result = $observer->observe($message);
             $event = TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->firstOrFail();
@@ -834,21 +835,82 @@ it('filters legacy unusable and contextless events from the final built and form
         $legacyEvent('Он давно не работает.', '2026-09-23 08:10:00', '2303', '2303');
         $legacyEvent('Сфоткать не могу гости на диване.', '2026-09-15 08:00:00', '2304', '2304');
         $legacyEvent('Не могу дозвониться.', '2026-09-22 08:00:00', '2305', '2305');
-        $legacyEvent('У вытяжки не работает свет.', '2026-09-23 08:15:00', '2306', '2306');
-        $legacyEvent('На кухне вытяжка не работает.', '2026-09-23 08:20:00', '2307', '2307');
+        $legacyEvent('У вытяжки не работает свет.', '2026-09-23 08:15:00', '2306', '2306', chatId: '-1009');
+        $legacyEvent('Жалюзи упала, не могу повесить — очень высоко.', '2026-09-23 08:25:00', '2308', '2308', chatId: '-1008');
+        $legacyEvent('Обнаружен брак маленького полотенца, замены нет.', '2026-09-23 08:35:00', '2310', '2310');
+        $legacyEvent('У вытяжки не работает свет.', '2026-09-22 08:00:00', '2318', '2318');
+        $legacyEvent('Простынь большая, жёлтое пятно; заменила, брак.', '2026-09-22 08:05:00', '2319', '2319');
+        $legacyEvent('Сломана вешалка.', '2026-09-22 08:10:00', '2320', '2320');
+        $legacyEvent('Не работает свет.', '2026-09-22 08:15:00', '2321', '2321');
+        $legacyEvent('На кухне вытяжка не работает.', '2026-09-22 08:20:00', '2322', '2322');
+        $legacyEvent('В программе гостевой локер: ошибка, правильный код — 1291.', '2026-09-22 08:25:00', '2323', '2323');
+        $legacyEvent('Курьер забрал не всё грязное бельё.', '2026-09-21 07:55:00', '2324', '2324');
+        $legacyEvent('Дверь закрыта, никто не открывает.', '2026-09-21 08:00:00', '2325', '2325');
+        $legacyEvent('Обнаружена грязная посуда.', '2026-09-21 08:05:00', '2326', '2326');
+        $legacyEvent('Не могу найти запасную бумагу.', '2026-09-21 08:10:00', '2327', '2327');
 
-        $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-09-23');
-        $rendered = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+        recurrenceProblem('2331', '2026-09-17 08:00:00', '2331');
+        recurrenceProblem('2332', '2026-09-19 08:00:00', '2332');
+        recurrenceProblem('2333', '2026-09-21 08:00:00', '2333');
+
+        $builder = app(TelegramEveningIntelligenceBuilder::class);
+        $formatter = app(TelegramDigestFormatter::class);
+        $preview = $builder->build('2026-09-23');
+        $recurrencesBeforeFormatting = $preview['recurrences'];
+        $renderedToday = $formatter->eveningIntelligence($preview);
+        $renderedRawSafeOnly = $formatter->eveningIntelligence($builder->build('2026-09-23', [
+            'district' => ['chat_id' => '-1008', 'label' => 'Navigli'],
+        ]));
+        $renderedComposedOnly = $formatter->eveningIntelligence($builder->build('2026-09-23', [
+            'district' => ['chat_id' => '-1009', 'label' => 'Navigli'],
+        ]));
+        $previewPreviousDay = $builder->build('2026-09-22');
+        $renderedPreviousDay = $formatter->eveningIntelligence($previewPreviousDay);
+        $renderedTwoDaysAgo = $formatter->eveningIntelligence($builder->build('2026-09-21'));
+        $rendered = implode("\n", [
+            $renderedToday,
+            $renderedPreviousDay,
+            $renderedTwoDaysAgo,
+        ]);
 
         expect($preview['sections'])->not->toBeEmpty()
+            ->and($preview['mode']['read_only'])->toBeTrue()
+            ->and($preview['mode']['mutations'])->toBe(0)
+            ->and($preview['mode']['telegram_actions'])->toBe(0)
+            ->and($recurrencesBeforeFormatting)->not->toBeEmpty()
+            ->and($preview['recurrences'])->toBe($recurrencesBeforeFormatting)
+            ->and($renderedRawSafeOnly)->toContain('Жалюзи упала, не могу повесить')
+            ->not->toContain('Значимых операционных событий не зафиксировано.')
+            ->and($renderedComposedOnly)->toContain('У вытяжки не работает свет.')
+            ->not->toContain('Значимых операционных событий не зафиксировано.')
+            ->and($renderedToday)->toContain('Жалюзи упала, не могу повесить')
+            ->toContain('У вытяжки не работает свет.')
+            ->not->toContain('Значимых операционных событий не зафиксировано.')
+            ->and($renderedPreviousDay)->toContain('Простынь большая, жёлтое пятно')
+            ->toContain('На кухне не работает вытяжка.')
+            ->not->toContain('Значимых операционных событий не зафиксировано.')
             ->and($rendered)
             ->not->toContain('Не могу тут к вай фаю подключиться')
             ->not->toContain('Не работает.')
             ->not->toContain('Он давно не работает.')
             ->not->toContain('Сфоткать не могу гости на диване.')
             ->not->toContain('Не могу дозвониться.')
+            ->not->toContain('Значимых операционных событий не зафиксировано.')
             ->toContain('У вытяжки не работает свет.')
-            ->toContain('На кухне не работает вытяжка.');
+            ->toContain('Жалюзи упала, не могу повесить')
+            ->toContain('Обнаружен брак маленького полотенца, замены нет.')
+            ->toContain('правильный код — 1291')
+            ->toContain('Курьер забрал не всё грязное бельё.')
+            ->toContain('Простынь большая, жёлтое пятно')
+            ->toContain('Сломана вешалка.')
+            ->toContain('Не работает свет.')
+            ->toContain('На кухне не работает вытяжка.')
+            ->toContain('Возникла проблема с доступом')
+            ->toContain('Обнаружена грязная посуда.')
+            ->toContain('Проверить наличие запасной бумаги.')
+            ->toContain('🔄 Переходящие проблемы:')
+            ->toContain('Проверить свет у вытяжки.')
+            ->not->toContain('⚠️ Повторяется:');
     } finally {
         Carbon::setTestNow();
     }

@@ -11,7 +11,7 @@ class TelegramEveningHumanComposer
         private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
     ) {}
 
-    /** @return array{include: bool, handled: bool, technical_failure?: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
+    /** @return array{include: bool, handled: bool, decision: 'omit'|'composed'|'raw_safe'|'technical_failure', summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
     public function compose(array $item): array
     {
         $rawSummary = (string) ($item['summary'] ?? '');
@@ -23,7 +23,7 @@ class TelegramEveningHumanComposer
         $actor = $this->clean((string) ($item['actor_name'] ?? ''));
 
         if ($summary === '' && $evidence->isEmpty()) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         // A preview item with no evidence references cannot be semantically
@@ -32,7 +32,7 @@ class TelegramEveningHumanComposer
             return [
                 'include' => true,
                 'handled' => false,
-                'technical_failure' => true,
+                'decision' => 'technical_failure',
                 'summary' => null,
                 'follow_up' => null,
             ];
@@ -46,14 +46,14 @@ class TelegramEveningHumanComposer
 
         if ($this->lifecyclePolicy->isStandaloneInstruction($summary)
             && $evidence->every(fn (string $text): bool => $this->lifecyclePolicy->isStandaloneInstruction($text))) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         if ($this->isDirtyReferentFragment($summary)) {
             $objectSummary = $this->dirtyReferentSummary($evidence->implode(' '));
 
             if ($objectSummary === null) {
-                return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+                return $this->omit();
             }
 
             return $this->result($objectSummary, null);
@@ -211,27 +211,37 @@ class TelegramEveningHumanComposer
         }
 
         if ($this->isInstructionOrRoutine($context)) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         if ($this->isMeaninglessFragment($summary)
             && $evidence->every(fn (string $text): bool => $this->isMeaninglessFragment($text))) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         if ($types->intersect(['request', 'unanswered_question'])->isNotEmpty()
             && (str_contains($context, '?') || $this->isConversationalQuestion($context))) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         if ($summary !== '' && $this->startsWithAcknowledgementFraming($rawSummary)) {
             return $this->result(mb_ucfirst(rtrim($summary, " .!?\t\n\r\0\x0B")).'.', null);
         }
 
-        return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        if ($this->isRawSafe($summary, $types->all())) {
+            return [
+                'include' => true,
+                'handled' => false,
+                'decision' => 'raw_safe',
+                'summary' => null,
+                'follow_up' => null,
+            ];
+        }
+
+        return $this->omit();
     }
 
-    /** @return array{include: true, handled: true, summary: string, follow_up: ?string, resolution: ?string, show_in_day: bool} */
+    /** @return array{include: true, handled: true, decision: 'composed', summary: string, follow_up: ?string, resolution: ?string, show_in_day: bool} */
     private function result(
         string $summary,
         ?string $followUp,
@@ -241,6 +251,7 @@ class TelegramEveningHumanComposer
         return [
             'include' => true,
             'handled' => true,
+            'decision' => 'composed',
             'summary' => $summary,
             'follow_up' => $followUp,
             'resolution' => $resolution,
@@ -248,7 +259,7 @@ class TelegramEveningHumanComposer
         ];
     }
 
-    /** @return array{include: true, handled: true, summary: string, follow_up: ?string} */
+    /** @return array{include: true, handled: true, decision: 'composed', summary: string, follow_up: ?string} */
     private function question(string $context, bool $isOpen): array
     {
         if (preg_match('/во\s+сколько.{0,40}заезд|заезд.{0,40}во\s+сколько/iu', $context) === 1) {
@@ -307,7 +318,34 @@ class TelegramEveningHumanComposer
             );
         }
 
-        return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        return $this->omit();
+    }
+
+    /** @return array{include: false, handled: true, decision: 'omit', summary: null, follow_up: null} */
+    private function omit(): array
+    {
+        return [
+            'include' => false,
+            'handled' => true,
+            'decision' => 'omit',
+            'summary' => null,
+            'follow_up' => null,
+        ];
+    }
+
+    /** @param array<int, string> $types */
+    private function isRawSafe(string $summary, array $types): bool
+    {
+        if ($summary === '' || $this->isMeaninglessFragment($summary)
+            || collect($types)->intersect(['problem', 'quality_issue', 'risk', 'request'])->isEmpty()) {
+            return false;
+        }
+
+        if (preg_match('/(?:подключиться.{0,50}поэтому\s+так\s+отправля|поэтому\s+так\s+отправля)/iu', $summary) === 1) {
+            return false;
+        }
+
+        return preg_match('/жалюз.{0,70}(?:упал\S*.{0,60}(?:не\s+могу\s+повесить|высок)|не\s+могу\s+повесить.{0,60}высок)|(?:простын|полотен|пододеял).{0,90}(?:пятн|брак|гряз|замен\S*\s+нет)|(?:пятн|брак|гряз|замен\S*\s+нет).{0,90}(?:простын|полотен|пододеял)|слом\S*.{0,35}вешалк|вешалк.{0,35}слом|(?:не\s+могу\s+найти|не\s+нашл|отсутств|нет\b).{0,60}(?:запасн.{0,20}бумаг|ключ|полотен|бель|пульт|вешалк|инвентар|средств)/iu', $summary) === 1;
     }
 
     /** @return Collection<int, string> */
