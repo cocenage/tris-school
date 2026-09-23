@@ -46,6 +46,25 @@ it('suppresses unknown fragments instead of inventing their object', function (s
     )))->toMatchArray(['include' => false, 'summary' => null, 'follow_up' => null]);
 })->with(['Сломана.', 'Это ошибка(.', 'Есть грязные моменты.']);
 
+it('cleans confirmed production phrases without inventing an issue from instructions or fragments', function () {
+    $cases = [
+        ['Коврик брак.', ['quality_issue'], true, 'Обнаружен брак коврика.'],
+        ['Очень жаль что нет посудомойки((( А то вся посуда грязная от маленьких ложок до кастрюль.', ['quality_issue'], true, 'Вся посуда была грязной.'],
+        ['И фото загрязнений пожалуйста.', ['quality_issue'], false, null],
+        ['Оформи пожалуйста запрос на грязную квартиру.', ['quality_issue'], false, null],
+        ['Если есть грязное постельное, нужно фото прикрепить.', ['quality_issue'], false, null],
+        ['Отмечен риск: на более быстрый.', ['risk'], false, null],
+    ];
+
+    foreach ($cases as $index => [$text, $types, $include, $summary]) {
+        $message = TelegramOperationalTestDatabase::message($text, messageId: (string) (1600 + $index));
+        $result = app(TelegramEveningHumanComposer::class)->compose(humanItem($text, [$message->id], $types));
+
+        expect($result['include'])->toBe($include)
+            ->and($result['summary'])->toBe($summary);
+    }
+});
+
 it('recovers a linen defect object from related evidence', function () {
     $fragment = TelegramOperationalTestDatabase::message('Сломана.', messageId: '401');
     $context = TelegramOperationalTestDatabase::message('Брак полотенца и пододеяльника.', messageId: '402');

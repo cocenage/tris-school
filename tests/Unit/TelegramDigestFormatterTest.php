@@ -2,6 +2,7 @@
 
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramEveningHumanComposer;
+use App\Services\Telegram\TelegramOperationalEventLifecyclePolicy;
 
 it('formats an empty morning using only the supplied contract', function () {
     $text = app(TelegramDigestFormatter::class)->morning([
@@ -450,7 +451,7 @@ it('does not move a mixed historical problem into the good-work block', function
 });
 
 it('falls back to deterministic formatting when the evidence composer fails', function () {
-    $composer = new class extends TelegramEveningHumanComposer
+    $composer = new class(app(TelegramOperationalEventLifecyclePolicy::class)) extends TelegramEveningHumanComposer
     {
         public function compose(array $item): array
         {

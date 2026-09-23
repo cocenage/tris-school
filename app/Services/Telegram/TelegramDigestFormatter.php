@@ -310,6 +310,35 @@ class TelegramDigestFormatter
             $lines[] = '• Значимых операционных событий не зафиксировано.';
         }
 
+        $recurrences = collect($preview['recurrences'] ?? [])
+            ->filter(fn (array $recurrence): bool => (int) ($recurrence['count'] ?? 0) >= 3)
+            ->take(5)
+            ->values();
+
+        if ($recurrences->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = '⚠️ Повторяется:';
+
+            foreach ($recurrences as $recurrence) {
+                $count = (int) $recurrence['count'];
+                $times = $count % 10 >= 2 && $count % 10 <= 4 && ($count % 100 < 12 || $count % 100 > 14)
+                    ? 'раза'
+                    : 'раз';
+                $phrase = match ($recurrence['family'] ?? null) {
+                    'access_lock', 'access_keys' => "Проблема с доступом возникала {$count} {$times} за последние 7 дней.",
+                    'hood_light' => "Проблема с подсветкой вытяжки возникала {$count} {$times} за последние 7 дней.",
+                    default => null,
+                };
+
+                if ($phrase !== null) {
+                    $lines[] = '• '.$this->withEveningContext(
+                        ['context_label' => $recurrence['context_label'] ?? null],
+                        $phrase,
+                    );
+                }
+            }
+        }
+
         if ($resolvedItems->isNotEmpty()) {
             $lines[] = '';
             $lines[] = '✅ Решено сегодня:';

@@ -8,6 +8,10 @@ use Throwable;
 
 class TelegramEveningHumanComposer
 {
+    public function __construct(
+        private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
+    ) {}
+
     /** @return array{include: bool, handled: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
     public function compose(array $item): array
     {
@@ -27,6 +31,11 @@ class TelegramEveningHumanComposer
         // are unavailable locally. Keep the existing formatter as the safe fallback.
         if ($evidence->isEmpty()) {
             return ['include' => true, 'handled' => false, 'summary' => null, 'follow_up' => null];
+        }
+
+        if ($this->lifecyclePolicy->isStandaloneInstruction($summary)
+            && $evidence->every(fn (string $text): bool => $this->lifecyclePolicy->isStandaloneInstruction($text))) {
+            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
         }
 
         if (($item['status'] ?? null) === 'resolved' && preg_match('/закрыли\s+двер/iu', $context) === 1) {
@@ -87,6 +96,15 @@ class TelegramEveningHumanComposer
             return $this->result(
                 'Из посудомоечной машины вытекала вода; нужно проверить её состояние.',
                 $isOpen ? 'Проверить состояние посудомоечной машины.' : null,
+            );
+        }
+
+        if (preg_match('/(?:\bпосуд[ауыое]\b.{0,30}грязн|грязн.{0,30}\bпосуд[ауыое]\b)/iu', $context) === 1) {
+            return $this->result(
+                preg_match('/вся\s+посуда\s+грязн/iu', $context) === 1
+                    ? 'Вся посуда была грязной.'
+                    : 'Обнаружена грязная посуда.',
+                null,
             );
         }
 
@@ -153,6 +171,10 @@ class TelegramEveningHumanComposer
             if ($objects->isNotEmpty()) {
                 return $this->result('Обнаружен брак '.$objects->join(' и ').'.', null);
             }
+        }
+
+        if (preg_match('/коврик/iu', $context) === 1 && preg_match('/брак/iu', $context) === 1) {
+            return $this->result('Обнаружен брак коврика.', null);
         }
 
         if ($this->isConcreteQuestion($context)) {
@@ -356,7 +378,8 @@ class TelegramEveningHumanComposer
             || preg_match('/^(?:сломана|сломано|это\s+ошибка|есть\s+грязные\s+моменты|хорошо|поняла|понял|спасибо|ок)$/iu', $normalized) === 1
             || preg_match('/^(?:(?:хорошо|поняла|понял|спасибо|ок)[,.\s]*)+$/iu', $normalized) === 1
             || preg_match('/^они\s+(?:вообще\s+)?не\s+открыва\S*(?:\s+почему-то)?$/iu', $normalized) === 1
-            || preg_match('/не\s+знаю.{0,40}было\s+ли.{0,30}сломан.{0,30}раньше/iu', $normalized) === 1;
+            || preg_match('/не\s+знаю.{0,40}было\s+ли.{0,30}сломан.{0,30}раньше/iu', $normalized) === 1
+            || preg_match('/^(?:отмечен\s+риск:\s*)?на\s+более\s+быстрый$/iu', $normalized) === 1;
     }
 
     private function startsWithAcknowledgementFraming(string $text): bool

@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\Telegram\TelegramOperationalEventObserver;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -128,6 +129,19 @@ it('filters a configured district while keeping complete technical evidence in j
 it('fails cleanly when the required ledger is unavailable', function () {
     Schema::connection('analytics')->dropIfExists('telegram_operational_event_evidence');
     Schema::connection('analytics')->dropIfExists('telegram_operational_events');
+
+    $this->artisan('telegram:evening-intelligence-preview', ['--date' => '2026-06-17'])
+        ->expectsOutputToContain('Operational event ledger is unavailable')
+        ->assertExitCode(1);
+});
+
+it('fails closed when the analytics apartment-context migration is missing', function () {
+    Schema::connection('analytics')->table('telegram_operational_events', function (Blueprint $table): void {
+        $table->dropIndex('telegram_operational_events_apartment_id_index');
+    });
+    Schema::connection('analytics')->table('telegram_operational_events', function (Blueprint $table): void {
+        $table->dropColumn('apartment_id');
+    });
 
     $this->artisan('telegram:evening-intelligence-preview', ['--date' => '2026-06-17'])
         ->expectsOutputToContain('Operational event ledger is unavailable')

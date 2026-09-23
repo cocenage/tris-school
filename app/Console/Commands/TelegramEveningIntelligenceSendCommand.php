@@ -9,10 +9,13 @@ use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 class TelegramEveningIntelligenceSendCommand extends Command
 {
+    private const DELIVERY_GUARD_DAYS = 30;
+
     protected $signature = 'telegram:evening-intelligence-send
         {--date= : Calendar date in the application timezone; defaults to today}
         {--district= : Optional configured district key}
@@ -109,23 +112,44 @@ class TelegramEveningIntelligenceSendCommand extends Command
                 continue;
             }
 
+            $targetChatId = $deliveryMode === 'centralized' ? $centralChatId : (string) $route['chat_id'];
+            $targetThreadId = $deliveryMode === 'centralized' ? $centralThreadId : (string) $route['duty_thread_id'];
+            $deliveryKey = 'telegram_evening_intelligence_v1:'.hash('sha256', implode('|', [
+                $date->toDateString(), $route['key'], $deliveryMode, $targetChatId, $targetThreadId,
+            ]));
+
             try {
-    if ($deliveryMode === 'centralized') {
-        $messageId = $bot->sendMessage(
-            $centralChatId,
-            $text,
-            $centralThreadId,
-        );
-    } else {
-        $messageId = $bot->sendAnalyticsMessage(
-            (string) $route['chat_id'],
-            $text,
-            (string) $route['duty_thread_id'],
-        );
-    }
-} catch (Throwable) {
-    $messageId = null;
-}
+                $reserved = Cache::add($deliveryKey, 'attempted', now()->addDays(self::DELIVERY_GUARD_DAYS));
+                $previous = $reserved ? null : Cache::get($deliveryKey);
+            } catch (Throwable) {
+                $results[] = $this->result($route, $date, 'failed', $materialEvents, 0, 'idempotency_store_unavailable');
+
+                continue;
+            }
+
+            if (! $reserved) {
+                $status = $previous === 'sent' ? 'skipped_duplicate' : 'blocked_uncertain';
+                $results[] = $this->result($route, $date, $status, $materialEvents, 0);
+
+                continue;
+            }
+
+            try {
+                $messageId = $deliveryMode === 'centralized'
+                    ? $bot->sendMessage($targetChatId, $text, $targetThreadId)
+                    : $bot->sendAnalyticsMessage($targetChatId, $text, $targetThreadId);
+            } catch (Throwable) {
+                $messageId = null;
+            }
+
+            if ($messageId !== null) {
+                try {
+                    Cache::put($deliveryKey, 'sent', now()->addDays(self::DELIVERY_GUARD_DAYS));
+                } catch (Throwable) {
+                    // The reserved attempt still prevents an automatic retry after an uncertain cache update.
+                }
+            }
+
             $results[] = $this->result(
                 $route,
                 $date,
@@ -156,7 +180,9 @@ class TelegramEveningIntelligenceSendCommand extends Command
             }
         }
 
-        return collect($results)->contains('status', 'failed') ? self::FAILURE : self::SUCCESS;
+        return collect($results)->contains(fn (array $result): bool => in_array($result['status'], ['failed', 'blocked_uncertain'], true))
+            ? self::FAILURE
+            : self::SUCCESS;
     }
 
     private function dateOption(): ?Carbon
