@@ -33,7 +33,7 @@ it('returns explicit omit, composed, raw-safe, and technical-failure outcomes', 
         ['Сфоткать не могу гости на диване.', ['problem'], 'omit'],
         ['Не могу тут к вай фаю подключиться, поэтому так отправляется 🥲', ['problem'], 'omit'],
         ['Жалюзи упала не могу повесить так как очень высоко.', ['problem'], 'raw_safe'],
-        ['Обнаружен брак маленького полотенца, замены нет.', ['quality_issue'], 'raw_safe'],
+        ['Обнаружен брак маленького полотенца, замены нет.', ['quality_issue'], 'composed'],
         ['На кухне вытяжка не работает.', ['problem'], 'composed'],
     ];
 
@@ -47,6 +47,21 @@ it('returns explicit omit, composed, raw-safe, and technical-failure outcomes', 
     expect($composer->compose(humanItem('Не работает свет.', [], ['problem']))['decision'])
         ->toBe('technical_failure');
 });
+
+it('allows concrete object-and-fact summaries while omitting objectless or context chatter', function (string $text, string $decision) {
+    $message = TelegramOperationalTestDatabase::message($text, messageId: (string) fake()->unique()->numberBetween(3000, 9999));
+
+    expect(app(TelegramEveningHumanComposer::class)->compose(humanItem($text, [$message->id], ['problem']))['decision'])
+        ->toBe($decision);
+})->with([
+    ['Простынь большая, жёлтое пятно; заменила, брак.', 'raw_safe'],
+    ['Сломана вешалка.', 'raw_safe'],
+    ['В ванной треснула плитка.', 'raw_safe'],
+    ['Не работает.', 'omit'],
+    ['Он давно не работает.', 'omit'],
+    ['Сфоткать не могу гости на диване.', 'omit'],
+    ['Не могу тут к вай фаю подключиться, поэтому так отправляется.', 'omit'],
+]);
 
 it('turns courier evidence into a concise linen handoff', function () {
     $message = TelegramOperationalTestDatabase::message('Курьер бельё принёс, но грязное не забрал.', messageId: '201');

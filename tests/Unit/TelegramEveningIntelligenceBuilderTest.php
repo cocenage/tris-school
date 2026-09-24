@@ -898,7 +898,7 @@ it('filters legacy unusable and contextless events from the final built and form
             ->not->toContain('Значимых операционных событий не зафиксировано.')
             ->toContain('У вытяжки не работает свет.')
             ->toContain('Жалюзи упала, не могу повесить')
-            ->toContain('Обнаружен брак маленького полотенца, замены нет.')
+            ->toContain('Обнаружен брак полотенца.')
             ->toContain('правильный код — 1291')
             ->toContain('Курьер забрал не всё грязное бельё.')
             ->toContain('Простынь большая, жёлтое пятно')
