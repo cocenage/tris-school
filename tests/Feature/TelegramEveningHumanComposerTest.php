@@ -45,7 +45,22 @@ it('returns explicit omit, composed, raw-safe, and technical-failure outcomes', 
     }
 
     expect($composer->compose(humanItem('Не работает свет.', [], ['problem']))['decision'])
-        ->toBe('technical_failure');
+        ->toBe('omit');
+});
+
+it('does not let missing evidence trigger the formatter raw-summary fallback', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Lecco 93 Green'],
+        'sections' => [['key' => 'attention', 'items' => [[
+            ...humanItem('Он может поэтому и не работает, потому что уже включен режим был.', [], ['problem']),
+            'carry_over' => true,
+            'open_age_days' => 8,
+        ]]]],
+    ]);
+
+    expect($text)
+        ->not->toContain('Он может поэтому и не работает')
+        ->not->toContain('Открыто 8 дней.');
 });
 
 it('allows concrete object-and-fact summaries while omitting objectless or context chatter', function (string $text, string $decision) {

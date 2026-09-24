@@ -11,7 +11,7 @@ class TelegramEveningHumanComposer
         private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
     ) {}
 
-    /** @return array{include: bool, handled: bool, decision: 'omit'|'composed'|'raw_safe'|'technical_failure', summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
+    /** @return array{include: bool, handled: bool, decision: 'omit'|'composed'|'raw_safe'|'technical_failure', summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool, completed?: bool} */
     public function compose(array $item): array
     {
         $rawSummary = (string) ($item['summary'] ?? '');
@@ -26,16 +26,10 @@ class TelegramEveningHumanComposer
             return $this->omit();
         }
 
-        // A preview item with no evidence references cannot be semantically
-        // judged. Preserve the legacy formatter only for this incomplete input.
+        // Missing evidence is a semantic limitation, not a composer failure.
+        // Only a thrown technical error may trigger the formatter's legacy fallback.
         if (collect($item['evidence'] ?? [])->pluck('local_message_id')->filter(fn (mixed $id): bool => is_numeric($id))->isEmpty()) {
-            return [
-                'include' => true,
-                'handled' => false,
-                'decision' => 'technical_failure',
-                'summary' => null,
-                'follow_up' => null,
-            ];
+            return $this->omit();
         }
 
         if ($types->contains('positive_contribution')
@@ -59,11 +53,20 @@ class TelegramEveningHumanComposer
             return $this->result($objectSummary, null);
         }
 
-        if ($this->hasConfirmedToiletPaperStockIssue($summary, $evidence)) {
-            return $this->result(
-                'Запас туалетной бумаги отсутствует.',
-                $isOpen ? 'Пополнить запас туалетной бумаги.' : null,
-            );
+        if ($this->hasConfirmedInventoryShortage($summary, $evidence)) {
+            $object = $this->searchedObject($summary) ?? 'искомую вещь';
+            $summaryText = $object === 'туалетную бумагу'
+                ? 'Запас туалетной бумаги отсутствует.'
+                : 'Подтверждено отсутствие: '.$object.'.';
+            $followUp = $object === 'туалетную бумагу'
+                ? 'Пополнить запас туалетной бумаги.'
+                : 'Пополнить запас: '.$object.'.';
+
+            return $this->result($summaryText, $isOpen ? $followUp : null);
+        }
+
+        if ($this->hasCompletedSearch($summary, $evidence)) {
+            return $this->result('Искомая вещь найдена.', null, completed: true);
         }
 
         if (($item['status'] ?? null) === 'resolved' && preg_match('/закрыли\s+двер/iu', $context) === 1) {
@@ -79,6 +82,10 @@ class TelegramEveningHumanComposer
         }
 
         if ($this->isLinenCourierIssue($context)) {
+            if ($this->hasCompletedCourierPickup($evidence)) {
+                return $this->result('Курьер забрал оставшееся бельё.', null, completed: true);
+            }
+
             $broughtClean = preg_match('/(?:прив[её]з|прин[её]с).{0,50}(?:чист|бель)|(?:чист|бель).{0,50}(?:прив[её]з|прин[её]с)/iu', $context) === 1;
             $didNotTakeDirty = preg_match('/(?:не\s+забрал|забрал\s+не\s+вс[её]).{0,60}(?:гряз|бель)|(?:гряз|бель).{0,60}(?:не\s+забрал|забрал\s+не\s+вс[её])/iu', $context) === 1;
             $mentionsDirty = preg_match('/гряз/iu', $context) === 1;
@@ -177,6 +184,18 @@ class TelegramEveningHumanComposer
             );
         }
 
+        if (preg_match('/переключател/iu', $context) === 1
+            && preg_match('/не\s+работает|слом/iu', $context) === 1
+            && preg_match('/мастер|техник/iu', $context) === 1) {
+            return $this->result('Не работает переключатель, требуется мастер.', $isOpen ? 'Организовать ремонт переключателя.' : null);
+        }
+
+        if (preg_match('/жалюз/iu', $context) === 1
+            && preg_match('/упал/iu', $context) === 1
+            && preg_match('/не\s+могу\s+повесить|не\s+удалос\S*.{0,30}повесить|высок/iu', $context) === 1) {
+            return $this->result('Упали жалюзи; установить обратно не удалось из-за высоты.', null);
+        }
+
         if (preg_match('/пульт/iu', $context) === 1
             && preg_match('/кондиционер|конд[её]р/iu', $context) === 1
             && preg_match('/не\s+работает|слом/iu', $context) === 1) {
@@ -199,14 +218,28 @@ class TelegramEveningHumanComposer
         }
 
         if ($this->isLinenDefect($context)) {
-            $objects = collect([
-                preg_match('/полотен/iu', $context) === 1 ? 'полотенца' : null,
-                preg_match('/пододеяльник/iu', $context) === 1 ? 'пододеяльника' : null,
-            ])->filter()->values();
+            $completed = $this->hasCompletedLinenReplacement($context);
+            $object = match (true) {
+                preg_match('/наволоч/iu', $context) === 1 => 'наволочку',
+                preg_match('/простын/iu', $context) === 1 => 'простыню',
+                preg_match('/полотен/iu', $context) === 1 => 'полотенце',
+                preg_match('/пододеяль/iu', $context) === 1 => 'пододеяльник',
+                default => 'постельное бельё',
+            };
+            $detail = match (true) {
+                preg_match('/наволоч/iu', $context) === 1 => 'Обнаружена бракованная наволочка'.($completed ? ', заменена.' : '.'),
+                preg_match('/простын/iu', $context) === 1 => preg_match('/пятн/iu', $context) === 1
+                    ? 'Обнаружена простыня с пятном'.($completed ? ', заменена как брак.' : '.')
+                    : 'Обнаружена бракованная простыня'.($completed ? ', заменена.' : '.'),
+                preg_match('/полотен/iu', $context) === 1 => 'Обнаружено бракованное полотенце'.($completed ? ', заменено.' : '.'),
+                default => 'Обнаружен дефект: '.$object.($completed ? ' заменено.' : '.'),
+            };
 
-            if ($objects->isNotEmpty()) {
-                return $this->result('Обнаружен брак '.$objects->join(' и ').'.', null);
-            }
+            return $this->result(
+                $detail,
+                $isOpen && ! $completed ? 'Заменить '.$object.'.' : null,
+                completed: $completed,
+            );
         }
 
         if (preg_match('/коврик/iu', $context) === 1 && preg_match('/брак/iu', $context) === 1) {
@@ -254,6 +287,7 @@ class TelegramEveningHumanComposer
         ?string $followUp,
         ?string $resolution = null,
         bool $showInDay = true,
+        bool $completed = false,
     ): array {
         return [
             'include' => true,
@@ -263,6 +297,7 @@ class TelegramEveningHumanComposer
             'follow_up' => $followUp,
             'resolution' => $resolution,
             'show_in_day' => $showInDay,
+            'completed' => $completed,
         ];
     }
 
@@ -355,21 +390,79 @@ class TelegramEveningHumanComposer
         return $this->hasConcreteOperationalObjectAndFact($summary);
     }
 
-    private function hasConfirmedToiletPaperStockIssue(string $summary, Collection $evidence): bool
+    private function hasConfirmedInventoryShortage(string $summary, Collection $evidence): bool
     {
-        if (preg_match('/(?:туалетн.{0,15}бумаг|рулон.{0,15}бумаг|бумаг)/iu', $summary) !== 1
+        if ($this->searchedObject($summary) === null
             || preg_match('/(?:не\s+(?:могу\s+)?найти|не\s+нашл|где\b|есть\s+ли|\?)/iu', $summary) !== 1) {
             return false;
         }
 
-        return $evidence->contains(fn (string $text): bool => preg_match('/(?:туалетн.{0,15}бумаг|рулон.{0,15}бумаг|бумаг)/iu', $text) === 1
-            && preg_match('/(?:действительно\s+нет|нет.{0,35}(?:запас|бумаг|рулон)|не\s+остал|законч\S*|пополн\S*.{0,35}запас|запас.{0,35}пополн|не\s+хвата\S*|отсутств\S*)/iu', $text) === 1);
+        $objectPattern = $this->searchedObjectPattern($summary);
+
+        return $objectPattern !== null && $evidence->contains(fn (string $text): bool => preg_match($objectPattern, $text) === 1
+            && preg_match('/(?:действительно\s+нет|нет.{0,45}(?:запас|бумаг|рулон|ключ|полотен|бель|одеял|пульт|инвентар|средств)|не\s+остал|законч\S*|пополн\S*.{0,35}запас|запас.{0,35}пополн|не\s+хвата\S*|отсутств\S*)/iu', $text) === 1);
+    }
+
+    private function hasCompletedSearch(string $summary, Collection $evidence): bool
+    {
+        $objectPattern = $this->searchedObjectPattern($summary);
+
+        return $objectPattern !== null && $evidence->contains(fn (string $text): bool => preg_match($objectPattern, $text) === 1
+            && preg_match('/(?:наш[её]л|нашла|нашли|нашлось|нашлась|нашлись|обнаружил[аи]?|нашёлся)/iu', $text) === 1);
+    }
+
+    private function searchedObject(?string $text): ?string
+    {
+        if ($text === null) {
+            return null;
+        }
+
+        return match (true) {
+            preg_match('/(?:туалетн.{0,15}бумаг|рулон.{0,15}бумаг|бумаг)/iu', $text) === 1 => 'туалетную бумагу',
+            preg_match('/ключ/iu', $text) === 1 => 'ключ',
+            preg_match('/полотен|бель/iu', $text) === 1 => 'бельё',
+            preg_match('/одеял/iu', $text) === 1 => 'одеяло',
+            preg_match('/пульт/iu', $text) === 1 => 'пульт',
+            preg_match('/инвентар/iu', $text) === 1 => 'инвентарь',
+            preg_match('/средств/iu', $text) === 1 => 'средство',
+            default => null,
+        };
+    }
+
+    private function searchedObjectPattern(string $text): ?string
+    {
+        return match (true) {
+            preg_match('/(?:туалетн.{0,15}бумаг|рулон.{0,15}бумаг|бумаг)/iu', $text) === 1 => '/(?:туалетн.{0,15}бумаг|рулон.{0,15}бумаг|бумаг)/iu',
+            preg_match('/ключ/iu', $text) === 1 => '/ключ/iu',
+            preg_match('/полотен|бель/iu', $text) === 1 => '/полотен|бель/iu',
+            preg_match('/одеял/iu', $text) === 1 => '/одеял/iu',
+            preg_match('/пульт/iu', $text) === 1 => '/пульт/iu',
+            preg_match('/инвентар/iu', $text) === 1 => '/инвентар/iu',
+            preg_match('/средств/iu', $text) === 1 => '/средств/iu',
+            default => null,
+        };
+    }
+
+    private function hasCompletedCourierPickup(Collection $evidence): bool
+    {
+        return $evidence->contains(fn (string $text): bool => preg_match('/курьер/iu', $text) === 1
+            && preg_match('/(?:забрал|ув[её]з|забрали|увезли)/iu', $text) === 1
+            && preg_match('/грязн\S*.{0,50}(?:бель|постель)|(?:бель|постель).{0,50}грязн/iu', $text) === 1
+            && preg_match('/не\s+(?:забрал|забрали|ув[её]з)|не\s+вс[её]/iu', $text) !== 1);
+    }
+
+    private function hasCompletedLinenReplacement(string $text): bool
+    {
+        return preg_match('/(?:заменил[аи]?|поменял[аи]?|заменена|заменено)/iu', $text) === 1
+            && preg_match('/(?:брак|слом|поврежд|пятн)/iu', $text) === 1
+            && preg_match('/(?:наволоч|простын|полотен|пододеял)/iu', $text) === 1;
     }
 
     private function isContextDependentChatter(string $text): bool
     {
         return preg_match('/(?:подключиться.{0,50}поэтому\s+так\s+отправля|поэтому\s+так\s+отправля)/iu', $text) === 1
             || preg_match('/^(?:сфоткать|сфотографировать|не\s+могу\s+дозвониться|не\s+могу\s+тут\s+к\s+вай\s*фаю)/iu', $text) === 1
+            || preg_match('/^(?:он|она|оно|они|это|так)\b/iu', $text) === 1
             || preg_match('/^(?:не\s+работает|он\s+давно\s+не\s+работает)[.!?]*$/iu', $text) === 1;
     }
 
