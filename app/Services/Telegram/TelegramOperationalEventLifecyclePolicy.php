@@ -41,6 +41,19 @@ class TelegramOperationalEventLifecyclePolicy
         return ! $this->isStandaloneInstruction($summary);
     }
 
+    /** @param array<int, string> $types
+     *  @param Collection<int, TelegramOperationalEventEvidence> $evidence
+     */
+    public function mayNeedAttentionToday(array $types, string $summary, Collection $evidence): bool
+    {
+        if (! in_array('unanswered_question', $types, true)
+            || $this->isTemporaryAvailabilityRequest($summary)) {
+            return false;
+        }
+
+        return $evidence->contains(fn (TelegramOperationalEventEvidence $item): bool => $item->role === 'question');
+    }
+
     private function hasIndependentlyConfirmedDurableProblem(Collection $evidence): bool
     {
         return $evidence->contains(function (TelegramOperationalEventEvidence $item): bool {
@@ -62,7 +75,7 @@ class TelegramOperationalEventLifecyclePolicy
                 return false;
             }
 
-            return preg_match('/(?:двер|замок|ключ|свет|подсвет|вытяж|ручк|полотен|пододеяль|бель|курьер|посуд|ванн|кухн|кран|труб|вода|вешалк|пульт|кондиционер|гостев\s+локер|коврик|туалетн.{0,15}бумаг|бумаг|рулон)/ui', $text) === 1
+            return preg_match('/(?:двер|доступ|замок|ключ|код|локер|переключател|свет|подсвет|вытяж|ручк|наволоч|простын|полотен|пододеяль|бель|курьер|посуд|ванн|кухн|кран|труб|вода|вешалк|пульт|кондиционер|коврик|туалетн.{0,15}бумаг|бумаг|рулон)/ui', $text) === 1
                 && preg_match('/(?:не\s+работает|слом|брак|поврежд|протеч|подт[её]к|не\s+открыва|не\s+забрал|не\s+включа|грязн|отвал)/ui', $text) === 1;
         });
     }

@@ -47,7 +47,7 @@ it('emits the JSON contract without changing source or ledger rows', function ()
     ])->all();
 
     expect($output)
-        ->toHaveKeys(['date', 'timezone', 'district', 'events', 'sections', 'events_considered', 'events_included', 'events_omitted', 'no_material_events', 'data_quality', 'mode'])
+        ->toHaveKeys(['date', 'timezone', 'district', 'events', 'sections', 'editorial_sections', 'events_considered', 'events_included', 'events_omitted', 'no_material_events', 'data_quality', 'mode'])
         ->and($output['date'])->toBe('2026-06-17')
         ->and($output['mode'])->toBe(['read_only' => true, 'telegram_actions' => 0, 'mutations' => 0])
         ->and($output['sections'])->not->toBeEmpty()
@@ -64,8 +64,10 @@ it('renders only non-empty human sections and an explicit read-only footer', fun
         ->expectsOutputToContain('TRIS — итоги дня')
         ->expectsOutputToContain('За день:')
         ->expectsOutputToContain('Не работает замок')
-        ->expectsOutputToContain('Открытых вопросов на конец дня нет.')
-        ->doesntExpectOutputToContain('Требует внимания')
+        ->doesntExpectOutputToContain('🔄 Требует внимания:')
+        ->doesntExpectOutputToContain('Осталось сделать:')
+        ->doesntExpectOutputToContain('Открытых вопросов на конец дня нет.')
+        ->doesntExpectOutputToContain('Переходящие проблемы')
         ->doesntExpectOutputToContain('Событие:')
         ->doesntExpectOutputToContain('Доказательства:')
         ->doesntExpectOutputToContain('статус:')
@@ -95,7 +97,9 @@ it('keeps an open operational question visible with evidence and a concrete huma
         ->toContain('Уточняли, что делать со сломанными очками.')
         ->toContain('Уточнить, нужно ли выбрасывать сломанные очки.')
         ->not->toContain('@Tris_Anastasiia_Radevych')
-        ->not->toContain('Открытых вопросов на конец дня нет.');
+        ->not->toContain('Открытых вопросов на конец дня нет.')
+        ->not->toContain('Переходящие проблемы')
+        ->not->toContain('Открыто');
 });
 
 it('filters a configured district while keeping complete technical evidence in json', function () {

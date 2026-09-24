@@ -11,10 +11,6 @@ use Throwable;
  */
 class TelegramDigestFormatter
 {
-    public function __construct(
-        private readonly TelegramEveningHumanComposer $eveningHumanComposer,
-    ) {}
-
     public function morning(array $context): string
     {
         $lines = [
@@ -229,130 +225,37 @@ class TelegramDigestFormatter
     public function eveningIntelligence(array $preview): string
     {
         $district = $this->value($preview['district']['label'] ?? null);
-        $eligibleItems = collect($preview['sections'] ?? [])
-            ->flatMap(fn (array $section) => $section['items'] ?? [])
-            ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
-            ->map(function (array $item): array {
-                try {
-                    $item['_human'] = $this->eveningHumanComposer->compose($item);
-                } catch (Throwable $exception) {
-                    if (app()->bound('log')) {
-                        app('log')->warning('Evening digest composer failed; deterministic formatter fallback used.', [
-                            'event_key' => $item['event_key'] ?? null,
-                            'exception' => $exception::class,
-                        ]);
-                    }
-                    $item['_human'] = [
-                        'include' => true,
-                        'handled' => false,
-                        'decision' => 'technical_failure',
-                        'summary' => null,
-                        'follow_up' => null,
-                    ];
-                }
+        return $this->renderEditorialEvening($preview, $district);
+    }
 
-                return $item;
-            })
-            ->filter(fn (array $item): bool => ($item['_human']['include'] ?? true) === true)
-            ->filter(fn (array $item): bool => in_array(
-                $item['_human']['decision'] ?? null,
-                ['composed', 'raw_safe', 'technical_failure'],
-                true,
-            ))
-            ->filter(fn (array $item): bool => $this->isHumanEveningEvent($item))
-            ->values();
-        $eligibleItems = $this->consolidateEveningItems($eligibleItems);
-        $positiveItems = $eligibleItems
-            ->filter(fn (array $item): bool => $this->isPositiveEveningEvent($item))
-            ->take(7)
-            ->values();
-        $otherItems = $eligibleItems
-            ->reject(fn (array $item): bool => $this->isPositiveEveningEvent($item))
-            ->filter(fn (array $item): bool => ($item['status'] ?? null) !== 'resolved'
-                || $this->hasEveningTransitionOnDay($item, 'resolved', $preview))
-            ->values();
-        $items = $this->selectEveningItems($otherItems
-            ->reject(fn (array $item): bool => ($item['carry_over'] ?? false) === true)
-            ->filter(fn (array $item): bool => ($item['status'] ?? null) !== 'resolved'
-                || ($item['_human']['show_in_day'] ?? true)
-                    && $this->hasEveningTransitionOnDay($item, 'created', $preview))
-            ->values(), 6);
-        $resolvedItems = $otherItems
-            ->filter(fn (array $item): bool => ($item['status'] ?? null) === 'resolved')
-            ->take(4)
-            ->values();
-        $carryOverItems = $otherItems
-            ->filter(fn (array $item): bool => ($item['carry_over'] ?? false) === true)
-            ->filter(fn (array $item): bool => in_array($item['status'] ?? null, ['open', 'reopened'], true))
-            ->take(6)
-            ->values();
-        $openQuestions = $otherItems
-            ->filter(fn (array $item): bool => $this->isOpenEveningQuestion($item));
-        $openLines = $openQuestions->concat($items)->concat($carryOverItems)
-            ->unique(fn (array $item): string => (string) ($item['event_key'] ?? sha1(json_encode($item))))
-            ->filter(fn (array $item): bool => in_array($item['status'] ?? null, ['open', 'reopened'], true))
-            ->map(function (array $item): ?string {
-                $followUp = $this->humanEveningFollowUp($item);
+    private function renderEditorialEvening(array $preview, string $district): string
+    {
+        $sections = collect($preview['editorial_sections'] ?? [])->keyBy('key');
+        $lines = ['🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня'];
 
-                return $followUp === null ? null : $this->withEveningContext($item, $followUp);
-            })
-            ->filter()
-            ->unique()
-            ->take(4)
-            ->values();
-        $lines = [
-            '🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня',
-        ];
+        foreach ([
+            'day' => 'За день:',
+            'resolved' => '✅ Решено сегодня:',
+            'positive' => '⭐ Хорошая работа:',
+            'attention' => '🔄 Требует внимания:',
+            'actions' => 'Осталось сделать:',
+        ] as $key => $heading) {
+            $items = collect($sections->get($key)['items'] ?? []);
 
-        if ($items->isNotEmpty()) {
+            if ($items->isEmpty()) {
+                continue;
+            }
+
             $lines[] = '';
-            $lines[] = 'За день:';
+            $lines[] = $heading;
+
             foreach ($items as $item) {
-                $lines[] = '• '.$this->withEveningContext($item, $this->humanEveningSummary($item));
-            }
-        } elseif ($resolvedItems->isEmpty() && $positiveItems->isEmpty()) {
-            $lines[] = '';
-            $lines[] = 'За день:';
-            $lines[] = '• Значимых операционных событий не зафиксировано.';
-        }
+                $context = $this->value($item['context_label'] ?? null);
+                $summary = trim((string) ($item['summary'] ?? ''));
 
-        if ($resolvedItems->isNotEmpty()) {
-            $lines[] = '';
-            $lines[] = '✅ Решено сегодня:';
-
-            foreach ($resolvedItems as $item) {
-                $lines[] = '• '.$this->withEveningContext($item, $this->humanEveningResolution($item));
-            }
-        }
-
-        if ($positiveItems->isNotEmpty()) {
-            $lines[] = '';
-            $lines[] = '⭐ Хорошая работа:';
-
-            foreach ($positiveItems as $item) {
-                $lines[] = '• '.$this->withEveningContext($item, $this->humanPositiveSummary($item));
-            }
-        }
-
-        if ($carryOverItems->isNotEmpty()) {
-            $lines[] = '';
-            $lines[] = '🔄 Переходящие проблемы:';
-
-            foreach ($carryOverItems as $item) {
-                $lines[] = '• '.$this->withEveningContext(
-                    $item,
-                    $this->humanEveningSummary($item).' '.$this->openAgeLabel($item),
-                );
-            }
-        }
-
-        $lines[] = '';
-        if ($openLines->isEmpty()) {
-            $lines[] = 'Открытых вопросов на конец дня нет.';
-        } else {
-            $lines[] = 'Осталось на контроле:';
-            foreach ($openLines as $line) {
-                $lines[] = '• '.$line;
+                if ($summary !== '') {
+                    $lines[] = '• '.($context !== '' ? $context.' — ' : '').$summary;
+                }
             }
         }
 
