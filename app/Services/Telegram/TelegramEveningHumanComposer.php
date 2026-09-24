@@ -11,7 +11,7 @@ class TelegramEveningHumanComposer
         private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
     ) {}
 
-    /** @return array{include: bool, handled: bool, technical_failure?: bool, summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
+    /** @return array{include: bool, handled: bool, decision: 'omit'|'composed'|'raw_safe'|'technical_failure', summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool} */
     public function compose(array $item): array
     {
         $rawSummary = (string) ($item['summary'] ?? '');
@@ -23,7 +23,7 @@ class TelegramEveningHumanComposer
         $actor = $this->clean((string) ($item['actor_name'] ?? ''));
 
         if ($summary === '' && $evidence->isEmpty()) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         // A preview item with no evidence references cannot be semantically
@@ -32,7 +32,7 @@ class TelegramEveningHumanComposer
             return [
                 'include' => true,
                 'handled' => false,
-                'technical_failure' => true,
+                'decision' => 'technical_failure',
                 'summary' => null,
                 'follow_up' => null,
             ];
@@ -46,14 +46,14 @@ class TelegramEveningHumanComposer
 
         if ($this->lifecyclePolicy->isStandaloneInstruction($summary)
             && $evidence->every(fn (string $text): bool => $this->lifecyclePolicy->isStandaloneInstruction($text))) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         if ($this->isDirtyReferentFragment($summary)) {
             $objectSummary = $this->dirtyReferentSummary($evidence->implode(' '));
 
             if ($objectSummary === null) {
-                return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+                return $this->omit();
             }
 
             return $this->result($objectSummary, null);
@@ -211,27 +211,37 @@ class TelegramEveningHumanComposer
         }
 
         if ($this->isInstructionOrRoutine($context)) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         if ($this->isMeaninglessFragment($summary)
             && $evidence->every(fn (string $text): bool => $this->isMeaninglessFragment($text))) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         if ($types->intersect(['request', 'unanswered_question'])->isNotEmpty()
             && (str_contains($context, '?') || $this->isConversationalQuestion($context))) {
-            return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+            return $this->omit();
         }
 
         if ($summary !== '' && $this->startsWithAcknowledgementFraming($rawSummary)) {
             return $this->result(mb_ucfirst(rtrim($summary, " .!?\t\n\r\0\x0B")).'.', null);
         }
 
-        return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        if ($this->isRawSafe($summary, $types->all())) {
+            return [
+                'include' => true,
+                'handled' => false,
+                'decision' => 'raw_safe',
+                'summary' => null,
+                'follow_up' => null,
+            ];
+        }
+
+        return $this->omit();
     }
 
-    /** @return array{include: true, handled: true, summary: string, follow_up: ?string, resolution: ?string, show_in_day: bool} */
+    /** @return array{include: true, handled: true, decision: 'composed', summary: string, follow_up: ?string, resolution: ?string, show_in_day: bool} */
     private function result(
         string $summary,
         ?string $followUp,
@@ -241,6 +251,7 @@ class TelegramEveningHumanComposer
         return [
             'include' => true,
             'handled' => true,
+            'decision' => 'composed',
             'summary' => $summary,
             'follow_up' => $followUp,
             'resolution' => $resolution,
@@ -248,7 +259,7 @@ class TelegramEveningHumanComposer
         ];
     }
 
-    /** @return array{include: true, handled: true, summary: string, follow_up: ?string} */
+    /** @return array{include: true, handled: true, decision: 'composed', summary: string, follow_up: ?string} */
     private function question(string $context, bool $isOpen): array
     {
         if (preg_match('/во\s+сколько.{0,40}заезд|заезд.{0,40}во\s+сколько/iu', $context) === 1) {
@@ -307,7 +318,52 @@ class TelegramEveningHumanComposer
             );
         }
 
-        return ['include' => false, 'handled' => true, 'summary' => null, 'follow_up' => null];
+        return $this->omit();
+    }
+
+    /** @return array{include: false, handled: true, decision: 'omit', summary: null, follow_up: null} */
+    private function omit(): array
+    {
+        return [
+            'include' => false,
+            'handled' => true,
+            'decision' => 'omit',
+            'summary' => null,
+            'follow_up' => null,
+        ];
+    }
+
+    /** @param array<int, string> $types */
+    private function isRawSafe(string $summary, array $types): bool
+    {
+        if ($summary === '' || $this->isMeaninglessFragment($summary)
+            || collect($types)->intersect(['problem', 'quality_issue', 'risk', 'request'])->isEmpty()) {
+            return false;
+        }
+
+        if ($this->isContextDependentChatter($summary)) {
+            return false;
+        }
+
+        return $this->hasConcreteOperationalObject($summary)
+            && $this->hasConcreteOperationalFact($summary);
+    }
+
+    private function isContextDependentChatter(string $text): bool
+    {
+        return preg_match('/(?:подключиться.{0,50}поэтому\s+так\s+отправля|поэтому\s+так\s+отправля)/iu', $text) === 1
+            || preg_match('/^(?:сфоткать|сфотографировать|не\s+могу\s+дозвониться|не\s+могу\s+тут\s+к\s+вай\s*фаю)/iu', $text) === 1
+            || preg_match('/^(?:не\s+работает|он\s+давно\s+не\s+работает)[.!?]*$/iu', $text) === 1;
+    }
+
+    private function hasConcreteOperationalObject(string $text): bool
+    {
+        return preg_match('/(?:жалюз|простын|полотен|пододеял|бель[еёя]|вешалк|свет|подсвет|вытяжк|локер|код|двер|замок|окн|ручк|пульт|кондиционер|посудомоечн|посуд|кран|раковин|душ|ванн|унитаз|шкаф|холодильник|плита|духовк|чайник|утюг|фен|ламп|розетк|ключ|бумаг|инвентар|средств|коврик|мебел|диван|кровать|матрас|одеял|конверт|курьер|плитк)/iu', $text) === 1;
+    }
+
+    private function hasConcreteOperationalFact(string $text): bool
+    {
+        return preg_match('/(?:не\s+работа\S*|не\s+включа\S*|слом\S*|брак\S*|поврежд\S*|дефект\S*|грязн\S*|пятн\S*|теч\S*|протека\S*|упал\S*|отвал\S*|тресн\S*|неверн\S*|ошибк\S*|не\s+хвата\S*|отсутств\S*|не\s+(?:могу\s+)?найти\S*|не\s+нашл\S*|не\s+забрал\S*|забрал\s+не\s+вс[её]\S*|замен\S*\s+нет|почин\S*|исправ\S*|установ\S*|нет\s+(?:запасн\S*\s+)?(?:бумаг\S*|ключ\S*|полотен\S*|бель\S*|пульт\S*|вешалк\S*|инвентар\S*|средств\S*))/iu', $text) === 1;
     }
 
     /** @return Collection<int, string> */
