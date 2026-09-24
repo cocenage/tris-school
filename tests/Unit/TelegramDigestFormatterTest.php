@@ -1,24 +1,16 @@
 <?php
 
 use App\Services\Telegram\TelegramDigestFormatter;
-use App\Services\Telegram\TelegramEveningHumanComposer;
-use App\Services\Telegram\TelegramOperationalEventLifecyclePolicy;
 
 it('formats an empty morning using only the supplied contract', function () {
     $text = app(TelegramDigestFormatter::class)->morning([
-        'date' => '2026-08-03',
-        'timezone' => 'Europe/Rome',
+        'date' => '2026-08-03', 'timezone' => 'Europe/Rome',
         'staff' => ['working' => [], 'not_working' => [], 'shift' => ['total' => 0]],
-        'calendar' => ['events' => []],
-        'tasks' => ['items' => []],
-        'mobility' => ['items' => []],
-        'risks' => [],
-        'telegram' => ['messages' => 0],
-        'data_quality' => [],
+        'calendar' => ['events' => []], 'tasks' => ['items' => []], 'mobility' => ['items' => []],
+        'risks' => [], 'telegram' => ['messages' => 0], 'data_quality' => [],
     ]);
 
-    expect($text)
-        ->toContain('Утренняя сводка')
+    expect($text)->toContain('Утренняя сводка')
         ->toContain('За день значимых событий по доступным данным не обнаружено.')
         ->not->toContain('рейтинг')
         ->not->toContain('эффективность');
@@ -26,24 +18,18 @@ it('formats an empty morning using only the supplied contract', function () {
 
 it('formats conservative evening problem and tomorrow sections', function () {
     $text = app(TelegramDigestFormatter::class)->evening([
-        'date' => '2026-08-02',
-        'timezone' => 'Europe/Rome',
+        'date' => '2026-08-02', 'timezone' => 'Europe/Rome',
         'forums' => [[
             'chat_title' => 'Рабочий форум',
             'topics' => [[
-                'topic_title' => 'Ключи',
-                'problem_signals' => 2,
-                'positive_signals' => 0,
-                'possible_unanswered' => true,
-                'possible_resolved' => false,
-                'repeated_problem' => true,
+                'topic_title' => 'Ключи', 'problem_signals' => 2, 'positive_signals' => 0,
+                'possible_unanswered' => true, 'possible_resolved' => false, 'repeated_problem' => true,
             ]],
         ]],
         'data_quality' => [],
     ]);
 
-    expect($text)
-        ->toContain('Итоги дня')
+    expect($text)->toContain('Итоги дня')
         ->toContain('Проблемы')
         ->toContain('Без ответа')
         ->toContain('Повторяющиеся сигналы')
@@ -53,24 +39,19 @@ it('formats conservative evening problem and tomorrow sections', function () {
 
 it('renders only meaningful normalized mobility events without severity labels', function () {
     $text = app(TelegramDigestFormatter::class)->morning([
-        'date' => '2026-08-03',
-        'timezone' => 'Europe/Rome',
+        'date' => '2026-08-03', 'timezone' => 'Europe/Rome',
         'staff' => ['working' => [], 'not_working' => [], 'shift' => ['total' => 0]],
-        'calendar' => ['events' => []],
-        'tasks' => ['items' => []],
+        'calendar' => ['events' => []], 'tasks' => ['items' => []],
         'mobility' => ['items' => [
             ['risk' => 'info', 'district' => 'M1', 'summary' => 'REGOLARE'],
             ['risk' => 'low', 'district' => 'M2', 'summary' => 'Обычный режим'],
             ['risk' => 'medium', 'district' => 'M2', 'summary' => 'Частичное ограничение'],
             ['risk' => 'high', 'district' => 'M3', 'summary' => 'Линия закрыта'],
         ]],
-        'risks' => [],
-        'telegram' => ['messages' => 0],
-        'data_quality' => [],
+        'risks' => [], 'telegram' => ['messages' => 0], 'data_quality' => [],
     ]);
 
-    expect($text)
-        ->toContain('M2 — Частичное ограничение')
+    expect($text)->toContain('M2 — Частичное ограничение')
         ->toContain('M3 — Линия закрыта')
         ->not->toContain('M1 — REGOLARE')
         ->not->toContain('M2 — Обычный режим')
@@ -81,394 +62,91 @@ it('renders only meaningful normalized mobility events without severity labels',
 
 it('hides empty positive and tomorrow sections in evening digest', function () {
     $text = app(TelegramDigestFormatter::class)->evening([
-        'date' => '2026-08-03',
-        'timezone' => 'Europe/Rome',
-        'forums' => [],
-        'data_quality' => [],
+        'date' => '2026-08-03', 'timezone' => 'Europe/Rome', 'forums' => [], 'data_quality' => [],
     ]);
 
-    expect($text)
-        ->not->toContain('Что прошло хорошо')
+    expect($text)->not->toContain('Что прошло хорошо')
         ->not->toContain('Проверить завтра');
 });
 
 it('keeps one freshest state per current line and removes duplicate line prefixes', function () {
     $text = app(TelegramDigestFormatter::class)->morning([
-        'date' => '2026-08-03',
-        'timezone' => 'Europe/Rome',
+        'date' => '2026-08-03', 'timezone' => 'Europe/Rome',
         'staff' => ['working' => [['name' => 'Cleaner']], 'not_working' => [], 'shift' => ['total' => 1]],
-        'calendar' => ['events' => []],
-        'tasks' => ['items' => []],
+        'calendar' => ['events' => []], 'tasks' => ['items' => []],
         'mobility' => ['items' => [
             ['risk' => 'medium', 'district' => 'M1', 'type' => 'partial_closure', 'title' => 'M1 partial', 'summary' => 'M1 — частично ограничено движение', 'starts_at' => '2026-08-03'],
             ['risk' => 'high', 'district' => 'M1', 'type' => 'closure', 'title' => 'M1 closure', 'summary' => 'M1 — линия закрыта', 'starts_at' => '2026-08-03'],
         ]],
-        'risks' => [],
-        'telegram' => ['messages' => 0],
-        'data_quality' => [],
+        'risks' => [], 'telegram' => ['messages' => 0], 'data_quality' => [],
     ]);
 
-    expect($text)
-        ->toContain('M1 — линия закрыта')
+    expect($text)->toContain('M1 — линия закрыта')
         ->not->toContain('частично ограничено движение')
         ->not->toContain('M1 — M1 —');
 });
 
-it('hides mobility presentation completely when only stale important events remain', function () {
+it('hides stale mobility presentation when no current event remains', function () {
     $text = app(TelegramDigestFormatter::class)->morning([
-        'date' => '2026-08-03',
-        'timezone' => 'Europe/Rome',
+        'date' => '2026-08-03', 'timezone' => 'Europe/Rome',
         'staff' => ['working' => [['name' => 'Cleaner']], 'not_working' => [], 'shift' => ['total' => 1]],
-        'calendar' => ['events' => []],
-        'tasks' => ['items' => []],
+        'calendar' => ['events' => []], 'tasks' => ['items' => []],
         'mobility' => ['items' => [[
             'risk' => 'high', 'district' => 'M2', 'summary' => 'Линия закрыта',
             'starts_at' => '2026-08-01', 'ends_at' => '2026-08-02',
         ]]],
         'risks' => [['level' => 'high', 'code' => 'mobility_alert', 'source' => 'mobility', 'message' => 'transport']],
-        'telegram' => ['messages' => 0],
-        'data_quality' => [],
+        'telegram' => ['messages' => 0], 'data_quality' => [],
     ]);
 
-    expect($text)
-        ->not->toContain('Транспорт и ограничения')
+    expect($text)->not->toContain('Транспорт и ограничения')
         ->not->toContain('существенных транспортных ограничений')
         ->not->toContain('Уточнить влияние транспортного ограничения');
 });
 
-it('formats evening intelligence for humans without technical fields or duplicate events', function () {
-    $item = [
-        'event_key' => 'telegram:internal-key',
-        'summary' => str_repeat('Длинное описание проблемы с замком. ', 12),
-        'types' => ['problem'],
-        'status' => 'open',
-        'confidence' => 'high',
-        'uncertainty' => null,
-        'evidence' => [[
-            'local_message_id' => 10,
-            'telegram_message_id' => '20',
-            'transition' => 'created',
-            'occurred_at' => '2026-08-03T10:00:00+02:00',
-        ]],
-    ];
+it('renders only Builder editorial sections in handoff order', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'date' => '2026-08-03',
-        'timezone' => 'Europe/Rome',
-        'district' => ['key' => 'navigli', 'label' => 'Navigli'],
-        'no_material_events' => false,
-        'sections' => [
-            ['key' => 'attention', 'label' => 'Требует внимания', 'items' => [$item]],
-            ['key' => 'tomorrow', 'label' => 'На завтра', 'items' => [$item]],
+        'district' => ['label' => 'Navigli'],
+        // Raw ledger sections remain diagnostic data and are never rendered.
+        'sections' => [['key' => 'attention', 'items' => [[
+            'summary' => 'СТАРАЯ грязная посуда — открыто 8 дней',
+        ]]]],
+        'editorial_sections' => [
+            ['key' => 'day', 'items' => [['event_key' => 'today', 'context_label' => 'Via Tosi 11', 'summary' => 'Сотрудник сообщил о задержке.']]],
+            ['key' => 'resolved', 'items' => [['event_key' => 'resolved', 'context_label' => 'Via Savona 8', 'summary' => 'Проблема с доступом решена.']]],
+            ['key' => 'positive', 'items' => [['event_key' => 'positive', 'context_label' => 'Via Y', 'summary' => 'Анна заметила дефект до заезда.']]],
+            ['key' => 'attention', 'items' => [['event_key' => 'active', 'context_label' => 'Via Alfredo Panzini 13', 'summary' => 'Проблема с доступом: дверь не открывали.']]],
+            ['key' => 'actions', 'items' => [['event_key' => 'active', 'context_label' => 'Via Alfredo Panzini 13', 'summary' => 'Проверить доступ в квартиру.']]],
         ],
     ]);
 
-    expect($text)
-        ->toContain('🌙 Navigli — итоги дня')
+    expect($text)->toContain('🌙 Navigli — итоги дня')
         ->toContain('За день:')
-        ->toContain('Открытых вопросов на конец дня нет.')
-        ->not->toContain('Требует внимания')
-        ->not->toContain('Качество')
-        ->not->toContain('Риски и задержки')
-        ->not->toContain('Возможно:')
-        ->not->toContain('event_key')
-        ->not->toContain('telegram:internal-key')
-        ->not->toContain('Событие:')
-        ->not->toContain('Доказательства:')
-        ->not->toContain('статус')
-        ->not->toContain('уверенность')
-        ->not->toContain('transition')
-        ->and(substr_count($text, '• '))->toBe(1)
-        ->and(mb_strlen($text))->toBeLessThan(600);
+        ->toContain('✅ Решено сегодня:')
+        ->toContain('⭐ Хорошая работа:')
+        ->toContain('🔄 Требует внимания:')
+        ->toContain('Осталось сделать:')
+        ->not->toContain('СТАРАЯ грязная посуда')
+        ->not->toContain('Открыто')
+        ->not->toContain('Переходящие проблемы')
+        ->not->toContain('Открытых вопросов на конец дня нет.')
+        ->not->toContain('⚠️ Повторяется')
+        ->and(strpos($text, 'За день:'))->toBeLessThan(strpos($text, '✅ Решено сегодня:'))
+        ->and(strpos($text, '✅ Решено сегодня:'))->toBeLessThan(strpos($text, '⭐ Хорошая работа:'))
+        ->and(strpos($text, '⭐ Хорошая работа:'))->toBeLessThan(strpos($text, '🔄 Требует внимания:'))
+        ->and(strpos($text, '🔄 Требует внимания:'))->toBeLessThan(strpos($text, 'Осталось сделать:'));
 });
 
-it('removes a leading operational hashtag and keeps the human evening bullet concise', function () {
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'date' => '2026-07-23',
-        'timezone' => 'Europe/Rome',
-        'district' => ['key' => 'navigli', 'label' => 'Navigli'],
-        'no_material_events' => false,
-        'sections' => [[
-            'key' => 'quality',
-            'label' => 'Качество',
-            'items' => [[
-                'event_key' => 'telegram:quality',
-                'summary' => '#сильныйбардак '.str_repeat('При осмотре квартиры обнаружен беспорядок. ', 8),
-                'confidence' => 'high',
-                'uncertainty' => null,
-            ]],
-        ]],
-    ]);
-
-    $bullet = collect(explode("\n", $text))->first(fn (string $line) => str_starts_with($line, '• '));
-
-    expect($bullet)
-        ->not->toContain('#сильныйбардак')
-        ->and(mb_strlen($bullet))->toBeLessThanOrEqual(162);
-});
-
-it('renders a shift handoff with context, human wording and only open follow-ups', function () {
-    $open = [
-        'event_key' => 'open-problem',
-        'summary' => 'Не работает замок',
-        'context_label' => 'Via Roma 10',
-        'types' => ['problem'],
-        'status' => 'open',
-        'confidence' => 'medium',
-        'uncertainty' => 'нужно проверить',
-    ];
-    $resolved = [
-        'event_key' => 'resolved-delay',
-        'summary' => 'Я задержусь на 10 минут',
-        'context_label' => 'Via Torino 5',
-        'types' => ['delay', 'resolution'],
-        'status' => 'resolved',
-        'confidence' => 'high',
-        'uncertainty' => null,
-    ];
-
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [
-            ['key' => 'attention', 'items' => [$open]],
-            ['key' => 'resolved', 'items' => [$resolved]],
-        ],
-    ]);
-
-    expect($text)
-        ->toContain('Via Roma 10 — Не работает замок.')
-        ->toContain('Via Torino 5 — Сотрудник сообщил о задержке примерно на 10 минут.')
-        ->toContain('Открытых вопросов на конец дня нет.')
-        ->not->toContain('Проверить, устранена ли проблема')
-        ->not->toContain('Возможно:');
-});
-
-it('normalizes representative replay wording without inventing an apartment', function () {
-    $items = [
-        ['event_key' => 'arrival', 'summary' => 'Во сколько заезд?', 'types' => ['unanswered_question'], 'status' => 'open'],
-        ['event_key' => 'hood', 'summary' => 'Вытяжка не работает на кухне', 'types' => ['problem'], 'status' => 'open'],
-        ['event_key' => 'shutter', 'summary' => 'И в спальне не открываться ставня', 'types' => ['problem'], 'status' => 'open'],
-    ];
-
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => $items]],
-    ]);
-
-    expect($text)
-        ->toContain('Уточняли время заезда.')
-        ->toContain('На кухне не работала вытяжка.')
-        ->toContain('В спальне не открывалась ставня.')
-        ->toContain('Уточнить время заезда.')
-        ->toContain('Нужно проверить, работает ли вытяжка на кухне.')
-        ->not->toContain('Via ');
-});
-
-it('keeps a representative multi-type handoff concise without collapsing to one event type', function () {
-    $items = [
-        ['event_key' => 'question-1', 'summary' => 'Во сколько заезд?', 'types' => ['unanswered_question'], 'status' => 'open'],
-        ['event_key' => 'question-2', 'summary' => 'Сколько им времени нужно?', 'types' => ['unanswered_question'], 'status' => 'open'],
-        ['event_key' => 'problem-1', 'summary' => 'Вытяжка не работает на кухне', 'types' => ['problem'], 'status' => 'open'],
-        ['event_key' => 'problem-2', 'summary' => 'И в спальне не открываться ставня', 'types' => ['problem'], 'status' => 'open'],
-        ['event_key' => 'quality-1', 'summary' => 'Брак большого полотенца', 'types' => ['quality_issue'], 'status' => 'open'],
-        ['event_key' => 'quality-2', 'summary' => 'Брак был в прошлой уборке', 'types' => ['quality_issue'], 'status' => 'open'],
-        ['event_key' => 'delay', 'summary' => 'Я чуть задержусь', 'types' => ['delay'], 'status' => 'open'],
-    ];
-
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => $items]],
-    ]);
-
-    expect($text)
-        ->toContain('На кухне не работала вытяжка.')
-        ->toContain('Обнаружен брак')
-        ->toContain('Сотрудник сообщил о задержке.')
-        ->toContain('Уточняли время заезда.')
-        ->and(substr_count($text, '• '))->toBe(10)
-        ->and(mb_strlen($text))->toBeLessThan(600);
-});
-
-it('describes an unresolved access issue once and does not turn a routine delay into follow-up', function () {
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => [
-            [
-                'event_key' => 'access',
-                'summary' => 'Доступ в квартиру: дверь закрыта, никто не открывает',
-                'types' => ['problem'],
-                'status' => 'open',
-            ],
-            [
-                'event_key' => 'delay',
-                'summary' => 'Я задержусь на 10 минут',
-                'types' => ['delay'],
-                'status' => 'open',
-            ],
-        ]]],
-    ]);
-
-    expect($text)
-        ->toContain('Возникла проблема с доступом в квартиру: дверь была закрыта, никто не открыл.')
-        ->toContain('Проверить, решён ли вопрос с доступом в квартиру.')
-        ->toContain('Сотрудник сообщил о задержке примерно на 10 минут.')
-        ->and(substr_count($text, '• '))->toBe(3)
-        ->and(mb_strlen($text))->toBeLessThan(600);
-});
-
-it('deduplicates identical concrete follow-ups without deduplicating distinct events', function () {
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => [
-            ['event_key' => 'access-one', 'summary' => 'Дверь закрыта, никто не открывает.', 'types' => ['problem'], 'status' => 'open'],
-            ['event_key' => 'access-two', 'summary' => 'Дверь была закрыта, никто не открыл.', 'types' => ['problem'], 'status' => 'open'],
-        ]]],
-    ]);
-
-    expect(substr_count($text, 'Возникла проблема с доступом:'))->toBe(2)
-        ->and(substr_count($text, 'Проверить, решён ли вопрос с доступом в квартиру.'))->toBe(1);
-});
-
-it('omits templates, guidance and standalone resolutions from the human handoff', function () {
-    $items = [
-        ['event_key' => 'template', 'summary' => '#сильныйбардак При осмотре квартиры делаем 10-15 фото', 'types' => ['quality_issue'], 'status' => 'open'],
-        ['event_key' => 'guidance', 'summary' => 'И промыла водой? Нужно всё хорошо промыть, чтобы средство не осталось', 'types' => ['problem'], 'status' => 'open'],
-        ['event_key' => 'done', 'summary' => 'Готово', 'types' => ['resolution'], 'status' => 'resolved'],
-    ];
-
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => $items]],
-    ]);
-
-    expect($text)
-        ->toContain('• Значимых операционных событий не зафиксировано.')
-        ->toContain('Открытых вопросов на конец дня нет.')
-        ->not->toContain('10-15 фото')
-        ->not->toContain('промыла водой')
-        ->not->toContain('Готово');
-});
-
-it('turns the reported Navigli handoff into natural events and one concrete follow-up', function () {
-    $items = [
-        ['event_key' => 'access', 'summary' => 'Дверь закрыта, никто не открывает.', 'types' => ['problem'], 'status' => 'open'],
-        ['event_key' => 'bathroom', 'summary' => 'есть повреждения в ванной, выглядит как грязное.', 'types' => ['quality_issue'], 'status' => 'open'],
-        ['event_key' => 'delay', 'summary' => 'Я чуть задержусь', 'types' => ['delay'], 'status' => 'open'],
-        ['event_key' => 'linen', 'summary' => 'он не забрал грязное и чистое я сложила еще в другой шкаф, а то в маленьком места нет.', 'types' => ['quality_issue'], 'status' => 'open'],
-    ];
-
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => $items]],
-    ]);
-
-    expect($text)
-        ->toContain('Возникла проблема с доступом: дверь была закрыта, никто не открыл.')
-        ->toContain('В ванной обнаружили повреждение или загрязнение.')
-        ->toContain('Сотрудник сообщил о задержке.')
-        ->toContain('Возник вопрос с хранением грязного и чистого белья.')
-        ->toContain('Проверить, решён ли вопрос с доступом в квартиру.')
-        ->not->toContain('Проверить, устранена ли проблема')
-        ->not->toContain('Проверить, устранено ли замечание по качеству')
-        ->not->toContain('он не забрал')
-        ->and(substr_count($text, '• '))->toBe(5)
-        ->and(mb_strlen($text))->toBeLessThan(600);
-});
-
-it('suppresses an open question when no specific follow-up is supported', function () {
+it('hides empty editorial sections and refuses to infer from raw ledger sections', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'district' => ['label' => 'Navigli'],
         'sections' => [['key' => 'attention', 'items' => [[
-            'event_key' => 'question',
-            'summary' => 'Что делать с найденной вещью? @Duty_Manager',
-            'types' => ['request'],
-            'status' => 'open',
-            'evidence' => [['role' => 'question']],
+            'summary' => 'Не работает дверь, проверьте срочно.', 'status' => 'open', 'types' => ['problem'],
         ]]]],
+        'editorial_sections' => [],
     ]);
 
-    expect($text)->not->toContain('Что делать с найденной вещью')
-        ->not->toContain('Есть открытый вопрос, требующий уточнения.')
-        ->not->toContain('@Duty_Manager')
-        ->toContain('Открытых вопросов на конец дня нет.');
-});
-
-it('turns concrete open questions into short apartment-specific handoff lines', function () {
-    $items = [
-        ['event_key' => 'arrival', 'summary' => 'Привет, Настя, во сколько здесь заезд? @Duty_Manager', 'context_label' => 'Via X', 'types' => ['request'], 'status' => 'open', 'evidence' => [['role' => 'question']]],
-        ['event_key' => 'linen', 'summary' => 'Девочки, подскажите пожалуйста, для дивана постельное есть в шкафу?', 'context_label' => 'Via Y', 'types' => ['request'], 'status' => 'open', 'evidence' => [['role' => 'question']]],
-        ['event_key' => 'glasses', 'summary' => 'Очки сломаны, выбрасывать? @Duty_Manager', 'context_label' => 'Via Z', 'types' => ['problem'], 'status' => 'open'],
-        ['event_key' => 'paper', 'summary' => 'Здесь 2 или 3 запасных бумаги, не могу найти', 'context_label' => 'Via W', 'types' => ['problem'], 'status' => 'open'],
-    ];
-
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Lambrate'],
-        'sections' => [['key' => 'attention', 'items' => $items]],
-    ]);
-
-    expect($text)->toContain('• Via X — Уточняли время заезда.')
-        ->toContain('• Via X — Уточнить время заезда.')
-        ->toContain('• Via Y — Уточнить наличие постельного белья для дивана.')
-        ->toContain('• Via Z — Уточнить, нужно ли выбрасывать сломанные очки.')
-        ->toContain('• Via W — Проверить наличие запасной бумаги.')
-        ->not->toContain('Настя')
-        ->not->toContain('Девочки')
-        ->not->toContain('Привет')
-        ->not->toContain('@Duty_Manager')
-        ->not->toContain('Есть открытый вопрос, требующий уточнения.');
-});
-
-it('does not invent an access problem from a vague cannot-open message', function () {
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Lambrate'],
-        'sections' => [['key' => 'attention', 'items' => [[
-            'event_key' => 'vague',
-            'summary' => 'Чет не открывается',
-            'context_label' => 'Via X',
-            'types' => ['problem'],
-            'status' => 'open',
-        ]]]],
-    ]);
-
-    expect($text)->toContain('• Via X — Возникла проблема: что-то не открывается.')
-        ->not->toContain('проблема с доступом');
-});
-
-it('does not move a mixed historical problem into the good-work block', function () {
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'sections' => [[
-            'key' => 'attention',
-            'items' => [[
-                'event_key' => 'historical-mixed',
-                'summary' => 'Не работает замок в квартире.',
-                'types' => ['problem', 'positive_contribution'],
-                'status' => 'open',
-            ]],
-        ]],
-    ]);
-
-    expect($text)->toContain('• Не работает замок в квартире.')
-        ->not->toContain('⭐ Хорошая работа:');
-});
-
-it('falls back to deterministic formatting when the evidence composer fails', function () {
-    $composer = new class(app(TelegramOperationalEventLifecyclePolicy::class)) extends TelegramEveningHumanComposer
-    {
-        public function compose(array $item): array
-        {
-            throw new RuntimeException('provider unavailable');
-        }
-    };
-    $formatter = new TelegramDigestFormatter($composer);
-
-    $text = $formatter->eveningIntelligence([
-        'district' => ['label' => 'Lodi'],
-        'sections' => [['key' => 'attention', 'items' => [[
-            'event_key' => 'fallback',
-            'summary' => 'Не работает свет в комнате 1.',
-            'types' => ['problem'],
-            'status' => 'open',
-        ]]]],
-    ]);
-
-    expect($text)->toContain('• Не работает свет в комнате 1.');
+    expect($text)->toBe('🌙 Navigli — итоги дня')
+        ->not->toContain('Не работает дверь')
+        ->not->toContain('Осталось сделать:');
 });

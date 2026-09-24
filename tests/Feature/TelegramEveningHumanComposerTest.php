@@ -19,8 +19,8 @@ it('uses several evidence messages to explain one access situation', function ()
 
     expect($human)->toMatchArray([
         'include' => true,
-        'summary' => 'Возникла проблема с доступом: консьержа не было на месте, дверь не открывали.',
-        'follow_up' => 'Проверить, решён ли вопрос с доступом в квартиру.',
+        'summary' => 'Проблема с доступом: консьерж отсутствовал, дверь не открывали.',
+        'follow_up' => 'Проверить доступ в квартиру.',
     ]);
 });
 
@@ -159,7 +159,7 @@ it('suppresses acknowledgement-only chatter without losing an operational fact a
         ]);
 });
 
-it('keeps apartment context and falls back deterministically when evidence is unavailable', function () {
+it('does not let the formatter infer or render ledger sections without Builder decisions', function () {
     $preview = [
         'date' => '2026-09-20',
         'timezone' => 'Europe/Rome',
@@ -175,7 +175,7 @@ it('keeps apartment context and falls back deterministically when evidence is un
 
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
 
-    expect($text)->toContain('• Via X — Не работает свет.');
+    expect($text)->not->toContain('Не работает свет.');
 });
 
 it('uses only a structurally confirmed actor and location in the human delay', function () {
@@ -188,12 +188,9 @@ it('uses only a structurally confirmed actor and location in the human delay', f
         'context_label' => 'Via Confirmed',
     ];
 
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => [$item]]],
-    ]);
+    $human = app(TelegramEveningHumanComposer::class)->compose($item);
 
-    expect($text)->toContain('• Via Confirmed — Анна задерживается примерно на 10 минут.');
+    expect($human['summary'])->toBe('Анна задерживается примерно на 10 минут.');
 });
 
 it('does not attribute an ordinary apartment question to its message author', function () {
@@ -205,13 +202,11 @@ it('does not attribute an ordinary apartment question to its message author', fu
         'context_label' => 'Via Question',
     ];
 
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => [$item]]],
-    ]);
+    $human = app(TelegramEveningHumanComposer::class)->compose($item);
 
-    expect($text)->toContain('• Via Question — Уточняли время заезда.')
-        ->not->toContain('Worker 101');
+    expect($human['summary'])->toBe('Уточняли время заезда.')
+        ->and($item['actor_user_id'])->toBeNull()
+        ->and($item['actor_name'])->toBeNull();
 });
 
 it('restores a broken handle object from bounded evidence without mutating source data', function () {
@@ -248,16 +243,14 @@ it('suppresses a dirty referent fragment unless bounded evidence establishes its
     $formatter = app(TelegramDigestFormatter::class);
     $withoutObjectPreview = $formatter->eveningIntelligence([
         'district' => ['label' => 'Certosa'],
-        'sections' => [['key' => 'quality', 'items' => [[
-            ...humanItem('Нет..это грязное.', [$fragment->id], ['quality_issue']),
-            'context_label' => 'Imbonati 88 DEER постельное владельца',
-        ]]]],
+        'editorial_sections' => [],
     ]);
     $withObjectPreview = $formatter->eveningIntelligence([
         'district' => ['label' => 'Certosa'],
-        'sections' => [['key' => 'quality', 'items' => [[
-            ...humanItem('Нет..это грязное.', [$object->id, $fragment->id], ['quality_issue']),
+        'editorial_sections' => [['key' => 'day', 'items' => [[
+            'event_key' => 'dirty-linen',
             'context_label' => 'Imbonati 88 DEER',
+            'summary' => $withObject['summary'],
         ]]]],
     ]);
 
@@ -288,15 +281,15 @@ it('humanizes production-shaped operational facts and suppresses contextless fra
         $items[] = humanItem($text, [$message->id], $types);
     }
 
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Lambrate'],
-        'sections' => [['key' => 'attention', 'items' => $items]],
-    ]);
+    $results = collect($items)->map(fn (array $item): array => app(TelegramEveningHumanComposer::class)->compose($item));
+    $text = $results->pluck('summary')->filter()->implode("\n");
+    $actions = $results->pluck('follow_up')->filter()->implode("\n");
 
     expect($text)
         ->toContain('В программе указан неверный код гостевого локера; правильный код — 1291.')
         ->toContain('Гость забыл конверт; нужно найти его и сообщить о находке.')
         ->toContain('Из посудомоечной машины вытекала вода; нужно проверить её состояние.')
+        ->and($actions)
         ->toContain('Исправить код гостевого локера в программе.')
         ->toContain('Найти конверт и сообщить о находке.')
         ->toContain('Проверить состояние посудомоечной машины.')
@@ -319,16 +312,13 @@ it('consolidates one apartment courier situation only in the human digest', func
         'context_label' => 'Baiamonti 2',
     ])->all();
 
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Certosa'],
-        'sections' => [['key' => 'attention', 'items' => $items]],
-    ]);
+    $text = app(TelegramEveningHumanComposer::class)->compose($items[1])['summary'];
 
     expect($items)->toHaveCount(3)
-        ->and($text)->toContain('• Baiamonti 2 — Курьер забрал не всё грязное бельё.')
+        ->and($text)->toBe('Курьер забрал не всё грязное бельё.')
         ->and(substr_count($text, 'Курьер забрал не всё грязное бельё.'))->toBe(1)
-        ->and($text)->not->toContain('После курьера осталось')
-        ->not->toContain('Нужно фото грязного белья');
+        ->and($items[0]['summary'])->toContain('После курьера осталось')
+        ->and($items[2]['summary'])->toContain('Нужно фото грязного белья');
 });
 
 it('renders the supplied September 20 five-district scenarios as shift handoffs', function () {
@@ -393,12 +383,12 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
             'date' => '2026-09-20',
             'timezone' => 'Europe/Rome',
             'district' => ['label' => $district],
-            'sections' => [['key' => 'attention', 'items' => $items]],
+            'editorial_sections' => humanEditorialSections($items),
         ]);
     }
 
     expect($previews['Navigli'])
-        ->toContain('Via N1 — Возникла проблема с доступом: консьержа не было на месте, дверь не открывали.')
+        ->toContain('Via N1 — Проблема с доступом: консьерж отсутствовал, дверь не открывали.')
         ->toContain('Via N2 — Курьер привёз чистое бельё, но не забрал грязное.')
         ->toContain('Via N3 — Анна задерживается примерно на 10 минут.')
         ->and(substr_count($previews['Navigli'], 'Via N3 —'))->toBe(1)
@@ -410,7 +400,7 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
         ->not->toContain('поняла, спасибо')
         ->not->toContain('Одеяла возьми')
         ->and($previews['Como'])->toContain('Via C1 — Гости сообщили о грязи на кухне и пыли.')
-        ->and($previews['Certosa'])->toContain('Via T1 — Возникла проблема с доступом.')
+        ->and($previews['Certosa'])->toContain('Via T1 — Проблема с доступом: дверь была закрыта, никто не открыл.')
         ->toContain('Via T2 — Курьер забрал не всё бельё.')
         ->toContain('Via T3 — Ольга задерживается.')
         ->not->toContain('Что это за звук')
@@ -443,4 +433,49 @@ function humanItem(string $summary, array $messageIds, array $types, string $sta
             'occurred_at' => '2026-09-20T10:00:00+02:00',
         ])->all(),
     ];
+}
+
+function humanEditorialSections(array $items): array
+{
+    $sections = [
+        'day' => ['key' => 'day', 'label' => 'За день', 'items' => []],
+        'resolved' => ['key' => 'resolved', 'label' => 'Решено сегодня', 'items' => []],
+        'positive' => ['key' => 'positive', 'label' => 'Хорошая работа', 'items' => []],
+        'attention' => ['key' => 'attention', 'label' => 'Требует внимания', 'items' => []],
+        'actions' => ['key' => 'actions', 'label' => 'Осталось сделать', 'items' => []],
+    ];
+    $composer = app(TelegramEveningHumanComposer::class);
+
+    foreach ($items as $item) {
+        $human = $composer->compose($item);
+        if (($human['include'] ?? false) !== true || blank($human['summary'] ?? null)) {
+            continue;
+        }
+
+        $row = [
+            'event_key' => $item['event_key'],
+            'context_label' => $item['context_label'] ?? null,
+            'summary' => $human['summary'],
+        ];
+        $dayKey = in_array('delay', $item['types'] ?? [], true)
+            ? sha1('delay|'.($item['context_label'] ?? '').'|'.($item['actor_name'] ?? ''))
+            : (string) $item['event_key'];
+        $existing = collect($sections['day']['items'])->search(fn (array $candidate): bool => ($candidate['_group_key'] ?? null) === $dayKey);
+        $row['_group_key'] = $dayKey;
+
+        if ($existing === false) {
+            $sections['day']['items'][] = $row;
+        } elseif (mb_strlen($row['summary']) > mb_strlen($sections['day']['items'][$existing]['summary'])) {
+            $sections['day']['items'][$existing] = $row;
+        }
+
+        if (filled($human['follow_up'] ?? null)) {
+            $attention = [...$row, 'summary' => $human['summary']];
+            $action = [...$row, 'summary' => $human['follow_up']];
+            $sections['attention']['items'][] = $attention;
+            $sections['actions']['items'][] = $action;
+        }
+    }
+
+    return collect($sections)->filter(fn (array $section): bool => $section['items'] !== [])->values()->all();
 }

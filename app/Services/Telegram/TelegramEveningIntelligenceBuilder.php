@@ -9,12 +9,14 @@ use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
+use Throwable;
 
 class TelegramEveningIntelligenceBuilder
 {
     public function __construct(
         private readonly TelegramTopicPresenter $topicPresenter,
         private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
+        private readonly TelegramEveningHumanComposer $humanComposer,
     ) {}
 
     private const REASON_TYPES = [
@@ -115,6 +117,9 @@ class TelegramEveningIntelligenceBuilder
             ->map(fn (TelegramOperationalEvent $event) => $this->project($event, $start, $cutoff))
             ->filter()
             ->values();
+        $editorialItems = $projected
+            ->map(fn (array $item): array => $this->editorialize($item, $start, $cutoff))
+            ->values();
         $items = $projected
             ->filter(fn (array $item) => $this->shouldInclude($item))
             ->values()
@@ -122,8 +127,9 @@ class TelegramEveningIntelligenceBuilder
         $this->sortItems($items);
 
         $sections = $this->sections($items);
+        $editorialSections = $this->editorialSections($editorialItems);
         $recurrences = $this->recurrences($recurrenceStart, $cutoff, $district);
-        $included = collect($sections)
+        $included = collect($editorialSections)
             ->flatMap(fn (array $section) => $section['items'])
             ->pluck('event_key')
             ->unique()
@@ -137,8 +143,9 @@ class TelegramEveningIntelligenceBuilder
                 'label' => $district['label'] ?? null,
                 'source_chat_id' => $district['chat_id'] ?? null,
             ],
-            'events' => $projected->all(),
+            'events' => $editorialItems->all(),
             'sections' => $sections,
+            'editorial_sections' => $editorialSections,
             'recurrences' => $recurrences,
             'events_considered' => $events->count(),
             'events_included' => $included,
@@ -323,6 +330,9 @@ class TelegramEveningIntelligenceBuilder
         $carryOver = in_array($status, ['open', 'reopened'], true)
             && $openSince?->lt($start) === true
             && $this->lifecyclePolicy->mayCarryOver($types, (string) $event->summary, $evidence);
+        $attentionEligible = in_array($status, ['open', 'reopened'], true)
+            && ($this->lifecyclePolicy->mayCarryOver($types, (string) $event->summary, $evidence)
+                || $this->lifecyclePolicy->mayNeedAttentionToday($types, (string) $event->summary, $evidence));
 
         if (! $hasActivityOnDay && ! $carryOver) {
             return null;
@@ -387,11 +397,177 @@ class TelegramEveningIntelligenceBuilder
             'uncertainty' => $uncertainty !== '' ? $this->compact($uncertainty, 400) : null,
             'repeated' => $reportCount > 1 || $evidence->contains('transition', 'reopened'),
             'carry_over' => $carryOver,
+            'attention_eligible' => $attentionEligible,
             'open_since' => $carryOver ? $openSince?->toIso8601String() : null,
             'open_age_days' => $carryOver ? $this->openAgeDays($openSince, $cutoff) : null,
             'latest_activity_at' => $evidence->last()->occurred_at?->toIso8601String(),
             'evidence' => $references,
         ];
+    }
+
+    /** @return array<string, mixed> */
+    private function editorialize(array $item, Carbon $start, Carbon $cutoff): array
+    {
+        $relevantToday = collect($item['evidence'] ?? [])->contains(function (array $evidence) use ($start, $cutoff): bool {
+            if (blank($evidence['occurred_at'] ?? null)) {
+                return false;
+            }
+
+            $occurredAt = Carbon::parse($evidence['occurred_at'])->setTimezone($start->getTimezone());
+
+            return $occurredAt->betweenIncluded($start, $cutoff);
+        });
+        $resolvedToday = ($item['status'] ?? null) === 'resolved'
+            && collect($item['evidence'] ?? [])->contains(function (array $evidence) use ($start, $cutoff): bool {
+                if (($evidence['transition'] ?? null) !== 'resolved' || blank($evidence['occurred_at'] ?? null)) {
+                    return false;
+                }
+
+                return Carbon::parse($evidence['occurred_at'])->setTimezone($start->getTimezone())->betweenIncluded($start, $cutoff);
+            });
+
+        try {
+            $human = $this->shouldInclude($item)
+                ? $this->humanComposer->compose($item)
+                : ['include' => false, 'decision' => 'omit', 'summary' => null, 'follow_up' => null];
+        } catch (Throwable $exception) {
+            if (app()->bound('log')) {
+                app('log')->warning('Evening editorial composition failed; candidate omitted.', [
+                    'event_key' => $item['event_key'] ?? null,
+                    'exception' => $exception::class,
+                ]);
+            }
+
+            $human = ['include' => false, 'decision' => 'technical_failure', 'summary' => null, 'follow_up' => null];
+        }
+
+        $summary = filled($human['summary'] ?? null) ? (string) $human['summary'] : null;
+        $followUp = filled($human['follow_up'] ?? null) ? (string) $human['follow_up'] : null;
+        $isPositive = in_array('positive_contribution', $item['types'] ?? [], true)
+            && collect($item['types'] ?? [])->diff(['positive_contribution'])->isEmpty();
+        $activeStatus = in_array($item['status'] ?? null, ['open', 'reopened'], true);
+        $completed = ($human['completed'] ?? false) === true || $resolvedToday;
+        $state = 'omit';
+        $needsAttention = false;
+        $nextAction = null;
+        $renderOutcome = [];
+        $resolution = null;
+
+        if (($human['include'] ?? false) === true && $summary !== null) {
+            if ($completed && $relevantToday) {
+                $state = 'completed';
+
+                if ($resolvedToday) {
+                    $renderOutcome[] = 'resolved';
+                    $resolution = $human['resolution'] ?? $this->resolutionSummary($item, $summary);
+                } elseif (($human['show_in_day'] ?? true) === true) {
+                    $renderOutcome[] = 'day';
+                }
+            } elseif ($isPositive && $relevantToday) {
+                $state = 'informational';
+                $renderOutcome[] = 'positive';
+            } elseif ($activeStatus && ($relevantToday || ($item['carry_over'] ?? false))
+                && ($item['attention_eligible'] ?? false) === true && $followUp !== null) {
+                $state = 'active';
+                $needsAttention = true;
+                $nextAction = $followUp;
+                $renderOutcome[] = 'attention';
+
+                if ($relevantToday && ($human['show_in_day'] ?? true) === true) {
+                    $renderOutcome[] = 'day';
+                }
+            } elseif ($relevantToday && ($item['status'] ?? null) !== 'resolved'
+                && ($human['show_in_day'] ?? true) === true) {
+                $state = 'informational';
+                $renderOutcome[] = 'day';
+            }
+        }
+
+        return [
+            ...$item,
+            'editorial' => [
+                'relevant_today' => $relevantToday,
+                'state' => $state,
+                'needs_attention' => $needsAttention,
+                'next_action' => $nextAction,
+                'render_outcome' => $renderOutcome === [] ? ['omit'] : $renderOutcome,
+                'summary' => $summary,
+                'resolution' => $resolution,
+            ],
+        ];
+    }
+
+    /** @param Collection<int, array<string, mixed>> $items
+     *  @return array<int, array{key: string, label: string, items: array<int, array<string, mixed>>}>
+     */
+    private function editorialSections(Collection $items): array
+    {
+        $labels = [
+            'day' => 'За день',
+            'resolved' => 'Решено сегодня',
+            'positive' => 'Хорошая работа',
+            'attention' => 'Требует внимания',
+            'actions' => 'Осталось сделать',
+        ];
+        $sections = [];
+        foreach ($labels as $key => $label) {
+            $sections[$key] = ['key' => $key, 'label' => $label, 'items' => []];
+        }
+
+        foreach ($items as $item) {
+            $editorial = $item['editorial'];
+
+            foreach (['day', 'resolved', 'positive', 'attention'] as $key) {
+                if (! in_array($key, $editorial['render_outcome'], true)) {
+                    continue;
+                }
+
+                $summary = $key === 'resolved' ? $editorial['resolution'] : $editorial['summary'];
+                if (filled($summary)) {
+                    $sections[$key]['items'][] = $this->editorialLine($item, (string) $summary);
+                }
+            }
+
+            if ($editorial['needs_attention'] && filled($editorial['next_action'])) {
+                $sections['actions']['items'][] = $this->editorialLine($item, (string) $editorial['next_action']);
+            }
+        }
+
+        foreach (['day', 'resolved', 'positive', 'attention', 'actions'] as $key) {
+            $sections[$key]['items'] = collect($sections[$key]['items'])
+                ->unique(fn (array $item): string => $key === 'actions'
+                    ? sha1(mb_strtolower(($item['context_label'] ?? '').'|'.$item['summary']))
+                    : (string) $item['event_key'])
+                ->take($key === 'actions' ? 6 : 7)
+                ->values()
+                ->all();
+        }
+
+        return collect($sections)->filter(fn (array $section): bool => $section['items'] !== [])->values()->all();
+    }
+
+    /** @return array{event_key: string, context_label: ?string, summary: string, evidence: array<int, array<string, mixed>>} */
+    private function editorialLine(array $item, string $summary): array
+    {
+        return [
+            'event_key' => $item['event_key'],
+            'context_label' => $item['context_label'] ?? null,
+            'summary' => $summary,
+            'evidence' => $item['evidence'] ?? [],
+        ];
+    }
+
+    private function resolutionSummary(array $item, string $summary): string
+    {
+        $types = collect($item['types'] ?? []);
+
+        return match (true) {
+            preg_match('/двер|доступ|консьерж/iu', (string) ($item['summary'] ?? '')) === 1 => 'Проблема с доступом решена.',
+            $types->contains('quality_issue') => 'Замечание по качеству устранено.',
+            $types->contains('unanswered_question') => 'Вопрос закрыт.',
+            $types->contains('delay') => 'Ситуация с задержкой закрыта.',
+            default => 'Ситуация решена: '.$summary,
+        };
     }
 
     private function currentOpenPeriodStart(Collection $evidence, string $status): ?Carbon

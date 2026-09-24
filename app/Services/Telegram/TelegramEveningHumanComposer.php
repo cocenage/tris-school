@@ -75,10 +75,10 @@ class TelegramEveningHumanComposer
 
         if ($this->isAccessIssue($context)) {
             $detail = preg_match('/консьерж/iu', $context) === 1
-                ? 'Возникла проблема с доступом: консьержа не было на месте, дверь не открывали.'
-                : 'Возникла проблема с доступом.';
+                ? 'Проблема с доступом: консьерж отсутствовал, дверь не открывали.'
+                : 'Проблема с доступом: дверь была закрыта, никто не открыл.';
 
-            return $this->result($detail, $isOpen ? 'Проверить, решён ли вопрос с доступом в квартиру.' : null);
+            return $this->result($detail, $isOpen ? 'Проверить доступ в квартиру.' : null);
         }
 
         if ($this->isLinenCourierIssue($context)) {
@@ -187,7 +187,7 @@ class TelegramEveningHumanComposer
         if (preg_match('/переключател/iu', $context) === 1
             && preg_match('/не\s+работает|слом/iu', $context) === 1
             && preg_match('/мастер|техник/iu', $context) === 1) {
-            return $this->result('Не работает переключатель, требуется мастер.', $isOpen ? 'Организовать ремонт переключателя.' : null);
+            return $this->result('Не работает переключатель, требуется мастер.', $isOpen ? 'Вызвать мастера для ремонта переключателя.' : null);
         }
 
         if (preg_match('/жалюз/iu', $context) === 1
@@ -232,7 +232,10 @@ class TelegramEveningHumanComposer
                     ? 'Обнаружена простыня с пятном'.($completed ? ', заменена как брак.' : '.')
                     : 'Обнаружена бракованная простыня'.($completed ? ', заменена.' : '.'),
                 preg_match('/полотен/iu', $context) === 1 => 'Обнаружено бракованное полотенце'.($completed ? ', заменено.' : '.'),
-                default => 'Обнаружен дефект: '.$object.($completed ? ' заменено.' : '.'),
+                default => 'Обнаружен брак '.match ($object) {
+                    'пододеяльник' => 'пододеяльника',
+                    default => 'постельного белья',
+                }.($completed ? ' заменено.' : '.'),
             };
 
             return $this->result(
@@ -271,9 +274,9 @@ class TelegramEveningHumanComposer
         if ($this->isRawSafe($summary, $types->all())) {
             return [
                 'include' => true,
-                'handled' => false,
+                'handled' => true,
                 'decision' => 'raw_safe',
-                'summary' => null,
+                'summary' => mb_ucfirst(rtrim($summary, " .!?\t\n\r\0\x0B")).'.',
                 'follow_up' => null,
             ];
         }
@@ -551,7 +554,7 @@ class TelegramEveningHumanComposer
     private function isLinenDefect(string $text): bool
     {
         return preg_match('/(?:брак|слом|поврежд)/iu', $text) === 1
-            && preg_match('/полотен|пододеяльник/iu', $text) === 1;
+            && preg_match('/полотен|пододеяльник|пододеял|наволоч|простын/iu', $text) === 1;
     }
 
     private function isApartmentQualityReview(string $text): bool

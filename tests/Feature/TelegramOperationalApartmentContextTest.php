@@ -72,7 +72,7 @@ it('carries mapped apartment topics into events and both evening handoff section
         ->and($navigliItems->get('У вытяжки не работает свет.')['apartment_id'])->toBe($viaY->id)
         ->and($navigliItems->get('Не работает кран в ванной.')['apartment_id'])->toBeNull()
         ->and($navigliText)->toContain('• Via Y — У вытяжки не работает свет.')
-        ->toContain('• Via X — Проверить, решён ли вопрос с доступом в квартиру.')
+        ->toContain('• Via X — Проверить доступ в квартиру.')
         ->toContain('• Via Unknown — Не работает кран в ванной.')
         ->not->toContain('Via Z')
         ->and($lodiText)->toContain('Via Z — Не работает замок в квартире.')
@@ -248,7 +248,7 @@ it('reopens the same event on confirmed recurrence and no longer presents it as 
     expect($result['outcome'])->toBe('reopened')
         ->and(TelegramOperationalEvent::query()->sole()->status)->toBe('reopened')
         ->and(TelegramOperationalEvent::query()->sole()->evidence()->pluck('transition')->all())->toBe(['created', 'resolved', 'reopened'])
-        ->and($text)->toContain('Осталось на контроле:')
+        ->and($text)->toContain('Осталось сделать:')
         ->not->toContain('✅ Решено сегодня:');
 });
 
