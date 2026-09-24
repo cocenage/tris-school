@@ -27,7 +27,8 @@ class TelegramOperationalEventLifecyclePolicy
         }
 
         if ($this->isTemporaryAvailabilityRequest($summary)
-            && ! $this->hasIndependentInventoryConfirmation($summary, $evidence)) {
+            && ! $this->hasIndependentInventoryConfirmation($summary, $evidence)
+            && ! $this->hasIndependentlyConfirmedDurableProblem($evidence)) {
             return false;
         }
 
@@ -68,10 +69,7 @@ class TelegramOperationalEventLifecyclePolicy
 
     private function isTemporaryAvailabilityRequest(string $summary): bool
     {
-        $mentionsItem = preg_match('/(?:бумаг|рулон|ключ|полотен|бель|одеял|пульт|инвентар|средств)/ui', $summary) === 1;
-        $isSearchOrQuestion = preg_match('/(?:не\s+(?:могу\s+)?найти|не\s+нашл|где\b|есть\s+ли|хватит\s+ли|сколько.{0,30}(?:остал|есть|найти)|\?)/ui', $summary) === 1;
-
-        return $mentionsItem && $isSearchOrQuestion;
+        return preg_match('/(?:не\s+(?:могу\s+)?найти|не\s+нашл|где\b|есть\s+ли|хватит\s+ли|сколько.{0,30}(?:остал|есть|найти)|\bесть\b.{0,60}\?|\bсколько\b)/ui', $summary) === 1;
     }
 
     private function hasIndependentInventoryConfirmation(string $summary, Collection $evidence): bool
@@ -94,9 +92,18 @@ class TelegramOperationalEventLifecyclePolicy
                 return false;
             }
 
-            $sameItem = preg_match('/(?:бумаг|рулон)/ui', $summary) === 1
-                && preg_match('/(?:бумаг|рулон)/ui', $text) === 1;
-            $confirmedMissing = preg_match('/(?:действительно\s+нет|нет.{0,35}(?:запас|бумаг|рулон)|не\s+остал|законч\S*|пополн\S*.{0,35}запас|запас.{0,35}пополн|не\s+хвата\S*|отсутств\S*)/ui', $text) === 1;
+            $inventoryItems = [
+                '/(?:туалетн.{0,15}бумаг|бумаг|рулон)/ui',
+                '/ключ/ui',
+                '/полотен|бель/ui',
+                '/одеял/ui',
+                '/пульт/ui',
+                '/инвентар/ui',
+                '/средств/ui',
+            ];
+            $sameItem = collect($inventoryItems)->contains(fn (string $pattern): bool => preg_match($pattern, $summary) === 1
+                && preg_match($pattern, $text) === 1);
+            $confirmedMissing = preg_match('/(?:действительно\s+нет|нет.{0,35}(?:запас|бумаг|рулон|ключ|полотен|бель|одеял|пульт|инвентар|средств)|не\s+остал|законч\S*|пополн\S*.{0,35}запас|запас.{0,35}пополн|не\s+хвата\S*|отсутств\S*|инвентар.{0,35}(?:неверн|ошиб|расхожд))/ui', $text) === 1;
 
             return $sameItem && $confirmedMissing;
         });

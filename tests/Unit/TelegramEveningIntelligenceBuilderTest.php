@@ -439,6 +439,23 @@ it('shows a temporary missing-paper search only on its day unless independent st
     $event->update(['primary_type' => 'problem', 'types' => ['problem'], 'summary' => $search->text, 'status' => 'open']);
     $event->evidence()->update(['role' => 'report']);
 
+    $missingItem = TelegramOperationalTestDatabase::message(
+        'Не работает свет в комнате 1.',
+        '2026-06-16 08:30:00',
+        '1823',
+        threadId: '193',
+    );
+    $missingItemResult = $observer->observe($missingItem, 'message', Carbon::parse('2026-06-16 08:30:00', 'Europe/Rome'));
+    $missingItemEvent = TelegramOperationalEvent::query()->where('event_key', $missingItemResult['event_key'])->firstOrFail();
+    $missingItem->update(['text' => 'Не могу найти фен.']);
+    $missingItemEvent->update([
+        'primary_type' => 'problem',
+        'types' => ['problem'],
+        'summary' => $missingItem->text,
+        'status' => 'open',
+    ]);
+    $missingItemEvent->evidence()->update(['role' => 'report']);
+
     $builder = app(TelegramEveningIntelligenceBuilder::class);
     $sameDay = $builder->build('2026-06-16');
     $nextDayWithoutConfirmation = $builder->build('2026-06-17');
@@ -477,8 +494,10 @@ it('shows a temporary missing-paper search only on its day unless independent st
     $nextDayWithConfirmationText = app(TelegramDigestFormatter::class)->eveningIntelligence($nextDayWithConfirmation);
 
     expect($sameDayText)->toContain('Туалетную бумагу не могу найти.')
+        ->toContain('Не могу найти фен.')
         ->and($nextDayWithoutConfirmation['events'])->toBeEmpty()
         ->and($nextDayWithoutConfirmationText)->not->toContain('Туалетную бумагу не могу найти.')
+        ->not->toContain('Не могу найти фен.')
         ->and($nextDayWithConfirmation['events'])->toHaveCount(1)
         ->and($nextDayWithConfirmation['events'][0]['carry_over'])->toBeTrue()
         ->and($nextDayWithConfirmationText)->toContain('🔄 Переходящие проблемы:')
