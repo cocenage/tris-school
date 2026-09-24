@@ -21,7 +21,13 @@ class TelegramOperationalEventLifecyclePolicy
         }
 
         if (in_array('unanswered_question', $types, true)
-            && ! $this->hasIndependentlyConfirmedDurableProblem($evidence)) {
+            && ! $this->hasIndependentlyConfirmedDurableProblem($evidence)
+            && ! $this->hasIndependentInventoryConfirmation($summary, $evidence)) {
+            return false;
+        }
+
+        if ($this->isTemporaryAvailabilityRequest($summary)
+            && ! $this->hasIndependentInventoryConfirmation($summary, $evidence)) {
             return false;
         }
 
@@ -55,8 +61,44 @@ class TelegramOperationalEventLifecyclePolicy
                 return false;
             }
 
-            return preg_match('/(?:двер|замок|ключ|свет|подсвет|вытяж|ручк|полотен|пододеяль|бель|курьер|посуд|ванн|кухн|кран|труб|вода|вешалк|пульт|кондиционер|гостев\s+локер|коврик)/ui', $text) === 1
+            return preg_match('/(?:двер|замок|ключ|свет|подсвет|вытяж|ручк|полотен|пододеяль|бель|курьер|посуд|ванн|кухн|кран|труб|вода|вешалк|пульт|кондиционер|гостев\s+локер|коврик|туалетн.{0,15}бумаг|бумаг|рулон)/ui', $text) === 1
                 && preg_match('/(?:не\s+работает|слом|брак|поврежд|протеч|подт[её]к|не\s+открыва|не\s+забрал|не\s+включа|грязн|отвал)/ui', $text) === 1;
+        });
+    }
+
+    private function isTemporaryAvailabilityRequest(string $summary): bool
+    {
+        $mentionsItem = preg_match('/(?:бумаг|рулон|ключ|полотен|бель|одеял|пульт|инвентар|средств)/ui', $summary) === 1;
+        $isSearchOrQuestion = preg_match('/(?:не\s+(?:могу\s+)?найти|не\s+нашл|где\b|есть\s+ли|хватит\s+ли|сколько.{0,30}(?:остал|есть|найти)|\?)/ui', $summary) === 1;
+
+        return $mentionsItem && $isSearchOrQuestion;
+    }
+
+    private function hasIndependentInventoryConfirmation(string $summary, Collection $evidence): bool
+    {
+        return $evidence->contains(function (TelegramOperationalEventEvidence $item) use ($summary): bool {
+            if (! in_array($item->role, ['report', 'recurrence'], true)) {
+                return false;
+            }
+
+            $observation = $item->observation;
+            $message = $observation?->message;
+
+            if (! $message || ! in_array($observation->reason_code, ['operational_problem', 'quality_issue', 'operational_request', 'operational_action'], true)) {
+                return false;
+            }
+
+            $text = trim((string) ($message->text ?: $message->caption ?: ''));
+
+            if ($text === '' || $this->isTemporaryAvailabilityRequest($text)) {
+                return false;
+            }
+
+            $sameItem = preg_match('/(?:бумаг|рулон)/ui', $summary) === 1
+                && preg_match('/(?:бумаг|рулон)/ui', $text) === 1;
+            $confirmedMissing = preg_match('/(?:действительно\s+нет|нет.{0,35}(?:запас|бумаг|рулон)|не\s+остал|законч\S*|пополн\S*.{0,35}запас|запас.{0,35}пополн|не\s+хвата\S*|отсутств\S*)/ui', $text) === 1;
+
+            return $sameItem && $confirmedMissing;
         });
     }
 

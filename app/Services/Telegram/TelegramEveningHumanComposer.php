@@ -59,6 +59,13 @@ class TelegramEveningHumanComposer
             return $this->result($objectSummary, null);
         }
 
+        if ($this->hasConfirmedToiletPaperStockIssue($summary, $evidence)) {
+            return $this->result(
+                'Запас туалетной бумаги отсутствует.',
+                $isOpen ? 'Пополнить запас туалетной бумаги.' : null,
+            );
+        }
+
         if (($item['status'] ?? null) === 'resolved' && preg_match('/закрыли\s+двер/iu', $context) === 1) {
             return $this->result('Дверь закрыли.', null, 'Дверь закрыли.', false);
         }
@@ -345,8 +352,18 @@ class TelegramEveningHumanComposer
             return false;
         }
 
-        return $this->hasConcreteOperationalObject($summary)
-            && $this->hasConcreteOperationalFact($summary);
+        return $this->hasConcreteOperationalObjectAndFact($summary);
+    }
+
+    private function hasConfirmedToiletPaperStockIssue(string $summary, Collection $evidence): bool
+    {
+        if (preg_match('/(?:туалетн.{0,15}бумаг|рулон.{0,15}бумаг|бумаг)/iu', $summary) !== 1
+            || preg_match('/(?:не\s+(?:могу\s+)?найти|не\s+нашл|где\b|есть\s+ли|\?)/iu', $summary) !== 1) {
+            return false;
+        }
+
+        return $evidence->contains(fn (string $text): bool => preg_match('/(?:туалетн.{0,15}бумаг|рулон.{0,15}бумаг|бумаг)/iu', $text) === 1
+            && preg_match('/(?:действительно\s+нет|нет.{0,35}(?:запас|бумаг|рулон)|не\s+остал|законч\S*|пополн\S*.{0,35}запас|запас.{0,35}пополн|не\s+хвата\S*|отсутств\S*)/iu', $text) === 1);
     }
 
     private function isContextDependentChatter(string $text): bool
@@ -356,14 +373,26 @@ class TelegramEveningHumanComposer
             || preg_match('/^(?:не\s+работает|он\s+давно\s+не\s+работает)[.!?]*$/iu', $text) === 1;
     }
 
-    private function hasConcreteOperationalObject(string $text): bool
+    private function hasConcreteOperationalObjectAndFact(string $text): bool
     {
-        return preg_match('/(?:жалюз|простын|полотен|пододеял|бель[еёя]|вешалк|свет|подсвет|вытяжк|локер|код|двер|замок|окн|ручк|пульт|кондиционер|посудомоечн|посуд|кран|раковин|душ|ванн|унитаз|шкаф|холодильник|плита|духовк|чайник|утюг|фен|ламп|розетк|ключ|бумаг|инвентар|средств|коврик|мебел|диван|кровать|матрас|одеял|конверт|курьер|плитк)/iu', $text) === 1;
-    }
+        $object = '(?:жалюз|простын|полотен|пододеял|бель[еёя]|вешалк|свет|подсвет|вытяжк|локер|код|двер|замок|окн|ручк|переключател|пульт|кондиционер|посудомоечн|посуд|кран|раковин|душ|ванн|унитаз|шкаф|холодильник|плита|духовк|чайник|утюг|фен|ламп|розетк|ключ|бумаг|инвентар|средств|коврик|мебел|диван|кровать|матрас|одеял|конверт|курьер|плитк)';
+        $fact = '(?:не\s+работа\S*|не\s+включа\S*|слом\S*|брак\S*|поврежд\S*|дефект\S*|грязн\S*|пятн\S*|теч\S*|протека\S*|упал\S*|отвал\S*|тресн\S*|неверн\S*|ошибк\S*|не\s+хвата\S*|отсутств\S*|не\s+(?:могу\s+)?найти\S*|не\s+нашл\S*|не\s+забрал\S*|забрал\s+не\s+вс[её]\S*|замен\S*\s+нет|почин\S*|исправ\S*|установ\S*|нет\s+(?:запасн\S*\s+)?(?:бумаг\S*|ключ\S*|полотен\S*|бель\S*|пульт\S*|вешалк\S*|инвентар\S*|средств\S*))';
 
-    private function hasConcreteOperationalFact(string $text): bool
-    {
-        return preg_match('/(?:не\s+работа\S*|не\s+включа\S*|слом\S*|брак\S*|поврежд\S*|дефект\S*|грязн\S*|пятн\S*|теч\S*|протека\S*|упал\S*|отвал\S*|тресн\S*|неверн\S*|ошибк\S*|не\s+хвата\S*|отсутств\S*|не\s+(?:могу\s+)?найти\S*|не\s+нашл\S*|не\s+забрал\S*|забрал\s+не\s+вс[её]\S*|замен\S*\s+нет|почин\S*|исправ\S*|установ\S*|нет\s+(?:запасн\S*\s+)?(?:бумаг\S*|ключ\S*|полотен\S*|бель\S*|пульт\S*|вешалк\S*|инвентар\S*|средств\S*))/iu', $text) === 1;
+        $clauses = preg_split('/[.!?;]+|,\s*(?=(?:а|но|и|поэтому|значит|тогда)\b)/iu', $text) ?: [];
+
+        foreach ($clauses as $clause) {
+            $clause = trim($clause);
+
+            if (preg_match('/^(?:он|она|оно|они|это|так)\b/iu', $clause) === 1) {
+                continue;
+            }
+
+            if (preg_match('/'.$object.'.{0,60}'.$fact.'|'.$fact.'.{0,60}'.$object.'/iu', $clause) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @return Collection<int, string> */

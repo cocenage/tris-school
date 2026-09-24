@@ -425,6 +425,115 @@ it('allows a question-classified problem to carry over after independent evidenc
         ->and(collect($item['evidence'])->pluck('local_message_id'))->toContain($question->id, $confirmation->id);
 });
 
+it('shows a temporary missing-paper search only on its day unless independent stock evidence confirms a durable issue', function () {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $search = TelegramOperationalTestDatabase::message(
+        'Не работает свет в комнате 1.',
+        '2026-06-16 08:00:00',
+        '1821',
+        threadId: '192',
+    );
+    $created = $observer->observe($search, 'message', Carbon::parse('2026-06-16 08:00:00', 'Europe/Rome'));
+    $event = TelegramOperationalEvent::query()->where('event_key', $created['event_key'])->firstOrFail();
+    $search->update(['text' => 'Туалетную бумагу не могу найти.']);
+    $event->update(['primary_type' => 'problem', 'types' => ['problem'], 'summary' => $search->text, 'status' => 'open']);
+    $event->evidence()->update(['role' => 'report']);
+
+    $builder = app(TelegramEveningIntelligenceBuilder::class);
+    $sameDay = $builder->build('2026-06-16');
+    $nextDayWithoutConfirmation = $builder->build('2026-06-17');
+    $sameDayText = app(TelegramDigestFormatter::class)->eveningIntelligence($sameDay);
+    $nextDayWithoutConfirmationText = app(TelegramDigestFormatter::class)->eveningIntelligence($nextDayWithoutConfirmation);
+
+    $confirmation = TelegramOperationalTestDatabase::message(
+        'Туалетной бумаги действительно нет, нужно пополнить запас.',
+        '2026-06-16 13:00:00',
+        '1822',
+        threadId: '192',
+    );
+    $observation = TelegramOperationalObservation::query()->create([
+        'telegram_message_id' => $confirmation->id,
+        'source_revision_hash' => str_repeat('c', 64),
+        'evaluation_kind' => 'message',
+        'state' => 'completed',
+        'outcome' => 'evidence',
+        'reason_code' => 'operational_problem',
+        'confidence' => 'high',
+        'is_current_revision' => true,
+        'processed_at' => '2026-06-16 13:00:00',
+    ]);
+    $event->evidence()->create([
+        'observation_id' => $observation->id,
+        'role' => 'report',
+        'transition' => 'evidence',
+        'status_before' => 'open',
+        'status_after' => 'open',
+        'confidence' => 'high',
+        'occurred_at' => '2026-06-16 13:00:00',
+        'is_current_revision' => true,
+    ]);
+
+    $nextDayWithConfirmation = $builder->build('2026-06-17');
+    $nextDayWithConfirmationText = app(TelegramDigestFormatter::class)->eveningIntelligence($nextDayWithConfirmation);
+
+    expect($sameDayText)->toContain('Туалетную бумагу не могу найти.')
+        ->and($nextDayWithoutConfirmation['events'])->toBeEmpty()
+        ->and($nextDayWithoutConfirmationText)->not->toContain('Туалетную бумагу не могу найти.')
+        ->and($nextDayWithConfirmation['events'])->toHaveCount(1)
+        ->and($nextDayWithConfirmation['events'][0]['carry_over'])->toBeTrue()
+        ->and($nextDayWithConfirmationText)->toContain('🔄 Переходящие проблемы:')
+        ->toContain('Запас туалетной бумаги отсутствует.')
+        ->toContain('Пополнить запас туалетной бумаги.')
+        ->and($nextDayWithConfirmation['mode']['mutations'])->toBe(0)
+        ->and($nextDayWithConfirmation['mode']['telegram_actions'])->toBe(0);
+});
+
+it('renders raw-safe switch failures, composes pronouns only from linked evidence, and omits context-dependent fragments', function () {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $seed = function (string $summary, string $evidenceText, string $messageId, string $threadId) use ($observer): void {
+        $message = TelegramOperationalTestDatabase::message(
+            'Не работает свет в комнате 1.',
+            '2026-06-16 09:00:00',
+            $messageId,
+            threadId: $threadId,
+        );
+        $result = $observer->observe($message, 'message', Carbon::parse('2026-06-16 09:00:00', 'Europe/Rome'));
+        $event = TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->firstOrFail();
+        $message->update(['text' => $evidenceText]);
+        $event->update(['primary_type' => 'problem', 'types' => ['problem'], 'summary' => $summary, 'status' => 'open']);
+    };
+
+    $seed(
+        'Он может поэтому и не работает, потому что уже включен режим был.',
+        'Он может поэтому и не работает, потому что уже включен режим был.',
+        '1831',
+        '193',
+    );
+    $seed(
+        'Вытяжка включена. Он может поэтому и не работает, потому что уже включен режим был.',
+        'Вытяжка включена. Он может поэтому и не работает, потому что уже включен режим был.',
+        '1834',
+        '196',
+    );
+    $seed(
+        'Переключатель не работает, поэтому должен прийти мастер.',
+        'Переключатель не работает, поэтому должен прийти мастер.',
+        '1832',
+        '194',
+    );
+    $seed('Он не работает.', 'У вытяжки не работает свет.', '1833', '195');
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-16');
+    $rendered = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+
+    expect($rendered)->toContain('Переключатель не работает, поэтому должен прийти мастер.')
+        ->toContain('У вытяжки не работает свет.')
+        ->not->toContain('Он может поэтому и не работает')
+        ->not->toContain('Вытяжка включена.')
+        ->not->toContain('Он не работает.')
+        ->not->toContain('Значимых операционных событий не зафиксировано.');
+});
+
 it('orders the same preview deterministically', function () {
     $observer = app(TelegramOperationalEventObserver::class);
     $observer->observe(TelegramOperationalTestDatabase::message(
