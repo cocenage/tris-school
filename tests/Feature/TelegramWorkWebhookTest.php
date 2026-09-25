@@ -330,13 +330,25 @@ it('applies a day-off callback once and ignores a repeated click', function () {
     ];
 
     $this->postJson('/telegram/work-webhook/test-secret', $payload)->assertOk();
+    $reviewedAt = $day->refresh()->reviewed_at;
     $this->postJson('/telegram/work-webhook/test-secret', $payload)
         ->assertOk()
         ->assertJson(['skipped' => 'dayoffday_already_reviewed']);
 
     expect($day->refresh()->status)->toBe('approved')
         ->and($request->refresh()->status)->toBe('approved')
+        ->and($day->reviewed_at)->toEqual($reviewedAt)
         ->and($day->reviewed_at)->not->toBeNull();
+    Http::assertSent(fn (ClientRequest $httpRequest): bool =>
+        str_ends_with($httpRequest->url(), '/answerCallbackQuery')
+        && $httpRequest['callback_query_id'] === 'callback-3'
+    );
+    Http::assertSent(fn (ClientRequest $httpRequest): bool =>
+        str_ends_with($httpRequest->url(), '/editMessageText')
+        && $httpRequest['chat_id'] === -100
+        && $httpRequest['message_id'] === 12
+        && ($httpRequest['reply_markup']['inline_keyboard'] ?? null) === []
+    );
 });
 
 it('applies a day-off rejection callback and updates the aggregate request', function () {
@@ -366,4 +378,139 @@ it('applies a day-off rejection callback and updates the aggregate request', fun
 
     expect($day->refresh()->status)->toBe('rejected')
         ->and($request->refresh()->status)->toBe('rejected');
+});
+
+it('answers malformed and unknown request callbacks without changing request state', function () {
+    Http::fake(fn () => Http::response(['ok' => true]));
+
+    $employee = \App\Models\User::create([
+        'name' => 'Cleaner', 'telegram_id' => '456', 'status' => 'approved', 'role' => 'cleaner', 'is_active' => true,
+    ]);
+    $request = \App\Models\DayOffRequest::create([
+        'user_id' => $employee->id, 'reason' => 'Нужен выходной', 'status' => 'pending',
+    ]);
+    $day = \App\Models\DayOffRequestDay::create([
+        'day_off_request_id' => $request->id, 'user_id' => $employee->id, 'date' => '2026-08-25', 'status' => 'pending',
+    ]);
+
+    foreach ([
+        ['id' => 'callback-malformed', 'data' => 'dayoffday:approve'],
+        ['id' => 'callback-unknown', 'data' => 'unknown:action:'.$day->id],
+    ] as $callback) {
+        $this->postJson('/telegram/work-webhook/test-secret', [
+            'callback_query' => [
+                ...$callback,
+                'from' => ['id' => 123],
+                'message' => ['message_id' => 41, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+            ],
+        ])->assertOk();
+    }
+
+    expect($day->refresh()->status)->toBe('pending')
+        ->and($request->refresh()->status)->toBe('pending');
+    Http::assertSent(fn (ClientRequest $httpRequest): bool =>
+        str_ends_with($httpRequest->url(), '/answerCallbackQuery')
+        && in_array($httpRequest['callback_query_id'], ['callback-malformed', 'callback-unknown'], true)
+    );
+});
+
+it('answers a callback when the referenced day does not exist', function () {
+    Http::fake(fn () => Http::response(['ok' => true]));
+
+    $this->postJson('/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-invalid-day',
+            'data' => 'dayoffday:approve:999999',
+            'from' => ['id' => 123],
+            'message' => ['message_id' => 42, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ])->assertOk()->assertJson(['skipped' => 'dayoffday_not_found']);
+
+    Http::assertSent(fn (ClientRequest $httpRequest): bool =>
+        str_ends_with($httpRequest->url(), '/answerCallbackQuery')
+        && $httpRequest['callback_query_id'] === 'callback-invalid-day'
+    );
+});
+
+it('denies an unlinked Telegram reviewer without mutating a day-off request', function () {
+    Http::fake(fn () => Http::response(['ok' => true]));
+
+    $employee = \App\Models\User::create([
+        'name' => 'Cleaner', 'telegram_id' => '456', 'status' => 'approved', 'role' => 'cleaner', 'is_active' => true,
+    ]);
+    $request = \App\Models\DayOffRequest::create([
+        'user_id' => $employee->id, 'reason' => 'Нужен выходной', 'status' => 'pending',
+    ]);
+    $day = \App\Models\DayOffRequestDay::create([
+        'day_off_request_id' => $request->id, 'user_id' => $employee->id, 'date' => '2026-08-25', 'status' => 'pending',
+    ]);
+
+    $this->postJson('/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-unauthorized-day',
+            'data' => 'dayoffday:approve:'.$day->id,
+            'from' => ['id' => 999],
+            'message' => ['message_id' => 45, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ])->assertOk()->assertJson(['skipped' => 'reviewer_not_allowed']);
+
+    expect($day->refresh()->status)->toBe('pending')
+        ->and($request->refresh()->status)->toBe('pending');
+    Http::assertSent(fn (ClientRequest $httpRequest): bool =>
+        str_ends_with($httpRequest->url(), '/answerCallbackQuery')
+        && $httpRequest['callback_query_id'] === 'callback-unauthorized-day'
+        && $httpRequest['text'] === 'Недостаточно прав'
+    );
+});
+
+it('answers technical callback failures without exposing exceptions or retrying the webhook', function () {
+    Http::fake(fn () => Http::response(['ok' => true]));
+    \Illuminate\Support\Facades\Schema::drop('day_off_request_days');
+
+    $response = $this->postJson('/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-storage-failure',
+            'data' => 'dayoffday:approve:7',
+            'from' => ['id' => 123],
+            'message' => ['message_id' => 43, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ]);
+
+    $response->assertOk()->assertJson(['ok' => true, 'handled' => false]);
+    expect($response->getContent())->not->toContain('SQLSTATE');
+    Http::assertSent(fn (ClientRequest $httpRequest): bool =>
+        str_ends_with($httpRequest->url(), '/answerCallbackQuery')
+        && $httpRequest['callback_query_id'] === 'callback-storage-failure'
+        && str_contains($httpRequest['text'], 'Попробуйте ещё раз')
+    );
+});
+
+it('keeps a committed day-off decision when Telegram cannot edit the original message', function () {
+    Queue::fake();
+    Http::fake(fn () => Http::response(['ok' => false, 'description' => 'simulated edit failure'], 400));
+
+    $reviewer = \App\Models\User::create([
+        'name' => 'Supervisor', 'telegram_id' => '123', 'status' => 'approved', 'role' => 'supervisor', 'is_active' => true,
+    ]);
+    $employee = \App\Models\User::create([
+        'name' => 'Cleaner', 'telegram_id' => '456', 'status' => 'approved', 'role' => 'cleaner', 'is_active' => true,
+    ]);
+    $request = \App\Models\DayOffRequest::create([
+        'user_id' => $employee->id, 'reason' => 'Нужен выходной', 'status' => 'pending',
+    ]);
+    $day = \App\Models\DayOffRequestDay::create([
+        'day_off_request_id' => $request->id, 'user_id' => $employee->id, 'date' => '2026-08-26', 'status' => 'pending',
+    ]);
+
+    $this->postJson('/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-edit-failure',
+            'data' => 'dayoffday:approve:'.$day->id,
+            'from' => ['id' => (int) $reviewer->telegram_id],
+            'message' => ['message_id' => 44, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ])->assertOk();
+
+    expect($day->refresh()->status)->toBe('approved')
+        ->and($request->refresh()->status)->toBe('approved');
 });

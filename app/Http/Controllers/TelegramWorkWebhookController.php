@@ -136,7 +136,7 @@ class TelegramWorkWebhookController extends Controller
 
     private function handleCallbackQuery(array $callbackQuery)
     {
-        $data = $callbackQuery['data'] ?? '';
+        $data = is_string($callbackQuery['data'] ?? null) ? $callbackQuery['data'] : '';
         $this->callbackStartedAt = hrtime(true);
 
         $parts = explode(':', $data, 3);
@@ -155,23 +155,27 @@ class TelegramWorkWebhookController extends Controller
                 return $this->handleDayOffDayCallback($callbackQuery);
             }
         } catch (\Throwable $e) {
+            $this->answerCallback($callbackQuery, 'Не удалось обработать действие. Попробуйте ещё раз.');
             Log::error('Telegram callback handler failed', [
                 'callback_received' => true,
                 'callback_type' => $parts[0] ?? 'unknown',
                 'callback_action' => $parts[1] ?? 'unknown',
+                'callback_target_id' => is_numeric($parts[2] ?? null) ? (int) $parts[2] : null,
                 'telegram_user_found' => null,
                 'application_found' => null,
                 'authorization_passed' => null,
                 'handler_result' => 'error',
+                'exception' => class_basename($e),
                 'duration_ms' => round((hrtime(true) - $this->callbackStartedAt) / 1_000_000, 2),
             ]);
 
-            return response()->json(['ok' => false], 500);
+            return response()->json(['ok' => true, 'handled' => false]);
         } finally {
             $this->callbackStartedAt = null;
         }
 
         $this->logCallbackEvent($data, null, null, null, 'unknown_callback');
+        $this->answerCallback($callbackQuery, 'Это действие больше недоступно.');
 
         return response()->json([
             'ok' => true,
@@ -186,6 +190,7 @@ class TelegramWorkWebhookController extends Controller
 
         if (count($parts) !== 3) {
             $this->logCallbackEvent($data, null, false, false, 'bad_callback_data');
+            $this->answerCallback($callbackQuery, 'Некорректная кнопка.');
 
             return response()->json(['ok' => true, 'skipped' => 'bad_callback_data']);
         }
@@ -324,6 +329,7 @@ class TelegramWorkWebhookController extends Controller
 
         if (count($parts) !== 3) {
             $this->logCallbackEvent($data, null, false, false, 'bad_dayoffday_callback');
+            $this->answerCallback($callbackQuery, 'Некорректная кнопка заявки.');
 
             return response()->json(['ok' => true, 'skipped' => 'bad_dayoffday_callback']);
         }
@@ -698,12 +704,24 @@ private function editDayOffRequestMessage(
         }
 
         try {
-            Http::timeout(2)
+            $response = Http::timeout(2)
                 ->connectTimeout(1)
                 ->post($this->telegramApiUrl('answerCallbackQuery'), [
                     'callback_query_id' => $callbackQueryId,
                     'text' => $text,
                 ]);
+
+            if (! $response->successful() || data_get($response->json(), 'ok') === false) {
+                $parts = explode(':', (string) ($callbackQuery['data'] ?? ''), 3);
+
+                Log::warning('Telegram callback answer rejected', [
+                    'callback_received' => true,
+                    'callback_type' => $parts[0] ?? 'unknown',
+                    'callback_action' => $parts[1] ?? 'unknown',
+                    'handler_result' => 'answer_failed',
+                    'http_status' => $response->status(),
+                ]);
+            }
         } catch (\Throwable $e) {
             $parts = explode(':', (string) ($callbackQuery['data'] ?? ''), 3);
 
