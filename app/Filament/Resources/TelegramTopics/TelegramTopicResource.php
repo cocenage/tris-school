@@ -4,7 +4,6 @@ namespace App\Filament\Resources\TelegramTopics;
 
 use App\Filament\Resources\TelegramTopics\Pages\EditTelegramTopic;
 use App\Filament\Resources\TelegramTopics\Pages\ListTelegramTopics;
-use App\Models\Apartment;
 use App\Models\TelegramTopic;
 use App\Services\Telegram\TelegramTopicPresenter;
 use BackedEnum;
@@ -58,7 +57,7 @@ class TelegramTopicResource extends Resource
 
             Select::make('apartment_id')
                 ->label('Квартира')
-                ->options(fn (): array => Apartment::query()->orderBy('name')->pluck('name', 'id')->all())
+                ->options(fn (): array => app(TelegramTopicPresenter::class)->apartmentOptions())
                 ->searchable()
                 ->placeholder('Без квартиры (дежурный / служебный topic)')
                 ->helperText(fn (?TelegramTopic $record): ?string => $record && app(TelegramTopicPresenter::class)->isServiceTopic($record)
@@ -98,12 +97,12 @@ class TelegramTopicResource extends Resource
                 'recentMessages',
             ]))
             ->groups([
-                Group::make('chat.title')
+                Group::make('telegram_chat_id')
                     ->label('Район / Telegram chat')
                     ->getTitleFromRecordUsing(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->chatLabel($record->chat))
                     ->collapsible(),
             ])
-            ->defaultGroup('chat.title')
+            ->defaultGroup('telegram_chat_id')
             ->defaultSort('telegram_thread_id')
             ->columns([
                 TextColumn::make('chat.title')
@@ -131,12 +130,11 @@ class TelegramTopicResource extends Resource
                 TextColumn::make('telegram_thread_id')
                     ->label('Thread ID')
                     ->searchable()
-                    ->sortable()
-                    ->toggleable(isToggledHiddenByDefault: true),
+                    ->sortable(),
 
                 SelectColumn::make('apartment_id')
                     ->label('Квартира')
-                    ->options(fn (): array => Apartment::query()->orderBy('name')->pluck('name', 'id')->all())
+                    ->options(fn (): array => app(TelegramTopicPresenter::class)->apartmentOptions())
                     ->searchableOptions()
                     ->native(false)
                     ->placeholder('Без квартиры'),
@@ -183,12 +181,24 @@ class TelegramTopicResource extends Resource
                     ->searchable(),
 
                 TernaryFilter::make('without_apartment')
-                    ->label('Квартира')
+                    ->label('Без квартиры')
                     ->placeholder('Все topics')
-                    ->trueLabel('Только без квартиры')
-                    ->falseLabel('Только с квартирой')
+                    ->trueLabel('Без квартиры')
+                    ->falseLabel('С квартирой')
                     ->queries(
                         true: fn (Builder $query): Builder => $query->whereNull('apartment_id'),
+                        false: fn (Builder $query): Builder => $query->whereNotNull('apartment_id'),
+                        blank: fn (Builder $query): Builder => $query,
+                    ),
+
+                TernaryFilter::make('unmapped_apartment_candidates')
+                    ->label('Квартирные без привязки')
+                    ->placeholder('Все topics')
+                    ->trueLabel('Квартирные без привязки')
+                    ->falseLabel('С квартирой')
+                    ->queries(
+                        true: fn (Builder $query): Builder => app(TelegramTopicPresenter::class)
+                            ->scopeUnmappedApartmentCandidates($query),
                         false: fn (Builder $query): Builder => $query->whereNotNull('apartment_id'),
                         blank: fn (Builder $query): Builder => $query,
                     ),

@@ -3,6 +3,7 @@
 use App\Filament\Resources\TelegramTopics\Pages\ListTelegramTopics;
 use App\Filament\Resources\TelegramTopics\TelegramTopicResource;
 use App\Models\Apartment;
+use App\Models\TelegramTopic;
 use App\Services\Telegram\TelegramTopicPresenter;
 use Filament\Tables\Columns\SelectColumn;
 use Filament\Tables\Table;
@@ -19,6 +20,8 @@ beforeEach(function () {
     Schema::create('apartments', function (Blueprint $table): void {
         $table->id();
         $table->string('name');
+        $table->string('code')->nullable();
+        $table->string('address')->nullable();
         $table->timestamps();
     });
 
@@ -95,8 +98,8 @@ it('distinguishes duty and service topics without requiring an apartment', funct
         ->and($presenter->mappingLabel($ordinary))->toBe('Квартира не назначена');
 });
 
-it('configures chat grouping filters inline mapping and Telegram action', function () {
-    Apartment::create(['name' => 'Via X']);
+it('configures chat grouping, explicit apartment filters, searchable mapping, and Telegram action', function () {
+    Apartment::create(['name' => 'Via X', 'code' => 'VX-1', 'address' => 'Milan']);
     TelegramOperationalTestDatabase::message('Контекст');
 
     $table = TelegramTopicResource::table(Table::make(new ListTelegramTopics));
@@ -104,14 +107,44 @@ it('configures chat grouping filters inline mapping and Telegram action', functi
     $filters = $table->getFilters();
     $actions = collect($table->getRecordActions())->map->getName()->all();
 
-    expect(array_keys($table->getGroups()))->toBe(['chat.title'])
-        ->and($table->getDefaultGroup()?->getId())->toBe('chat.title')
-        ->and(array_keys($filters))->toContain('telegram_chat_id', 'without_apartment')
+    expect(array_keys($table->getGroups()))->toBe(['telegram_chat_id'])
+        ->and($table->getDefaultGroup()?->getId())->toBe('telegram_chat_id')
+        ->and(array_keys($filters))->toContain('telegram_chat_id', 'without_apartment', 'unmapped_apartment_candidates')
         ->and($columns['apartment_id'])->toBeInstanceOf(SelectColumn::class)
         ->and($columns['apartment_id']->areOptionsSearchable())->toBeTrue()
-        ->and($columns['apartment_id']->getOptions())->toBe([1 => 'Via X'])
+        ->and($columns['apartment_id']->getOptions())->toBe([1 => 'Via X — VX-1 · Milan'])
         ->and($actions)->toContain('open_telegram', 'edit')
         ->and(app(TelegramTopicPresenter::class)->chatOptions())->toBe([
             DB::connection('analytics')->table('telegram_chats')->value('id') => 'Navigli',
         ]);
+});
+
+it('filters unmapped apartment candidates while excluding existing service and duty topics', function () {
+    $apartment = Apartment::create(['name' => 'Via Candidate']);
+    $mapped = TelegramOperationalTestDatabase::message('Mapped topic', messageId: '1', threadId: '97');
+    $mapped->topic->update(['apartment_id' => $apartment->id]);
+    TelegramOperationalTestDatabase::message('Unmapped apartment topic', messageId: '2', threadId: '96');
+    $duty = TelegramOperationalTestDatabase::message('Duty', messageId: '3', threadId: '99')->topic;
+    $service = TelegramOperationalTestDatabase::message('Mobility service', messageId: '4', threadId: '95')->topic;
+    $service->update(['purpose' => 'mobility']);
+
+    $candidateThreads = app(TelegramTopicPresenter::class)
+        ->scopeUnmappedApartmentCandidates(TelegramTopic::query())
+        ->orderBy('telegram_thread_id')
+        ->pluck('telegram_thread_id')
+        ->all();
+
+    expect($candidateThreads)->toBe(['96'])
+        ->and($duty->fresh()->apartment_id)->toBeNull()
+        ->and($service->fresh()->apartment_id)->toBeNull();
+});
+
+it('does not assign an apartment when a topic title happens to match an apartment name', function () {
+    $apartment = Apartment::create(['name' => 'Via Savona 12']);
+    $topic = TelegramOperationalTestDatabase::message('Operational message', messageId: '5')->topic;
+    $topic->update(['title' => 'Via Savona 12']);
+
+    expect($topic->fresh()->apartment_id)->toBeNull()
+        ->and(app(TelegramTopicPresenter::class)->apartmentOptions())
+        ->toBe([$apartment->id => 'Via Savona 12']);
 });
