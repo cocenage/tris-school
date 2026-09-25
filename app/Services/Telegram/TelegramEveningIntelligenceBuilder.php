@@ -107,7 +107,7 @@ class TelegramEveningIntelligenceBuilder
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
                     ->where('occurred_at', '<=', $cutoff)
-                    ->with('observation.message.telegramUser')
+                    ->with('observation.message.telegramUser.linkedUser')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
             ])
@@ -122,6 +122,11 @@ class TelegramEveningIntelligenceBuilder
             ->values();
         $items = $projected
             ->filter(fn (array $item) => $this->shouldInclude($item))
+            ->map(function (array $item): array {
+                unset($item['_citation_candidates']);
+
+                return $item;
+            })
             ->values()
             ->all();
         $this->sortItems($items);
@@ -143,7 +148,11 @@ class TelegramEveningIntelligenceBuilder
                 'label' => $district['label'] ?? null,
                 'source_chat_id' => $district['chat_id'] ?? null,
             ],
-            'events' => $editorialItems->all(),
+            'events' => $editorialItems->map(function (array $item): array {
+                unset($item['_citation_candidates']);
+
+                return $item;
+            })->all(),
             'sections' => $sections,
             'editorial_sections' => $editorialSections,
             'recurrences' => $recurrences,
@@ -354,6 +363,26 @@ class TelegramEveningIntelligenceBuilder
                 'occurred_at' => $item->occurred_at?->toIso8601String(),
             ];
         })->all();
+        $citationCandidates = $evidence->map(function (TelegramOperationalEventEvidence $item) use ($event): array {
+            $message = $item->observation->message;
+            $sourceText = trim((string) ($message->text ?? ''));
+
+            if ($sourceText === '') {
+                $sourceText = trim((string) ($message->caption ?? ''));
+            }
+
+            return [
+                'message_id' => $message->id,
+                'is_root' => (int) $message->id === (int) $event->root_message_id,
+                'role' => $item->role,
+                'transition' => $item->transition,
+                'occurred_at' => $item->occurred_at?->toIso8601String(),
+                'text' => $sourceText !== '' ? $this->compact($sourceText, 1000) : null,
+                'author_name' => filled($message->telegramUser?->linkedUser?->name)
+                    ? $this->compact((string) $message->telegramUser->linkedUser->name, 80)
+                    : null,
+            ];
+        })->all();
         $reportCount = $evidence
             ->whereIn('role', ['report', 'recurrence'])
             ->count();
@@ -402,6 +431,7 @@ class TelegramEveningIntelligenceBuilder
             'open_age_days' => $carryOver ? $this->openAgeDays($openSince, $cutoff) : null,
             'latest_activity_at' => $evidence->last()->occurred_at?->toIso8601String(),
             'evidence' => $references,
+            '_citation_candidates' => $citationCandidates,
         ];
     }
 
@@ -524,12 +554,12 @@ class TelegramEveningIntelligenceBuilder
 
                 $summary = $key === 'resolved' ? $editorial['resolution'] : $editorial['summary'];
                 if (filled($summary)) {
-                    $sections[$key]['items'][] = $this->editorialLine($item, (string) $summary);
+                    $sections[$key]['items'][] = $this->editorialLine($item, (string) $summary, $key);
                 }
             }
 
             if ($editorial['needs_attention'] && filled($editorial['next_action'])) {
-                $sections['actions']['items'][] = $this->editorialLine($item, (string) $editorial['next_action']);
+                $sections['actions']['items'][] = $this->editorialLine($item, (string) $editorial['next_action'], 'actions');
             }
         }
 
@@ -546,15 +576,84 @@ class TelegramEveningIntelligenceBuilder
         return collect($sections)->filter(fn (array $section): bool => $section['items'] !== [])->values()->all();
     }
 
-    /** @return array{event_key: string, context_label: ?string, summary: string, evidence: array<int, array<string, mixed>>} */
-    private function editorialLine(array $item, string $summary): array
+    /** @return array<string, mixed> */
+    private function editorialLine(array $item, string $summary, string $section): array
     {
+        $support = $section === 'actions' ? null : $this->primarySupportingEvidence($item, $summary, $section);
+
         return [
             'event_key' => $item['event_key'],
             'context_label' => $item['context_label'] ?? null,
             'summary' => $summary,
             'evidence' => $item['evidence'] ?? [],
+            'author_name' => $support['author_name'] ?? null,
+            'quote' => $support['quote'] ?? null,
         ];
+    }
+
+    /** @return array{author_name: ?string, quote: string}|null */
+    private function primarySupportingEvidence(array $item, string $summary, string $section): ?array
+    {
+        $summaryTerms = collect(preg_split('/[^\pL\pN]+/u', mb_strtolower($summary)) ?: [])
+            ->filter(fn (string $term): bool => mb_strlen($term) >= 4)
+            ->reject(fn (string $term): bool => in_array($term, [
+                'обнаружена', 'обнаружен', 'проблема', 'ситуация', 'сегодня', 'сотрудник', 'сообщил',
+                'требуется', 'необходимо', 'примерно', 'сделать', 'проверить', 'устранено',
+            ], true))
+            ->unique()
+            ->values();
+        $preferredRoles = match ($section) {
+            'resolved' => ['resolution'],
+            'positive' => ['positive'],
+            default => ['report', 'recurrence', 'question'],
+        };
+        $candidates = collect($item['_citation_candidates'] ?? [])
+            ->map(function (array $candidate) use ($summaryTerms, $preferredRoles, $section): array {
+                $quote = $this->cleanEvidenceQuote((string) ($candidate['text'] ?? ''));
+                $normalizedQuote = mb_strtolower($quote);
+                $overlap = $summaryTerms->filter(fn (string $term): bool => str_contains($normalizedQuote, $term))->count();
+                $preferred = in_array($candidate['role'] ?? null, $preferredRoles, true)
+                    || ($section === 'resolved' && ($candidate['transition'] ?? null) === 'resolved');
+
+                return [
+                    ...$candidate,
+                    'quote' => $quote,
+                    'overlap' => $overlap,
+                    'preferred' => $preferred,
+                    'score' => ($preferred ? 100 : 0) + ($overlap * 10) + (($candidate['is_root'] ?? false) ? 5 : 0),
+                ];
+            })
+            ->filter(fn (array $candidate): bool => $candidate['quote'] !== ''
+                && (($candidate['overlap'] ?? 0) > 0
+                    || ($candidate['preferred'] ?? false)
+                    || ($candidate['is_root'] ?? false)))
+            ->all();
+
+        usort($candidates, fn (array $left, array $right): int =>
+            ($right['score'] <=> $left['score'])
+            ?: (($right['is_root'] ?? false) <=> ($left['is_root'] ?? false))
+            ?: strcmp((string) ($left['occurred_at'] ?? ''), (string) ($right['occurred_at'] ?? ''))
+            ?: (($left['message_id'] ?? 0) <=> ($right['message_id'] ?? 0))
+        );
+
+        if ($candidates === []) {
+            return null;
+        }
+
+        $candidate = $candidates[0];
+
+        return [
+            'author_name' => $candidate['author_name'] ?? null,
+            'quote' => mb_strimwidth($candidate['quote'], 0, 140, '…'),
+        ];
+    }
+
+    private function cleanEvidenceQuote(string $text): string
+    {
+        $text = preg_replace('/\s+/u', ' ', strip_tags($text)) ?: '';
+        $text = preg_replace('/(?<!\S)@[\pL\pN_]+/u', '', $text) ?: $text;
+
+        return trim(preg_replace('/\s+/u', ' ', $text) ?: $text);
     }
 
     private function resolutionSummary(array $item, string $summary): string

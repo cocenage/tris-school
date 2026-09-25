@@ -255,6 +255,14 @@ class TelegramDigestFormatter
 
                 if ($summary !== '') {
                     $lines[] = '• '.($context !== '' ? $context.' — ' : '').$summary;
+
+                    if ($key !== 'actions' && filled($item['author_name'] ?? null)) {
+                        $lines[] = '  👤 '.$this->value($item['author_name']);
+                    }
+
+                    if ($key !== 'actions' && filled($item['quote'] ?? null)) {
+                        $lines[] = '  💬 «'.trim((string) $item['quote']).'»';
+                    }
                 }
             }
         }
