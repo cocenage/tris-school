@@ -107,14 +107,41 @@ class TelegramEveningIntelligenceBuilder
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
                     ->where('occurred_at', '<=', $cutoff)
-                    ->with('observation.message.telegramUser.linkedUser')
+                    ->with('observation.message.telegramUser')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
             ])
             ->get();
 
+        // Telegram analytics and application users use separate connections.
+        // Reuse the assistant's existing linked-id / Telegram-id resolution read-only.
+        $telegramUsers = $events
+            ->flatMap(fn (TelegramOperationalEvent $event) => $event->evidence
+                ->map(fn (TelegramOperationalEventEvidence $evidence) => $evidence->observation?->message?->telegramUser))
+            ->filter()
+            ->unique('id')
+            ->values();
+        $linkedUserIds = $telegramUsers->pluck('linked_user_id')->filter()->unique()->values();
+        $telegramSenderIds = $telegramUsers->pluck('telegram_user_id')->filter()->unique()->values();
+        $resolvedUsers = $linkedUserIds->isEmpty() && $telegramSenderIds->isEmpty()
+            ? collect()
+            : User::query()
+                ->where(fn ($query) => $query
+                    ->whereIn('id', $linkedUserIds)
+                    ->orWhereIn('telegram_id', $telegramSenderIds))
+                ->get(['id', 'name', 'telegram_id']);
+        $linkedUserNames = $resolvedUsers->keyBy('id');
+        $telegramSenderNames = $resolvedUsers->filter(fn (User $user): bool => filled($user->telegram_id))
+            ->keyBy(fn (User $user): string => (string) $user->telegram_id);
+
         $projected = $events
-            ->map(fn (TelegramOperationalEvent $event) => $this->project($event, $start, $cutoff))
+            ->map(fn (TelegramOperationalEvent $event) => $this->project(
+                $event,
+                $start,
+                $cutoff,
+                $linkedUserNames,
+                $telegramSenderNames,
+            ))
             ->filter()
             ->values();
         $editorialItems = $projected
@@ -303,7 +330,13 @@ class TelegramEveningIntelligenceBuilder
         return null;
     }
 
-    private function project(TelegramOperationalEvent $event, Carbon $start, Carbon $cutoff): ?array
+    private function project(
+        TelegramOperationalEvent $event,
+        Carbon $start,
+        Carbon $cutoff,
+        Collection $linkedUserNames,
+        Collection $telegramSenderNames,
+    ): ?array
     {
         /** @var Collection<int, TelegramOperationalEventEvidence> $evidence */
         $evidence = $event->evidence
@@ -363,13 +396,17 @@ class TelegramEveningIntelligenceBuilder
                 'occurred_at' => $item->occurred_at?->toIso8601String(),
             ];
         })->all();
-        $citationCandidates = $evidence->map(function (TelegramOperationalEventEvidence $item) use ($event): array {
+        $citationCandidates = $evidence->map(function (TelegramOperationalEventEvidence $item) use ($event, $linkedUserNames, $telegramSenderNames): array {
             $message = $item->observation->message;
+            $telegramUser = $message->telegramUser;
             $sourceText = trim((string) ($message->text ?? ''));
 
             if ($sourceText === '') {
                 $sourceText = trim((string) ($message->caption ?? ''));
             }
+
+            $linkedUser = $linkedUserNames->get($telegramUser?->linked_user_id)
+                ?? $telegramSenderNames->get((string) ($telegramUser?->telegram_user_id ?? ''));
 
             return [
                 'message_id' => $message->id,
@@ -378,8 +415,8 @@ class TelegramEveningIntelligenceBuilder
                 'transition' => $item->transition,
                 'occurred_at' => $item->occurred_at?->toIso8601String(),
                 'text' => $sourceText !== '' ? $this->compact($sourceText, 1000) : null,
-                'author_name' => filled($message->telegramUser?->linkedUser?->name)
-                    ? $this->compact((string) $message->telegramUser->linkedUser->name, 80)
+                'author_name' => filled($linkedUser?->name)
+                    ? $this->compact((string) $linkedUser->name, 80)
                     : null,
             ];
         })->all();
@@ -594,12 +631,7 @@ class TelegramEveningIntelligenceBuilder
     /** @return array{author_name: ?string, quote: string}|null */
     private function primarySupportingEvidence(array $item, string $summary, string $section): ?array
     {
-        $summaryTerms = collect(preg_split('/[^\pL\pN]+/u', mb_strtolower($summary)) ?: [])
-            ->filter(fn (string $term): bool => mb_strlen($term) >= 4)
-            ->reject(fn (string $term): bool => in_array($term, [
-                'обнаружена', 'обнаружен', 'проблема', 'ситуация', 'сегодня', 'сотрудник', 'сообщил',
-                'требуется', 'необходимо', 'примерно', 'сделать', 'проверить', 'устранено',
-            ], true))
+        $summaryTerms = $this->evidenceTerms($summary)
             ->unique()
             ->values();
         $preferredRoles = match ($section) {
@@ -610,8 +642,7 @@ class TelegramEveningIntelligenceBuilder
         $candidates = collect($item['_citation_candidates'] ?? [])
             ->map(function (array $candidate) use ($summaryTerms, $preferredRoles, $section): array {
                 $quote = $this->cleanEvidenceQuote((string) ($candidate['text'] ?? ''));
-                $normalizedQuote = mb_strtolower($quote);
-                $overlap = $summaryTerms->filter(fn (string $term): bool => str_contains($normalizedQuote, $term))->count();
+                $overlap = $summaryTerms->intersect($this->evidenceTerms($quote))->count();
                 $preferred = in_array($candidate['role'] ?? null, $preferredRoles, true)
                     || ($section === 'resolved' && ($candidate['transition'] ?? null) === 'resolved');
 
@@ -620,13 +651,11 @@ class TelegramEveningIntelligenceBuilder
                     'quote' => $quote,
                     'overlap' => $overlap,
                     'preferred' => $preferred,
-                    'score' => ($preferred ? 100 : 0) + ($overlap * 10) + (($candidate['is_root'] ?? false) ? 5 : 0),
+                    'score' => ($overlap * 10) + (($candidate['is_root'] ?? false) ? 2 : 0) + ($preferred ? 1 : 0),
                 ];
             })
-            ->filter(fn (array $candidate): bool => $candidate['quote'] !== ''
-                && (($candidate['overlap'] ?? 0) > 0
-                    || ($candidate['preferred'] ?? false)
-                    || ($candidate['is_root'] ?? false)))
+            // Role and root status may break ties, but never make unrelated text eligible.
+            ->filter(fn (array $candidate): bool => $candidate['quote'] !== '' && ($candidate['overlap'] ?? 0) > 0)
             ->all();
 
         usort($candidates, fn (array $left, array $right): int =>
@@ -654,6 +683,30 @@ class TelegramEveningIntelligenceBuilder
         $text = preg_replace('/(?<!\S)@[\pL\pN_]+/u', '', $text) ?: $text;
 
         return trim(preg_replace('/\s+/u', ' ', $text) ?: $text);
+    }
+
+    /** @return Collection<int, string> */
+    private function evidenceTerms(string $text): Collection
+    {
+        $genericPrefixes = ['обнар', 'проб', 'ситу', 'сегод', 'сотр', 'сообщ', 'треб', 'необх', 'пример', 'сдел', 'пров', 'устра', 'уточн', 'слом'];
+        $suffixes = ['иями', 'ями', 'ами', 'ого', 'ему', 'ыми', 'ими', 'ее', 'ие', 'ые', 'ое', 'ей', 'ой', 'ий', 'ый', 'ая', 'яя', 'ую', 'юю', 'ам', 'ям', 'ах', 'ях', 'ов', 'ев', 'ом', 'ем', 'а', 'я', 'ы', 'и', 'е', 'у', 'ю', 'ь'];
+
+        return collect(preg_split('/[^\pL\pN]+/u', mb_strtolower($text)) ?: [])
+            ->filter(fn (string $term): bool => mb_strlen($term) >= 4 || preg_match('/^\d{3,}$/u', $term) === 1)
+            ->map(function (string $term) use ($suffixes): string {
+                foreach ($suffixes as $suffix) {
+                    if (mb_strlen($term) - mb_strlen($suffix) >= 3 && str_ends_with($term, $suffix)) {
+                        return mb_substr($term, 0, mb_strlen($term) - mb_strlen($suffix));
+                    }
+                }
+
+                return $term;
+            })
+            ->reject(fn (string $term): bool => collect($genericPrefixes)->contains(
+                fn (string $prefix): bool => str_starts_with($term, $prefix)
+            ))
+            ->unique()
+            ->values();
     }
 
     private function resolutionSummary(array $item, string $summary): string

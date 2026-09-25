@@ -19,6 +19,7 @@ beforeEach(function () {
     Schema::create('users', function (Blueprint $table): void {
         $table->id();
         $table->string('name');
+        $table->string('telegram_id')->nullable();
         $table->timestamps();
     });
     Schema::create('apartments', function (Blueprint $table): void {
@@ -188,7 +189,7 @@ it('quotes linked evidence without guessing an author from an unlinked Telegram 
     expect($text)
         ->toContain('У вытяжки не работает свет.')
         ->toContain('💬 «У вытяжки не работает свет.»')
-        ->not->toContain('👤 Worker 101');
+        ->not->toContain('👤');
 });
 
 it('keeps the normalized summary but omits author and quote when the linked source has no usable text', function () {
@@ -281,4 +282,103 @@ it('identifies the reporter without attributing a reported colleague action to t
         ->toContain('👤 Мария')
         ->toContain('💬 «Анна помогла коллеге решить проблему с доступом.»')
         ->not->toContain('👤 Анна');
+});
+
+it('renders the linked TRIS user for the exact evidence message selected as the quote', function () {
+    $employeeId = DB::table('users')->insertGetId([
+        'name' => 'Мария Иванова', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+    $message = TelegramOperationalTestDatabase::message('У вытяжки не работает свет.', messageId: '807');
+    $message->telegramUser->update(['linked_user_id' => $employeeId]);
+    app(TelegramOperationalEventObserver::class)->observe($message);
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence(
+        app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17'),
+    );
+
+    expect($text)
+        ->toContain('У вытяжки не работает свет.')
+        ->toContain('👤 Мария Иванова')
+        ->toContain('💬 «У вытяжки не работает свет.»');
+});
+
+it('uses the existing Telegram ID account match read-only when linked_user_id is not populated', function () {
+    DB::table('users')->insert([
+        'name' => 'Елена', 'telegram_id' => '811', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+    $message = TelegramOperationalTestDatabase::message(
+        'У вытяжки не работает свет.', messageId: '811', userId: '811',
+    );
+    app(TelegramOperationalEventObserver::class)->observe($message);
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence(
+        app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17'),
+    );
+
+    expect($text)
+        ->toContain('👤 Елена')
+        ->toContain('💬 «У вытяжки не работает свет.»')
+        ->and($message->telegramUser->fresh()->linked_user_id)->toBeNull();
+});
+
+it('selects evidence about the same object and omits evidence about another object', function () {
+    $employeeId = DB::table('users')->insertGetId([
+        'name' => 'Мария', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+    $root = TelegramOperationalTestDatabase::message('Очки сломаны, выбрасывать?', messageId: '808');
+    $root->telegramUser->update(['linked_user_id' => $employeeId]);
+    app(TelegramOperationalEventObserver::class)->observe($root);
+    $event = TelegramOperationalEvent::query()->firstOrFail();
+
+    $unrelated = TelegramOperationalTestDatabase::message(
+        'У тумбочки сломалась ножка.', sentAt: '2026-06-17 08:10:00', messageId: '809',
+    );
+    $observation = TelegramOperationalObservation::query()->create([
+        'telegram_message_id' => $unrelated->id,
+        'source_revision_hash' => hash('sha256', 'unrelated-object-evidence'),
+        'evaluation_kind' => 'message',
+        'state' => 'completed',
+        'outcome' => 'updated',
+        'reason_code' => 'operational_problem',
+        'confidence' => 'high',
+        'is_current_revision' => true,
+        'processed_at' => now(),
+    ]);
+    $event->evidence()->create([
+        'observation_id' => $observation->id,
+        'role' => 'report',
+        'transition' => 'evidence',
+        'status_before' => 'open',
+        'status_after' => 'open',
+        'confidence' => 'high',
+        'occurred_at' => '2026-06-17 08:10:00',
+        'is_current_revision' => true,
+    ]);
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence(
+        app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17'),
+    );
+
+    expect($text)
+        ->toContain('💬 «Очки сломаны, выбрасывать?»')
+        ->toContain('👤 Мария')
+        ->not->toContain('💬 «У тумбочки сломалась ножка.»')
+        ->not->toContain('👤 Worker 101');
+});
+
+it('omits a quote when same-event evidence does not factually match the final summary', function () {
+    $message = TelegramOperationalTestDatabase::message('У тумбочки сломалась ножка.', messageId: '810');
+    app(TelegramOperationalEventObserver::class)->observe($message);
+    TelegramOperationalEvent::query()->firstOrFail()->update([
+        'summary' => 'Уточняли, что делать со сломанными очками.',
+    ]);
+
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence(
+        app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17'),
+    );
+
+    expect($text)
+        ->toContain('очк')
+        ->not->toContain('💬 «У тумбочки сломалась ножка.»')
+        ->not->toContain('💬 «');
 });
