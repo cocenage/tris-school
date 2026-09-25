@@ -27,6 +27,8 @@ beforeEach(function () {
     Schema::create('apartments', function (Blueprint $table): void {
         $table->id();
         $table->string('name');
+        $table->string('code')->nullable();
+        $table->string('address')->nullable();
         $table->timestamps();
     });
 });
@@ -145,13 +147,16 @@ it('maps apartments per topic in one district while leaving its duty topic unmap
 });
 
 it('offers only existing apartments in the searchable nullable topic editor', function () {
-    $viaX = Apartment::create(['name' => 'Via X']);
-    $viaY = Apartment::create(['name' => 'Via Y']);
+    $viaX = Apartment::create(['name' => 'Via X', 'address' => 'Via Roma 1']);
+    $viaY = Apartment::create(['name' => 'Via Y', 'code' => 'VY-2']);
     $schema = TelegramTopicResource::form(FilamentSchema::make());
     $select = collect($schema->getComponents())->first(fn ($component): bool => $component->getName() === 'apartment_id');
 
     expect($select)->toBeInstanceOf(Select::class)
-        ->and($select->getOptions())->toBe([$viaX->id => 'Via X', $viaY->id => 'Via Y'])
+        ->and($select->getOptions())->toBe([
+            $viaX->id => 'Via X — Via Roma 1',
+            $viaY->id => 'Via Y — VY-2',
+        ])
         ->and($select->isSearchable())->toBeTrue();
 });
 

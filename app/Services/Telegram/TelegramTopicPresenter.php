@@ -2,9 +2,11 @@
 
 namespace App\Services\Telegram;
 
+use App\Models\Apartment;
 use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
 use App\Models\TelegramTopic;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 
 class TelegramTopicPresenter
@@ -67,15 +69,7 @@ class TelegramTopicPresenter
         $chatId = (string) $topic->chat?->telegram_chat_id;
         $threadId = (string) $topic->telegram_thread_id;
 
-        foreach (config('services.telegram.digest_districts', []) as $route) {
-            if ((string) ($route['chat_id'] ?? '') === $chatId
-                && (string) ($route['duty_thread_id'] ?? '') === $threadId) {
-                return true;
-            }
-        }
-
-        return (string) config('services.telegram.evening_intelligence_central_chat_id') === $chatId
-            && (string) config('services.telegram.evening_intelligence_central_thread_id') === $threadId;
+        return in_array([$chatId, $threadId], $this->serviceTopicPairs(), true);
     }
 
     public function isServiceTopic(TelegramTopic $topic): bool
@@ -135,6 +129,71 @@ class TelegramTopicPresenter
             ->orderBy('title')
             ->get()
             ->mapWithKeys(fn (TelegramChat $chat): array => [$chat->id => $this->chatLabel($chat)])
+            ->all();
+    }
+
+    /** @return array<int, string> */
+    public function apartmentOptions(): array
+    {
+        return Apartment::query()
+            ->orderBy('name')
+            ->orderBy('id')
+            ->get(['id', 'name', 'code', 'address'])
+            ->mapWithKeys(function (Apartment $apartment): array {
+                $details = collect([$apartment->code, $apartment->address])
+                    ->filter(fn (mixed $value): bool => filled($value))
+                    ->unique()
+                    ->implode(' · ');
+                $label = trim((string) $apartment->name);
+
+                if ($details !== '' && ! str_contains($label, $details)) {
+                    $label .= ' — '.$details;
+                }
+
+                return [$apartment->getKey() => $label];
+            })
+            ->all();
+    }
+
+    /** Keep the UI's candidate filter aligned with the existing service-topic rules. */
+    public function scopeUnmappedApartmentCandidates(Builder $query): Builder
+    {
+        $query
+            ->whereNull('apartment_id')
+            ->where(fn (Builder $purpose): Builder => $purpose
+                ->whereNull('purpose')
+                ->orWhereRaw("TRIM(purpose) = ''"));
+
+        foreach ($this->serviceTopicPairs() as [$chatId, $threadId]) {
+            if ($chatId === '' || $threadId === '') {
+                continue;
+            }
+
+            $query->where(function (Builder $candidate) use ($chatId, $threadId): void {
+                $candidate
+                    ->where('telegram_thread_id', '!=', $threadId)
+                    ->orWhereDoesntHave('chat', fn (Builder $chat): Builder => $chat
+                        ->where('telegram_chat_id', $chatId));
+            });
+        }
+
+        return $query;
+    }
+
+    /** @return array<int, array{0: string, 1: string}> */
+    private function serviceTopicPairs(): array
+    {
+        return collect(config('services.telegram.digest_districts', []))
+            ->map(fn (mixed $route): array => [
+                (string) (is_array($route) ? ($route['chat_id'] ?? '') : ''),
+                (string) (is_array($route) ? ($route['duty_thread_id'] ?? '') : ''),
+            ])
+            ->push([
+                (string) config('services.telegram.evening_intelligence_central_chat_id'),
+                (string) config('services.telegram.evening_intelligence_central_thread_id'),
+            ])
+            ->unique(fn (array $pair): string => implode('|', $pair))
+            ->values()
             ->all();
     }
 }
