@@ -57,11 +57,17 @@ class TelegramOiLogicAuditCommand extends Command
             // This is the same projection used by the existing evening preview.
             $preview = $builder->build($date, ['district' => $district]);
             $audit = $this->audit($preview, $date, $topics);
-        } catch (Throwable) {
-            $this->error('Operational Intelligence audit could not read the ledger and Telegram context.');
+} catch (Throwable $e) {
+    report($e);
 
-            return self::FAILURE;
-        }
+    $this->error('Operational Intelligence audit could not read the ledger and Telegram context.');
+
+    if ($this->getOutput()->isVerbose()) {
+        $this->line($e::class.': '.$e->getMessage());
+    }
+
+    return self::FAILURE;
+}
 
         if ($this->option('json')) {
             $this->line(json_encode(
