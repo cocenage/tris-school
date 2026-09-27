@@ -177,7 +177,7 @@ class TelegramOiLogicAuditCommand extends Command
             ->groupBy('event_key');
         $linkedNames = $this->linkedUserNames($events->values());
 
-        $audited = $items->map(function (array $item) use ($events, $sectionItems, $linkedNames): array {
+$audited = $items->map(function (array $item) use ($events, $sectionItems, $linkedNames, $topics): array {
             /** @var TelegramOperationalEvent|null $event */
             $event = $events->get($item['event_key'] ?? '');
 
