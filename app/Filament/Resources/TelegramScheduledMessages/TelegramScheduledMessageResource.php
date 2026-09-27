@@ -5,9 +5,8 @@ namespace App\Filament\Resources\TelegramScheduledMessages;
 use App\Filament\Resources\TelegramScheduledMessages\Pages\CreateTelegramScheduledMessage;
 use App\Filament\Resources\TelegramScheduledMessages\Pages\EditTelegramScheduledMessage;
 use App\Filament\Resources\TelegramScheduledMessages\Pages\ListTelegramScheduledMessages;
-use App\Models\TelegramChat;
 use App\Models\TelegramScheduledMessage;
-use App\Models\TelegramTopic;
+use App\Services\Telegram\TelegramDestinationCatalog;
 use BackedEnum;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
@@ -59,14 +58,8 @@ class TelegramScheduledMessageResource extends Resource
 
             Select::make('telegram_chat_record_id')
                 ->label('Telegram чат')
-                ->options(fn (): array => TelegramChat::query()
-                    ->where('is_enabled', true)
-                    ->orderBy('title')
-                    ->get(['id', 'title', 'telegram_chat_id'])
-                    ->mapWithKeys(fn (TelegramChat $chat): array => [
-                        $chat->getKey() => trim((string) $chat->title) ?: (string) $chat->telegram_chat_id,
-                    ])
-                    ->all())
+                ->options(fn (?TelegramScheduledMessage $record): array => app(TelegramDestinationCatalog::class)
+                    ->chatOptions($record?->telegram_chat_record_id))
                 ->searchable()
                 ->native(false)
                 ->live()
@@ -75,17 +68,13 @@ class TelegramScheduledMessageResource extends Resource
 
             Select::make('telegram_topic_record_id')
                 ->label('Telegram тема / топик')
-                ->options(fn (Get $get): array => filled($get('telegram_chat_record_id'))
-                    ? TelegramTopic::query()
-                        ->where('telegram_chat_id', $get('telegram_chat_record_id'))
-                        ->where('is_enabled', true)
-                        ->orderBy('telegram_thread_id')
-                        ->get(['id', 'title', 'telegram_thread_id'])
-                        ->mapWithKeys(fn (TelegramTopic $topic): array => [
-                            $topic->getKey() => trim((string) $topic->title) ?: 'Тема #'.$topic->telegram_thread_id,
-                        ])
-                        ->all()
-                    : [])
+                ->options(fn (Get $get, ?TelegramScheduledMessage $record): array => app(TelegramDestinationCatalog::class)
+                    ->topicOptions(
+                        filled($get('telegram_chat_record_id')) ? (int) $get('telegram_chat_record_id') : null,
+                        $record !== null && (int) $record->telegram_chat_record_id === (int) $get('telegram_chat_record_id')
+                            ? (int) $record->telegram_topic_record_id
+                            : null,
+                    ))
                 ->searchable()
                 ->native(false)
                 ->placeholder('Весь чат, без темы')
