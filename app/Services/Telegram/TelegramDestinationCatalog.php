@@ -12,10 +12,12 @@ class TelegramDestinationCatalog
     {
         $chats = TelegramChat::query()
             ->where(function ($query) use ($preserveChatId): void {
-                $query->where('is_enabled', true)->whereNotNull('telegram_chat_id')->where('telegram_chat_id', '!=', '');
+                $query->where('is_enabled', true)
+                    ->whereNotNull('telegram_chat_id')
+                    ->where('telegram_chat_id', '!=', '');
 
                 if ($preserveChatId !== null) {
-                    $query->orWhereKey($preserveChatId);
+                    $query->orWhere('id', $preserveChatId);
                 }
             })
             ->orderBy('title')
@@ -43,13 +45,15 @@ class TelegramDestinationCatalog
             ->where('telegram_chat_id', $chatRecordId)
             ->where(function ($query) use ($chat, $preserveTopicId): void {
                 if ($chat->is_enabled && filled($chat->telegram_chat_id)) {
-                    $query->where('is_enabled', true)->whereNotNull('telegram_thread_id')->where('telegram_thread_id', '!=', '');
+                    $query->where('is_enabled', true)
+                        ->whereNotNull('telegram_thread_id')
+                        ->where('telegram_thread_id', '!=', '');
                 } else {
                     $query->whereRaw('1 = 0');
                 }
 
                 if ($preserveTopicId !== null) {
-                    $query->orWhereKey($preserveTopicId);
+                    $query->orWhere('id', $preserveTopicId);
                 }
             })
             ->orderBy('telegram_thread_id')
