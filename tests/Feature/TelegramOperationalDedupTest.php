@@ -144,3 +144,56 @@ it('does not merge two unrelated open questions with the same broad subject', fu
         ->and(TelegramOperationalEvent::query()->withCount('evidence')->get()->pluck('evidence_count')->all())
         ->toBe([1, 1]);
 });
+
+it('keeps concrete subjects separate within one topic', function (array $texts) {
+    $observer = app(TelegramOperationalEventObserver::class);
+
+    foreach ($texts as $index => $text) {
+        $observer->observe(TelegramOperationalTestDatabase::message($text, messageId: (string) (801 + $index)));
+    }
+
+    expect(TelegramOperationalEvent::query()->count())->toBe(count($texts))
+        ->and(TelegramOperationalEvent::query()->withCount('evidence')->get()->pluck('evidence_count')->all())
+        ->toBe(array_fill(0, count($texts), 1));
+})->with([
+    'bedside table and glasses' => [[
+        'У тумбочки сломалась ножка.',
+        'Очки сломаны, выбрасывать?',
+    ]],
+    'pillowcase and duvet cover' => [[
+        'Бракованная наволочка.',
+        'Пододеяльник с браком.',
+    ]],
+    'gate and apartment door' => [[
+        'Не открываются ворота.',
+        'Не открывается дверь.',
+    ]],
+    'independent incidents' => [[
+        'Не открываются ворота.',
+        'Сломалась ножка у стула.',
+        'Не работает свет вытяжки.',
+        'Не работает переключатель душа.',
+    ]],
+]);
+
+it('does not recommend replacement or calling a master after that work is underway', function (string $problem, string $action, string $actionText) {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $root = TelegramOperationalTestDatabase::message($problem, '2026-06-17 08:00:00', '901');
+    $observer->observe($root);
+    $reply = TelegramOperationalTestDatabase::message(
+        $action,
+        '2026-06-17 08:05:00',
+        '902',
+        ['message' => ['reply_to_message' => ['message_id' => 901]]],
+    );
+    $observer->observe($reply);
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+    $item = collect($preview['events'])->first(fn (array $event): bool => str_contains($event['summary'], $actionText));
+
+    expect($item)->not->toBeNull()
+        ->and($item['editorial']['next_action'])->toBeNull()
+        ->and($item['editorial']['needs_attention'])->toBeFalse();
+})->with([
+    'replacement underway' => ['Бракованная наволочка.', 'Сейчас поменяю наволочку.', 'наволочка'],
+    'master called' => ['Переключатель не работает, должен прийти мастер.', 'Мастера вызвали.', 'переключатель'],
+]);

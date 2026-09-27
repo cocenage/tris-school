@@ -187,7 +187,12 @@ class TelegramEveningHumanComposer
         if (preg_match('/переключател/iu', $context) === 1
             && preg_match('/не\s+работает|слом/iu', $context) === 1
             && preg_match('/мастер|техник/iu', $context) === 1) {
-            return $this->result('Не работает переключатель, требуется мастер.', $isOpen ? 'Вызвать мастера для ремонта переключателя.' : null);
+            $called = preg_match('/(?:мастер\S*\s+вызвал|вызвал\S*\s+мастер\S*)/iu', $context) === 1;
+
+            return $this->result(
+                $called ? 'Не работает переключатель, мастер вызван.' : 'Не работает переключатель, требуется мастер.',
+                $isOpen && ! $called ? 'Вызвать мастера для ремонта переключателя.' : null,
+            );
         }
 
         if (preg_match('/жалюз/iu', $context) === 1
@@ -219,6 +224,7 @@ class TelegramEveningHumanComposer
 
         if ($this->isLinenDefect($context)) {
             $completed = $this->hasCompletedLinenReplacement($context);
+            $replacementHandled = $completed || preg_match('/(?:сейчас\s+)?(?:поменяю|заменю|меняю|заменяю)/iu', $context) === 1;
             $object = match (true) {
                 preg_match('/наволоч/iu', $context) === 1 => 'наволочку',
                 preg_match('/простын/iu', $context) === 1 => 'простыню',
@@ -240,7 +246,7 @@ class TelegramEveningHumanComposer
 
             return $this->result(
                 $detail,
-                $isOpen && ! $completed ? 'Заменить '.$object.'.' : null,
+                $isOpen && ! $replacementHandled ? 'Заменить '.$object.'.' : null,
                 completed: $completed,
             );
         }
