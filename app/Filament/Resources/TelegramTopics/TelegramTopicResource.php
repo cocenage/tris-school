@@ -95,7 +95,7 @@ class TelegramTopicResource extends Resource
                 'chat',
                 'apartment',
                 'recentMessages',
-            ]))
+            ])->withMax('messages as last_activity_at', 'sent_at'))
             ->groups([
                 Group::make('telegram_chat_id')
                     ->label('Район / Telegram chat')
@@ -110,6 +110,11 @@ class TelegramTopicResource extends Resource
                     ->formatStateUsing(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->chatLabel($record->chat))
                     ->searchable()
                     ->placeholder('—'),
+
+                TextColumn::make('chat.telegram_chat_id')
+                    ->label('Telegram chat ID')
+                    ->searchable()
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 TextColumn::make('title')
                     ->label('Topic')
@@ -131,6 +136,11 @@ class TelegramTopicResource extends Resource
                     ->label('Thread ID')
                     ->searchable()
                     ->sortable(),
+
+                TextColumn::make('apartment.name')
+                    ->label('Привязанная квартира')
+                    ->placeholder('Не назначена')
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 SelectColumn::make('apartment_id')
                     ->label('Квартира')
@@ -170,6 +180,19 @@ class TelegramTopicResource extends Resource
                     })
                     ->toggleable(isToggledHiddenByDefault: true),
 
+                TextColumn::make('last_activity_at')
+                    ->label('Последняя активность')
+                    ->dateTime('d.m.Y H:i')
+                    ->placeholder('Нет сообщений')
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('destination_status')
+                    ->label('Адресат отправки')
+                    ->state(fn (TelegramTopic $record): string => app(TelegramTopicPresenter::class)->destinationStatus($record))
+                    ->wrap()
+                    ->toggleable(isToggledHiddenByDefault: true),
+
                 IconColumn::make('is_enabled')
                     ->label('Активен')
                     ->boolean(),
@@ -202,6 +225,28 @@ class TelegramTopicResource extends Resource
                         false: fn (Builder $query): Builder => $query->whereNotNull('apartment_id'),
                         blank: fn (Builder $query): Builder => $query,
                     ),
+
+                SelectFilter::make('apartment_id')
+                    ->label('Квартира')
+                    ->options(fn (): array => app(TelegramTopicPresenter::class)->apartmentOptions()),
+
+                TernaryFilter::make('is_enabled')
+                    ->label('Активность в TRIS')
+                    ->trueLabel('Включённые')
+                    ->falseLabel('Отключённые'),
+
+                SelectFilter::make('topic_role')
+                    ->label('Тип темы')
+                    ->options(['apartment' => 'Квартирная', 'service' => 'Служебная / дежурная'])
+                    ->query(function (Builder $query, array $data): Builder {
+                        $presenter = app(TelegramTopicPresenter::class);
+
+                        return match ($data['value'] ?? null) {
+                            'service' => $presenter->scopeServiceTopics($query),
+                            'apartment' => $presenter->scopeApartmentTopics($query),
+                            default => $query,
+                        };
+                    }),
             ])
             ->recordActions([
                 Action::make('open_telegram')

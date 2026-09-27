@@ -1,5 +1,8 @@
 <?php
 
+use App\Filament\Resources\TelegramChats\Pages\ListTelegramChats;
+use App\Filament\Resources\TelegramChats\RelationManagers\TopicsRelationManager;
+use App\Filament\Resources\TelegramChats\TelegramChatResource;
 use App\Filament\Resources\TelegramTopics\Pages\ListTelegramTopics;
 use App\Filament\Resources\TelegramTopics\TelegramTopicResource;
 use App\Models\Apartment;
@@ -17,6 +20,11 @@ beforeEach(function () {
     DB::purge('sqlite');
 
     TelegramOperationalTestDatabase::refresh();
+    if (! Schema::connection('analytics')->hasColumn('telegram_topics', 'apartment_id')) {
+        Schema::connection('analytics')->table('telegram_topics', function (Blueprint $table): void {
+            $table->unsignedBigInteger('apartment_id')->nullable();
+        });
+    }
     Schema::create('apartments', function (Blueprint $table): void {
         $table->id();
         $table->string('name');
@@ -36,6 +44,31 @@ beforeEach(function () {
         'services.telegram.evening_intelligence_central_chat_id' => null,
         'services.telegram.evening_intelligence_central_thread_id' => null,
     ]);
+});
+
+it('shows forums with topic and apartment-mapping coverage in a chat-first inventory', function () {
+    $apartment = Apartment::create(['name' => 'Via Mapped']);
+    $mapped = TelegramOperationalTestDatabase::message('Mapped context', messageId: '91', threadId: '91');
+    $mapped->topic->update(['apartment_id' => $apartment->id]);
+    TelegramOperationalTestDatabase::message('Unmapped context', messageId: '92', threadId: '92');
+    TelegramOperationalTestDatabase::message('Duty context', messageId: '93', threadId: '99');
+    $service = TelegramOperationalTestDatabase::message('Mobility context', messageId: '94', threadId: '94');
+    $service->topic->update(['purpose' => 'mobility']);
+
+    $chat = $mapped->chat->fresh();
+    $inventory = TelegramChatResource::getEloquentQuery()->findOrFail($chat->getKey());
+    $table = TelegramChatResource::table(Table::make(new ListTelegramChats));
+
+    expect($inventory->topics_count)->toBe(4)
+        ->and($inventory->mapped_topics_count)->toBe(1)
+        ->and($inventory->unmapped_topics_count)->toBe(1)
+        ->and(array_keys(TelegramChatResource::getPages()))->toContain('index', 'view')
+        ->and(array_keys($table->getColumns()))->toContain(
+            'telegram_chat_id', 'type', 'is_enabled', 'topics_count', 'mapped_topics_count', 'unmapped_topics_count', 'last_activity_at', 'bot_access',
+        )
+        ->and(TelegramChatResource::getRelations())->toContain(TopicsRelationManager::class)
+        ->and(TelegramChatResource::canCreate())->toBeFalse()
+        ->and(TelegramChatResource::canEdit($chat))->toBeFalse();
 });
 
 afterEach(function () {
@@ -109,10 +142,13 @@ it('configures chat grouping, explicit apartment filters, searchable mapping, an
 
     expect(array_keys($table->getGroups()))->toBe(['telegram_chat_id'])
         ->and($table->getDefaultGroup()?->getId())->toBe('telegram_chat_id')
-        ->and(array_keys($filters))->toContain('telegram_chat_id', 'without_apartment', 'unmapped_apartment_candidates')
+        ->and(array_keys($filters))->toContain(
+            'telegram_chat_id', 'without_apartment', 'unmapped_apartment_candidates', 'apartment_id', 'is_enabled', 'topic_role',
+        )
         ->and($columns['apartment_id'])->toBeInstanceOf(SelectColumn::class)
         ->and($columns['apartment_id']->areOptionsSearchable())->toBeTrue()
         ->and($columns['apartment_id']->getOptions())->toBe([1 => 'Via X — VX-1 · Milan'])
+        ->and(array_keys($columns))->toContain('chat.telegram_chat_id', 'apartment.name', 'last_activity_at', 'destination_status')
         ->and($actions)->toContain('open_telegram', 'edit')
         ->and(app(TelegramTopicPresenter::class)->chatOptions())->toBe([
             DB::connection('analytics')->table('telegram_chats')->value('id') => 'Navigli',
@@ -133,8 +169,20 @@ it('filters unmapped apartment candidates while excluding existing service and d
         ->orderBy('telegram_thread_id')
         ->pluck('telegram_thread_id')
         ->all();
+    $serviceThreads = app(TelegramTopicPresenter::class)
+        ->scopeServiceTopics(TelegramTopic::query())
+        ->orderBy('telegram_thread_id')
+        ->pluck('telegram_thread_id')
+        ->all();
+    $apartmentThreads = app(TelegramTopicPresenter::class)
+        ->scopeApartmentTopics(TelegramTopic::query())
+        ->orderBy('telegram_thread_id')
+        ->pluck('telegram_thread_id')
+        ->all();
 
     expect($candidateThreads)->toBe(['96'])
+        ->and($serviceThreads)->toBe(['95', '99'])
+        ->and($apartmentThreads)->toBe(['96', '97'])
         ->and($duty->fresh()->apartment_id)->toBeNull()
         ->and($service->fresh()->apartment_id)->toBeNull();
 });

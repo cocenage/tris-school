@@ -6,6 +6,7 @@ use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramTopic;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramDestinationCatalog;
 use Carbon\Carbon;
 use Filament\Forms\Components\Select;
 use Filament\Schemas\Schema as FilamentSchema;
@@ -43,6 +44,7 @@ beforeEach(function (): void {
         $table->unsignedBigInteger('telegram_chat_id');
         $table->string('telegram_thread_id');
         $table->string('title')->nullable();
+        $table->unsignedBigInteger('apartment_id')->nullable();
         $table->boolean('is_enabled')->default(true);
         $table->timestamps();
     });
@@ -179,7 +181,9 @@ it('exposes searchable existing chat and topic selectors and persists the select
 
     expect($components['telegram_chat_record_id'])->toBeInstanceOf(Select::class)
         ->and($components['telegram_chat_record_id']->isSearchable())->toBeTrue()
-        ->and($components['telegram_chat_record_id']->getOptions())->toBe([$message->telegram_chat_record_id => 'Test work chat'])
+        ->and($components['telegram_chat_record_id']->getOptions())->toBe([
+            $message->telegram_chat_record_id => 'Test work chat · -100000000001',
+        ])
         ->and($components['telegram_topic_record_id'])->toBeInstanceOf(Select::class)
         ->and($components['telegram_topic_record_id']->isSearchable())->toBeTrue();
 
@@ -191,6 +195,55 @@ it('exposes searchable existing chat and topic selectors and persists the select
         ->and($reloaded->enabled)->toBeTrue()
         ->and($reloaded->telegramChat->title)->toBe('Test work chat')
         ->and($reloaded->telegramTopic->telegram_thread_id)->toBe('42');
+});
+
+it('offers enabled known chats and non-apartment topics, scoped strictly to the selected chat', function (): void {
+    $firstChat = TelegramChat::query()->create([
+        'telegram_chat_id' => '-100000000101', 'title' => 'First forum', 'type' => 'supergroup', 'is_enabled' => true,
+    ]);
+    $secondChat = TelegramChat::query()->create([
+        'telegram_chat_id' => '-100000000202', 'title' => 'Second forum', 'type' => 'supergroup', 'is_enabled' => true,
+    ]);
+    $disabledChat = TelegramChat::query()->create([
+        'telegram_chat_id' => '-100000000303', 'title' => 'Disabled forum', 'type' => 'supergroup', 'is_enabled' => false,
+    ]);
+    $apartmentless = TelegramTopic::query()->create([
+        'telegram_chat_id' => $firstChat->getKey(), 'telegram_thread_id' => '381534', 'title' => 'Duty desk', 'apartment_id' => null, 'is_enabled' => true,
+    ]);
+    TelegramTopic::query()->create([
+        'telegram_chat_id' => $secondChat->getKey(), 'telegram_thread_id' => '71', 'title' => 'Different forum topic', 'is_enabled' => true,
+    ]);
+    TelegramTopic::query()->create([
+        'telegram_chat_id' => $firstChat->getKey(), 'telegram_thread_id' => '72', 'title' => 'Disabled topic', 'is_enabled' => false,
+    ]);
+
+    $catalog = app(TelegramDestinationCatalog::class);
+    $chats = $catalog->chatOptions();
+    $topics = $catalog->topicOptions((int) $firstChat->getKey());
+    $otherChatTopic = TelegramTopic::query()->where('telegram_chat_id', $secondChat->getKey())->firstOrFail();
+
+    expect($chats)->toHaveKey($firstChat->getKey())
+        ->and($chats)->toHaveKey($secondChat->getKey())
+        ->and($chats)->not->toHaveKey($disabledChat->getKey())
+        ->and($chats[$firstChat->getKey()])->toContain('First forum', '-100000000101')
+        ->and($topics)->toBe([$apartmentless->getKey() => 'Duty desk · thread 381534'])
+        ->and($topics)->not->toHaveKey($otherChatTopic->getKey());
+});
+
+it('preserves a disabled current destination only while editing its schedule', function (): void {
+    $message = makeScheduledTelegramMessage();
+    $chat = $message->telegramChat;
+    $topic = $message->telegramTopic;
+    $chat->update(['is_enabled' => false]);
+    $topic->update(['is_enabled' => false]);
+
+    $catalog = app(TelegramDestinationCatalog::class);
+
+    expect($catalog->chatOptions())->not->toHaveKey($chat->getKey())
+        ->and($catalog->chatOptions((int) $chat->getKey()))->toHaveKey($chat->getKey())
+        ->and($catalog->topicOptions((int) $chat->getKey()))->toBe([])
+        ->and($catalog->topicOptions((int) $chat->getKey(), (int) $topic->getKey()))
+            ->toBe([$topic->getKey() => 'Test topic · thread 42 · отключена (текущий адресат)']);
 });
 
 it('registers the sender on Laravel scheduler at minute frequency', function (): void {

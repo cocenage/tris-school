@@ -132,6 +132,63 @@ class TelegramTopicPresenter
             ->all();
     }
 
+    public function destinationStatus(TelegramTopic $topic): string
+    {
+        $chat = $topic->chat;
+
+        return $chat !== null
+            && $chat->is_enabled
+            && filled($chat->telegram_chat_id)
+            && $topic->is_enabled
+            && filled($topic->telegram_thread_id)
+                ? 'Локально разрешён; доступ Bot API не проверен'
+                : 'Недоступен по локальным настройкам';
+    }
+
+    public function scopeServiceTopics(Builder $query): Builder
+    {
+        $query->where(function (Builder $service): void {
+            $service->where(function (Builder $purpose): void {
+                $purpose->whereNotNull('purpose')->whereRaw("TRIM(purpose) != ''");
+            });
+
+            foreach ($this->serviceTopicPairs() as [$chatId, $threadId]) {
+                if ($chatId === '' || $threadId === '') {
+                    continue;
+                }
+
+                $service->orWhere(function (Builder $pair) use ($chatId, $threadId): void {
+                    $pair->where('telegram_thread_id', $threadId)
+                        ->whereHas('chat', fn (Builder $chat): Builder => $chat->where('telegram_chat_id', $chatId));
+                });
+            }
+        });
+
+        return $query;
+    }
+
+    public function scopeApartmentTopics(Builder $query): Builder
+    {
+        $query->where(fn (Builder $purpose): Builder => $purpose
+            ->whereNull('purpose')
+            ->orWhereRaw("TRIM(purpose) = ''"));
+
+        foreach ($this->serviceTopicPairs() as [$chatId, $threadId]) {
+            if ($chatId === '' || $threadId === '') {
+                continue;
+            }
+
+            $query->where(function (Builder $candidate) use ($chatId, $threadId): void {
+                $candidate
+                    ->where('telegram_thread_id', '!=', $threadId)
+                    ->orWhereDoesntHave('chat', fn (Builder $chat): Builder => $chat
+                        ->where('telegram_chat_id', $chatId));
+            });
+        }
+
+        return $query;
+    }
+
     /** @return array<int, string> */
     public function apartmentOptions(): array
     {
