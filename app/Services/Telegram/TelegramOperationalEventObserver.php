@@ -188,7 +188,7 @@ class TelegramOperationalEventObserver
             'operational_event_id' => $event->id,
             'observation_id' => $observation->id,
             'role' => $decision['role'],
-            'transition' => 'created',
+            'transition' => $decision['transition'] === 'resolved' ? 'resolved' : 'created',
             'status_before' => null,
             'status_after' => $status,
             'confidence' => $decision['confidence'],
@@ -276,7 +276,7 @@ class TelegramOperationalEventObserver
                 ->get();
 
             if ($replyEvents->isNotEmpty()) {
-                return $replyEvents;
+                return $replyEvents->filter(fn (TelegramOperationalEvent $event): bool => $this->hasCompatibleSubject($event, $decision))->values();
             }
         }
 
@@ -318,16 +318,22 @@ class TelegramOperationalEventObserver
             $candidateParts = array_values(array_filter(explode('|', (string) $event->subject_key)));
             $shared = array_values(array_intersect($subjectParts, $candidateParts));
 
-            if ($shared === []) {
+            if ($shared === [] || ! $this->hasCompatibleSubject($event, $decision)) {
                 return false;
             }
 
-            $specificSubjects = ['lock', 'keys', 'payment', 'technical', 'hood_light'];
+            $specificSubjects = ['door', 'bedside_table', 'glasses', 'pillowcase', 'duvet_cover', 'gate', 'hood', 'shower_switch', 'lock', 'keys', 'payment', 'technical', 'hood_light'];
             $hasSpecificSubject = array_intersect($shared, $specificSubjects) !== [];
+            $sameAccessContinuation = $decision['role'] === 'resolution'
+                && in_array('access', $subjectParts, true)
+                && in_array('access', $candidateParts, true)
+                && ! in_array('gate', $candidateParts, true)
+                && $event->rootMessage?->telegram_user_id === $message->telegram_user_id
+                && $event->last_observed_at->gte($this->messageTime($message)->subMinutes(45));
             $hasDetailedSubject = count($shared) >= 2
                 && collect($subjectParts)->sort()->values()->all() === collect($candidateParts)->sort()->values()->all();
 
-            if (! $hasSpecificSubject && ! $hasDetailedSubject) {
+            if (! $hasSpecificSubject && ! $hasDetailedSubject && ! $sameAccessContinuation) {
                 return false;
             }
 
@@ -351,6 +357,32 @@ class TelegramOperationalEventObserver
                 || $decision['transition'] !== 'created'
                 || $event->primary_type === $decision['primary_type'];
         })->values();
+    }
+
+    private function hasCompatibleSubject(TelegramOperationalEvent $event, array $decision): bool
+    {
+        $eventParts = array_values(array_filter(explode('|', (string) $event->subject_key)));
+        $decisionParts = array_values(array_filter(explode('|', (string) ($decision['subject_key'] ?? ''))));
+        $specific = ['door', 'bedside_table', 'glasses', 'pillowcase', 'duvet_cover', 'gate', 'hood', 'hood_light', 'shower_switch'];
+        $eventSpecific = array_values(array_intersect($eventParts, $specific));
+        $decisionSpecific = array_values(array_intersect($decisionParts, $specific));
+
+        if ($eventSpecific !== [] && $decisionSpecific !== []) {
+            return array_intersect($eventSpecific, $decisionSpecific) !== [];
+        }
+
+        if ($eventParts === []) {
+            $root = $event->rootMessage;
+            $rootDecision = $this->interpreter->interpret((string) ($root?->text ?: $root?->caption ?: ''));
+            $rootParts = array_values(array_filter(explode('|', (string) ($rootDecision['subject_key'] ?? ''))));
+            $rootSpecific = array_values(array_intersect($rootParts, $specific));
+
+            if ($rootSpecific !== [] && $decisionSpecific !== []) {
+                return array_intersect($rootSpecific, $decisionSpecific) !== [];
+            }
+        }
+
+        return true;
     }
 
     private function delayContinuationDecision(TelegramMessage $message, string $text): ?array

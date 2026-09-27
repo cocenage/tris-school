@@ -260,3 +260,39 @@ it('does not treat a direct follow-up question as an answer', function () {
 
     expect($unanswered['event_types'])->toContain('unanswered_question');
 });
+
+it('resolves an access problem from a same-topic factual continuation', function (string $problem, string $answer) {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $root = TelegramOperationalTestDatabase::message($problem, '2026-06-17 08:00:00', '701');
+    $observer->observe($root);
+    $reply = TelegramOperationalTestDatabase::message($answer, '2026-06-17 08:10:00', '702');
+
+    expect($observer->observe($reply)['outcome'])->toBe('resolved')
+        ->and(TelegramOperationalEvent::query()->sole()->status)->toBe('resolved')
+        ->and(TelegramOperationalEventEvidence::query()->latest('id')->value('transition'))->toBe('resolved');
+})->with([
+    'opened after PM' => ['Дверь не открывается', 'Спасибо открыла'],
+    'entered after concierge was missing' => ['Стою здесь, консьержа нет. Не открывают.', 'Зашла, люди вышли'],
+]);
+
+it('keeps a completed replacement as a historical defect without leaving its action active', function () {
+    $message = TelegramOperationalTestDatabase::message('Бракованная наволочка, заменила.');
+    $result = app(TelegramOperationalEventObserver::class)->observe($message);
+    $event = TelegramOperationalEvent::query()->sole();
+
+    expect($result['outcome'])->toBe('resolved')
+        ->and($event->status)->toBe('resolved')
+        ->and($event->primary_type)->toBe('quality_issue');
+});
+
+it('suppresses general instructions and reassurance while retaining concrete delay and courier facts', function (string $text, string $expected) {
+    $result = app(TelegramOperationalEventObserver::class)->observe(TelegramOperationalTestDatabase::message($text));
+
+    expect($result['outcome'])->toBe($expected);
+})->with([
+    'drain procedure' => ['Вот как разбираются такие сливы: сначала снимаем решётку и чистим.', 'no_event'],
+    'photo procedure' => ['#сильныйбардак делаем 10-15 фото каждой зоны по инструкции.', 'no_event'],
+    'reassurance' => ['Да, думаю не проблема будет', 'no_event'],
+    'delay' => ['Мне 10 мин еще нужно', 'created'],
+    'courier did not take dirty linen' => ['Курьер не забрал грязное бельё', 'created'],
+]);

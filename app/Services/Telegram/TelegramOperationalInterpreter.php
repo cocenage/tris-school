@@ -29,6 +29,10 @@ class TelegramOperationalInterpreter
             return $this->noEvent('communication_connectivity_chatter', $assistant['category'], $isQuestion);
         }
 
+        if ($this->isGenericReassurance($normalized) || $this->isGeneralProcedure($normalized)) {
+            return $this->noEvent('ordinary_conversation', $assistant['category'], $isQuestion);
+        }
+
         $isUncertain = preg_match(self::UNCERTAIN_PATTERN, $normalized) === 1;
 
         $signal = $this->detectSignal($normalized, $assistant['category'], $isQuestion);
@@ -89,9 +93,21 @@ class TelegramOperationalInterpreter
             ];
         }
 
+        if (! $isQuestion
+            && preg_match('/(?:брак|дефект|поломк|поврежд|пятн|некачествен)/ui', $text) === 1
+            && preg_match('/(?:заменил[аи]?|поменял[аи]?|заменила|заменил)\b/ui', $text) === 1) {
+            return [
+                'type' => 'quality_issue',
+                'role' => 'resolution',
+                'transition' => 'resolved',
+                'reason_code' => 'quality_issue',
+                'confidence' => 'high',
+            ];
+        }
+
         $signals = [
             [
-                'pattern' => '/(исправ(?:лен|или|лено)|решен[оа]?|решили|готово|закрыли|починили|устранили|вопрос\s+закрыт|(?:открыли|нашли|заменили)\s*[.!]?\s*$)/ui',
+                'pattern' => '/(исправ(?:лен|или|лено)|решен[оа]?|решили|готово|закрыли|починили|устранили|вопрос\s+закрыт|зашла.{0,35}(?:люди|гости).{0,20}(?:вышли|ушли)|(?:открыли|открыла|открыл|зашла|зашёл|нашли|заменили|заменила|заменил)\s*[.!]?\s*$)/ui',
                 'type' => 'resolution',
                 'role' => 'resolution',
                 'transition' => 'resolved',
@@ -99,7 +115,7 @@ class TelegramOperationalInterpreter
                 'confidence' => 'high',
             ],
             [
-                'pattern' => '/(плохо\s+убран|гряз|качество|брак|недоч[её]т|некачествен|вонь|запах\s+канализац|подт[её]к|протеч|мусорин|в\s+разводах|остал(?:ись|ось)?.{0,20}развод)/ui',
+                'pattern' => '/(плохо\s+убран|гряз|качество|брак|недоч[её]т|некачествен|вонь|запах\s+канализац|подт[её]к|протеч|мусорин|в\s+разводах|остал(?:ись|ось)?.{0,20}развод|курьер.{0,50}не\s+забрал|не\s+забрал.{0,50}(?:гряз|бель)|нет\s+замены|замены\s+нет)/ui',
                 'type' => 'quality_issue',
                 'role' => 'report',
                 'transition' => 'created',
@@ -115,7 +131,7 @@ class TelegramOperationalInterpreter
                 'confidence' => 'high',
             ],
             [
-                'pattern' => '/(уже\s+(?:проверяю|делаю|исправляю|еду|занимаюсь)|начал[аи]?|проверяем|в\s+работе|взял[аи]?\s+в\s+работу)/ui',
+                'pattern' => '/(уже\s+(?:проверяю|делаю|исправляю|еду|занимаюсь)|начал[аи]?|проверяем|в\s+работе|взял[аи]?\s+в\s+работу|(?:сейчас\s+)?(?:поменяю|заменю)|мастер(?:а)?\s+вызвали|вызвали\s+мастера)/ui',
                 'type' => 'action',
                 'role' => 'action',
                 'transition' => 'updated',
@@ -123,7 +139,7 @@ class TelegramOperationalInterpreter
                 'confidence' => 'high',
             ],
             [
-                'pattern' => '/(опозд|задерж|не\s+успе|позже|перенос)/ui',
+                'pattern' => '/(опозд|задерж|не\s+успе|позже|перенос|мне\s+(?:ещё\s+)?\d{1,3}\s*мин.{0,25}(?:нужно|надо)|нужно\s+ещё\s+\d{1,3}\s*мин)/ui',
                 'type' => 'delay',
                 'role' => 'report',
                 'transition' => 'created',
@@ -260,6 +276,17 @@ class TelegramOperationalInterpreter
         }
 
         $subjects = [
+            'access' => '/(двер|замок|консьерж|не\s+открыва|не\s+войти|не\s+впуска|зашла|зашёл|открыла|открыл)/ui',
+            'door' => '/двер/ui',
+            'bedside_table' => '/(тумбочк|прикроватн\S*\s+столик)/ui',
+            'glasses' => '/очк/ui',
+            'pillowcase' => '/наволоч/ui',
+            'duvet_cover' => '/пододеял/ui',
+            'gate' => '/ворот/ui',
+            'hood' => '/вытяж/ui',
+            'shower_switch' => '/(?:душ|ванн).{0,40}(?:переключ|выключател)|(?:переключ|выключател).{0,40}(?:душ|ванн)/ui',
+            'courier_linen' => '/курьер.{0,50}(?:гряз|бель)|(?:гряз|бель).{0,50}курьер/ui',
+            'linen' => '/(бель|простын|пододеял|наволоч|полотен)/ui',
             'lock' => '/(замок|двер)/ui',
             'keys' => '/(?<![\p{L}\p{N}_])ключ(?:и|ик(?:а|и|ом|е)?|а|ей|ом|у|ам|ами|ах)?(?![\p{L}])/ui',
             'apartment' => '/(квартир|апартамент)/ui',
@@ -285,6 +312,16 @@ class TelegramOperationalInterpreter
         }
 
         return null;
+    }
+
+    private function isGenericReassurance(string $text): bool
+    {
+        return preg_match('/^(?:да[, ]+)?(?:думаю|наверное|скорее всего)\s*,?\s*(?:не\s+проблема|проблем\S*\s+не\s+будет|всё\s+будет\s+хорошо)[.! ]*$/ui', $text) === 1;
+    }
+
+    private function isGeneralProcedure(string $text): bool
+    {
+        return preg_match('/^(?:вот\s+как\s+(?:разбираются|нужно|надо)|#сильныйбардак\b|(?:обычно|всегда)\s+(?:нужно|надо|делаем)|(?:делаем|сделайте)\s+\d{1,2}\s*[-–]\s*\d{1,2}\s*(?:фото|фотограф))/ui', $text) === 1;
     }
 
     private function hasOperationalContext(string $text): bool

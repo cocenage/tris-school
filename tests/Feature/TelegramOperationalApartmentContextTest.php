@@ -209,6 +209,27 @@ it('resolves a replied access problem with evidence and shows it as resolved ins
         ->not->toContain('Осталось на контроле:');
 });
 
+it('resolves access continuations so they no longer require apartment handoff attention', function (string $problem, string $answer) {
+    $apartment = Apartment::create(['name' => 'Via Access']);
+    $observer = app(TelegramOperationalEventObserver::class);
+    $root = TelegramOperationalTestDatabase::message($problem, '2026-06-17 08:00:00', '711');
+    $root->topic->update(['apartment_id' => $apartment->id]);
+    $observer->observe($root->fresh(['chat', 'topic', 'telegramUser', 'attachments']));
+    $reply = TelegramOperationalTestDatabase::message($answer, '2026-06-17 08:10:00', '712');
+    $observer->observe($reply);
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+    $event = collect($preview['events'])->first();
+
+    expect(TelegramOperationalEvent::query()->sole()->status)->toBe('resolved')
+        ->and($event['editorial']['needs_attention'])->toBeFalse()
+        ->and($event['editorial']['next_action'])->toBeNull()
+        ->and(collect($preview['editorial_sections'])->pluck('key'))->not->toContain('actions');
+})->with([
+    'opened after PM' => ['Дверь не открывается', 'Спасибо открыла'],
+    'entered after concierge was missing' => ['Стою здесь, консьержа нет. Не открывают.', 'Зашла, люди вышли'],
+]);
+
 it('does not close another topic with a bare resolution, but accepts a direct reply in the same topic', function () {
     $observer = app(TelegramOperationalEventObserver::class);
     $root = TelegramOperationalTestDatabase::message('Не работает замок в квартире.', messageId: '201', threadId: '11');
