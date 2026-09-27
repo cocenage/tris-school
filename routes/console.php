@@ -34,3 +34,7 @@ Schedule::command('telegram:evening-intelligence-send')
 Schedule::command('tris-mare:sync')
     ->dailyAt('20:15')
     ->timezone('Europe/Rome');
+
+Schedule::command('telegram:scheduled-messages-send')
+    ->everyMinute()
+    ->withoutOverlapping();
