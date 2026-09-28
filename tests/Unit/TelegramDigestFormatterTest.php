@@ -107,6 +107,8 @@ it('hides stale mobility presentation when no current event remains', function (
 it('renders only Builder editorial sections in handoff order', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'district' => ['label' => 'Navigli'],
+        'date' => '2026-08-03',
+        'timezone' => 'Europe/Rome',
         // Raw ledger sections remain diagnostic data and are never rendered.
         'sections' => [['key' => 'attention', 'items' => [[
             'summary' => 'СТАРАЯ грязная посуда — открыто 8 дней',
@@ -120,7 +122,7 @@ it('renders only Builder editorial sections in handoff order', function () {
         ],
     ]);
 
-    expect($text)->toContain('🌙 Navigli — итоги дня')
+    expect($text)->toContain('🌙 Navigli — итоги дня · 03.08.2026')
         ->toContain('За день:')
         ->toContain('✅ Решено сегодня:')
         ->toContain('⭐ Хорошая работа:')

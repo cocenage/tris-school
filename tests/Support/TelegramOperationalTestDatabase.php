@@ -13,6 +13,16 @@ use Illuminate\Support\Facades\Schema;
 
 class TelegramOperationalTestDatabase
 {
+    private const SYNTHETIC_OPERATIONAL_CHAT_IDS = [
+        '-1001',
+        '-1002',
+        '-1003',
+        '-1004',
+        '-1005',
+        '-1008',
+        '-1009',
+    ];
+
     public static function refresh(): void
     {
         config([
@@ -20,9 +30,22 @@ class TelegramOperationalTestDatabase
             'database.connections.analytics.database' => ':memory:',
             'services.telegram.work_allowed_chat_ids' => [],
             'services.telegram.operational_observer_enabled' => false,
+            'services.telegram.operational_chat_ids' => self::SYNTHETIC_OPERATIONAL_CHAT_IDS,
         ]);
 
         DB::purge('analytics');
+
+        $primarySchema = Schema::connection('sqlite');
+
+        if (! $primarySchema->hasTable('users')) {
+            $primarySchema->create('users', function (Blueprint $table) {
+                $table->id();
+                $table->string('name');
+                $table->string('telegram_id')->nullable();
+                $table->timestamps();
+            });
+        }
+
         $schema = Schema::connection('analytics');
 
         $schema->create('telegram_chats', function (Blueprint $table) {

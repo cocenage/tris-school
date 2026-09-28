@@ -19,11 +19,6 @@ beforeEach(function () {
     }
 
     TelegramOperationalTestDatabase::refresh();
-    Schema::create('users', function (Blueprint $table): void {
-        $table->id();
-        $table->string('name');
-        $table->timestamps();
-    });
     Schema::create('apartments', function (Blueprint $table): void {
         $table->id();
         $table->string('name');
@@ -188,7 +183,7 @@ it('does not recommend replacement or calling a master after that work is underw
     );
     $observer->observe($reply);
     $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
-    $item = collect($preview['events'])->first(fn (array $event): bool => str_contains($event['summary'], $actionText));
+    $item = collect($preview['events'])->first(fn (array $event): bool => mb_stripos($event['summary'], $actionText) !== false);
 
     expect($item)->not->toBeNull()
         ->and($item['editorial']['next_action'])->toBeNull()

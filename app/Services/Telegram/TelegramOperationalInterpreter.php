@@ -279,7 +279,7 @@ class TelegramOperationalInterpreter
             'access' => '/(двер|замок|консьерж|не\s+открыва|не\s+войти|не\s+впуска|зашла|зашёл|открыла|открыл)/ui',
             'door' => '/двер/ui',
             'bedside_table' => '/(тумбочк|прикроватн\S*\s+столик)/ui',
-            'glasses' => '/очк/ui',
+            'glasses' => '/(?<![\p{L}])очк\p{L}*/ui',
             'pillowcase' => '/наволоч/ui',
             'duvet_cover' => '/пододеял/ui',
             'gate' => '/ворот/ui',
@@ -316,7 +316,7 @@ class TelegramOperationalInterpreter
 
     private function isGenericReassurance(string $text): bool
     {
-        return preg_match('/^(?:да[, ]+)?(?:думаю|наверное|скорее всего)\s*,?\s*(?:не\s+проблема|проблем\S*\s+не\s+будет|всё\s+будет\s+хорошо)[.! ]*$/ui', $text) === 1;
+        return preg_match('/^(?:да[, ]+)?(?:думаю|наверное|скорее всего)\s*,?\s*(?:не\s+проблема(?:\s+будет)?|проблем\S*\s+не\s+будет|всё\s+будет\s+хорошо)[.! ]*$/ui', $text) === 1;
     }
 
     private function isGeneralProcedure(string $text): bool
