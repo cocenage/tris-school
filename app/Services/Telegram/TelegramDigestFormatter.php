@@ -225,13 +225,17 @@ class TelegramDigestFormatter
     public function eveningIntelligence(array $preview): string
     {
         $district = $this->value($preview['district']['label'] ?? null);
+
         return $this->renderEditorialEvening($preview, $district);
     }
 
     private function renderEditorialEvening(array $preview, string $district): string
     {
         $sections = collect($preview['editorial_sections'] ?? [])->keyBy('key');
-        $lines = ['🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня'];
+        $date = filled($preview['date'] ?? null)
+            ? Carbon::parse((string) $preview['date'], (string) ($preview['timezone'] ?? config('app.timezone', 'Europe/Rome')))->format('d.m.Y')
+            : null;
+        $lines = ['🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня'.($date !== null ? ' · '.$date : '')];
 
         foreach ([
             'day' => 'За день:',

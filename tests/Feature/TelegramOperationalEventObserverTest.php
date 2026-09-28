@@ -3,6 +3,7 @@
 use App\Models\TelegramOperationalEvent;
 use App\Models\TelegramOperationalEventEvidence;
 use App\Models\TelegramOperationalObservation;
+use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -79,6 +80,22 @@ it('rejects private bot service and empty messages', function (array $case) {
         'text' => '', 'type' => 'empty', 'raw' => [], 'reason' => 'empty_content',
     ]],
 ]);
+
+it('still rejects a synthetic supergroup excluded by an explicit test allowlist', function () {
+    config(['services.telegram.operational_chat_ids' => ['-1002']]);
+
+    $message = TelegramOperationalTestDatabase::message(
+        'Не работает замок',
+        chatId: '-1001',
+    );
+
+    $result = app(TelegramOperationalEventObserver::class)->observe($message);
+
+    expect($result)->toMatchArray([
+        'outcome' => 'no_event',
+        'reason_code' => 'private_or_disallowed_chat',
+    ]);
+});
 
 it('supports legacy json raw data and retains low-confidence uncertainty', function () {
     $message = TelegramOperationalTestDatabase::message('Кажется, с замком может быть проблема');
@@ -278,12 +295,33 @@ it('resolves an access problem from a same-topic factual continuation', function
 it('keeps a completed replacement as a historical defect without leaving its action active', function () {
     $message = TelegramOperationalTestDatabase::message('Бракованная наволочка, заменила.');
     $result = app(TelegramOperationalEventObserver::class)->observe($message);
-    $event = TelegramOperationalEvent::query()->sole();
+    $event = TelegramOperationalEvent::query()->with('evidence')->sole();
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+    $previewEvent = collect($preview['events'])->sole();
 
     expect($result['outcome'])->toBe('resolved')
         ->and($event->status)->toBe('resolved')
-        ->and($event->primary_type)->toBe('quality_issue');
+        ->and($event->primary_type)->toBe('quality_issue')
+        ->and($event->evidence->pluck('role')->all())->toBe(['resolution'])
+        ->and($event->evidence->pluck('transition')->all())->toBe(['resolved'])
+        ->and($event->evidence->pluck('status_after')->all())->toBe(['resolved'])
+        ->and($previewEvent['editorial']['state'])->toBe('completed')
+        ->and($previewEvent['editorial']['needs_attention'])->toBeFalse()
+        ->and($previewEvent['editorial']['next_action'])->toBeNull()
+        ->and(collect($preview['editorial_sections'])->pluck('key'))->toContain('resolved');
 });
+
+it('does not create standalone events for context-free completion words', function (string $text) {
+    $result = app(TelegramOperationalEventObserver::class)->observe(
+        TelegramOperationalTestDatabase::message($text),
+    );
+
+    expect($result['outcome'])->toBe('no_event')
+        ->and(TelegramOperationalEvent::query()->count())->toBe(0);
+})->with([
+    'готово' => ['Готово.'],
+    'поменяла' => ['Поменяла.'],
+]);
 
 it('suppresses general instructions and reassurance while retaining concrete delay and courier facts', function (string $text, string $expected) {
     $result = app(TelegramOperationalEventObserver::class)->observe(TelegramOperationalTestDatabase::message($text));

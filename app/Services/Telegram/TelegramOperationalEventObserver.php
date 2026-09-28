@@ -111,7 +111,8 @@ class TelegramOperationalEventObserver
                     return $this->completeAmbiguous($observation, $clock);
                 }
 
-                if (! $previousEvent && $candidates->isEmpty() && $decision['transition'] === 'resolved') {
+                if (! $previousEvent && $candidates->isEmpty() && $decision['transition'] === 'resolved'
+                    && ! $this->isStandaloneCompletedDefect($decision)) {
                     return $this->completeNoEventWithCorrection($message, $observation, 'uncorrelated_resolution', $clock);
                 }
 
@@ -198,6 +199,16 @@ class TelegramOperationalEventObserver
         ]);
 
         return $this->reprojectEvent($event);
+    }
+
+    private function isStandaloneCompletedDefect(array $decision): bool
+    {
+        return ($decision['primary_type'] ?? null) === 'quality_issue'
+            && ($decision['reason_code'] ?? null) === 'quality_issue'
+            && ($decision['role'] ?? null) === 'resolution'
+            && ($decision['transition'] ?? null) === 'resolved'
+            && ($decision['confidence'] ?? null) === 'high'
+            && filled($decision['subject_key'] ?? null);
     }
 
     private function appendToEvent(
