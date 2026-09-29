@@ -9,7 +9,7 @@ class TelegramScheduledMessagesSendCommand extends Command
 {
     protected $signature = 'telegram:scheduled-messages-send';
 
-    protected $description = 'Send configured Telegram control messages that are due now';
+    protected $description = 'Send configured Telegram scheduled messages that are due';
 
     public function handle(TelegramScheduledMessageDeliveryService $deliveries): int
     {

@@ -34,6 +34,19 @@ class TelegramBotService
         );
     }
 
+    public function sendScheduledMessage(string $chatId, string $text, ?string $threadId = null): ?int
+    {
+        $token = config('services.telegram.scheduled_bot_token');
+
+        if (! filled($token)) {
+            Log::warning('Scheduled Telegram bot token is not configured.');
+
+            return null;
+        }
+
+        return $this->sendMessageUsingToken($token, $chatId, $text, $threadId);
+    }
+
     private function sendMessageUsingToken(
         ?string $token,
         string $chatId,
