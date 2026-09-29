@@ -8,7 +8,6 @@ use App\Filament\Resources\TelegramScheduledMessages\Pages\ListTelegramScheduled
 use App\Models\TelegramScheduledMessage;
 use App\Services\Telegram\TelegramDestinationCatalog;
 use BackedEnum;
-use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
@@ -16,9 +15,9 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\TimePicker;
 use Filament\Forms\Components\Toggle;
+use Filament\Resources\Resource;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
-use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -35,11 +34,11 @@ class TelegramScheduledMessageResource extends Resource
 
     protected static string|UnitEnum|null $navigationGroup = 'Аналитика';
 
-    protected static ?string $navigationLabel = 'Telegram напоминания';
+    protected static ?string $navigationLabel = 'Запланированные сообщения';
 
-    protected static ?string $modelLabel = 'Telegram напоминание';
+    protected static ?string $modelLabel = 'Запланированное сообщение';
 
-    protected static ?string $pluralModelLabel = 'Telegram напоминания';
+    protected static ?string $pluralModelLabel = 'Запланированные сообщения';
 
     public static function form(Schema $schema): Schema
     {
@@ -50,8 +49,8 @@ class TelegramScheduledMessageResource extends Resource
                 ->maxLength(255),
 
             TextInput::make('control_type')
-                ->label('Тип контроля')
-                ->helperText('Стабильный идентификатор, например first_cleanings_started.')
+                ->label('Тип сообщения')
+                ->helperText('Стабильный идентификатор, например control_question, reminder или information.')
                 ->required()
                 ->rules(['regex:/^[a-z][a-z0-9_]*$/'])
                 ->maxLength(100),
@@ -129,7 +128,7 @@ class TelegramScheduledMessageResource extends Resource
                     ->sortable(),
 
                 TextColumn::make('control_type')
-                    ->label('Тип контроля')
+                    ->label('Тип сообщения')
                     ->searchable(),
 
                 TextColumn::make('telegram_chat')

@@ -12,6 +12,6 @@ class ListTelegramScheduledMessages extends ListRecords
 
     protected function getHeaderActions(): array
     {
-        return [CreateAction::make()->label('Добавить напоминание')];
+        return [CreateAction::make()->label('Добавить сообщение')];
     }
 }

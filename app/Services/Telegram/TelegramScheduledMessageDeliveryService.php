@@ -15,17 +15,15 @@ class TelegramScheduledMessageDeliveryService
     public function sendDue(): array
     {
         $now = CarbonImmutable::now(config('app.timezone', 'Europe/Rome'));
-        $weekday = $now->dayOfWeekIso;
-        $minute = $now->format('H:i');
         $timezone = config('app.timezone', 'Europe/Rome');
+        $graceMinutes = max(0, (int) config('services.telegram.scheduled_delivery_grace_minutes', 5));
         $result = ['due' => 0, 'sent' => 0, 'failed' => 0, 'duplicate' => 0, 'telegram_actions' => 0];
 
         $messages = TelegramScheduledMessage::query()
             ->enabled()
             ->orderBy('id')
             ->get()
-            ->filter(fn (TelegramScheduledMessage $message): bool => substr((string) $message->send_time, 0, 5) === $minute
-                && in_array($weekday, array_map('intval', $message->weekdays ?? []), true));
+            ->filter(fn (TelegramScheduledMessage $message): bool => $this->isWithinDeliveryWindow($message, $now, $timezone, $graceMinutes));
 
         $result['due'] = $messages->count();
 
@@ -76,7 +74,7 @@ class TelegramScheduledMessageDeliveryService
                 }
 
                 $result['telegram_actions']++;
-                $messageId = app(TelegramBotService::class)->sendMessage(
+                $messageId = app(TelegramBotService::class)->sendScheduledMessage(
                     (string) $chatId,
                     htmlspecialchars((string) $message->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
                     $threadId === null ? null : (string) $threadId,
@@ -141,6 +139,19 @@ class TelegramScheduledMessageDeliveryService
         [$hour, $minute, $second] = array_pad(array_map('intval', explode(':', $time)), 3, 0);
 
         return $now->setTimezone($timezone)->startOfDay()->setTime($hour, $minute, $second);
+    }
+
+    private function isWithinDeliveryWindow(
+        TelegramScheduledMessage $message,
+        CarbonImmutable $now,
+        string $timezone,
+        int $graceMinutes,
+    ): bool {
+        $scheduledFor = $this->scheduledFor($now, (string) $message->send_time, $timezone);
+
+        return in_array($scheduledFor->dayOfWeekIso, array_map('intval', $message->weekdays ?? []), true)
+            && $scheduledFor->lessThanOrEqualTo($now)
+            && $scheduledFor->diffInSeconds($now) <= $graceMinutes * 60;
     }
 
     private function fail(TelegramScheduledMessageDelivery $delivery, string $reason): void

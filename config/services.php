@@ -38,6 +38,8 @@ return [
 
     'telegram' => [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
+        'scheduled_bot_token' => env('TELEGRAM_SCHEDULED_BOT_TOKEN'),
+        'scheduled_delivery_grace_minutes' => env('TELEGRAM_SCHEDULED_DELIVERY_GRACE_MINUTES', 5),
         // Disabled by default until Rich Message delivery is proven reliable in production.
         'rich_messages_enabled' => env('TELEGRAM_RICH_MESSAGES_ENABLED', false),
         'bot_username' => env('TELEGRAM_BOT_USERNAME'),
