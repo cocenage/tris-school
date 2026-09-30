@@ -482,10 +482,18 @@ it('preserves a disabled current destination only while editing its schedule', f
         ->toBe([$topic->getKey() => 'Test topic · thread 42 · отключена (текущий адресат)']);
 });
 
-it('registers the sender on Laravel scheduler at minute frequency', function (): void {
-    $event = collect(app(Schedule::class)->events())
-        ->first(fn ($event): bool => str_contains($event->command ?? '', 'telegram:scheduled-messages-send'));
+it('registers the sender and short-lived queue worker on Laravel scheduler at minute frequency', function (): void {
+    $events = collect(app(Schedule::class)->events());
+    $senderPosition = $events->search(fn ($event): bool => str_contains($event->command ?? '', 'telegram:scheduled-messages-send'));
+    $workerPosition = $events->search(fn ($event): bool => str_contains($event->command ?? '', 'queue:work database'));
+    $event = $senderPosition === false ? null : $events->get($senderPosition);
+    $worker = $workerPosition === false ? null : $events->get($workerPosition);
 
     expect($event)->not->toBeNull()
-        ->and($event->expression)->toBe('* * * * *');
+        ->and($event->expression)->toBe('* * * * *')
+        ->and($worker)->not->toBeNull()
+        ->and($worker->command)->toContain('--queue=default --stop-when-empty --tries=8 --timeout=30 --max-time=50')
+        ->and($worker->expression)->toBe('* * * * *')
+        ->and($worker->withoutOverlapping)->toBeTrue()
+        ->and($workerPosition)->toBeGreaterThan($senderPosition);
 });
