@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#17324d">
+    <title>TRIS — аварийный режим</title>
+    <link rel="stylesheet" href="assets/site.css">
+    <script src="assets/site.js" defer></script>
+</head>
+<body>
+    <header class="site-header">
+        <div class="wrap">
+            <p class="eyebrow" id="source"></p>
+            <h1 id="status-title">⚠ TRIS — аварийный режим</h1>
+            <p class="lead" id="status-message"></p>
+            <p class="updated"><span id="updated-label">Данные актуальны на:</span> <strong id="updated-at"></strong></p>
+            <p id="freshness" class="freshness" role="status" aria-live="polite"></p>
+            <p class="notice">Это аварийная версия. Инструкции доступны из сохранённого снимка и могут быть устаревшими.</p>
+        </div>
+    </header>
+
+    <main class="wrap">
+        <section aria-labelledby="instructions-heading" class="instructions-section">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Рабочая информация</p>
+                    <h2 id="instructions-heading">Инструкции</h2>
+                </div>
+                <label class="search-label">Поиск
+                    <input id="instruction-search" type="search" placeholder="Найти инструкцию" autocomplete="off">
+                </label>
+            </div>
+            <div id="instructions" class="instruction-groups"></div>
+            <p id="instructions-empty" class="empty" hidden>Подходящих инструкций нет.</p>
+        </section>
+
+        <section aria-labelledby="feedback-heading" class="feedback-section">
+            <p class="eyebrow">Одна форма для любых ситуаций</p>
+            <h2 id="feedback-heading">Сообщить о проблеме или событии</h2>
+            <p class="form-intro">Черновик сохраняется только в этом браузере. Не указывайте пароли, коды доступа и платёжные данные.</p>
+            <form id="feedback-form">
+                <div class="form-grid">
+                    <label>Тип
+                        <select name="type" id="feedback-type" required></select>
+                    </label>
+                    <label>Область
+                        <select name="area" id="feedback-area" required></select>
+                    </label>
+                    <label>Срочность
+                        <select name="urgency" id="feedback-urgency" required></select>
+                    </label>
+                    <label>Район <span class="optional">необязательно</span>
+                        <input name="district" maxlength="120" autocomplete="organization">
+                    </label>
+                    <label>Квартира или объект <span class="optional">необязательно</span>
+                        <input name="apartment" maxlength="120">
+                    </label>
+                    <label>Имя сотрудника <span class="optional">необязательно</span>
+                        <input name="name" maxlength="120" autocomplete="name">
+                    </label>
+                    <label>Контакт или ссылка на обращение <span class="optional">необязательно</span>
+                        <input name="reference" maxlength="160">
+                    </label>
+                    <label class="wide">Сообщение
+                        <textarea name="message" rows="5" maxlength="5000" required></textarea>
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="button button-primary">Отправить сообщение</button>
+                    <button type="button" id="copy-report" class="button button-secondary">Скопировать отчёт</button>
+                </div>
+                <p id="feedback-status" class="feedback-status" role="status" aria-live="polite">Пока ничего не отправлено.</p>
+            </form>
+        </section>
+    </main>
+
+    <footer class="wrap footer">Emergency TRIS · сохранённая статическая версия</footer>
+    <script id="emergency-snapshot" type="application/json"><!-- EMERGENCY_SNAPSHOT --></script>
+</body>
+</html>

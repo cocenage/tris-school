@@ -24,6 +24,7 @@ class Instruction extends Model
         'status',
         'is_featured',
         'is_public',
+        'is_emergency_safe',
         'views_count',
         'sort_order',
         'published_at',
@@ -35,6 +36,7 @@ class Instruction extends Model
         'blocks' => 'array',
         'is_featured' => 'boolean',
         'is_public' => 'boolean',
+        'is_emergency_safe' => 'boolean',
         'published_at' => 'datetime',
     ];
 

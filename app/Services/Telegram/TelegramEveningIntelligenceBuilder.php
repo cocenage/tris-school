@@ -373,8 +373,16 @@ class TelegramEveningIntelligenceBuilder
             && $openSince?->lt($start) === true
             && $this->lifecyclePolicy->mayCarryOver($types, (string) $event->summary, $evidence);
         $attentionEligible = in_array($status, ['open', 'reopened'], true)
-            && ($this->lifecyclePolicy->mayCarryOver($types, (string) $event->summary, $evidence)
-                || $this->lifecyclePolicy->mayNeedAttentionToday($types, (string) $event->summary, $evidence));
+            && (
+                ($hasActivityOnDay && $this->lifecyclePolicy->mayCarryOver($types, (string) $event->summary, $evidence))
+                || ($carryOver && $this->lifecyclePolicy->mayRemainActionableCarryOver(
+                    (string) $event->primary_type,
+                    $types,
+                    (string) $event->summary,
+                    $evidence,
+                ))
+                || $this->lifecyclePolicy->mayNeedAttentionToday($types, (string) $event->summary, $evidence)
+            );
 
         if (! $hasActivityOnDay && ! $carryOver) {
             return null;
@@ -534,7 +542,8 @@ class TelegramEveningIntelligenceBuilder
                 $state = 'informational';
                 $renderOutcome[] = 'positive';
             } elseif ($activeStatus && ($relevantToday || ($item['carry_over'] ?? false))
-                && ($item['attention_eligible'] ?? false) === true && $followUp !== null) {
+                && ($item['attention_eligible'] ?? false) === true
+                && ($followUp !== null || ($item['carry_over'] ?? false))) {
                 $state = 'active';
                 $needsAttention = true;
                 $nextAction = $followUp;
@@ -681,6 +690,11 @@ class TelegramEveningIntelligenceBuilder
     {
         $text = preg_replace('/\s+/u', ' ', strip_tags($text)) ?: '';
         $text = preg_replace('/(?<!\S)@[\pL\pN_]+/u', '', $text) ?: $text;
+
+        $clauses = preg_split('/(?<=[.!?;])\s+|,\s*(?=(?:а|но|и|поэтому|значит|тогда|он|она|оно|они|это|так)\b)/iu', $text) ?: [$text];
+        $text = collect($clauses)
+            ->reject(fn (string $clause): bool => preg_match('/^\s*(?:он|она|оно|они|это|так)\b/iu', $clause) === 1)
+            ->implode(' ');
 
         return trim(preg_replace('/\s+/u', ' ', $text) ?: $text);
     }

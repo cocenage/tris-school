@@ -32,6 +32,17 @@ class TelegramEveningHumanComposer
             return $this->omit();
         }
 
+        if ($this->isContextDependentChatter($summary)) {
+            $concreteEvidence = $evidence->filter(fn (string $text): bool => $this->hasConcreteOperationalObjectAndFact($text));
+
+            if ($concreteEvidence->isEmpty()) {
+                return $this->omit();
+            }
+
+            $summary = $concreteEvidence->implode(' ');
+            $context = $summary;
+        }
+
         if ($types->contains('positive_contribution')
             && $types->diff(['positive_contribution'])->isEmpty()
             && $summary !== '') {
@@ -469,10 +480,17 @@ class TelegramEveningHumanComposer
 
     private function isContextDependentChatter(string $text): bool
     {
-        return preg_match('/(?:подключиться.{0,50}поэтому\s+так\s+отправля|поэтому\s+так\s+отправля)/iu', $text) === 1
+        if (preg_match('/(?:подключиться.{0,50}поэтому\s+так\s+отправля|поэтому\s+так\s+отправля)/iu', $text) === 1
             || preg_match('/^(?:сфоткать|сфотографировать|не\s+могу\s+дозвониться|не\s+могу\s+тут\s+к\s+вай\s*фаю)/iu', $text) === 1
-            || preg_match('/^(?:он|она|оно|они|это|так)\b/iu', $text) === 1
-            || preg_match('/^(?:не\s+работает|он\s+давно\s+не\s+работает)[.!?]*$/iu', $text) === 1;
+            || preg_match('/^(?:не\s+работает|он\s+давно\s+не\s+работает)[.!?]*$/iu', $text) === 1) {
+            return true;
+        }
+
+        $clauses = preg_split('/[.!?;]+|,\s*(?=(?:а|но|и|поэтому|значит|тогда|он|она|оно|они|это|так)\b)/iu', $text) ?: [];
+
+        return collect($clauses)->contains(
+            fn (string $clause): bool => preg_match('/^\s*(?:он|она|оно|они|это|так)\b/iu', $clause) === 1,
+        );
     }
 
     private function hasConcreteOperationalObjectAndFact(string $text): bool

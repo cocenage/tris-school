@@ -41,6 +41,39 @@ class TelegramOperationalEventLifecyclePolicy
         return ! $this->isStandaloneInstruction($summary);
     }
 
+    /**
+     * @param array<int, string> $types
+     * @param Collection<int, TelegramOperationalEventEvidence> $evidence
+     */
+    public function mayRemainActionableCarryOver(
+        string $primaryType,
+        array $types,
+        string $summary,
+        Collection $evidence,
+    ): bool {
+        if (! $this->mayCarryOver($types, $summary, $evidence)) {
+            return false;
+        }
+
+        if ($primaryType !== 'quality_issue') {
+            return true;
+        }
+
+        return $evidence->contains(function (TelegramOperationalEventEvidence $item): bool {
+            if (! in_array($item->role, ['report', 'recurrence'], true)) {
+                return false;
+            }
+
+            $message = $item->observation?->message;
+            $text = trim((string) ($message?->text ?: $message?->caption ?: ''));
+
+            return $text !== '' && preg_match(
+                '/(?:брак|дефект|слом|поврежд|протеч|подт[её]к|не\s+работ|не\s+открыва|не\s+забрал|не\s+включа|отвал|неисправ)/iu',
+                $text,
+            ) === 1;
+        });
+    }
+
     /** @param array<int, string> $types
      *  @param Collection<int, TelegramOperationalEventEvidence> $evidence
      */

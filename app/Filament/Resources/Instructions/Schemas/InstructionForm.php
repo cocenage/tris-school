@@ -100,6 +100,11 @@ class InstructionForm
                                             ->label('Публичная')
                                             ->default(true),
 
+                                        Toggle::make('is_emergency_safe')
+                                            ->label('Разрешена для Emergency TRIS')
+                                            ->helperText('Публикуйте во внешней аварийной версии только после проверки инструкции на пароли, коды доступа и личные данные.')
+                                            ->default(false),
+
                                         TextInput::make('sort_order')
                                             ->label('Сортировка')
                                             ->numeric()
