@@ -1,6 +1,7 @@
 <?php
 
 use App\Filament\Resources\TelegramScheduledMessages\TelegramScheduledMessageResource;
+use App\Jobs\DeliverScheduledTelegramMessage;
 use App\Models\TelegramChat;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
@@ -12,15 +13,19 @@ use Filament\Forms\Components\Select;
 use Filament\Schemas\Schema as FilamentSchema;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Mockery\MockInterface;
 
 beforeEach(function (): void {
     config([
         'app.timezone' => 'Europe/Rome',
+        'queue.default' => 'database',
         'database.default' => 'sqlite',
         'database.connections.sqlite.database' => ':memory:',
         'database.connections.analytics.database' => ':memory:',
@@ -31,6 +36,8 @@ beforeEach(function (): void {
 
     $migration = require base_path('database/migrations/2026_09_27_000000_create_telegram_scheduled_messages_tables.php');
     $migration->up();
+    $queueMigration = require base_path('database/migrations/0001_01_01_000002_create_jobs_table.php');
+    $queueMigration->up();
 
     Schema::connection('analytics')->create('telegram_chats', function (Blueprint $table): void {
         $table->id();
@@ -83,113 +90,235 @@ function makeScheduledTelegramMessage(array $overrides = []): TelegramScheduledM
     ], $overrides));
 }
 
-it('sends an active due message to its configured chat and thread and stores the returned telegram message id', function (): void {
+it('reserves one due occurrence and queues it without calling Telegram in the command', function (): void {
     makeScheduledTelegramMessage();
-    $this->mock(TelegramBotService::class, function (MockInterface $mock): void {
-        $mock->shouldReceive('sendScheduledMessage')->once()
-            ->with('-100000000001', '🔴 Проверка уборок', '42')
-            ->andReturn(5678);
-    });
+    Queue::fake();
+    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock->shouldNotReceive('sendScheduledMessage'));
 
-    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
 
-    expect(TelegramScheduledMessageDelivery::query()->sole()->toArray())
+    $delivery = TelegramScheduledMessageDelivery::query()->sole();
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, fn (DeliverScheduledTelegramMessage $job): bool => $job->deliveryId === $delivery->id);
+
+    expect($delivery->toArray())
         ->toMatchArray([
             'control_type' => 'first_cleanings_started',
             'chat_id' => '-100000000001',
             'message_thread_id' => '42',
-            'telegram_message_id' => 5678,
-            'status' => 'sent',
-        ])
-        ->and(TelegramScheduledMessageDelivery::query()->sole()->sent_at)->not->toBeNull();
+            'telegram_message_id' => null,
+            'status' => 'pending',
+        ]);
 });
 
 it('does not send a future, disabled, or wrong-weekday message', function (): void {
     makeScheduledTelegramMessage(['name' => 'Future', 'send_time' => '12:00:00']);
     makeScheduledTelegramMessage(['name' => 'Disabled', 'enabled' => false]);
     makeScheduledTelegramMessage(['name' => 'Wrong weekday', 'weekdays' => [2]]);
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock->shouldNotReceive('sendScheduledMessage'));
+    Queue::fake();
 
     $this->artisan('telegram:scheduled-messages-send')
-        ->expectsOutputToContain('Telegram actions: 0')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
         ->assertExitCode(0);
 
     expect(TelegramScheduledMessageDelivery::query()->count())->toBe(0);
+    Queue::assertNothingPushed();
 });
 
 it('respects configured weekdays when the message is due at the current minute', function (): void {
     makeScheduledTelegramMessage(['weekdays' => [2]]);
     Carbon::setTestNow(Carbon::parse('2026-09-29 11:00:20', 'Europe/Rome'));
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldReceive('sendScheduledMessage')->once()->andReturn(5679));
+    Queue::fake();
 
-    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('queued: 1')
+        ->assertExitCode(0);
 
-    expect(TelegramScheduledMessageDelivery::query()->sole()->status)->toBe('sent');
+    expect(TelegramScheduledMessageDelivery::query()->sole()->status)->toBe('pending');
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
 });
 
 it('does not attempt the same scheduled occurrence twice', function (): void {
     makeScheduledTelegramMessage(['send_time' => '10:59:00']);
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldReceive('sendScheduledMessage')->once()->andReturn(5680));
+    Queue::fake();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    Http::fake(['*' => Http::response(['result' => ['message_id' => 5680]], 200)]);
 
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
-    Carbon::setTestNow(Carbon::parse('2026-09-28 11:01:20', 'Europe/Rome'));
-    $this->artisan('telegram:scheduled-messages-send')
-        ->expectsOutputToContain('duplicate: 1')
-        ->assertExitCode(0);
-
-    expect(TelegramScheduledMessageDelivery::query()->count())->toBe(1);
-});
-
-it('keeps failed attempts explicit and does not automatically retry an uncertain Telegram send', function (): void {
-    makeScheduledTelegramMessage(['send_time' => '10:59:00']);
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldReceive('sendScheduledMessage')->once()->andReturn(null));
-
-    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(1);
+    $job = Queue::pushed(DeliverScheduledTelegramMessage::class)->sole();
+    $job->handle(app(TelegramBotService::class));
+    $job->handle(app(TelegramBotService::class));
     Carbon::setTestNow(Carbon::parse('2026-09-28 11:01:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
         ->expectsOutputToContain('duplicate: 1')
         ->assertExitCode(0);
 
     expect(TelegramScheduledMessageDelivery::query()->count())->toBe(1)
-        ->and(TelegramScheduledMessageDelivery::query()->sole()->status)->toBe('failed');
+        ->and(TelegramScheduledMessageDelivery::query()->sole()->status)->toBe('sent');
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+    Http::assertSentCount(1);
+});
+
+it('retries a connection exception and marks the same delivery sent on a later attempt', function (): void {
+    makeScheduledTelegramMessage();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    $attempt = 0;
+    Http::fake(function () use (&$attempt) {
+        $attempt++;
+
+        if ($attempt === 1) {
+            throw new ConnectionException('Temporary network failure');
+        }
+
+        return Http::response(['ok' => true, 'result' => ['message_id' => 5685]], 200);
+    });
+
+    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $delivery = TelegramScheduledMessageDelivery::query()->sole();
+    $deliveryId = $delivery->id;
+
+    expect(DB::table('jobs')->count())->toBe(1);
+    $payload = json_decode((string) DB::table('jobs')->value('payload'), true, flags: JSON_THROW_ON_ERROR);
+    $queuedJob = unserialize($payload['data']['command']);
+    expect($queuedJob)->toBeInstanceOf(DeliverScheduledTelegramMessage::class)
+        ->and($queuedJob->deliveryId)->toBe($deliveryId)
+        ->and($queuedJob->tries)->toBe(8)
+        ->and($queuedJob->backoff())->toBe([30, 60, 120, 300, 600, 600, 600])
+        ->and($queuedJob->retryUntilAt->equalTo($delivery->scheduled_for->copy()->addHour()))->toBeTrue();
+
+    $workerOptions = [
+        'connection' => 'database',
+        '--queue' => 'default',
+        '--once' => true,
+        '--tries' => 8,
+        '--timeout' => 30,
+        '--sleep' => 0,
+    ];
+    $this->artisan('queue:work', $workerOptions)->assertExitCode(0);
+
+    expect($delivery->fresh()->toArray())->toMatchArray([
+        'status' => 'retrying',
+        'failure_reason' => 'connection_exception',
+    ]);
+    expect(DB::table('jobs')->count())->toBe(1)
+        ->and(DB::table('jobs')->value('attempts'))->toBe(1);
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 11:00:51', 'Europe/Rome'));
+    $this->artisan('queue:work', $workerOptions)->assertExitCode(0);
+    $delivery->refresh();
+
+    expect($delivery->status)->toBe('sent')
+        ->and($delivery->telegram_message_id)->toBe(5685)
+        ->and($delivery->sent_at)->not->toBeNull()
+        ->and($delivery->id)->toBe($deliveryId);
+    expect($attempt)->toBe(2);
+    expect(DB::table('jobs')->count())->toBe(0);
+    Http::assertSentCount(1);
+});
+
+it('retries transient Telegram server responses and completes the original delivery later', function (): void {
+    makeScheduledTelegramMessage();
+    Queue::fake();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    Http::fakeSequence()
+        ->push(['ok' => false], 503)
+        ->push(['ok' => true, 'result' => ['message_id' => 5686]], 200);
+
+    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $job = Queue::pushed(DeliverScheduledTelegramMessage::class)->sole();
+    $delivery = TelegramScheduledMessageDelivery::query()->sole();
+
+    expect(fn () => $job->handle(app(TelegramBotService::class)))->toThrow(RequestException::class);
+    expect($delivery->fresh()->toArray())->toMatchArray([
+        'status' => 'retrying',
+        'failure_reason' => 'telegram_http_503',
+    ]);
+
+    $job->handle(app(TelegramBotService::class));
+
+    expect($delivery->fresh()->status)->toBe('sent')
+        ->and($delivery->fresh()->telegram_message_id)->toBe(5686);
+    Http::assertSentCount(2);
+});
+
+it('records a retryable error as final when the queue retry policy is exhausted', function (): void {
+    makeScheduledTelegramMessage();
+    Queue::fake();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    Http::fake(['*' => Http::response(['ok' => false], 503)]);
+
+    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $job = Queue::pushed(DeliverScheduledTelegramMessage::class)->sole();
+    $delivery = TelegramScheduledMessageDelivery::query()->sole();
+    $failure = null;
+
+    try {
+        $job->handle(app(TelegramBotService::class));
+    } catch (RequestException $exception) {
+        $failure = $exception;
+    }
+
+    expect($failure)->toBeInstanceOf(RequestException::class);
+    $job->failed($failure);
+
+    expect($delivery->fresh()->toArray())->toMatchArray([
+        'status' => 'failed',
+        'failure_reason' => 'telegram_http_503',
+    ]);
+});
+
+it('marks a permanent Telegram 4xx failed and does not retry it', function (): void {
+    makeScheduledTelegramMessage();
+    Queue::fake();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    Http::fake(['*' => Http::response(['ok' => false], 403)]);
+
+    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $job = Queue::pushed(DeliverScheduledTelegramMessage::class)->sole();
+    $delivery = TelegramScheduledMessageDelivery::query()->sole();
+    $job->handle(app(TelegramBotService::class));
+    $job->handle(app(TelegramBotService::class));
+
+    expect($delivery->fresh()->status)->toBe('failed')
+        ->and($delivery->fresh()->failure_reason)->toBe('telegram_http_403');
+    Http::assertSentCount(1);
 });
 
 it('allows the next day occurrence after a successful previous day send', function (): void {
     makeScheduledTelegramMessage(['weekdays' => [1, 2]]);
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldReceive('sendScheduledMessage')->twice()->andReturn(5681, 5682));
+    Queue::fake();
 
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
     Carbon::setTestNow(Carbon::parse('2026-09-29 11:00:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
 
     expect(TelegramScheduledMessageDelivery::query()->count())->toBe(2)
-        ->and(TelegramScheduledMessageDelivery::query()->where('status', 'sent')->count())->toBe(2);
+        ->and(TelegramScheduledMessageDelivery::query()->where('status', 'pending')->count())->toBe(2);
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 2);
 });
 
 it('supports different semantic message types through the same sender and continues after a failure', function (): void {
     makeScheduledTelegramMessage(['name' => 'First']);
     makeScheduledTelegramMessage(['name' => 'Second', 'control_type' => 'reminder']);
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldReceive('sendScheduledMessage')->twice()->andReturn(null, 5683));
+    Queue::fake();
 
-    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(1);
+    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
 
-    expect(TelegramScheduledMessageDelivery::query()->where('status', 'failed')->count())->toBe(1)
-        ->and(TelegramScheduledMessageDelivery::query()->where('status', 'sent')->count())->toBe(1)
+    expect(TelegramScheduledMessageDelivery::query()->where('status', 'pending')->count())->toBe(2)
         ->and(TelegramScheduledMessageDelivery::query()->where('control_type', 'reminder')->exists())->toBeTrue();
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 2);
 });
 
 it('performs no Telegram actions when no messages are due', function (): void {
     makeScheduledTelegramMessage(['send_time' => '10:00:00']);
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock->shouldNotReceive('sendScheduledMessage'));
+    Queue::fake();
 
     $this->artisan('telegram:scheduled-messages-send')
-        ->expectsOutputToContain('Due: 0; sent: 0; failed: 0; duplicate: 0; Telegram actions: 0')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
         ->assertExitCode(0);
+    Queue::assertNothingPushed();
 });
 
 it('uses the dedicated scheduled bot token while Academy messages keep their existing token', function (): void {
@@ -212,45 +341,73 @@ it('uses the dedicated scheduled bot token while Academy messages keep their exi
 
 it('fails safely and records a clear warning when the scheduled bot token is missing', function (): void {
     makeScheduledTelegramMessage();
+    Queue::fake();
     config([
         'services.telegram.bot_token' => 'academy-test-token',
         'services.telegram.scheduled_bot_token' => null,
     ]);
     Http::fake();
-    Log::shouldReceive('warning')->once()->with('Scheduled Telegram bot token is not configured.');
+    Log::spy();
 
     $this->artisan('telegram:scheduled-messages-send')
-        ->expectsOutputToContain('failed: 1')
-        ->assertExitCode(1);
+        ->expectsOutputToContain('queued: 1')
+        ->assertExitCode(0);
+    $job = Queue::pushed(DeliverScheduledTelegramMessage::class)->sole();
+    $job->handle(app(TelegramBotService::class));
 
     expect(TelegramScheduledMessageDelivery::query()->sole())
         ->status->toBe('failed')
-        ->failure_reason->toBe('telegram_send_failed');
+        ->failure_reason->toBe('scheduled_bot_token_missing');
+    Log::shouldHaveReceived('warning')->once()->with('Scheduled Telegram bot token is not configured.', [
+        'delivery_id' => TelegramScheduledMessageDelivery::query()->sole()->id,
+    ]);
+    Http::assertNothingSent();
+});
+
+it('refuses a sync queue connection so the scheduler command cannot send inline', function (): void {
+    makeScheduledTelegramMessage();
+    config(['queue.default' => 'sync']);
+    Http::fake();
+
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 0; failed: 1; duplicate: 0')
+        ->assertExitCode(1);
+
+    expect(TelegramScheduledMessageDelivery::query()->sole()->toArray())
+        ->toMatchArray([
+            'status' => 'failed',
+            'failure_reason' => 'queue_connection_sync',
+        ]);
     Http::assertNothingSent();
 });
 
 it('catches up a missed minute only inside the configured grace window', function (): void {
     makeScheduledTelegramMessage(['send_time' => '10:59:00']);
     config(['services.telegram.scheduled_delivery_grace_minutes' => 5]);
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldReceive('sendScheduledMessage')->once()->andReturn(5684));
+    Queue::fake();
 
-    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('queued: 1')
+        ->assertExitCode(0);
 
-    expect(TelegramScheduledMessageDelivery::query()->sole()->scheduled_for->format('H:i:s'))->toBe('10:59:00');
+    expect(TelegramScheduledMessageDelivery::query()->sole())
+        ->scheduled_for->format('H:i:s')->toBe('10:59:00')
+        ->status->toBe('pending');
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
 });
 
 it('does not catch up occurrences outside the grace window or from a previous day', function (): void {
     makeScheduledTelegramMessage(['name' => 'Too old', 'send_time' => '10:54:00']);
     makeScheduledTelegramMessage(['name' => 'Yesterday', 'send_time' => '10:59:00', 'weekdays' => [1]]);
     Carbon::setTestNow(Carbon::parse('2026-09-29 11:00:20', 'Europe/Rome'));
-    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock->shouldNotReceive('sendScheduledMessage'));
+    Queue::fake();
 
     $this->artisan('telegram:scheduled-messages-send')
-        ->expectsOutputToContain('Due: 0')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
         ->assertExitCode(0);
 
     expect(TelegramScheduledMessageDelivery::query()->count())->toBe(0);
+    Queue::assertNothingPushed();
 });
 
 it('exposes searchable existing chat and topic selectors and persists the selected schedule fields', function (): void {
