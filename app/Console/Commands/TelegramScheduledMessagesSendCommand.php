@@ -16,12 +16,11 @@ class TelegramScheduledMessagesSendCommand extends Command
         $result = $deliveries->sendDue();
 
         $this->line(sprintf(
-            'Due: %d; sent: %d; failed: %d; duplicate: %d; Telegram actions: %d',
+            'Due: %d; queued: %d; failed: %d; duplicate: %d',
             $result['due'],
-            $result['sent'],
+            $result['queued'],
             $result['failed'],
             $result['duplicate'],
-            $result['telegram_actions'],
         ));
 
         return $result['failed'] > 0 ? self::FAILURE : self::SUCCESS;

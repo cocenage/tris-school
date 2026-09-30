@@ -44,7 +44,7 @@ class TelegramBotService
             return null;
         }
 
-        return $this->sendMessageUsingToken($token, $chatId, $text, $threadId);
+        return $this->sendMessageUsingToken($token, $chatId, $text, $threadId, throwOnHttpFailure: true);
     }
 
     private function sendMessageUsingToken(
@@ -54,6 +54,7 @@ class TelegramBotService
         ?string $threadId = null,
         ?string $replyToMessageId = null,
         ?array $replyMarkup = null,
+        bool $throwOnHttpFailure = false,
     ): ?int {
         if (! $token) {
             Log::warning('Telegram bot token is not configured.');
@@ -92,6 +93,10 @@ class TelegramBotService
             'status' => $response->status(),
             'successful' => $response->successful(),
         ]);
+
+        if ($throwOnHttpFailure) {
+            $response->throw();
+        }
 
         return $response->successful()
             ? data_get($response->json(), 'result.message_id')

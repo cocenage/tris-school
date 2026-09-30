@@ -2,22 +2,24 @@
 
 namespace App\Services\Telegram;
 
+use App\Jobs\DeliverScheduledTelegramMessage;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class TelegramScheduledMessageDeliveryService
 {
-    /** @return array{due: int, sent: int, failed: int, duplicate: int, telegram_actions: int} */
+    /** @return array{due: int, queued: int, failed: int, duplicate: int} */
     public function sendDue(): array
     {
         $now = CarbonImmutable::now(config('app.timezone', 'Europe/Rome'));
         $timezone = config('app.timezone', 'Europe/Rome');
         $graceMinutes = max(0, (int) config('services.telegram.scheduled_delivery_grace_minutes', 5));
-        $result = ['due' => 0, 'sent' => 0, 'failed' => 0, 'duplicate' => 0, 'telegram_actions' => 0];
+        $result = ['due' => 0, 'queued' => 0, 'failed' => 0, 'duplicate' => 0];
 
         $messages = TelegramScheduledMessage::query()
             ->enabled()
@@ -48,58 +50,52 @@ class TelegramScheduledMessageDeliveryService
                 continue;
             }
 
-            try {
-                $chat = $message->telegramChat;
-                $topic = $message->telegramTopic;
-                $chatId = $chat?->telegram_chat_id;
-                $threadId = $topic?->telegram_thread_id;
+            $chat = $message->telegramChat;
+            $topic = $message->telegramTopic;
+            $chatId = $chat?->telegram_chat_id;
+            $threadId = $topic?->telegram_thread_id;
 
-                $delivery->update([
-                    'chat_id' => $chatId,
-                    'message_thread_id' => $threadId,
-                ]);
+            $delivery->update([
+                'chat_id' => $chatId,
+                'message_thread_id' => $threadId,
+            ]);
 
-                $destinationIsValid = $chat !== null
-                    && $chat->is_enabled
-                    && ($message->telegram_topic_record_id === null
-                        || ($topic !== null
-                            && $topic->is_enabled
-                            && (string) $topic->telegram_chat_id === (string) $message->telegram_chat_record_id));
+            $destinationIsValid = $chat !== null
+                && $chat->is_enabled
+                && ($message->telegram_topic_record_id === null
+                    || ($topic !== null
+                        && $topic->is_enabled
+                        && (string) $topic->telegram_chat_id === (string) $message->telegram_chat_record_id));
 
-                if (! $destinationIsValid || ! filled($chatId)) {
-                    $this->fail($delivery, 'destination_unavailable');
-                    $result['failed']++;
-
-                    continue;
-                }
-
-                $result['telegram_actions']++;
-                $messageId = app(TelegramBotService::class)->sendScheduledMessage(
-                    (string) $chatId,
-                    htmlspecialchars((string) $message->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
-                    $threadId === null ? null : (string) $threadId,
-                );
-
-                if ($messageId === null) {
-                    $this->fail($delivery, 'telegram_send_failed');
-                    $result['failed']++;
-
-                    continue;
-                }
-
-                $delivery->update([
-                    'status' => 'sent',
-                    'sent_at' => CarbonImmutable::now($timezone),
-                    'telegram_message_id' => $messageId,
-                    'failure_reason' => null,
-                ]);
-                $result['sent']++;
-            } catch (Throwable $exception) {
-                $this->fail($delivery, 'exception:'.class_basename($exception));
+            if (! $destinationIsValid || ! filled($chatId)) {
+                $this->fail($delivery, 'destination_unavailable');
                 $result['failed']++;
 
-                Log::warning('Telegram scheduled message delivery failed.', [
-                    'scheduled_message_id' => $message->getKey(),
+                continue;
+            }
+
+            if (config('queue.connections.'.config('queue.default').'.driver') === 'sync') {
+                $this->fail($delivery, 'queue_connection_sync');
+                $result['failed']++;
+
+                Log::error('Scheduled Telegram delivery requires a non-sync queue connection.', [
+                    'delivery_id' => $delivery->getKey(),
+                ]);
+
+                continue;
+            }
+
+            try {
+                Bus::dispatch(new DeliverScheduledTelegramMessage(
+                    (int) $delivery->getKey(),
+                    $scheduledFor->addMinutes(60),
+                ));
+                $result['queued']++;
+            } catch (Throwable $exception) {
+                $this->fail($delivery, 'queue_dispatch_failed:'.class_basename($exception));
+                $result['failed']++;
+
+                Log::error('Scheduled Telegram delivery could not be queued.', [
                     'delivery_id' => $delivery->getKey(),
                     'exception' => class_basename($exception),
                 ]);
