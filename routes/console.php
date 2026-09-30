@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\Emergency\EmergencyScheduleRegistrar;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -42,3 +43,5 @@ Schedule::command('telegram:scheduled-messages-send')
 Schedule::command('queue:work database --queue=default --stop-when-empty --tries=8 --timeout=30 --max-time=50')
     ->everyMinute()
     ->withoutOverlapping();
+
+app(EmergencyScheduleRegistrar::class)->register(app(\Illuminate\Console\Scheduling\Schedule::class));

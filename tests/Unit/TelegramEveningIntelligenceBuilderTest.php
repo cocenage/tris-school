@@ -545,7 +545,7 @@ it('renders raw-safe switch failures, composes pronouns only from linked evidenc
     $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-16');
     $rendered = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
 
-    expect($rendered)->toContain('Переключатель не работает, поэтому должен прийти мастер.')
+    expect($rendered)->toContain('Не работает переключатель, требуется мастер.')
         ->toContain('У вытяжки не работает свет.')
         ->not->toContain('Он может поэтому и не работает')
         ->not->toContain('Вытяжка включена.')
@@ -1029,7 +1029,7 @@ it('filters legacy unusable and contextless events from the final built and form
             ->not->toContain('Значимых операционных событий не зафиксировано.')
             ->toContain('У вытяжки не работает свет.')
             ->toContain('Жалюзи упала, не могу повесить')
-            ->toContain('Обнаружен брак полотенца.')
+            ->toContain('Обнаружено бракованное полотенце.')
             ->toContain('правильный код — 1291')
             ->toContain('Курьер забрал не всё грязное бельё.')
             ->toContain('Простынь большая, жёлтое пятно')
@@ -1098,13 +1098,19 @@ it('builds a district shift handoff from explicit editorial states', function ()
             app(TelegramEveningIntelligenceBuilder::class)->build('2026-09-24', ['district' => ['label' => 'Navigli']]),
         );
         $editorials = collect($preview['events'])->keyBy('summary')->map(fn (array $item) => $item['editorial']);
+        $paperEventKey = collect($preview['events'])->firstWhere('summary', 'Туалетную бумагу не могу найти.')['event_key'];
+        $attentionAndActionEventKeys = collect($preview['editorial_sections'])
+            ->whereIn('key', ['attention', 'actions'])
+            ->flatMap(fn (array $section) => $section['items'])
+            ->pluck('event_key');
 
         expect($editorials['Простынь большая, жёлтое пятно; заменила, брак.'])
             ->toMatchArray(['relevant_today' => true, 'state' => 'completed', 'needs_attention' => false, 'next_action' => null])
             ->and($editorials['Кровать. Брак наволочки. Заменила.'])
             ->toMatchArray(['relevant_today' => true, 'state' => 'completed', 'needs_attention' => false, 'next_action' => null])
             ->and($editorials['Думаю не проблема будет.']['state'])->toBe('omit')
-            ->and($editorials['Обнаружена грязная посуда.']['state'])->toBe('omit')
+            ->and($editorials['Обнаружена грязная посуда.'])
+            ->toMatchArray(['state' => 'omit', 'needs_attention' => false, 'next_action' => null])
             ->and($editorials['Туалетную бумагу не могу найти.'])
             ->toMatchArray(['state' => 'informational', 'needs_attention' => false, 'next_action' => null])
             ->and($rendered)
@@ -1124,7 +1130,6 @@ it('builds a district shift handoff from explicit editorial states', function ()
             ->toContain('Туалетную бумагу не могу найти.')
             ->not->toContain('грязная посуда')
             ->not->toContain('Думаю не проблема будет')
-            ->not->toContain('Туалетную бумагу не могу найти')
             ->not->toContain('Открыто')
             ->not->toContain('Переходящие проблемы')
             ->not->toContain('Открытых вопросов на конец дня нет.')
@@ -1134,7 +1139,8 @@ it('builds a district shift handoff from explicit editorial states', function ()
             ->not->toContain('Via Editorial 109')
             ->not->toContain('грязная посуда')
             ->not->toContain('Туалетную бумагу не могу найти')
-            ->toContain('🔄 Требует внимания:');
+            ->toContain('🔄 Требует внимания:')
+            ->and($attentionAndActionEventKeys)->not->toContain($paperEventKey);
     } finally {
         Carbon::setTestNow();
     }
