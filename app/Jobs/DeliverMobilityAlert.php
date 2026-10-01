@@ -33,7 +33,15 @@ class DeliverMobilityAlert implements ShouldQueue
             if (! $message || $message->sent_at || $message->deleted_at) {
                 return;
             }
-            $id = $bot->sendAnalyticsMessage($message->chat_id, $message->text, $message->thread_id ?? '');
+            try {
+                $id = $bot->sendAnalyticsMessage($message->chat_id, $message->text, $message->thread_id ?? '');
+            } catch (\Throwable $error) {
+                Log::warning('Mobility strike delivery transport failed', [
+                    'reservation_id' => $message->id, 'failed' => 1, 'error_class' => get_class($error),
+                ]);
+                // Do not persist transport exception URLs containing bot tokens.
+                throw new RuntimeException('Mobility Telegram transport failed.');
+            }
             if (! $id) {
                 Log::warning('Mobility strike delivery failed', ['reservation_id' => $message->id, 'failed' => 1]);
                 throw new RuntimeException('Mobility Telegram delivery did not return a message ID.');

@@ -16,19 +16,21 @@ class MobilityStrikeSyncService
     public function sync(bool $dryRun = false): array
     {
         $counts = array_fill_keys(['fetched', 'normalized', 'relevant', 'new', 'updated', 'cancelled', 'unchanged', 'queued', 'already_notified', 'would_queue', 'failed'], 0);
+        $counts['targets_configured'] = count($this->targets());
+        $counts['analytics_bot_configured'] = filled(config('services.telegram.analytics_bot_token'));
         try {
             $result = $this->source->fetch();
-        } catch (\Throwable) {
+        } catch (\Throwable $error) {
             $counts['failed']++;
             if (! $dryRun) {
-                Log::warning('Mobility MIT fetch/parse failed; ledger unchanged', $counts);
+                Log::warning('Mobility MIT fetch/parse failed; ledger unchanged', $counts + ['error_class' => get_class($error)]);
             }
 
             return $counts;
         }
         $counts['normalized'] = count($result['items']);
         $counts['failed'] = $result['invalid'];
-        $counts['fetched'] = $counts['normalized'] + $result['invalid'];
+        $counts['fetched'] = $result['fetched'];
         foreach ($result['items'] as $item) {
             if (! $this->source->relevant($item)) {
                 continue;
@@ -94,7 +96,10 @@ class MobilityStrikeSyncService
                     // failure rolls back this item; the next sync can safely retry.
                     DB::transaction($apply);
                 }
-            } catch (\Throwable) {
+            } catch (\Throwable $error) {
+                if (! $dryRun) {
+                    Log::warning('Mobility strike persistence/queue failed', ['error_class' => get_class($error)]);
+                }
                 $counts = $before;
                 $counts['failed']++;
             }
@@ -163,9 +168,9 @@ class MobilityStrikeSyncService
         }
         foreach (['region' => 'Регион', 'province' => 'Провинция', 'scope' => 'Масштаб', 'operator' => 'Оператор/категория', 'sector' => 'Сектор', 'duration' => 'Продолжительность/часы', 'notes' => 'Уточнения'] as $field => $label) {
             if ($item[$field] !== '') {
-                $text .= "\n".$label.': '.e($item[$field]);
+                $text .= "\n".$label.': '.e(Str::limit($item[$field], 300));
                 if (isset($old[$field]) && $old[$field] !== $item[$field]) {
-                    $text .= ' (ранее: '.e($old[$field]).')';
+                    $text .= ' (ранее: '.e(Str::limit($old[$field], 150)).')';
                 }
             }
         }

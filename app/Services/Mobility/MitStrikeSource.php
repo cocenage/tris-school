@@ -30,8 +30,10 @@ class MitStrikeSource
         }
         $xpath = new DOMXPath($document);
         $items = [];
+        $ambiguous = [];
         $recognized = false;
         $invalid = 0;
+        $fetched = 0;
         foreach ($xpath->query('//table') as $table) {
             $headers = [];
             foreach ($xpath->query('.//tr', $table) as $row) {
@@ -46,6 +48,7 @@ class MitStrikeSource
                     continue;
                 }
                 $fields = array_combine($headers, $values);
+                $fetched++;
                 try {
                     $start = $this->date($fields['Inizio']);
                     $end = $this->date($fields['Fine']);
@@ -65,19 +68,30 @@ class MitStrikeSource
                         'region' => $fields['Regione'] ?? '',
                         'province' => $fields['Provincia'] ?? '',
                     ];
-                    $item['status'] = preg_match('/\b(revocat[oa]|annullat[oa]|cancellat[oa])\b/iu',
-                        ($fields['Stato'] ?? '').' '.$item['notes']) ? 'cancelled' : 'scheduled';
+                    $item['status'] = preg_match('/^(?:sciopero\s+)?(?:revocat[oa]|annullat[oa]|cancellat[oa])\b/iu',
+                        trim(($fields['Stato'] ?? '').' '.$item['notes'])) ? 'cancelled' : 'scheduled';
                     $sourceId = $fields['ID'] ?? '';
                     // Public MIT table has no ID: proclamation + parties + category
                     // remain stable when occurrence dates or duration are amended.
-                    $unions = preg_split('/[\/;+]+/u', $this->key($item['unions']));
+                    $unions = array_map('trim', preg_split('/[\/;+]+/u', $this->key($item['unions'])));
                     sort($unions);
                     $identity = $sourceId ?: implode('|', [$item['proclaimed_at'], implode('/', $unions), $item['sector'], $item['operator']]);
                     $item['identity'] = hash('sha256', 'mit|'.$this->key($identity));
                     $canonical = array_map($this->key(...), $item);
                     $canonical['unions'] = implode('/', $unions);
                     $item['version'] = hash('sha256', json_encode($canonical, JSON_THROW_ON_ERROR));
-                    $items[$item['identity']] = $item;
+                    $identity = $item['identity'];
+                    if (isset($ambiguous[$identity])) {
+                        $invalid++;
+                    } elseif (isset($items[$identity]) && $items[$identity]['version'] !== $item['version']) {
+                        // Conflicting rows cannot safely be correlated without a
+                        // stable source ID/freshness signal. Never pick by row order.
+                        unset($items[$identity]);
+                        $ambiguous[$identity] = true;
+                        $invalid += 2;
+                    } else {
+                        $items[$identity] = $item;
+                    }
                 } catch (\Throwable) {
                     $invalid++;
                 }
@@ -87,7 +101,7 @@ class MitStrikeSource
             throw new RuntimeException('MIT registry table was not recognized; no alerts were changed.');
         }
 
-        return ['items' => array_values($items), 'invalid' => $invalid];
+        return ['items' => array_values($items), 'invalid' => $invalid, 'fetched' => $fetched];
     }
 
     public function relevant(array $item): bool

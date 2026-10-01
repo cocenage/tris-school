@@ -28,7 +28,7 @@ function mitStrikeTable(array $overrides = [], bool $duplicate = false): string
 
 beforeEach(function () {
     $this->travelTo(\Carbon\Carbon::parse('2026-10-01 10:00:00', 'Europe/Rome'));
-    config(['services.telegram.mobility_admin_targets' => '-100123:17']);
+    config(['services.telegram.mobility_admin_targets' => '-100123:17', 'services.telegram.analytics_bot_token' => null, 'queue.connections.database.connection' => null]);
     foreach (['2026_05_27_174319_create_mobility_alerts_table.php', '2026_07_02_042735_create_mobility_alert_messages_table.php', '2026_10_01_010000_add_strike_delivery_tracking_to_mobility_tables.php'] as $file) {
         (require database_path('migrations/'.$file))->up();
     }
@@ -228,4 +228,62 @@ it('isolates structured sector and geography from unrelated text', function () {
     expect($source->relevant($item))->toBeTrue();
     $item['sector'] = 'Aereo';
     expect($source->relevant($item))->toBeFalse();
+});
+
+it('retains pending delivery after a transport exception without exposing its text', function () {
+    app(MobilityStrikeSyncService::class)->sync();
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldReceive('sendAnalyticsMessage')->once()->andThrow(new RuntimeException('private transport detail'));
+    expect(fn () => (new DeliverMobilityAlert(MobilityAlertMessage::sole()->id))->handle($bot))
+        ->toThrow(RuntimeException::class, 'Mobility Telegram transport failed.');
+    expect(MobilityAlertMessage::sole()->sent_at)->toBeNull();
+});
+
+it('rejects an unrecognized successful source page without changing the ledger', function () {
+    Http::fake(['*' => Http::response('<html>Maintenance</html>')]);
+    expect(app(MobilityStrikeSyncService::class)->sync()['failed'])->toBe(1);
+    expect(MobilityAlert::count())->toBe(0)->and(MobilityAlertMessage::count())->toBe(0);
+    Bus::assertNothingDispatched();
+});
+
+it('queues operator and scope amendments under the official ID', function () {
+    app(MobilityStrikeSyncService::class)->sync();
+    Http::fake(['*' => Http::response(mitStrikeTable(['Categoria' => 'ATM MILANO - RETE METRO', 'Rilevanza' => 'Regionale']))]);
+    expect(app(MobilityStrikeSyncService::class)->sync()['updated'])->toBe(1);
+    expect(MobilityAlert::count())->toBe(1)->and(MobilityAlertMessage::count())->toBe(2);
+});
+
+it('keeps normal delivery available when the destination is configured later', function () {
+    config(['services.telegram.mobility_admin_targets' => null]);
+    app(MobilityStrikeSyncService::class)->sync();
+    expect(MobilityAlert::count())->toBe(1)->and(MobilityAlertMessage::count())->toBe(0);
+    config(['services.telegram.mobility_admin_targets' => '-100123:17', 'services.telegram.analytics_bot_token' => null, 'queue.connections.database.connection' => null]);
+    expect(app(MobilityStrikeSyncService::class)->sync()['queued'])->toBe(1);
+});
+
+it('reports source failure through the existing sync command', function () {
+    Http::fake(['*' => Http::response('', 503)]);
+    expect(Artisan::call('mobility:sync'))->toBe(1);
+    expect(MobilityAlert::count())->toBe(0)->and(MobilityAlertMessage::count())->toBe(0);
+    Bus::assertNothingDispatched();
+});
+
+it('omits explicitly cancelled strikes from existing mobility read sets without deleting history', function () {
+    app(MobilityStrikeSyncService::class)->sync();
+    Http::fake(['*' => Http::response(mitStrikeTable(['Note' => 'SCIOPERO REVOCATO']))]);
+    app(MobilityStrikeSyncService::class)->sync();
+    $visible = app(\App\Services\Mobility\MobilityAlertSyncService::class)->filterRepresentedRawAlerts(MobilityAlert::all());
+    expect($visible)->toHaveCount(0)->and(MobilityAlert::count())->toBe(1);
+});
+
+it('does not choose between conflicting ID-less rows by source ordering', function () {
+    $first = mitStrikeTable(['ID' => '']);
+    $second = mitStrikeTable(['ID' => '', 'Inizio' => '10/10/2026', 'Fine' => '10/10/2026']);
+    $source = app(MitStrikeSource::class);
+    expect($source->normalize($first.$second)['items'])->toBe([]);
+    expect($source->normalize($second.$first)['items'])->toBe([]);
+    Http::fake(['*' => Http::response($first.$second)]);
+    expect(app(MobilityStrikeSyncService::class)->sync()['failed'])->toBe(2);
+    expect(MobilityAlert::count())->toBe(0);
+    Bus::assertNothingDispatched();
 });

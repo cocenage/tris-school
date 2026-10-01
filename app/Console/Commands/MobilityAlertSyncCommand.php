@@ -35,6 +35,8 @@ class MobilityAlertSyncCommand extends Command
             $this->line(Artisan::output());
         }
 
-        return self::SUCCESS;
+        $this->line(json_encode($service->strikeReport, JSON_THROW_ON_ERROR));
+
+        return ($service->strikeReport['failed'] ?? 0) > 0 ? self::FAILURE : self::SUCCESS;
     }
 }

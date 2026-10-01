@@ -11,6 +11,8 @@ use Illuminate\Support\Str;
 
 class MobilityAlertSyncService
 {
+    public array $strikeReport = [];
+
     public function splitTelegramStatusEvents(string $title): array
     {
         $clean = $this->cleanTitle($title);
@@ -61,6 +63,8 @@ class MobilityAlertSyncService
      */
     public function filterRepresentedRawAlerts(Collection $alerts): Collection
     {
+        $alerts = $alerts->reject(fn (MobilityAlert $alert): bool => data_get($alert->strike_metadata, 'status') === 'cancelled')->values();
+
         $normalizedIdentities = $alerts
             ->filter(fn (MobilityAlert $alert): bool => $this->isNormalizedRepresentation($alert))
             ->flatMap(fn (MobilityAlert $alert): array => $this->representationIdentities($alert))
@@ -252,7 +256,9 @@ class MobilityAlertSyncService
 
     protected function syncMitStrikes(): int
     {
-        return app(MobilityStrikeSyncService::class)->sync()['new'];
+        $this->strikeReport = app(MobilityStrikeSyncService::class)->sync();
+
+        return $this->strikeReport['new'];
     }
 
     protected function syncAtm(): int
