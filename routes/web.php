@@ -50,6 +50,10 @@ Route::livewire('/access/rejected', 'access.rejected')
     ->name('access.rejected');
 
 Route::middleware(['auth', 'approved'])->group(function () {
+    Route::get('/knowledge', [\App\Http\Controllers\KnowledgeController::class, 'roadmap'])->name('knowledge.roadmap');
+    Route::get('/knowledge/entities', [\App\Http\Controllers\KnowledgeController::class, 'catalog'])->name('knowledge.entities');
+    Route::get('/knowledge/entities/{entity}', [\App\Http\Controllers\KnowledgeController::class, 'show'])->name('knowledge.show');
+
     Route::livewire('/home', 'page-home')->name('page-home');
 
     Route::livewire('/home/instructions', 'home.page-instructions')

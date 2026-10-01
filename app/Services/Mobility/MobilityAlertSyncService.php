@@ -252,12 +252,7 @@ class MobilityAlertSyncService
 
     protected function syncMitStrikes(): int
     {
-        return $this->syncGenericPage(
-            source: 'mit',
-            url: 'https://scioperi.mit.gov.it/mit2/public/scioperi',
-            forcedType: 'strike',
-            forcedRisk: 'high'
-        );
+        return app(MobilityStrikeSyncService::class)->sync()['new'];
     }
 
     protected function syncAtm(): int

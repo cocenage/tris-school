@@ -17,7 +17,7 @@ class MobilityAdminAlertsCommand extends Command
 
     public function handle(): int
     {
-        $query = MobilityAlert::query()
+        $query = MobilityAlert::query()->whereNull('strike_metadata')
             ->where(function ($query) {
                 $query->where('type', 'strike')
                     ->orWhere('risk', 'high')
