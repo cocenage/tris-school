@@ -26,6 +26,7 @@ beforeEach(function (): void {
     config([
         'app.timezone' => 'Europe/Rome',
         'queue.default' => 'database',
+        'services.telegram.main_bot_auto_replies_enabled' => false,
         'database.default' => 'sqlite',
         'database.connections.sqlite.database' => ':memory:',
         'database.connections.analytics.database' => ':memory:',

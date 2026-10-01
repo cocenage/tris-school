@@ -33,9 +33,20 @@ class TelegramOperationalInterpreter
             return $this->noEvent('ordinary_conversation', $assistant['category'], $isQuestion);
         }
 
+        // Match asserted predicates, not negated defect labels or hypothetical instructions.
+        // Keep the original source text for the summary and existing subject construction.
+        $assertedText = $this->assertedSignalText($normalized);
+        if ($this->isDefectClassificationQuestion($assertedText)) {
+            $assertedText = $this->classificationFactualText($assertedText);
+            if (! $this->hasIndependentIncidentReport($assertedText)) {
+                return $this->noEvent('ordinary_conversation', $assistant['category'], $isQuestion);
+            }
+        }
+        $signalCategory = $this->assistantClassifier->classify($assertedText)['category'];
+
         $isUncertain = preg_match(self::UNCERTAIN_PATTERN, $normalized) === 1;
 
-        $signal = $this->detectSignal($normalized, $assistant['category'], $isQuestion);
+        $signal = $this->detectSignal($assertedText, $signalCategory, $isQuestion);
 
         if ($signal === null) {
             return $this->noEvent('ordinary_conversation', $assistant['category'], $isQuestion);
@@ -163,7 +174,7 @@ class TelegramOperationalInterpreter
                 'confidence' => 'high',
             ],
             [
-                'pattern' => '/(проблем|не\s+работает|слом|нет\s+ключ|не\s+откры|не\s+включа\S*\s+подсветк|ошибк|не\s+могу)/ui',
+                'pattern' => '/(проблем|не\s+работает|слом|нет\s+ключ|не\s+откры|не\s+включается\b|не\s+включа\S*\s+подсветк|ошибк|не\s+могу)/ui',
                 'type' => 'problem',
                 'role' => 'report',
                 'transition' => 'created',
@@ -316,7 +327,48 @@ class TelegramOperationalInterpreter
 
     private function isGenericReassurance(string $text): bool
     {
-        return preg_match('/^(?:да[, ]+)?(?:думаю|наверное|скорее всего)\s*,?\s*(?:не\s+проблема(?:\s+будет)?|проблем\S*\s+не\s+будет|всё\s+будет\s+хорошо)[.! ]*$/ui', $text) === 1;
+        return preg_match('/^(?:да[, ]+)?(?:думаю|наверное|скорее всего)\s*,?\s*(?:не\s+проблема(?:\s+будет)?|проблем\S*\s+не\s+будет|всё\s+будет\s+хорошо)[.!\s\p{So}\p{Sk}\x{FE0F}]*$/ui', $text) === 1;
+    }
+
+    private function assertedSignalText(string $text): string
+    {
+        $text = preg_replace(
+            '/(?<!\p{L})(?:брак\s+не\s+(?:делал|отмечал|оформлял)\p{L}*|не\s+(?:делал|отмечал|оформлял)\p{L}*\s+брак|не\s+брак(?:ован\p{L}*)?)(?!\p{L})/ui',
+            ' ',
+            $text,
+        );
+
+        return trim((string) preg_replace_callback(
+            '/(?<!\p{L})если\b[^.!?;\n]*?(?=[.!?;\n]|\b(?:но|а)\s+(?:сейчас|сегодня|у\s+меня)\b|$)/ui',
+            function (array $match): string {
+                $conditional = $match[0];
+                $problem = preg_match('/(?:не\s+(?:работ|откры|включ|горит)|слом|брак|дефект)/ui', $conditional) === 1;
+                $guidance = preg_match('/(?:,\s*то\b|\b(?:открываем|закрываем|используем|нужно|надо|должна|должно|должен)\b)/ui', $conditional) === 1;
+
+                return $problem && $guidance ? ' ' : $conditional;
+            },
+            (string) $text,
+        ));
+    }
+
+    private function isDefectClassificationQuestion(string $text): bool
+    {
+        return preg_match('/(?<!\p{L})(?:(?:отмечать|помечать|считать|оформлять)\b[^.!?;\n]{0,80}\b(?:как|браком)\b|(?:делать|оформлять)\s+брак\b)[^.!;\n]*\?/ui', $text) === 1;
+    }
+
+    private function classificationFactualText(string $text): string
+    {
+        // Preserve factual clauses before and after the question, excluding its proposed label.
+        $parts = preg_split('/(?<!\p{L})(?:отмечать|помечать|считать|оформлять|делать)\b/ui', $text, 2);
+
+        return $parts[0].' '.(explode('?', $parts[1] ?? '', 2)[1] ?? '');
+    }
+
+    private function hasIndependentIncidentReport(string $text): bool
+    {
+        return preg_match('/(?:не\s+(?:работает|открывается|включается|горит)|сломал\p{L}*|сломана|сломано)/ui', $text) === 1
+            || preg_match('/(?<!\p{L})(?:нашла|нашёл|нашел|обнаружил\p{L}*|выявил\p{L}*)\b[^.!?;\n]{0,80}(?:брак|дефект|поломк|пятн)/ui', $text) === 1
+            || preg_match('/(?:^|[.!;]\s*)(?:(?:брак|дефект)\s+[^,.!?;]{1,60}|(?:\p{L}+\s+){1,3}(?:брак|бракован\p{L}*))\s*(?:[,.;]|$)/ui', $text) === 1;
     }
 
     private function isGeneralProcedure(string $text): bool

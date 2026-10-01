@@ -737,6 +737,10 @@ private function editDayOffRequestMessage(
 
     private function sendPrivateFallbackMessageStrict(array $message): void
     {
+        if (! config('services.telegram.main_bot_auto_replies_enabled', false)) {
+            return;
+        }
+
         $chatId = data_get($message, 'chat.id');
 
         if (! $chatId) {

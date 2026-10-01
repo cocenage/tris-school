@@ -18,9 +18,11 @@ class MobilityAlert extends Model
         'ends_at',
         'sent_at',
         'external_hash',
+        'strike_metadata',
     ];
 
     protected $casts = [
+        'strike_metadata' => 'array',
         'starts_at' => 'date',
         'ends_at' => 'date',
         'sent_at' => 'datetime',

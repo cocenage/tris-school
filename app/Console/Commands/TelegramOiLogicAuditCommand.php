@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramTopicPresenter;
+use App\Services\Telegram\TelegramOiCurrentInterpretationAudit;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Console\Command;
@@ -22,6 +23,7 @@ class TelegramOiLogicAuditCommand extends Command
         {--district= : Optional configured district key}
         {--event= : Optional ledger event ID or exact event key}
         {--apartment= : Optional apartment ID}
+        {--compare-current : Compare current message interpretation with stored ledger links (maximum 500 messages)}
         {--json : Emit machine-readable audit data}';
 
     protected $description = 'Inspect existing OI decisions, evidence, lifecycle, and bounded Telegram context without writes';
@@ -34,6 +36,7 @@ class TelegramOiLogicAuditCommand extends Command
         TelegramEveningIntelligenceBuilder $builder,
         TelegramDistrictRouteRegistry $districts,
         TelegramTopicPresenter $topics,
+        TelegramOiCurrentInterpretationAudit $comparisonAudit,
     ): int {
         $date = $this->dateOption();
 
@@ -44,13 +47,33 @@ class TelegramOiLogicAuditCommand extends Command
         $district = null;
 
         if (filled($this->option('district'))) {
-            $district = $districts->find((string) $this->option('district'));
+            $district = $this->option('compare-current')
+                ? $districts->sourceRoutes()->firstWhere('key', mb_strtolower(trim((string) $this->option('district'))))
+                : $districts->find((string) $this->option('district'));
 
             if ($district === null) {
                 $this->error('District route is not configured or is incomplete.');
 
                 return self::FAILURE;
             }
+        }
+
+        if ($this->option('compare-current')) {
+            try {
+                $comparison = $comparisonAudit->build($date, $district, $this->option('event'), $this->option('apartment'));
+            } catch (Throwable) {
+                $this->error('Current interpretation audit could not read the ledger and Telegram messages.');
+
+                return self::FAILURE;
+            }
+
+            if ($this->option('json')) {
+                $this->line(json_encode($comparison, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            } else {
+                $comparisonAudit->render($this, $comparison);
+            }
+
+            return self::SUCCESS;
         }
 
         try {

@@ -271,6 +271,12 @@ class TelegramDigestFormatter
             }
         }
 
+        if ($sections->isEmpty()) {
+            $lines[] = '';
+            $lines[] = 'За день:';
+            $lines[] = 'Новых значимых событий не зафиксировано.';
+        }
+
         return implode("\n", $lines);
     }
 

@@ -15,9 +15,12 @@ class MobilityAlertMessage extends Model
         'text',
         'sent_at',
         'deleted_at',
+        'delivery_key',
+        'queued_at',
     ];
 
     protected $casts = [
+        'queued_at' => 'datetime',
         'sent_at' => 'datetime',
         'deleted_at' => 'datetime',
     ];

@@ -15,6 +15,10 @@ class TelegramInstructionAutoReplyService
 
     public function handle(TelegramMessage $message): void
     {
+        if (! config('services.telegram.main_bot_auto_replies_enabled', false)) {
+            return;
+        }
+
         if ($message->message_type !== 'text') {
             return;
         }

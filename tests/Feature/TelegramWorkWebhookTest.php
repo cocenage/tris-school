@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Schema;
 beforeEach(function () {
     config([
         'services.telegram.bot_token' => 'test-token',
+        'services.telegram.main_bot_auto_replies_enabled' => true,
         'services.telegram.work_webhook_secret' => 'test-secret',
         'services.telegram.work_allowed_chat_ids' => ['-100'],
         'services.telegram.rich_messages_enabled' => true,
@@ -151,6 +152,15 @@ it('keeps work-message observation disabled by default', function () {
     ])->assertOk();
 
     Queue::assertNothingPushed();
+});
+
+it('suppresses the private automatic fallback when replies are disabled', function () {
+    config(['services.telegram.main_bot_auto_replies_enabled' => false]);
+    Http::fake();
+
+    $this->postJson('/telegram/work-webhook/test-secret', privateWebhookPayload())->assertOk();
+
+    Http::assertNothingSent();
 });
 
 it('answers private messages without ingesting or invoking the assistant', function () {
