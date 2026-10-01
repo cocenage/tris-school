@@ -3,6 +3,74 @@
 use App\Services\Telegram\TelegramAssistantClassifier;
 use App\Services\Telegram\TelegramOperationalInterpreter;
 
+it('ignores procedural classifications, hypothetical guidance and negated defect predicates', function (string $text) {
+    $decision = operationalInterpreter()->interpret($text);
+
+    expect($decision)->toMatchArray([
+        'meaningful' => false,
+        'primary_type' => null,
+        'role' => null,
+        'confidence' => null,
+        'reason_code' => 'ordinary_conversation',
+        'subject_key' => null,
+        'summary' => null,
+    ]);
+})->with([
+    'mark existing item' => ['Там лежит одно бракованное белье, помечать его как «usata»?'],
+    'system classification' => ['Одно синголо без наволочки, я его положила в синий пакет и отметила красной наклейкой. Его отмечать в программе как бракованное?'],
+    'negated defect action' => ['Не было коврика для ног, взяла в запечатанном, брак не делала'],
+    'conditional lock guidance' => ['Если не работает электронный замок, то ключом только открываем, а закрываться она должна автоматически'],
+    'prefixed lock explanation' => ['На ключ нет... Если не работает электронный замок, то ключом только открываем, а закрываться она должна автоматически'],
+    'reassurance' => ['Да, думаю не проблема будет'],
+    'emoji reassurance' => ['Да, думаю не проблема будет 👌'],
+    'emoji modifier' => ['Да, думаю не проблема будет 👌🏻'],
+    'not a defect' => ['Это не брак.'],
+    'not marked' => ['БРАК не отмечала!'],
+    'not made' => ['не делала брак'],
+    'not defective' => ['Это не бракованное бельё.'],
+    'classify as defect' => ['Считать это браком?'],
+]);
+
+it('preserves asserted facts despite questions, instructions or a separate negated defect predicate', function (string $text, string $type) {
+    $decision = operationalInterpreter()->interpret($text);
+
+    expect($decision['meaningful'])->toBeTrue()
+        ->and($decision['primary_type'])->toBe($type)
+        ->and($decision['summary'])->toBe($text)
+        ->and($decision['role'])->toBe('report');
+})->with([
+    ['Коврик брак', 'quality_issue'],
+    ['Брак наволочки. Есть замена', 'quality_issue'],
+    ['Вытяжка не работает', 'problem'],
+    ['Не работает свет', 'problem'],
+    ['Не включается вытяжка', 'problem'],
+    ['Дверь не открывается', 'problem'],
+    ['Дверь не открывается, что делать?', 'problem'],
+    ['У меня сломалась вешалка, что делать?', 'problem'],
+    ['Нашла бракованную простыню, куда её положить?', 'quality_issue'],
+    ['Простыня бракованная, куда её положить?', 'quality_issue'],
+    ['Нашла бракованную простыню, отмечать её как бракованное?', 'quality_issue'],
+    ['Коврик брак, отмечать его как бракованное?', 'quality_issue'],
+    ['Дверь не открывается, отмечать в программе как брак?', 'problem'],
+    ['Его отмечать как бракованное? Нашла бракованную простыню.', 'quality_issue'],
+    ['Брак не отмечала, дверь не открывается.', 'problem'],
+    ['Это не брак. Вытяжка не работает.', 'problem'],
+    ['Брак не делала, но нашла бракованную простыню.', 'quality_issue'],
+    ['Электронный замок сейчас не работает. Если не работает электронный замок, то используем ключ.', 'problem'],
+    ['Если не работает электронный замок, то используем ключ, но сейчас дверь не открывается.', 'problem'],
+    ['Если не работает электронный замок, то используем ключ. Сейчас дверь не открывается.', 'problem'],
+    ['Курьер не забрал грязное бельё, брак не отмечала.', 'quality_issue'],
+]);
+
+it('preserves existing completed-replacement interpretation', function () {
+    expect(operationalInterpreter()->interpret('Брак пододеяльника. Заменила.'))->toMatchArray([
+        'meaningful' => true,
+        'primary_type' => 'quality_issue',
+        'role' => 'resolution',
+        'transition' => 'resolved',
+    ]);
+});
+
 function operationalInterpreter(): TelegramOperationalInterpreter
 {
     return new TelegramOperationalInterpreter(new TelegramAssistantClassifier);

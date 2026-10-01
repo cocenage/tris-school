@@ -86,12 +86,12 @@ class TelegramAssistantService
             ])->save();
 
             $answer = 'Спасибо, уточнение получил. Я передал обращение ответственному сотруднику.';
-            $botMessageId = $this->bot->sendMessage(
+            $botMessageId = config('services.telegram.main_bot_auto_replies_enabled', false) ? $this->bot->sendMessage(
                 $chatId,
                 $answer,
                 $topicId,
                 (string) $message->message_id,
-            );
+            ) : null;
 
             if ($botMessageId) {
                 $request->forceFill(['last_bot_message_id' => (string) $botMessageId])->save();
@@ -134,12 +134,12 @@ class TelegramAssistantService
             : 'Я зафиксировал сообщение как «' . $categoryLabel . '».'
                 . ($question ? "\n\n{$question}" : "\n\nЯ передам его ответственному сотруднику.");
 
-        $botMessageId = $this->bot->sendMessage(
+        $botMessageId = config('services.telegram.main_bot_auto_replies_enabled', false) ? $this->bot->sendMessage(
             $chatId,
             $answer,
             $topicId,
             (string) $message->message_id,
-        );
+        ) : null;
 
         if ($botMessageId) {
             $request->forceFill(['last_bot_message_id' => (string) $botMessageId])->save();

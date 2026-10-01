@@ -147,10 +147,11 @@ class TelegramEveningIntelligenceBuilder
         $editorialItems = $projected
             ->map(fn (array $item): array => $this->editorialize($item, $start, $cutoff))
             ->values();
-        $items = $projected
+        $items = $editorialItems
+            ->filter(fn (array $item): bool => $item['editorial']['relevant_today'])
             ->filter(fn (array $item) => $this->shouldInclude($item))
             ->map(function (array $item): array {
-                unset($item['_citation_candidates']);
+                unset($item['_citation_candidates'], $item['editorial']);
 
                 return $item;
             })
@@ -528,7 +529,8 @@ class TelegramEveningIntelligenceBuilder
         $renderOutcome = [];
         $resolution = null;
 
-        if (($human['include'] ?? false) === true && $summary !== null) {
+        // Historical projections remain available to audits, but never enter human output.
+        if ($relevantToday && ($human['include'] ?? false) === true && $summary !== null) {
             if ($completed && $relevantToday) {
                 $state = 'completed';
 

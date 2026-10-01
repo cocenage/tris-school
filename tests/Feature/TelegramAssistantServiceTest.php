@@ -13,6 +13,7 @@ beforeEach(function () {
     config([
         'database.connections.analytics.database' => ':memory:',
         'services.telegram.bot_token' => 'test-token',
+        'services.telegram.main_bot_auto_replies_enabled' => true,
         'services.telegram.assistant_enabled' => true,
         'services.telegram.assistant_staff_chat_id' => '-100staff',
         'services.telegram.assistant_staff_thread_id' => null,
@@ -148,6 +149,20 @@ it('stores an activated Telegram request and does not duplicate retries', functi
         ->and(DB::connection('analytics')->table('telegram_assistant_requests')->count())->toBe(1)
         ->and(DB::connection('analytics')->table('telegram_assistant_request_messages')->count())->toBe(1)
         ->and(Http::recorded())->toHaveCount(2);
+});
+
+it('keeps assistant persistence and staff routing while suppressing user replies', function () {
+    config(['services.telegram.main_bot_auto_replies_enabled' => false]);
+    Http::fake(fn () => Http::response(['ok' => true, 'result' => ['message_id' => 900]]));
+    $data = assistantTestMessage('Завтра не смогу выйти на смену');
+
+    $request = app(TelegramAssistantService::class)->handle($data['model'], $data['payload']);
+
+    expect($request)->not->toBeNull()
+        ->and($request->last_bot_message_id)->toBeNull()
+        ->and(DB::connection('analytics')->table('telegram_assistant_request_messages')->count())->toBe(1);
+    Http::assertSentCount(1);
+    Http::assertSent(fn ($outgoing): bool => $outgoing['chat_id'] === '-100staff');
 });
 
 it('ignores ordinary group messages without creating an assistant request', function () {

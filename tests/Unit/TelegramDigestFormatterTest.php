@@ -148,7 +148,7 @@ it('hides empty editorial sections and refuses to infer from raw ledger sections
         'editorial_sections' => [],
     ]);
 
-    expect($text)->toBe('🌙 Navigli — итоги дня')
+    expect($text)->toBe("🌙 Navigli — итоги дня\n\nЗа день:\nНовых значимых событий не зафиксировано.")
         ->not->toContain('Не работает дверь')
         ->not->toContain('Осталось сделать:');
 });
