@@ -11,6 +11,34 @@ class TelegramEveningHumanComposer
         private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
     ) {}
 
+    public function isDailyProblem(array $item, array $human): bool
+    {
+        if (! ($human['include'] ?? false) || blank($human['summary'] ?? null)
+            || collect($item['types'] ?? [])->intersect(['problem', 'quality_issue', 'risk', 'delay'])->isEmpty()) {
+            return false;
+        }
+
+        return collect($item['_citation_candidates'] ?? [])->contains(function (array $source) use ($item): bool {
+            $text = (string) ($source['text'] ?? '');
+            if (! in_array($source['role'] ?? null, ['report', 'recurrence'], true)
+                || str_contains($text, '?')
+                || $this->isInstructionOrRoutine($text)) {
+                return false;
+            }
+
+            if ($this->hasConfirmedInventoryShortage($text, collect([$text]))) {
+                return true;
+            }
+            if ($this->isConcreteQuestion($text)) {
+                return false;
+            }
+
+            return $this->isAccessIssue($text)
+                || (preg_match('/не\s+(?:могу\s+)?найти|не\s+нашл/iu', $text) !== 1 && $this->hasConcreteOperationalObjectAndFact($text))
+                || (in_array('delay', $item['types'] ?? [], true) && preg_match('/задерж|опозд|не\s+успе/iu', $text) === 1);
+        });
+    }
+
     /** @return array{include: bool, handled: bool, decision: 'omit'|'composed'|'raw_safe'|'technical_failure', summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool, completed?: bool} */
     public function compose(array $item): array
     {
@@ -30,6 +58,12 @@ class TelegramEveningHumanComposer
         // Only a thrown technical error may trigger the formatter's legacy fallback.
         if (collect($item['evidence'] ?? [])->pluck('local_message_id')->filter(fn (mixed $id): bool => is_numeric($id))->isEmpty()) {
             return $this->omit();
+        }
+
+        // Explicitly taking a replacement closes this textile defect in the
+        // human report, even if a legacy ledger row still says open.
+        if (preg_match('/(?:плед|одеял|простын|наволоч|полотен|пододеял).{0,60}(?:грязн|пятн|брак).{0,60}(?<!не\s)(?:взял[аи]?|поставил[аи]?)\s+нов/iu', $context) === 1) {
+            return $this->result($summary, null, completed: true);
         }
 
         if ($this->isContextDependentChatter($summary)) {
@@ -85,9 +119,7 @@ class TelegramEveningHumanComposer
         }
 
         if ($this->isAccessIssue($context)) {
-            $detail = preg_match('/консьерж/iu', $context) === 1
-                ? 'Проблема с доступом: консьерж отсутствовал, дверь не открывали.'
-                : 'Проблема с доступом: дверь была закрыта, никто не открыл.';
+            $detail = 'Проблема с доступом: '.$summary;
 
             return $this->result($detail, $isOpen ? 'Проверить доступ в квартиру.' : null);
         }
@@ -190,7 +222,7 @@ class TelegramEveningHumanComposer
         if (preg_match('/вытяжк/iu', $context) === 1
             && preg_match('/не\s+работает|слом/iu', $context) === 1) {
             return $this->result(
-                'На кухне не работает вытяжка.',
+                preg_match('/кухн/iu', $context) === 1 ? 'На кухне не работает вытяжка.' : 'Не работает вытяжка.',
                 $isOpen ? 'Проверить, работает ли вытяжка на кухне.' : null,
             );
         }
@@ -209,7 +241,7 @@ class TelegramEveningHumanComposer
         if (preg_match('/жалюз/iu', $context) === 1
             && preg_match('/упал/iu', $context) === 1
             && preg_match('/не\s+могу\s+повесить|не\s+удалос\S*.{0,30}повесить|высок/iu', $context) === 1) {
-            return $this->result('Упали жалюзи; установить обратно не удалось из-за высоты.', null);
+            return $this->result('Упали жалюзи; установить обратно не удалось'.(preg_match('/высок/iu', $context) === 1 ? ' из-за высоты.' : '.'), null);
         }
 
         if (preg_match('/пульт/iu', $context) === 1
@@ -495,8 +527,8 @@ class TelegramEveningHumanComposer
 
     private function hasConcreteOperationalObjectAndFact(string $text): bool
     {
-        $object = '(?:жалюз|простын|полотен|пододеял|бель[еёя]|вешалк|свет|подсвет|вытяжк|локер|код|двер|замок|окн|ручк|переключател|пульт|кондиционер|посудомоечн|посуд|кран|раковин|душ|ванн|унитаз|шкаф|холодильник|плита|духовк|чайник|утюг|фен|ламп|розетк|ключ|бумаг|инвентар|средств|коврик|мебел|диван|кровать|матрас|одеял|конверт|курьер|плитк)';
-        $fact = '(?:не\s+работа\S*|не\s+включа\S*|слом\S*|брак\S*|поврежд\S*|дефект\S*|грязн\S*|пятн\S*|теч\S*|протека\S*|упал\S*|отвал\S*|тресн\S*|неверн\S*|ошибк\S*|не\s+хвата\S*|отсутств\S*|не\s+(?:могу\s+)?найти\S*|не\s+нашл\S*|не\s+забрал\S*|забрал\s+не\s+вс[её]\S*|замен\S*\s+нет|почин\S*|исправ\S*|установ\S*|нет\s+(?:запасн\S*\s+)?(?:бумаг\S*|ключ\S*|полотен\S*|бель\S*|пульт\S*|вешалк\S*|инвентар\S*|средств\S*))';
+        $object = '(?:жалюз|наволоч|плед|простын|полотен|пододеял|бель[еёя]|вешалк|свет|подсвет|вытяжк|локер|код|двер|замок|окн|ручк|переключател|пульт|кондиционер|посудомоечн|посуд|кран|раковин|душ|ванн|унитаз|шкаф|холодильник|плита|духовк|чайник|утюг|фен|ламп|розетк|ключ|бумаг|инвентар|средств|коврик|мебел|диван|кровать|матрас|одеял|конверт|курьер|плитк)';
+        $fact = '(?:не\s+работа\S*|не\s+включа\S*|слом\S*|брак\S*|поврежд\S*|дефект\S*|плесен\S*|грязн\S*|пятн\S*|теч\S*|протека\S*|упал\S*|отвал\S*|тресн\S*|неверн\S*|ошибк\S*|не\s+хвата\S*|отсутств\S*|не\s+(?:могу\s+)?найти\S*|не\s+нашл\S*|не\s+забрал\S*|забрал\s+не\s+вс[её]\S*|замен\S*\s+нет|почин\S*|исправ\S*|установ\S*|нет\s+(?:запасн\S*\s+)?(?:бумаг\S*|ключ\S*|полотен\S*|бель\S*|пульт\S*|вешалк\S*|инвентар\S*|средств\S*))';
 
         $clauses = preg_split('/[.!?;]+|,\s*(?=(?:а|но|и|поэтому|значит|тогда)\b)/iu', $text) ?: [];
 
