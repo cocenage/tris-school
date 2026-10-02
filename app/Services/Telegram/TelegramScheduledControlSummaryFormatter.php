@@ -3,60 +3,66 @@
 namespace App\Services\Telegram;
 
 use Carbon\CarbonImmutable;
-use Illuminate\Support\Str;
 
 class TelegramScheduledControlSummaryFormatter
 {
     public function format(array $summary): string
     {
-        $totals = $summary['totals'];
-        $text = '📊 Контрольные рассылки · '.CarbonImmutable::parse($summary['date'])->format('d.m.Y')."\n\nЗа день:\n";
-        foreach (['controls' => 'Контрольных точек', 'responded' => 'С ответом', 'no_response' => 'Без ответа', 'problem' => 'С проблемами', 'partial' => 'Частично', 'pending' => 'Ожидаем ответ', 'not_delivered' => 'Не доставлено'] as $key => $label) {
-            $text .= '• '.$label.': '.$totals[$key]."\n";
+        $text = '📊 TRIS — контроль дня · '.CarbonImmutable::parse($summary['date'])->format('d.m.Y')."\n";
+        if ($summary['controls'] === []) {
+            return $text."\n✅ Контрольных сообщений за день не было.\n";
         }
-        if ($totals['median_response_latency_seconds'] !== null) {
-            $text .= 'Медиана ответа: '.$this->latency($totals['median_response_latency_seconds'])."\n";
+
+        $text .= "\nКонтрольные точки\n";
+        foreach ($summary['controls'] as $control) {
+            $label = $control['label'];
+            $exceptionCount = collect($control['responses'])->whereIn('status', ['problem', 'partial'])->count();
+            $text .= match ($control['status']) {
+                'ok' => '✅ '.$label." без отклонений\n",
+                'problem' => '⚠️ '.$label.': '.$exceptionCount.' отклон.'."\n",
+                'unknown' => '❔ '.$label.": ответы неоднозначны\n",
+                default => '• '.$label.": подтверждений нет\n",
+            };
         }
         $shown = 0;
-        foreach ($summary['deliveries'] as $delivery) {
-            $section = "\n".CarbonImmutable::parse($delivery['scheduled_for'])->format('H:i').' · '.Str::limit($delivery['name'], 90)."\n";
-            $section .= 'Ответили: '.$delivery['unique_responder_count']." сотрудника\n";
-            if ($delivery['unidentified_response_messages'] > 0) {
-                $section .= 'Ответов без идентификатора автора: '.$delivery['unidentified_response_messages']."\n";
+        foreach ($summary['exceptions'] as $exception) {
+            $section = "\nОтклонения\n";
+            $where = $exception['district'] ?? $exception['apartment'] ?? null;
+            $controlLabel = ScheduledControlTypes::LABELS[$exception['control_type']] ?? $exception['control_type'];
+            $section .= '• '.($where ? $where.' — ' : '').$this->issueLine($exception)."\n";
+            if ($exception['reason']) {
+                $section .= '  Причина: '.$exception['reason']."\n";
             }
-            if ($delivery['median_response_latency_seconds'] !== null) {
-                $section .= 'Медиана ответа: '.$this->latency($delivery['median_response_latency_seconds'])."\n";
+            if ($exception['delay_minutes'] !== null) {
+                $section .= '  Задержка: '.$exception['delay_minutes'].' мин'."\n";
             }
-            foreach (['confirmed' => '✅ Подтверждено', 'problem' => '⚠️ Проблемы', 'partial' => '◐ Частично', 'unclear' => '❔ Неясно'] as $category => $label) {
-                if ($delivery['classification_counts'][$category]) {
-                    $section .= $label.': '.$delivery['classification_counts'][$category]." ответов\n";
-                }
+            if ($exception['resolved_later'] ?? false) {
+                $section .= '  ✅ Позже подтверждено завершение на контроле «'.$controlLabel.'».'."\n";
+            } else {
+                $section .= '  ⚠️ На последнем связанном контроле отклонение не закрыто.'."\n";
             }
-            if ($delivery['result'] === 'no_response') {
-                $section .= "❌ Без ответа\n";
-            } elseif ($delivery['delivery_status'] !== 'sent') {
-                $section .= "Сообщение не доставлено\n";
-            } elseif ($delivery['result'] === 'pending') {
-                $section .= "Окно ответа ещё открыто\n";
-            }
-            foreach ($delivery['exceptions'] as $exception) {
-                $section .= '• '.($exception['author_name'] ? Str::limit($exception['author_name'], 50).' — ' : '').$exception['text']."\n";
-            }
+            $author = filled($exception['author_name'] ?? null) ? $exception['author_name'].' · ' : '';
+            $section .= '  Источник: '.$author.CarbonImmutable::parse($exception['responded_at'])->format('H:i')
+                .' · сообщение '.$exception['source_message_id']."\n";
             if ($shown >= 12 || mb_strlen($text.$section) > 3400) {
                 break;
             }
             $text .= $section;
             $shown++;
         }
-        if ($shown < count($summary['deliveries'])) {
-            $text .= "\nЕщё контрольных точек: ".(count($summary['deliveries']) - $shown).'. Подробности доступны в админке.';
+        if ($summary['no_response_available'] === false) {
+            $text .= "\nℹ️ Список ожидаемых участников не настроен; отсутствие ответа не рассчитывается.\n";
         }
 
         return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
-    private function latency(float $seconds): string
+    private function issueLine(array $exception): string
     {
-        return $seconds < 60 ? (string) round($seconds).' сек' : (string) round($seconds / 60, 1).' мин';
+        if ($exception['district'] !== null && $exception['delay_minutes'] !== null) {
+            return 'Задержка начала уборки — '.$exception['delay_minutes'].' мин.';
+        }
+
+        return $exception['text'];
     }
 }

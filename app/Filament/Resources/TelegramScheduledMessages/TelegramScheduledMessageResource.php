@@ -48,12 +48,12 @@ class TelegramScheduledMessageResource extends Resource
                 ->required()
                 ->maxLength(255),
 
-            TextInput::make('control_type')
+            Select::make('control_type')
                 ->label('Тип сообщения')
-                ->helperText('Стабильный идентификатор, например control_question, reminder или information.')
+                ->options(\App\Services\Telegram\ScheduledControlTypes::options())
+                ->native(false)
                 ->required()
-                ->rules(['regex:/^[a-z][a-z0-9_]*$/'])
-                ->maxLength(100),
+                ->helperText('Выберите один из шести типов контрольных сообщений.'),
 
             Select::make('telegram_chat_record_id')
                 ->label('Telegram чат')

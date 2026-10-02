@@ -20,4 +20,9 @@ class TelegramScheduledMessageResponse extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function telegramMessage(): BelongsTo
+    {
+        return $this->belongsTo(TelegramMessage::class, 'telegram_message_record_id');
+    }
 }
