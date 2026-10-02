@@ -104,102 +104,55 @@ it('hides stale mobility presentation when no current event remains', function (
         ->not->toContain('Уточнить влияние транспортного ограничения');
 });
 
-it('renders only Builder editorial sections in handoff order', function () {
+it('renders one daily problem card with source metadata and no legacy sections', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'date' => '2026-08-03',
-        'timezone' => 'Europe/Rome',
-        // Raw ledger sections remain diagnostic data and are never rendered.
-        'sections' => [['key' => 'attention', 'items' => [[
-            'summary' => 'СТАРАЯ грязная посуда — открыто 8 дней',
-        ]]]],
+        'district' => ['label' => 'Como'], 'date' => '2026-09-30', 'timezone' => 'Europe/Rome',
+        'daily_problems' => [[
+            'event_key' => 'current', 'context_label' => 'Via Test 1', 'summary' => 'Не работает замок.',
+            'author_name' => 'Test Worker', 'source_time' => '2026-09-30T08:42:00Z',
+            'quote' => 'Не работает замок', 'source_url' => 'https://t.me/c/12345/42',
+        ]],
         'editorial_sections' => [
-            ['key' => 'day', 'items' => [['event_key' => 'today', 'context_label' => 'Via Tosi 11', 'summary' => 'Сотрудник сообщил о задержке.']]],
-            ['key' => 'resolved', 'items' => [['event_key' => 'resolved', 'context_label' => 'Via Savona 8', 'summary' => 'Проблема с доступом решена.']]],
-            ['key' => 'positive', 'items' => [['event_key' => 'positive', 'context_label' => 'Via Y', 'summary' => 'Анна заметила дефект до заезда.']]],
-            ['key' => 'attention', 'items' => [['event_key' => 'active', 'context_label' => 'Via Alfredo Panzini 13', 'summary' => 'Проблема с доступом: дверь не открывали.']]],
-            ['key' => 'actions', 'items' => [['event_key' => 'active', 'context_label' => 'Via Alfredo Panzini 13', 'summary' => 'Проверить доступ в квартиру.']]],
+            ['key' => 'carry_over', 'items' => [['summary' => 'Исторический дефект.']]],
+            ['key' => 'actions', 'items' => [['summary' => 'Проверить замок.']]],
+            ['key' => 'resolved', 'items' => [['summary' => 'Полотенце заменено.']]],
         ],
     ]);
 
-    expect($text)->toContain('🌙 Navigli — итоги дня · 03.08.2026')
-        ->toContain('За день:')
-        ->toContain('✅ Решено сегодня:')
-        ->toContain('⭐ Хорошая работа:')
-        ->toContain('🔄 Требует внимания:')
-        ->toContain('Осталось сделать:')
-        ->not->toContain('СТАРАЯ грязная посуда')
-        ->not->toContain('Открыто')
-        ->not->toContain('Переходящие проблемы')
-        ->not->toContain('Открытых вопросов на конец дня нет.')
-        ->not->toContain('⚠️ Повторяется')
-        ->and(strpos($text, 'За день:'))->toBeLessThan(strpos($text, '✅ Решено сегодня:'))
-        ->and(strpos($text, '✅ Решено сегодня:'))->toBeLessThan(strpos($text, '⭐ Хорошая работа:'))
-        ->and(strpos($text, '⭐ Хорошая работа:'))->toBeLessThan(strpos($text, '🔄 Требует внимания:'))
-        ->and(strpos($text, '🔄 Требует внимания:'))->toBeLessThan(strpos($text, 'Осталось сделать:'));
+    expect($text)->toBe("🌙 Como — проблемы за день · 30.09.2026\nНезакрытых проблем: 1\n\n• Via Test 1 — Не работает замок.\n  👤 Test Worker · 10:42\n  💬 «Не работает замок»\n  🔗 https://t.me/c/12345/42")
+        ->not->toContain('Исторический дефект', 'Проверить замок', 'Полотенце заменено', 'Осталось сделать');
 });
 
-it('hides empty editorial sections and refuses to infer from raw ledger sections', function () {
+it('renders a clean empty state and never falls back to diagnostic sections', function (?string $district) {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Navigli'],
-        'sections' => [['key' => 'attention', 'items' => [[
-            'summary' => 'Не работает дверь, проверьте срочно.', 'status' => 'open', 'types' => ['problem'],
-        ]]]],
-        'editorial_sections' => [],
+        'district' => $district === null ? null : ['label' => $district],
+        'date' => '2026-09-30', 'daily_problems' => [],
+        'sections' => [['key' => 'attention', 'items' => [['summary' => 'Старый дефект.']]]],
+        'editorial_sections' => [['key' => 'carry_over', 'items' => [['summary' => 'Старый дефект.']]]],
     ]);
 
-    expect($text)->toBe("🌙 Navigli — итоги дня\n\nЗа день:\nНовых значимых событий не зафиксировано.")
-        ->not->toContain('Не работает дверь')
-        ->not->toContain('Осталось сделать:');
-});
+    expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано.");
+})->with([null, 'Navigli']);
 
-it('separates current-day content from dated carry-over without rendering its old author or quote', function () {
+it('omits missing source metadata without inventing a person or link', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Como'],
-        'date' => '2026-09-30',
-        'timezone' => 'Europe/Rome',
-        'editorial_sections' => [
-            ['key' => 'day', 'items' => [[
-                'event_key' => 'today',
-                'context_label' => 'Via Roma 1',
-                'summary' => 'Не работает свет.',
-            ]]],
-            ['key' => 'carry_over', 'items' => [[
-                'event_key' => 'older',
-                'context_label' => 'Via Verdi 2',
-                'summary' => 'Требуется ремонт матраса.',
-                'open_since' => '2026-09-24T08:00:00+02:00',
-                'next_action' => 'Проверить замену матраса.',
-                'author_name' => 'Старый автор',
-                'quote' => 'Старая цитата из чата',
-            ]]],
-        ],
-    ]);
-    $day = str($text)->between('За день:', '⚠️ Осталось с прошлых дней:')->toString();
-    $carryOver = str($text)->after('⚠️ Осталось с прошлых дней:')->toString();
-
-    expect($text)->toContain('🌙 Como — итоги дня · 30.09.2026')
-        ->and($day)->toContain('Не работает свет.')
-        ->not->toContain('Требуется ремонт матраса.', 'Проверить замену матраса.')
-        ->and($carryOver)->toContain('с 24.09', 'Требуется ремонт матраса.', 'Проверить замену матраса.')
-        ->not->toContain('Старый автор', 'Старая цитата из чата');
-});
-
-it('states explicitly when there are no current-day events even if carry-over exists', function () {
-    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
-        'district' => ['label' => 'Como'],
-        'date' => '2026-09-30',
-        'timezone' => 'Europe/Rome',
-        'editorial_sections' => [[
-            'key' => 'carry_over',
-            'items' => [[
-                'event_key' => 'older',
-                'summary' => 'Дефект еще не устранен.',
-                'open_since' => '2026-09-24T08:00:00+02:00',
-            ]],
+        'date' => '2026-09-30', 'daily_problems' => [[
+            'event_key' => 'current', 'summary' => 'Не работает свет.',
+            'author_name' => null, 'source_time' => null, 'quote' => null, 'source_url' => null,
         ]],
     ]);
 
-    expect($text)->toContain('За день:', 'Новых значимых событий не зафиксировано.', '⚠️ Осталось с прошлых дней:', 'с 24.09')
-        ->and(strpos($text, 'Новых значимых событий не зафиксировано.'))->toBeLessThan(strpos($text, '⚠️ Осталось с прошлых дней:'));
+    expect($text)->toContain('• Не работает свет.', 'Незакрытых проблем: 1')
+        ->not->toContain('👤', '🕒', '💬', '🔗', 'Unknown', '#');
+});
+
+it('escapes source text for the existing HTML Telegram transport', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-09-30', 'daily_problems' => [[
+            'event_key' => 'current', 'summary' => 'Не работает свет & вытяжка.',
+            'author_name' => 'Test & Worker', 'quote' => 'Свет & вытяжка не работают',
+        ]],
+    ]);
+
+    expect($text)->toContain('свет &amp; вытяжка', 'Test &amp; Worker', 'Свет &amp; вытяжка не работают');
 });

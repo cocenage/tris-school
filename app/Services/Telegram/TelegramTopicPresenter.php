@@ -64,6 +64,16 @@ class TelegramTopicPresenter
         return "https://t.me/c/{$matches[1]}/{$threadId}";
     }
 
+    public function messageUrl(string $chatId, string $messageId): ?string
+    {
+        if (! preg_match('/^-100(\d+)$/', $chatId, $matches)
+            || ! ctype_digit($messageId) || (int) $messageId < 1) {
+            return null;
+        }
+
+        return "https://t.me/c/{$matches[1]}/{$messageId}";
+    }
+
     public function isDutyTopic(TelegramTopic $topic): bool
     {
         $chatId = (string) $topic->chat?->telegram_chat_id;

@@ -231,103 +231,43 @@ class TelegramDigestFormatter
 
     private function renderEditorialEvening(array $preview, string $district): string
     {
-        $sections = collect($preview['editorial_sections'] ?? [])->keyBy('key');
+        $problems = collect($preview['daily_problems'] ?? []);
+        $timezone = (string) ($preview['timezone'] ?? config('app.timezone', 'Europe/Rome'));
         $date = filled($preview['date'] ?? null)
-            ? Carbon::parse((string) $preview['date'], (string) ($preview['timezone'] ?? config('app.timezone', 'Europe/Rome')))->format('d.m.Y')
+            ? Carbon::parse((string) $preview['date'], $timezone)->format('d.m.Y')
             : null;
-        $lines = ['🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня'.($date !== null ? ' · '.$date : '')];
+        $lines = ['🌙 '.htmlspecialchars($district !== '' ? $district : 'TRIS', ENT_QUOTES, 'UTF-8').' — проблемы за день'.($date !== null ? ' · '.$date : '')];
 
-        $lines[] = '';
-        $lines[] = 'За день:';
-        $dayItems = collect($sections->get('day')['items'] ?? []);
-        if ($dayItems->isEmpty()) {
-            $lines[] = 'Новых значимых событий не зафиксировано.';
-        } else {
-            $this->appendEditorialItems($lines, $dayItems, 'day');
+        if ($problems->isEmpty()) {
+            $lines[] = '';
+            $lines[] = '✅ Незакрытых проблем за день не зафиксировано.';
+
+            return implode("\n", $lines);
         }
 
-        foreach ([
-            'resolved' => '✅ Решено сегодня:',
-            'positive' => '⭐ Хорошая работа:',
-            'attention' => '🔄 Требует внимания:',
-            'carry_over' => '⚠️ Осталось с прошлых дней:',
-            'actions' => 'Осталось сделать:',
-        ] as $key => $heading) {
-            $items = collect($sections->get($key)['items'] ?? []);
-
-            if ($items->isEmpty()) {
-                continue;
-            }
-
+        $lines[] = 'Незакрытых проблем: '.$problems->count();
+        foreach ($problems as $problem) {
+            $context = $this->value($problem['context_label'] ?? null);
             $lines[] = '';
-            $lines[] = $heading;
-
-            if ($key === 'carry_over') {
-                foreach ($items as $item) {
-                    $context = $this->value($item['context_label'] ?? null);
-                    $summary = trim((string) ($item['summary'] ?? ''));
-                    if ($summary === '') {
-                        continue;
-                    }
-
-                    $since = null;
-                    if (filled($item['open_since'] ?? null)) {
-                        $since = Carbon::parse((string) $item['open_since'])
-                            ->setTimezone((string) ($preview['timezone'] ?? config('app.timezone', 'Europe/Rome')))
-                            ->format('d.m');
-                    }
-                    $prefix = $since !== null ? 'с '.$since : 'с предыдущих дней';
-                    $lines[] = '• '.$prefix.' — '.($context !== '' ? $context.' — ' : '').$summary;
-
-                    if (filled($item['next_action'] ?? null)) {
-                        $lines[] = '  ↳ Осталось сделать: '.$this->value($item['next_action']);
-                    }
-                }
-
-                continue;
+            $lines[] = '• '.htmlspecialchars(($context !== '' ? $context.' — ' : '').$this->value($problem['summary']), ENT_QUOTES, 'UTF-8');
+            $author = $this->value($problem['author_name'] ?? null);
+            $time = filled($problem['source_time'] ?? null)
+                ? Carbon::parse($problem['source_time'])->setTimezone($timezone)->format('H:i')
+                : null;
+            if ($author !== '') {
+                $lines[] = '  👤 '.htmlspecialchars($author, ENT_QUOTES, 'UTF-8').($time !== null ? ' · '.$time : '');
+            } elseif ($time !== null) {
+                $lines[] = '  🕒 '.$time;
             }
-
-            foreach ($items as $item) {
-                $context = $this->value($item['context_label'] ?? null);
-                $summary = trim((string) ($item['summary'] ?? ''));
-
-                if ($summary !== '') {
-                    $lines[] = '• '.($context !== '' ? $context.' — ' : '').$summary;
-
-                    if ($key !== 'actions' && filled($item['author_name'] ?? null)) {
-                        $lines[] = '  👤 '.$this->value($item['author_name']);
-                    }
-
-                    if ($key !== 'actions' && filled($item['quote'] ?? null)) {
-                        $lines[] = '  💬 «'.trim((string) $item['quote']).'»';
-                    }
-                }
+            if (filled($problem['quote'] ?? null)) {
+                $lines[] = '  💬 «'.htmlspecialchars($this->value($problem['quote']), ENT_QUOTES, 'UTF-8').'»';
+            }
+            if (filled($problem['source_url'] ?? null)) {
+                $lines[] = '  🔗 '.$problem['source_url'];
             }
         }
 
         return implode("\n", $lines);
-    }
-
-    private function appendEditorialItems(array &$lines, Collection $items, string $key): void
-    {
-        foreach ($items as $item) {
-            $context = $this->value($item['context_label'] ?? null);
-            $summary = trim((string) ($item['summary'] ?? ''));
-
-            if ($summary === '') {
-                continue;
-            }
-
-            $lines[] = '• '.($context !== '' ? $context.' — ' : '').$summary;
-
-            if ($key !== 'actions' && filled($item['author_name'] ?? null)) {
-                $lines[] = '  👤 '.$this->value($item['author_name']);
-            }
-
-            if ($key !== 'actions' && filled($item['quote'] ?? null)) {
-                $lines[] = '  💬 «'.trim((string) $item['quote']).'»';
-            }
-        }
     }
 
     private function openAgeLabel(array $item): string

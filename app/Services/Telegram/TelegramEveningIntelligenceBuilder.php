@@ -161,19 +161,14 @@ class TelegramEveningIntelligenceBuilder
 
         $sections = $this->sections($items);
         $editorialSections = $this->editorialSections($editorialItems);
+        $dailyProblems = $editorialItems
+            ->filter(fn (array $item): bool => $item['editorial']['daily_problem'])
+            ->unique('event_key')
+            ->map(fn (array $item): array => $this->editorialLine($item, $item['editorial']['summary'], 'problem'))
+            ->values()
+            ->all();
         $recurrences = $this->recurrences($recurrenceStart, $cutoff, $district);
-        $currentIncludedKeys = collect($editorialSections)
-            ->reject(fn (array $section): bool => $section['key'] === 'carry_over')
-            ->flatMap(fn (array $section) => $section['items'])
-            ->pluck('event_key')
-            ->unique()
-            ->values();
-        $carryOverSection = collect($editorialSections)->firstWhere('key', 'carry_over');
-        $carryOverIncludedKeys = collect($carryOverSection['items'] ?? [])
-            ->pluck('event_key')
-            ->unique()
-            ->values();
-        $included = $currentIncludedKeys->merge($carryOverIncludedKeys)->unique()->count();
+        $included = count($dailyProblems);
 
         return [
             'date' => $day->toDateString(),
@@ -190,11 +185,12 @@ class TelegramEveningIntelligenceBuilder
             })->all(),
             'sections' => $sections,
             'editorial_sections' => $editorialSections,
+            'daily_problems' => $dailyProblems,
             'recurrences' => $recurrences,
             'events_considered' => $events->count(),
             'events_included' => $included,
-            'current_events_included' => $currentIncludedKeys->count(),
-            'carry_over_events_included' => $carryOverIncludedKeys->count(),
+            'current_events_included' => $included,
+            'carry_over_events_included' => 0,
             'events_omitted' => max(0, $events->count() - $included),
             'no_material_events' => $included === 0,
             'data_quality' => [
@@ -434,9 +430,11 @@ class TelegramEveningIntelligenceBuilder
                 'transition' => $item->transition,
                 'occurred_at' => $item->occurred_at?->toIso8601String(),
                 'text' => $sourceText !== '' ? $this->compact($sourceText, 1000) : null,
+                'source_time' => $message->sent_at?->toIso8601String(),
+                'source_url' => $this->topicPresenter->messageUrl((string) $event->chat?->telegram_chat_id, (string) $message->message_id),
                 'author_name' => filled($linkedUser?->name)
                     ? $this->compact((string) $linkedUser->name, 80)
-                    : null,
+                    : (filled($telegramUser?->full_name) ? $this->compact((string) $telegramUser->full_name, 80) : null),
             ];
         })->all();
         $reportCount = $evidence
@@ -585,6 +583,8 @@ class TelegramEveningIntelligenceBuilder
             ...$item,
             'editorial' => [
                 'relevant_today' => $relevantToday,
+                'daily_problem' => $relevantToday && $activeStatus && ! $completed
+                    && $this->humanComposer->isDailyProblem($item, $human),
                 'state' => $state,
                 'needs_attention' => $needsAttention,
                 'next_action' => $nextAction,
@@ -674,12 +674,31 @@ class TelegramEveningIntelligenceBuilder
             'evidence' => $item['evidence'] ?? [],
             'author_name' => $support['author_name'] ?? null,
             'quote' => $support['quote'] ?? null,
+            'source_time' => $support['source_time'] ?? null,
+            'source_url' => $support['source_url'] ?? null,
         ];
     }
 
-    /** @return array{author_name: ?string, quote: string}|null */
+    /** @return array{author_name: ?string, quote: string, source_time?: ?string, source_url?: ?string}|null */
     private function primarySupportingEvidence(array $item, string $summary, string $section): ?array
     {
+        if ($section === 'problem') {
+            // Evidence is chronological: cite the originating report, not a later
+            // message selected merely for having more words in common.
+            $source = collect($item['_citation_candidates'] ?? [])
+                ->first(fn (array $candidate): bool => in_array($candidate['role'], ['report', 'recurrence'], true)
+                    && filled($candidate['text'])
+                    && $this->evidenceTerms($summary)->intersect($this->evidenceTerms($candidate['text']))->isNotEmpty()
+                    && $this->cleanEvidenceQuote($candidate['text']) !== '');
+
+            return $source === null ? null : [
+                'author_name' => $source['author_name'],
+                'quote' => $source['text'],
+                'source_time' => $source['source_time'],
+                'source_url' => $source['source_url'],
+            ];
+        }
+
         $summaryTerms = $this->evidenceTerms($summary)
             ->unique()
             ->values();
