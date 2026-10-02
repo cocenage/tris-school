@@ -13,23 +13,39 @@ class TelegramScheduledControlResponseService
 {
     public function __construct(private ScheduledControlResponseClassifier $classifier) {}
 
-    public function capture(TelegramMessage $stored, array $message): ?TelegramScheduledMessageResponse
+    /** @return array{status: 'matched'|'unmatched'|'ambiguous', delivery: ?TelegramScheduledMessageDelivery} */
+    public function resolveDelivery(array $message): array
     {
         $replyId = data_get($message, 'reply_to_message.message_id');
         $chatId = data_get($message, 'chat.id');
         $messageId = $message['message_id'] ?? null;
         if (! is_numeric($replyId) || ! is_numeric($chatId) || ! is_numeric($messageId) || data_get($message, 'from.is_bot', false)) {
-            return null;
+            return ['status' => 'unmatched', 'delivery' => null];
         }
         $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
         $candidates = TelegramScheduledMessageDelivery::query()->where('status', 'sent')->whereNotNull('sent_at')
             ->where('chat_id', (string) $chatId)->where('telegram_message_id', $replyId)
             ->where('message_thread_id', $threadId)->limit(2)->get();
-        if ($candidates->count() !== 1) {
+
+        return match ($candidates->count()) {
+            0 => ['status' => 'unmatched', 'delivery' => null],
+            1 => ['status' => 'matched', 'delivery' => $candidates->first()],
+            default => ['status' => 'ambiguous', 'delivery' => null],
+        };
+    }
+
+    public function capture(TelegramMessage $stored, array $message): ?TelegramScheduledMessageResponse
+    {
+        $match = $this->resolveDelivery($message);
+        if ($match['status'] !== 'matched') {
             // Ordinary chat/discussion replies are not controls and do not spam logs.
             return null;
         }
-        $delivery = $candidates->first();
+        $delivery = $match['delivery'];
+        $replyId = data_get($message, 'reply_to_message.message_id');
+        $chatId = data_get($message, 'chat.id');
+        $messageId = $message['message_id'];
+        $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
         $text = (string) ($message['text'] ?? $message['caption'] ?? '');
         try {
             $result = $this->classifier->classify($text);
