@@ -18,25 +18,63 @@ class TelegramEveningHumanComposer
             return false;
         }
 
-        return collect($item['_citation_candidates'] ?? [])->contains(function (array $source) use ($item): bool {
-            $text = (string) ($source['text'] ?? '');
-            if (! in_array($source['role'] ?? null, ['report', 'recurrence'], true)
-                || str_contains($text, '?')
-                || $this->isInstructionOrRoutine($text)) {
-                return false;
+        return collect($item['_citation_candidates'] ?? [])
+            ->contains(fn (array $source): bool => $this->isProblemEvidence($source, $item['types'] ?? []));
+    }
+
+    public function isProblemEvidence(array $source, array $types): bool
+    {
+        $text = trim((string) ($source['text'] ?? ''));
+
+        // Conditional guidance does not establish that its condition is true.
+        // Routine requests can mention equipment or defects without reporting one.
+        if (preg_match('/(?:^|[.!;]\s*)(?:получается[,\s]+)?если\b/iu', $text) === 1
+            || preg_match('/^(?:(?:[\pL-]+|пожалуйста)[,\s]+){0,2}(?:сделай(?:те)?|сними(?:те)?|пришли(?:те)?|отправь(?:те)?|покажи(?:те)?|проверь(?:те)?|оформи(?:те)?)\b/iu', $text) === 1) {
+            return false;
+        }
+
+        if (! in_array($source['role'] ?? null, ['report', 'recurrence'], true)
+            || str_contains($text, '?')
+            || preg_match('/^(?:кто|где|когда|почему|как|можно\s+ли|есть\s+ли)\b/iu', $text) === 1
+            || $this->isInstructionOrRoutine($text)) {
+            return false;
+        }
+
+        if ($this->hasConfirmedInventoryShortage($text, collect([$text]))) {
+            return true;
+        }
+
+        if ($this->isConcreteQuestion($text)) {
+            return false;
+        }
+
+        return $this->isAccessIssue($text)
+            || (preg_match('/не\s+(?:могу\s+)?найти|не\s+нашл/iu', $text) !== 1 && $this->hasConcreteOperationalObjectAndFact($text))
+            || (in_array('delay', $types, true) && preg_match('/задерж|опозд|не\s+успе/iu', $text) === 1);
+    }
+
+    public function problemConclusion(string $summary, ?string $quote): string
+    {
+        $normalized = fn (string $text): string => mb_strtolower(trim(
+            preg_replace('/^проблема\s+с\s+доступом:\s*/iu', '', $this->clean($text)) ?? '',
+            " .!?\t\n\r",
+        ));
+        if ($quote === null || $normalized($summary) !== $normalized($quote)) {
+            return $summary;
+        }
+
+        // Normalize the reported condition; recurrence must be explicit in the
+        // source, not inferred from an old ledger row or a generic access label.
+        if (preg_match('/двер\S*.{0,30}долго\s+не\s+открыва/iu', $quote) === 1) {
+            $detail = 'Дверь открывается с задержкой';
+            if (preg_match('/\b(?:опять|снова|повторно)\b/iu', $quote) === 1) {
+                $detail .= '; проблема повторилась';
             }
 
-            if ($this->hasConfirmedInventoryShortage($text, collect([$text]))) {
-                return true;
-            }
-            if ($this->isConcreteQuestion($text)) {
-                return false;
-            }
+            return $detail.'.';
+        }
 
-            return $this->isAccessIssue($text)
-                || (preg_match('/не\s+(?:могу\s+)?найти|не\s+нашл/iu', $text) !== 1 && $this->hasConcreteOperationalObjectAndFact($text))
-                || (in_array('delay', $item['types'] ?? [], true) && preg_match('/задерж|опозд|не\s+успе/iu', $text) === 1);
-        });
+        return mb_ucfirst(trim($this->clean($quote), " .!?\t\n\r")).'.';
     }
 
     /** @return array{include: bool, handled: bool, decision: 'omit'|'composed'|'raw_safe'|'technical_failure', summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool, completed?: bool} */

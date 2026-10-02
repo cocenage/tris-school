@@ -1120,7 +1120,7 @@ it('filters legacy unusable and contextless events from the final built and form
             ->toContain('Сломана вешалка.')
             ->toContain('Не работает свет.')
             ->toContain('На кухне не работает вытяжка.')
-            ->toContain('Проблема с доступом')
+            ->toContain('Дверь закрыта, никто не открывает.')
             ->toContain('Обнаружена грязная посуда.')
             ->not->toContain('Уточняли наличие запасной бумаги.')
             ->not->toContain('🔄 Требует внимания:', 'Проверить свет у вытяжки.')
@@ -1293,3 +1293,41 @@ it('attributes a daily card to the original report without inventing access deta
         expect($text)->not->toContain('👤', '🔗', 'Worker 202');
     }
 })->with([true, false]);
+
+it('requires a factual condition even when legacy evidence is labelled as a problem report', function (string $source, bool $included, ?string $conclusion) {
+    $message = TelegramOperationalTestDatabase::message('Не работает свет.', sentAt: '2026-10-01 08:09:00', messageId: '4301', chatId: '-10012345');
+    $message->telegramUser->update(['full_name' => 'Test Worker']);
+    $result = app(TelegramOperationalEventObserver::class)->observe($message);
+    $message->update(['text' => $source]);
+    $event = TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->firstOrFail();
+    $event->update(['summary' => $source, 'primary_type' => 'problem', 'types' => ['problem']]);
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-10-01');
+    expect($preview['daily_problems'])->toHaveCount($included ? 1 : 0);
+    if (! $included) {
+        expect($preview['no_material_events'])->toBeTrue();
+
+        return;
+    }
+
+    $card = collect($preview['daily_problems'])->sole();
+    expect($card['quote'])->toBe($source)
+        ->and($card['author_name'])->toBe('Test Worker')
+        ->and(Carbon::parse($card['source_time'])->setTimezone('Europe/Rome')->format('H:i'))->toBe('08:09')
+        ->and($card['source_url'])->toBe('https://t.me/c/12345/4301');
+    if ($conclusion !== null) {
+        expect($card['summary'])->toBe($conclusion);
+    }
+    expect($card['summary'])->not->toContain('электронный', 'входной', 'не может попасть');
+})->with([
+    'routine video request' => ['Наля, сделай видео пожалуйста что есть горячая вода.', false, null],
+    'defect mentioned in an instruction' => ['Пришли видео сломанной ручки.', false, null],
+    'conditional advice' => ['Получается, если это брак, то тебе нужно 2 комплекта белья!', false, null],
+    'question without punctuation' => ['Почему не работает замок', false, null],
+    'door delay and recurrence' => ['Дверь опять долго не открывалась', true, 'Дверь открывается с задержкой; проблема повторилась.'],
+    'door delay without recurrence' => ['Дверь долго не открывалась', true, 'Дверь открывается с задержкой.'],
+    'physical defect' => ['Окно на кухне не плотно закрывается и ручка не работает.', true, 'Окно на кухне не плотно закрывается и ручка не работает.'],
+    'quality without replacement' => ['Плесень наволочка, но замены нет.', true, null],
+    'completed replacement' => ['Простынь с пятном; заменила, брак.', false, null],
+    'unspecified lock' => ['Не работает замок', true, 'Не работает замок.'],
+]);

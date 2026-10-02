@@ -666,6 +666,9 @@ class TelegramEveningIntelligenceBuilder
     private function editorialLine(array $item, string $summary, string $section): array
     {
         $support = $section === 'actions' ? null : $this->primarySupportingEvidence($item, $summary, $section);
+        if ($section === 'problem') {
+            $summary = $this->humanComposer->problemConclusion($summary, $support['quote'] ?? null);
+        }
 
         return [
             'event_key' => $item['event_key'],
@@ -686,7 +689,7 @@ class TelegramEveningIntelligenceBuilder
             // Evidence is chronological: cite the originating report, not a later
             // message selected merely for having more words in common.
             $source = collect($item['_citation_candidates'] ?? [])
-                ->first(fn (array $candidate): bool => in_array($candidate['role'], ['report', 'recurrence'], true)
+                ->first(fn (array $candidate): bool => $this->humanComposer->isProblemEvidence($candidate, $item['types'] ?? [])
                     && filled($candidate['text'])
                     && $this->evidenceTerms($summary)->intersect($this->evidenceTerms($candidate['text']))->isNotEmpty()
                     && $this->cleanEvidenceQuote($candidate['text']) !== '');
