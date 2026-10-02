@@ -3,6 +3,7 @@
 use App\Jobs\DeliverScheduledControlSummary;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\TelegramChat;
+use App\Models\TelegramMessage;
 use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
@@ -99,12 +100,131 @@ function captureControlReply(array $payload): ?TelegramScheduledMessageResponse
     return app(TelegramScheduledControlResponseService::class)->capture($stored, $payload['message']);
 }
 
+function storeBackfillReply(TelegramScheduledMessageDelivery $delivery, int $id, array $overrides = []): void
+{
+    $payload = controlReplyPayload($delivery, 'Все готово', $id);
+    $payload['message'] = array_replace($payload['message'], $overrides);
+    app(TelegramUpdateIngestService::class)->ingest($payload);
+}
+
+function runScheduledControlBackfill(bool $dryRun = false, bool $apply = true): int
+{
+    return Artisan::call('telegram:scheduled-control-responses-backfill', array_filter([
+        '--from' => '2026-10-01',
+        '--to' => '2026-10-02',
+        '--dry-run' => $dryRun ? true : null,
+        '--apply' => ! $dryRun && $apply ? true : null,
+    ], fn ($value) => $value !== null));
+}
+
 it('links an exact scheduled delivery reply and measures from actual send', function () {
     $delivery = controlDeliveryFixture();
     $response = captureControlReply(controlReplyPayload($delivery));
     expect($response->delivery_id)->toBe($delivery->id)
         ->and($response->response_latency_seconds)->toBe(360)
         ->and($response->classification)->toBe('confirmed');
+});
+
+it('backfills only an exact reply to a supported sent control occurrence', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    storeBackfillReply($delivery, 201);
+
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(1)
+        ->and(TelegramScheduledMessageResponse::sole()->delivery_id)->toBe($delivery->id);
+});
+
+it('rejects a matching reply id from the wrong chat', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    storeBackfillReply($delivery, 202, ['chat' => ['id' => -999, 'type' => 'supergroup']]);
+
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0)
+        ->and(Artisan::output())->toContain('Candidate replies found: 0');
+});
+
+it('rejects a matching reply id from the wrong thread when the delivery thread is known', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    storeBackfillReply($delivery, 203, ['message_thread_id' => 12]);
+
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0)
+        ->and(Artisan::output())->toContain('Unmatched/ambiguous: 1');
+});
+
+it('skips a reply whose delivery correlation is ambiguous', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    controlDeliveryFixture([
+        'control_type' => 'schedule_checked',
+        'telegram_message_id' => $delivery->telegram_message_id,
+    ]);
+    storeBackfillReply($delivery, 211);
+
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0)
+        ->and(Artisan::output())->toContain('Unmatched/ambiguous: 1');
+});
+
+it('ignores unrelated stored messages', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $payload = controlReplyPayload($delivery, 'Обычное сообщение', 204);
+    unset($payload['message']['reply_to_message']);
+    app(TelegramUpdateIngestService::class)->ingest($payload);
+
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0)
+        ->and(Artisan::output())->toContain('Candidate replies found: 0');
+});
+
+it('captures multiple valid replies to one control occurrence', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    storeBackfillReply($delivery, 205);
+    storeBackfillReply($delivery, 206);
+
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(2);
+});
+
+it('dry run reports recoverable replies without writing any database rows', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    storeBackfillReply($delivery, 207);
+    $messagesBefore = TelegramMessage::count();
+    $deliveriesBefore = TelegramScheduledMessageDelivery::count();
+
+    expect(runScheduledControlBackfill(true))->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0)
+        ->and(TelegramMessage::count())->toBe($messagesBefore)
+        ->and(TelegramScheduledMessageDelivery::count())->toBe($deliveriesBefore)
+        ->and(Artisan::output())->toContain('Would insert: 1');
+});
+
+it('defaults to read-only unless apply is explicitly requested', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    storeBackfillReply($delivery, 210);
+
+    expect(runScheduledControlBackfill(false, false))->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0)
+        ->and(Artisan::output())->toContain('Would insert: 1');
+});
+
+it('is idempotent when the historical backfill is repeated', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    storeBackfillReply($delivery, 208);
+
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(1);
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(1)
+        ->and(Artisan::output())->toContain('Already captured: 1');
+});
+
+it('ignores unsupported and test control types', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'control_question']);
+    storeBackfillReply($delivery, 209);
+
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0)
+        ->and(Artisan::output())->toContain('Deliveries scanned: 0');
 });
 
 it('does not capture a random chat message or unrelated reply', function () {
