@@ -171,6 +171,11 @@ class TelegramScheduledMessageResource extends Resource
             ]);
     }
 
+    public static function getRelations(): array
+    {
+        return [\App\Filament\Resources\TelegramScheduledMessages\RelationManagers\DeliveriesRelationManager::class];
+    }
+
     public static function getPages(): array
     {
         return [

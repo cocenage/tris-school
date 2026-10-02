@@ -20,6 +20,10 @@ class TelegramOperationalEventLifecyclePolicy
             return false;
         }
 
+        if ($this->isTransientHousekeepingState($summary, $evidence)) {
+            return false;
+        }
+
         if (in_array('unanswered_question', $types, true)
             && ! $this->hasIndependentlyConfirmedDurableProblem($evidence)
             && ! $this->hasIndependentInventoryConfirmation($summary, $evidence)) {
@@ -42,8 +46,38 @@ class TelegramOperationalEventLifecyclePolicy
     }
 
     /**
-     * @param array<int, string> $types
-     * @param Collection<int, TelegramOperationalEventEvidence> $evidence
+     * Dirt and mess observed during housekeeping are short-lived states, not
+     * durable issues. Explicit defects, access failures, and courier failures
+     * remain eligible even when their description also mentions dirt.
+     */
+    public function isTransientHousekeepingState(string $summary, Collection $evidence): bool
+    {
+        // An instruction mentioning dirt is not an observed housekeeping state.
+        if ($this->isStandaloneInstruction($summary)) {
+            return false;
+        }
+
+        $text = collect([$summary])
+            ->merge($evidence->map(fn (TelegramOperationalEventEvidence $item): string => trim((string) (
+                $item->observation?->message?->text ?: $item->observation?->message?->caption
+            ))))
+            ->filter()
+            ->implode(' ');
+
+        if (preg_match('/(?:слом|не\s+работ|дефект|брак|поврежд|протеч|подт[её]к|не\s+открыва|не\s+забрал|не\s+достав|ошибк|неверн\S*\s+код|неисправ)/iu', $text) === 1) {
+            return false;
+        }
+
+        $transientState = preg_match('/(?:грязн|грязь|грязно|пыл|загрязн|бардак|беспоряд)/iu', $text) === 1;
+        $housekeepingContext = preg_match('/(?:посуд|пол|поверхн|кухн|ванн|комнат|квартир|бель|постел|полотен|коврик|уборк|убира)/iu', $text) === 1;
+        $standaloneMess = preg_match('/(?:\bгрязно\b|\bбардак\b|\bбеспоряд\b)/iu', $text) === 1;
+
+        return $transientState && ($housekeepingContext || $standaloneMess);
+    }
+
+    /**
+     * @param  array<int, string>  $types
+     * @param  Collection<int, TelegramOperationalEventEvidence>  $evidence
      */
     public function mayRemainActionableCarryOver(
         string $primaryType,
@@ -75,7 +109,7 @@ class TelegramOperationalEventLifecyclePolicy
     }
 
     /** @param array<int, string> $types
-     *  @param Collection<int, TelegramOperationalEventEvidence> $evidence
+     * @param  Collection<int, TelegramOperationalEventEvidence>  $evidence
      */
     public function mayNeedAttentionToday(array $types, string $summary, Collection $evidence): bool
     {
