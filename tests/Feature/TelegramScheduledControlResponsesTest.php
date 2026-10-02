@@ -7,7 +7,10 @@ use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramScheduledMessageResponse;
+use App\Models\TelegramTopic;
 use App\Services\Telegram\ScheduledControlResponseClassifier;
+use App\Services\Telegram\ScheduledControlResponseInterpreter;
+use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
@@ -23,6 +26,8 @@ use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Database\Schema\Blueprint;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function () {
@@ -159,6 +164,51 @@ it('preserves later replies but uses each responders first reply for median late
         ->and($stats['median_response_latency_seconds'])->toBe(120.0)->and($stats['result'])->toBe('problem');
 });
 
+it('exposes the six canonical scheduled control types', function () {
+    expect(ScheduledControlTypes::options())->toEqual([
+        'schedule_checked' => 'Время уборок и заметки проверены',
+        'first_cleanings_started' => 'Все первые уборки начались',
+        'first_cleanings_finishing' => 'Первые уборки подходят к завершению',
+        'second_cleanings_finishing' => 'Вторые уборки подходят к завершению',
+        'couriers_completed' => 'Курьеры завершили все доставки',
+        'extra_payments_completed' => 'Все доплаты произведены',
+    ]);
+});
+
+it('extracts partial district exceptions, delay and missing-key reasons from response evidence', function ($text, $expected) {
+    expect(app(ScheduledControlResponseInterpreter::class)->interpret($text))->toMatchArray($expected);
+})->with([
+    ['Все начали', ['status' => 'ok', 'district' => null, 'delay_minutes' => null, 'reason' => null]],
+    ['Все начали кроме Комо', ['status' => 'partial', 'district' => 'Como']],
+    ['Маша опоздает минут на 20', ['status' => 'problem', 'delay_minutes' => 20, 'reason' => 'задержка']],
+    ['Там нет ключей', ['status' => 'problem', 'reason' => 'нет ключей']],
+    ['Да', ['status' => 'ok']],
+    ['Сейчас проверю?', ['status' => 'unknown']],
+]);
+
+it('renders aggregate control points and exceptions without inventing expected respondents', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    captureControlReply(controlReplyPayload($delivery, 'Маша опоздает минут на 20'));
+    controlDeliveryFixture(['control_type' => 'couriers_completed', 'scheduled_for' => '2026-10-01 10:00:00', 'telegram_message_id' => 9999]);
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+
+    expect($summary['controls'])->toHaveCount(2)
+        ->and($summary['exceptions'])->toHaveCount(1)
+        ->and($summary['exceptions'][0]['delay_minutes'])->toBe(20)
+        ->and($summary['expected_responders'])->toBeNull()
+        ->and($summary['no_response_available'])->toBeFalse()
+        ->and($text)->toContain('📊 TRIS — контроль дня · 01.10.2026', 'Отклонения', '20 мин', 'не рассчитывается')
+        ->not->toContain("\nНет ответа\n", 'Маша опоздает', '1/5');
+});
+
+it('exposes the requested read-only preview command and a compact empty state', function () {
+    expect(Artisan::call('telegram:control-summary-preview', ['--date' => '2026-10-01']))->toBe(0)
+        ->and(Artisan::output())->toContain('✅ Контрольных сообщений за день не было.')
+        ->not->toContain('Нет ответа');
+});
+
 it('counts unclear responses as responded', function () {
     captureControlReply(controlReplyPayload(controlDeliveryFixture(), 'Сейчас уточню'));
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
@@ -182,14 +232,43 @@ it('does not call failed delivery an unanswered staff control', function () {
     expect($summary['totals']['not_delivered'])->toBe(1)->and($summary['totals']['no_response'])->toBe(0);
 });
 
-it('builds daily totals and a bounded human summary without a fabricated denominator', function () {
+it('builds daily totals and a human summary without a fabricated denominator', function () {
     captureControlReply(controlReplyPayload(controlDeliveryFixture(), 'Курьер не приехал'));
     controlDeliveryFixture();
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
     expect($summary['totals'])->toMatchArray(['controls' => 2, 'responded' => 1, 'problem' => 1, 'no_response' => 1]);
     $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
-    expect($text)->toContain('Контрольные рассылки', '01.10.2026', 'Курьер не приехал', 'Без ответа', 'Ответили: 1 сотрудника')->not->toContain('1/5');
+    expect($text)->toContain('TRIS — контроль дня', '01.10.2026', 'Курьер не приехал', 'не рассчитывается')
+        ->not->toContain('Нет ответа', 'Ответили: 1 сотрудника', '1/5');
     expect(mb_strlen(html_entity_decode($text)))->toBeLessThan(4096);
+});
+
+it('merges a confirmed first-cleaning follow-up only for the same apartment and responder', function () {
+    if (! Schema::connection('sqlite')->hasTable('apartments')) {
+        Schema::connection('sqlite')->create('apartments', function (Blueprint $table): void {
+            $table->id();
+            $table->string('name');
+        });
+    }
+    DB::table('apartments')->updateOrInsert(['id' => 77], ['name' => 'Via Test 77']);
+
+    $first = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    captureControlReply(controlReplyPayload($first, 'Маша опоздает минут на 20', 701, 101));
+    TelegramTopic::query()->where('telegram_thread_id', '11')->update(['apartment_id' => 77]);
+
+    $later = controlDeliveryFixture([
+        'control_type' => 'first_cleanings_finishing', 'scheduled_for' => '2026-10-01 11:00:00',
+        'sent_at' => '2026-10-01 11:00:00', 'telegram_message_id' => 9901,
+    ]);
+    captureControlReply(controlReplyPayload($later, 'Все начали', 702, 101, '2026-10-01 11:05:00'));
+    $merged = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+
+    expect($merged['exceptions'])->toHaveCount(1)
+        ->and($merged['exceptions'][0]['resolved_later'])->toBeTrue()
+        ->and($merged['exceptions'][0]['history'])->toHaveCount(2)
+        ->and($merged['exceptions'][0]['history'][0]['source_message_id'])->toBe('701')
+        ->and($merged['exceptions'][0]['history'][1]['source_message_id'])->toBe('702')
+        ->and($merged['exceptions'][0]['apartment'])->toBe('Via Test 77');
 });
 
 it('exposes JSON preview and send dry run without jobs or transport', function () {

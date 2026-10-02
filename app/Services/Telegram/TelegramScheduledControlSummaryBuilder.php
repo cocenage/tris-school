@@ -3,13 +3,17 @@
 namespace App\Services\Telegram;
 
 use App\Models\TelegramScheduledMessageDelivery;
+use App\Models\TelegramScheduledMessageResponse;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 class TelegramScheduledControlSummaryBuilder
 {
-    public function __construct(private TelegramScheduledControlStatistics $statistics) {}
+    public function __construct(
+        private TelegramScheduledControlStatistics $statistics,
+        private ScheduledControlResponseInterpreter $interpreter,
+    ) {}
 
     public function build(string $date, ?int $scheduledMessageId = null, ?string $controlType = null, ?string $chatId = null, ?string $throughDate = null): array
     {
@@ -20,7 +24,7 @@ class TelegramScheduledControlSummaryBuilder
         }
         $timezone = config('app.timezone', 'Europe/Rome');
         $query = TelegramScheduledMessageDelivery::query()
-            ->with(['responses', 'scheduledMessage' => fn ($query) => $query->withTrashed()])
+            ->with(['responses.telegramMessage.topic.apartment', 'scheduledMessage' => fn ($query) => $query->withTrashed()])
             ->where('scheduled_for', '>=', $start->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->where('scheduled_for', '<', $end->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->when($scheduledMessageId !== null, fn ($query) => $query->where('scheduled_message_id', $scheduledMessageId))
@@ -35,19 +39,118 @@ class TelegramScheduledControlSummaryBuilder
                 'text' => Str::limit((string) preg_replace('/\s+/u', ' ', $response->text), 180),
             ])->values()->all();
 
+            $responses = $delivery->responses->map(function (TelegramScheduledMessageResponse $response) use ($delivery): array {
+                $telegramMessage = $response->telegramMessage;
+                $topic = $telegramMessage?->topic;
+                $interpretation = $this->interpreter->interpret((string) $response->text);
+                $interpretation['apartment_id'] = $topic?->apartment_id;
+                $interpretation['apartment'] = $topic?->apartment?->name;
+
+                return $interpretation + [
+                    'text' => Str::limit((string) preg_replace('/\s+/u', ' ', $response->text), 180),
+                    'control_type' => $delivery->control_type,
+                    'author_name' => $response->author_name,
+                    'responder_key' => $response->user_id !== null ? 'user:'.$response->user_id
+                        : ($response->telegram_user_id !== null ? 'telegram:'.$response->telegram_user_id : null),
+                    'responded_at' => $response->responded_at?->toIso8601String(),
+                    'source_message_id' => $response->telegram_message_id,
+                    'reply_to_message_id' => $response->reply_to_message_id,
+                ];
+            })->values()->all();
+
+            if ($responses !== []) {
+                $stats['classification_counts'] = array_fill_keys(['confirmed', 'problem', 'partial', 'unclear'], 0);
+                foreach ($responses as $response) {
+                    $category = match ($response['status']) {
+                        'ok' => 'confirmed',
+                        'problem' => 'problem',
+                        'partial' => 'partial',
+                        default => 'unclear',
+                    };
+                    $stats['classification_counts'][$category]++;
+                }
+                $stats['result'] = collect(['problem', 'partial', 'confirmed', 'unclear'])
+                    ->first(fn (string $category): bool => $stats['classification_counts'][$category] > 0);
+            }
+
             return $stats + [
                 'delivery_id' => $delivery->id, 'scheduled_message_id' => $delivery->scheduled_message_id,
                 'control_type' => $delivery->control_type, 'name' => $delivery->scheduledMessage?->name ?? 'Удалённое сообщение',
                 'scheduled_for' => CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->setTimezone('Europe/Rome')->toIso8601String(),
                 'sent_at' => $delivery->sent_at ? CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone)->setTimezone('Europe/Rome')->toIso8601String() : null,
-                'delivery_status' => $delivery->status, 'exceptions' => $exceptions,
+                'delivery_status' => $delivery->status, 'exceptions' => $exceptions, 'interpreted_responses' => $responses,
             ];
         })->all();
         $totals = $this->aggregate($deliveries);
         $groups = collect($deliveries)->groupBy('scheduled_message_id')->map(fn ($group) => $this->aggregate($group->all()))->all();
 
+        $controls = collect($deliveries)->groupBy('control_type')->map(function ($rows, string $type): array {
+            $responses = collect($rows)->flatMap(fn (array $row) => $row['interpreted_responses']);
+            $statuses = $responses->pluck('status')->countBy();
+            $label = ScheduledControlTypes::LABELS[$type] ?? $type;
+
+            return [
+                'control_type' => $type,
+                'label' => $label,
+                'count' => $rows->count(),
+                'status' => $statuses->get('problem', 0) + $statuses->get('partial', 0) > 0 ? 'problem'
+                    : ($statuses->get('unknown', 0) > 0 ? 'unknown' : ($statuses->get('ok', 0) > 0 ? 'ok' : 'no_responses')),
+                'responses' => $responses->all(),
+            ];
+        })->values()->all();
+
         return ['date' => $date, 'through_date' => $throughDate ?? $date, 'timezone' => 'Europe/Rome',
-            'expected_responders' => null, 'totals' => $totals, 'by_scheduled_message' => $groups, 'deliveries' => $deliveries];
+            'expected_responders' => null, 'no_response_available' => false, 'totals' => $totals,
+            'by_scheduled_message' => $groups, 'controls' => $controls,
+            'exceptions' => collect($this->mergeExceptions(collect($deliveries)->flatMap(fn (array $row) => $row['interpreted_responses'])->values()->all()))
+                ->filter(fn (array $exception): bool => isset($exception['latest_problem']))
+                ->values()->all(),
+            'deliveries' => $deliveries];
+    }
+
+    private function mergeExceptions(array $responses): array
+    {
+        $groups = [];
+        usort($responses, fn (array $left, array $right): int => strcmp((string) $left['responded_at'], (string) $right['responded_at']));
+        foreach ($responses as $response) {
+            $family = match ($response['control_type']) {
+                'first_cleanings_started', 'first_cleanings_finishing' => 'first_cleaning',
+                'second_cleanings_finishing' => 'second_cleaning',
+                'couriers_completed' => 'courier',
+                'extra_payments_completed' => 'payment',
+                'schedule_checked' => 'schedule',
+                default => $response['control_type'],
+            };
+            $identity = $response['apartment_id'] !== null && $response['responder_key'] !== null && $response['reason'] !== null
+                ? implode('|', [$response['apartment_id'], $response['responder_key'], $family, $response['reason']])
+                : null;
+            $baseIdentity = $response['apartment_id'] !== null && $response['responder_key'] !== null
+                ? implode('|', [$response['apartment_id'], $response['responder_key'], $family])
+                : null;
+            $key = null;
+            if ($response['status'] === 'ok' && $baseIdentity !== null && $family === 'first_cleaning') {
+                $open = collect($groups)->filter(fn (array $group): bool => ($group['identity_base'] ?? null) === $baseIdentity
+                    && isset($group['latest_problem']) && ! ($group['resolved_later'] ?? false))->keys();
+                if ($open->count() === 1) {
+                    $key = $open->first();
+                }
+            }
+            $key ??= $identity ?? 'response:'.$response['source_message_id'];
+            if (! isset($groups[$key])) {
+                $groups[$key] = $response + ['history' => [], 'identity_base' => $baseIdentity];
+            }
+            $groups[$key]['history'][] = [
+                'control_type' => $response['control_type'], 'status' => $response['status'],
+                'responded_at' => $response['responded_at'], 'source_message_id' => $response['source_message_id'],
+            ];
+            if ($response['status'] === 'problem' || $response['status'] === 'partial') {
+                $groups[$key]['latest_problem'] = $response;
+            } elseif ($response['status'] === 'ok' && $response['control_type'] === 'first_cleanings_finishing') {
+                $groups[$key]['resolved_later'] = true;
+            }
+        }
+
+        return array_values($groups);
     }
 
     public function day(string $date): CarbonImmutable
