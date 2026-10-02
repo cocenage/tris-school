@@ -78,26 +78,36 @@ it('bounds every human section to requested-day evidence while retaining histori
         $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-09-30', $options);
         $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
         $historical = collect($preview['events'])->filter(fn (array $item): bool => ! $item['editorial']['relevant_today']);
+        $editorialSections = collect($preview['editorial_sections'])->keyBy('key');
         $humanKeys = collect($preview['editorial_sections'])->flatMap(fn (array $section) => $section['items'])->pluck('event_key')->unique()->values()->all();
+        $dayText = str($text)->before('⚠️ Осталось с прошлых дней:')->toString();
+        $carryOverText = str($text)->after('⚠️ Осталось с прошлых дней:')->toString();
+        $carryOverItems = collect($editorialSections->get('carry_over')['items'] ?? []);
 
         expect($historical)->toHaveCount(4)
-            ->and($historical->every(fn (array $item): bool => $item['status'] === 'open' && $item['carry_over'] && $item['editorial']['state'] === 'omit' && ! $item['editorial']['needs_attention'] && $item['editorial']['next_action'] === null))->toBeTrue()
-            ->and($humanKeys)->toBe($withCurrent ? [$currentKey] : [])
+            ->and($historical->every(fn (array $item): bool => $item['status'] === 'open' && $item['carry_over'] && $item['editorial']['state'] === 'carry_over' && ! $item['editorial']['needs_attention'] && $item['editorial']['next_action'] === null))->toBeTrue()
+            ->and($withCurrent ? in_array($currentKey, $humanKeys, true) : $carryOverItems->isNotEmpty())->toBeTrue()
+            ->and($carryOverItems)->toHaveCount(4)
             ->and(eveningItems($preview)->pluck('event_key')->unique()->values()->all())->toBe($withCurrent ? [$currentKey] : [])
-            ->and($preview['events_included'])->toBe($withCurrent ? 1 : 0)
-            ->and($preview['no_material_events'])->toBe(! $withCurrent)
+            ->and($preview['events_included'])->toBe($withCurrent ? 5 : 4)
+            ->and($preview['current_events_included'])->toBe($withCurrent ? 1 : 0)
+            ->and($preview['carry_over_events_included'])->toBe(4)
+            ->and($preview['no_material_events'])->toBeFalse()
             ->and($text)->toContain('🌙 '.($district ?? 'TRIS').' — итоги дня · 30.09.2026')
-            ->not->toContain('Простынь', 'переключатель', 'наволочк', 'комнате 1')
+            ->and($dayText)->not->toContain('Простынь', 'переключатель', 'наволочк', 'комнате 1')
+            ->and($text)->toContain('⚠️ Осталось с прошлых дней:', 'с 19.09', 'с 24.09', 'с 28.09')
+            ->and($carryOverText)->not->toContain('  💬 «')
             ->and(TelegramOperationalEvent::query()->orderBy('id')->get()->toArray())->toBe($before)
             ->and(TelegramOperationalEventEvidence::query()->orderBy('id')->get()->toArray())->toBe($evidenceBefore);
 
         if ($withCurrent) {
             $sections = collect($preview['editorial_sections'])->keyBy('key');
             expect($sections->keys()->all())->toContain('day', 'attention', 'actions')
-                ->and($text)->toContain('Проверить неисправность света в комнате 2.');
+                ->and($text)->toContain('Проверить неисправность света в комнате 2.')
+                ->and(strpos($text, 'Не работает свет в комнате 2.'))->toBeLessThan(strpos($text, '⚠️ Осталось с прошлых дней:'));
         } else {
             expect($text)->toContain('За день:', 'Новых значимых событий не зафиксировано.')
-                ->not->toContain('Требует внимания', 'Осталось сделать');
+                ->toContain('⚠️ Осталось с прошлых дней:');
         }
     } finally {
         Carbon::setTestNow();
@@ -334,7 +344,7 @@ it('keeps an uncertain open question visible without hiding its low confidence i
         ->and($item['evidence'][0]['role'])->toBe('question');
 });
 
-it('retains an unresolved prior-day projection without including it in human output', function () {
+it('renders an eligible unresolved prior-day problem separately from the current day', function () {
     $message = TelegramOperationalTestDatabase::message(
         'Не работает замок в квартире',
         sentAt: '2026-06-16 08:00:00',
@@ -345,12 +355,16 @@ it('retains an unresolved prior-day projection without including it in human out
     $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
 
     expect($preview['events_considered'])->toBe(1)
-        ->and($preview['events_included'])->toBe(0)
+        ->and($preview['events_included'])->toBe(1)
+        ->and($preview['current_events_included'])->toBe(0)
+        ->and($preview['carry_over_events_included'])->toBe(1)
         ->and($preview['events'][0]['carry_over'])->toBeTrue()
         ->and($preview['events'][0]['open_age_days'])->toBe(2)
-        ->and($preview['no_material_events'])->toBeTrue()
+        ->and($preview['no_material_events'])->toBeFalse()
         ->and($preview['sections'])->toBeEmpty()
-        ->and($preview['editorial_sections'])->toBeEmpty()
+        ->and(collect($preview['editorial_sections'])->keyBy('key')->get('carry_over')['items'])->toHaveCount(1)
+        ->and(app(TelegramDigestFormatter::class)->eveningIntelligence($preview))
+        ->toContain('За день:', 'Новых значимых событий не зафиксировано.', '⚠️ Осталось с прошлых дней:', 'с 16.06')
         ->and($preview['mode'])->toBe([
             'read_only' => true,
             'telegram_actions' => 0,
@@ -358,7 +372,7 @@ it('retains an unresolved prior-day projection without including it in human out
         ]);
 });
 
-it('retains only durable prior-day projections while omitting all of them from human output', function () {
+it('renders only durable unresolved prior-day issues in the carry-over section', function () {
     $observer = app(TelegramOperationalEventObserver::class);
     $cases = [
         ['Я задержусь на 10 минут.', 'delay', false],
@@ -399,10 +413,9 @@ it('retains only durable prior-day projections while omitting all of them from h
             'Коврик брак.',
         ])
         ->and($bySummary->every(fn (array $item): bool => $item['carry_over'] && $item['open_age_days'] === 2))->toBeTrue()
-        ->and($followingDay['editorial_sections'])->toBeEmpty()
-        ->and($text)->not->toContain('🔄 Требует внимания:')
-        ->not->toContain('Курьер забрал не всё грязное бельё.')
-        ->not->toContain('Обнаружен брак коврика.')
+        ->and(collect($followingDay['editorial_sections'])->keyBy('key')->get('carry_over')['items'])->toHaveCount(3)
+        ->and($text)->toContain('За день:', 'Новых значимых событий не зафиксировано.', '⚠️ Осталось с прошлых дней:', 'с 16.06')
+        ->not->toContain('🔄 Требует внимания:')
         ->not->toContain('задержке')
         ->not->toContain('время заезда')
         ->not->toContain('фото загрязнений')
@@ -570,10 +583,9 @@ it('shows a temporary missing-paper search only on its day unless independent st
         ->not->toContain('Не могу найти фен.')
         ->and($nextDayWithConfirmation['events'])->toHaveCount(1)
         ->and($nextDayWithConfirmation['events'][0]['carry_over'])->toBeTrue()
-        ->and($nextDayWithConfirmation['editorial_sections'])->toBeEmpty()
+        ->and(collect($nextDayWithConfirmation['editorial_sections'])->keyBy('key')->get('carry_over')['items'])->toHaveCount(1)
         ->and($nextDayWithConfirmationText)->not->toContain('🔄 Требует внимания:')
-        ->not->toContain('Запас туалетной бумаги отсутствует.')
-        ->not->toContain('Пополнить запас туалетной бумаги.')
+        ->toContain('⚠️ Осталось с прошлых дней:', 'с 16.06')
         ->and($nextDayWithConfirmation['mode']['mutations'])->toBe(0)
         ->and($nextDayWithConfirmation['mode']['telegram_actions'])->toBe(0);
 });
@@ -660,6 +672,8 @@ it('omits standalone requests from the management preview', function () {
 
     expect($preview['events_considered'])->toBe(2)
         ->and($preview['events_included'])->toBe(1)
+        ->and($preview['current_events_included'])->toBe(1)
+        ->and($preview['carry_over_events_included'])->toBe(0)
         ->and($preview['events_omitted'])->toBe(1)
         ->and($items)->toHaveCount(1)
         ->and($items->first()['types'])->not->toBe(['request']);
@@ -701,6 +715,8 @@ it('omits an event whose source evidence message is unavailable', function () {
 
     expect($preview['events_considered'])->toBe(1)
         ->and($preview['events_included'])->toBe(0)
+        ->and($preview['current_events_included'])->toBe(0)
+        ->and($preview['carry_over_events_included'])->toBe(0)
         ->and($preview['events_omitted'])->toBe(1)
         ->and($preview['sections'])->toBe([])
         ->and($preview['no_material_events'])->toBeTrue();
@@ -863,7 +879,7 @@ it('keeps generic gratitude from a stale ledger in technical json only', functio
         ->and($preview['no_material_events'])->toBeTrue();
 });
 
-it('keeps same-day attention and actions while omitting yesterday events from human sections', function () {
+it('keeps current-day attention separate from carry-over items', function () {
     $observer = app(TelegramOperationalEventObserver::class);
     $yesterday = TelegramOperationalTestDatabase::message(
         'Не работает свет в комнате 1.',
@@ -889,10 +905,12 @@ it('keeps same-day attention and actions while omitting yesterday events from hu
         ->and($text)->toContain('За день:')
         ->toContain('• Не работает свет в комнате 2.')
         ->toContain('🔄 Требует внимания:')
-        ->not->toContain('• Не работает свет в комнате 1.')
+        ->toContain('⚠️ Осталось с прошлых дней:', 'с 16.06')
+        ->and(str($text)->before('⚠️ Осталось с прошлых дней:')->toString())->not->toContain('Не работает свет в комнате 1.')
+        ->and(str($text)->after('⚠️ Осталось с прошлых дней:')->toString())->toContain('с 16.06', 'Не работает свет в комнате 1.')
+        ->and(str($text)->after('⚠️ Осталось с прошлых дней:')->toString())->not->toContain('  💬 «')
         ->toContain('Осталось сделать:')
-        ->not->toContain('• Проверить неисправность света в комнате 1.')
-        ->not->toContain('Открыто');
+        ->and(strpos($text, 'Не работает свет в комнате 2.'))->toBeLessThan(strpos($text, '⚠️ Осталось с прошлых дней:'));
 });
 
 it('uses calendar-day age for an older open event without mutating ledger state', function () {
@@ -908,9 +926,9 @@ it('uses calendar-day age for an older open event without mutating ledger state'
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
 
     expect($preview['events'][0]['open_age_days'])->toBe(4)
-        ->and($preview['editorial_sections'])->toBeEmpty()
+        ->and(collect($preview['editorial_sections'])->keyBy('key')->get('carry_over')['items'])->toHaveCount(1)
         ->and($text)->not->toContain('🔄 Требует внимания:')
-        ->not->toContain('Открыто')
+        ->toContain('⚠️ Осталось с прошлых дней:', 'с 14.06')
         ->and(TelegramOperationalEvent::query()->firstOrFail()->toArray())->toBe($before);
 });
 
@@ -1170,6 +1188,8 @@ it('builds a district shift handoff from explicit editorial states', function ()
             app(TelegramEveningIntelligenceBuilder::class)->build('2026-09-24', ['district' => ['label' => 'Navigli']]),
         );
         $editorials = collect($preview['events'])->keyBy('summary')->map(fn (array $item) => $item['editorial']);
+        $carryOverItems = collect($preview['editorial_sections'])->firstWhere('key', 'carry_over')['items'] ?? [];
+        $carryOverContextLabels = collect($carryOverItems)->pluck('context_label');
         $paperEventKey = collect($preview['events'])->firstWhere('summary', 'Туалетную бумагу не могу найти.')['event_key'];
         $attentionAndActionEventKeys = collect($preview['editorial_sections'])
             ->whereIn('key', ['attention', 'actions'])
@@ -1183,8 +1203,21 @@ it('builds a district shift handoff from explicit editorial states', function ()
             ->and($editorials['Думаю не проблема будет.']['state'])->toBe('omit')
             ->and($editorials['Обнаружена грязная посуда.'])
             ->toMatchArray(['state' => 'omit', 'needs_attention' => false, 'next_action' => null])
+            ->and(collect($preview['events'])->firstWhere('summary', 'Обнаружена грязная посуда.')['carry_over'])->toBeFalse()
+            ->and($editorials['Стою здесь, консьержа нет. Не открывают пока.'])
+            ->toMatchArray(['state' => 'carry_over', 'needs_attention' => false, 'next_action' => null])
+            ->and($editorials['В программе гостевой локер: ошибка, правильный код — 1291.'])
+            ->toMatchArray(['state' => 'carry_over', 'needs_attention' => false, 'next_action' => null])
             ->and($editorials['Туалетную бумагу не могу найти.'])
             ->toMatchArray(['state' => 'informational', 'needs_attention' => false, 'next_action' => null])
+            ->and($editorials['Переключатель не работает, должен прийти мастер.'])
+            ->toMatchArray([
+                'relevant_today' => true,
+                'state' => 'active',
+                'needs_attention' => true,
+                'next_action' => 'Вызвать мастера для ремонта переключателя.',
+            ])
+            ->and(collect($preview['events'])->firstWhere('summary', 'Переключатель не работает, должен прийти мастер.')['carry_over'])->toBeFalse()
             ->and($rendered)
             ->toContain('🌙 Navigli — итоги дня · 23.09.2026')
             ->toContain('За день:')
@@ -1192,8 +1225,14 @@ it('builds a district shift handoff from explicit editorial states', function ()
             ->toContain('Via Editorial 102 — Обнаружена простыня с пятном, заменена как брак.')
             ->toContain('Via Editorial 109 — Обнаружена бракованная наволочка, заменена.')
             ->toContain('🔄 Требует внимания:')
-            ->not->toContain('Via Editorial 103')
-            ->not->toContain('Via Editorial 104')
+            ->and(str($rendered)->between('За день:', '⚠️ Осталось с прошлых дней:')->toString())->not->toContain('Via Editorial 103', 'Via Editorial 104')
+            ->and($carryOverContextLabels)->toContain('Via Editorial 103', 'Via Editorial 104')
+            ->and(str($rendered)->after('⚠️ Осталось с прошлых дней:')->toString())->toContain('с 22.09', 'Via Editorial 103', 'Via Editorial 104')
+            ->and(str($rendered)->between('🔄 Требует внимания:', '⚠️ Осталось с прошлых дней:')->toString())
+            ->toContain('Via Editorial 105 — Не работает переключатель, требуется мастер.')
+            ->and(str($rendered)->afterLast('Осталось сделать:')->toString())
+            ->toContain('Via Editorial 105 — Вызвать мастера для ремонта переключателя.')
+            ->and($rendered)
             ->toContain('Осталось сделать:')
             ->toContain('Via Editorial 105 — Не работает переключатель, требуется мастер.')
             ->toContain('Via Editorial 105 — Вызвать мастера для ремонта переключателя.')
@@ -1205,6 +1244,7 @@ it('builds a district shift handoff from explicit editorial states', function ()
             ->not->toContain('Открытых вопросов на конец дня нет.')
             ->not->toContain('Повторяется')
             ->and($renderedNextDay)
+            ->toContain('⚠️ Осталось с прошлых дней:', 'с 22.09', 'Via Editorial 103', 'Via Editorial 104')
             ->not->toContain('Via Editorial 102')
             ->not->toContain('Via Editorial 109')
             ->not->toContain('грязная посуда')

@@ -162,11 +162,18 @@ class TelegramEveningIntelligenceBuilder
         $sections = $this->sections($items);
         $editorialSections = $this->editorialSections($editorialItems);
         $recurrences = $this->recurrences($recurrenceStart, $cutoff, $district);
-        $included = collect($editorialSections)
+        $currentIncludedKeys = collect($editorialSections)
+            ->reject(fn (array $section): bool => $section['key'] === 'carry_over')
             ->flatMap(fn (array $section) => $section['items'])
             ->pluck('event_key')
             ->unique()
-            ->count();
+            ->values();
+        $carryOverSection = collect($editorialSections)->firstWhere('key', 'carry_over');
+        $carryOverIncludedKeys = collect($carryOverSection['items'] ?? [])
+            ->pluck('event_key')
+            ->unique()
+            ->values();
+        $included = $currentIncludedKeys->merge($carryOverIncludedKeys)->unique()->count();
 
         return [
             'date' => $day->toDateString(),
@@ -186,6 +193,8 @@ class TelegramEveningIntelligenceBuilder
             'recurrences' => $recurrences,
             'events_considered' => $events->count(),
             'events_included' => $included,
+            'current_events_included' => $currentIncludedKeys->count(),
+            'carry_over_events_included' => $carryOverIncludedKeys->count(),
             'events_omitted' => max(0, $events->count() - $included),
             'no_material_events' => $included === 0,
             'data_quality' => [
@@ -337,8 +346,7 @@ class TelegramEveningIntelligenceBuilder
         Carbon $cutoff,
         Collection $linkedUserNames,
         Collection $telegramSenderNames,
-    ): ?array
-    {
+    ): ?array {
         /** @var Collection<int, TelegramOperationalEventEvidence> $evidence */
         $evidence = $event->evidence
             ->filter(fn (TelegramOperationalEventEvidence $item) => $item->observation?->message !== null)
@@ -370,6 +378,8 @@ class TelegramEveningIntelligenceBuilder
             ->values()
             ->all();
         $openSince = $this->currentOpenPeriodStart($evidence, $status);
+        $transientHousekeeping = in_array($status, ['open', 'reopened'], true)
+            && $this->lifecyclePolicy->isTransientHousekeepingState((string) $event->summary, $evidence);
         $carryOver = in_array($status, ['open', 'reopened'], true)
             && $openSince?->lt($start) === true
             && $this->lifecyclePolicy->mayCarryOver($types, (string) $event->summary, $evidence);
@@ -385,7 +395,7 @@ class TelegramEveningIntelligenceBuilder
                 || $this->lifecyclePolicy->mayNeedAttentionToday($types, (string) $event->summary, $evidence)
             );
 
-        if (! $hasActivityOnDay && ! $carryOver) {
+        if (! $hasActivityOnDay && ! $carryOver && ! $transientHousekeeping) {
             return null;
         }
         $confidence = $this->weakestConfidence($evidence);
@@ -561,6 +571,16 @@ class TelegramEveningIntelligenceBuilder
             }
         }
 
+        if (($item['carry_over'] ?? false)
+            && ! $relevantToday
+            && $activeStatus
+            && ! $completed
+            && ($human['include'] ?? false) === true
+            && $summary !== null) {
+            $state = 'carry_over';
+            $renderOutcome = ['carry_over'];
+        }
+
         return [
             ...$item,
             'editorial' => [
@@ -570,13 +590,16 @@ class TelegramEveningIntelligenceBuilder
                 'next_action' => $nextAction,
                 'render_outcome' => $renderOutcome === [] ? ['omit'] : $renderOutcome,
                 'summary' => $summary,
+                'carry_over_action' => ($item['carry_over'] && $activeStatus)
+                    ? $followUp
+                    : null,
                 'resolution' => $resolution,
             ],
         ];
     }
 
     /** @param Collection<int, array<string, mixed>> $items
-     *  @return array<int, array{key: string, label: string, items: array<int, array<string, mixed>>}>
+     * @return array<int, array{key: string, label: string, items: array<int, array<string, mixed>>}>
      */
     private function editorialSections(Collection $items): array
     {
@@ -585,6 +608,7 @@ class TelegramEveningIntelligenceBuilder
             'resolved' => 'Решено сегодня',
             'positive' => 'Хорошая работа',
             'attention' => 'Требует внимания',
+            'carry_over' => 'Осталось с прошлых дней',
             'actions' => 'Осталось сделать',
         ];
         $sections = [];
@@ -609,9 +633,23 @@ class TelegramEveningIntelligenceBuilder
             if ($editorial['needs_attention'] && filled($editorial['next_action'])) {
                 $sections['actions']['items'][] = $this->editorialLine($item, (string) $editorial['next_action'], 'actions');
             }
+
+            if (($item['carry_over'] ?? false)
+                && ! ($editorial['relevant_today'] ?? false)
+                && in_array($item['status'] ?? null, ['open', 'reopened'], true)
+                && $editorial['state'] === 'carry_over'
+                && filled($editorial['summary'] ?? null)) {
+                $sections['carry_over']['items'][] = [
+                    'event_key' => $item['event_key'],
+                    'context_label' => $item['context_label'] ?? null,
+                    'summary' => $editorial['summary'],
+                    'open_since' => $item['open_since'] ?? null,
+                    'next_action' => $editorial['carry_over_action'] ?? null,
+                ];
+            }
         }
 
-        foreach (['day', 'resolved', 'positive', 'attention', 'actions'] as $key) {
+        foreach (['day', 'resolved', 'positive', 'attention', 'carry_over', 'actions'] as $key) {
             $sections[$key]['items'] = collect($sections[$key]['items'])
                 ->unique(fn (array $item): string => $key === 'actions'
                     ? sha1(mb_strtolower(($item['context_label'] ?? '').'|'.$item['summary']))
@@ -669,8 +707,7 @@ class TelegramEveningIntelligenceBuilder
             ->filter(fn (array $candidate): bool => $candidate['quote'] !== '' && ($candidate['overlap'] ?? 0) > 0)
             ->all();
 
-        usort($candidates, fn (array $left, array $right): int =>
-            ($right['score'] <=> $left['score'])
+        usort($candidates, fn (array $left, array $right): int => ($right['score'] <=> $left['score'])
             ?: (($right['is_root'] ?? false) <=> ($left['is_root'] ?? false))
             ?: strcmp((string) ($left['occurred_at'] ?? ''), (string) ($right['occurred_at'] ?? ''))
             ?: (($left['message_id'] ?? 0) <=> ($right['message_id'] ?? 0))

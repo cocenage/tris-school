@@ -7,6 +7,7 @@ use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\User;
 use App\Services\Telegram\TelegramUpdateIngestService;
+use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramRichMessageBuilder;
@@ -28,6 +29,7 @@ class TelegramWorkWebhookController extends Controller
         string $secret,
         TelegramUpdateIngestService $ingestService,
         TelegramAssistantService $assistantService,
+        TelegramScheduledControlResponseService $responses,
     ) {
 
         $update = $request->all();
@@ -97,6 +99,10 @@ class TelegramWorkWebhookController extends Controller
                 $update,
                 $activated && $this->isInstructionCommand($message),
             );
+
+            if ($savedMessage) {
+                $responses->capture($savedMessage, $message);
+            }
 
             if ($savedMessage && config('services.telegram.operational_observer_enabled', false)) {
                 ProcessTelegramOperationalMessage::dispatch($savedMessage->id);

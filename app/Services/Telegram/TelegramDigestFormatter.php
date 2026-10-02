@@ -237,11 +237,20 @@ class TelegramDigestFormatter
             : null;
         $lines = ['🌙 '.($district !== '' ? $district : 'TRIS').' — итоги дня'.($date !== null ? ' · '.$date : '')];
 
+        $lines[] = '';
+        $lines[] = 'За день:';
+        $dayItems = collect($sections->get('day')['items'] ?? []);
+        if ($dayItems->isEmpty()) {
+            $lines[] = 'Новых значимых событий не зафиксировано.';
+        } else {
+            $this->appendEditorialItems($lines, $dayItems, 'day');
+        }
+
         foreach ([
-            'day' => 'За день:',
             'resolved' => '✅ Решено сегодня:',
             'positive' => '⭐ Хорошая работа:',
             'attention' => '🔄 Требует внимания:',
+            'carry_over' => '⚠️ Осталось с прошлых дней:',
             'actions' => 'Осталось сделать:',
         ] as $key => $heading) {
             $items = collect($sections->get($key)['items'] ?? []);
@@ -252,6 +261,31 @@ class TelegramDigestFormatter
 
             $lines[] = '';
             $lines[] = $heading;
+
+            if ($key === 'carry_over') {
+                foreach ($items as $item) {
+                    $context = $this->value($item['context_label'] ?? null);
+                    $summary = trim((string) ($item['summary'] ?? ''));
+                    if ($summary === '') {
+                        continue;
+                    }
+
+                    $since = null;
+                    if (filled($item['open_since'] ?? null)) {
+                        $since = Carbon::parse((string) $item['open_since'])
+                            ->setTimezone((string) ($preview['timezone'] ?? config('app.timezone', 'Europe/Rome')))
+                            ->format('d.m');
+                    }
+                    $prefix = $since !== null ? 'с '.$since : 'с предыдущих дней';
+                    $lines[] = '• '.$prefix.' — '.($context !== '' ? $context.' — ' : '').$summary;
+
+                    if (filled($item['next_action'] ?? null)) {
+                        $lines[] = '  ↳ Осталось сделать: '.$this->value($item['next_action']);
+                    }
+                }
+
+                continue;
+            }
 
             foreach ($items as $item) {
                 $context = $this->value($item['context_label'] ?? null);
@@ -271,13 +305,29 @@ class TelegramDigestFormatter
             }
         }
 
-        if ($sections->isEmpty()) {
-            $lines[] = '';
-            $lines[] = 'За день:';
-            $lines[] = 'Новых значимых событий не зафиксировано.';
-        }
-
         return implode("\n", $lines);
+    }
+
+    private function appendEditorialItems(array &$lines, Collection $items, string $key): void
+    {
+        foreach ($items as $item) {
+            $context = $this->value($item['context_label'] ?? null);
+            $summary = trim((string) ($item['summary'] ?? ''));
+
+            if ($summary === '') {
+                continue;
+            }
+
+            $lines[] = '• '.($context !== '' ? $context.' — ' : '').$summary;
+
+            if ($key !== 'actions' && filled($item['author_name'] ?? null)) {
+                $lines[] = '  👤 '.$this->value($item['author_name']);
+            }
+
+            if ($key !== 'actions' && filled($item['quote'] ?? null)) {
+                $lines[] = '  💬 «'.trim((string) $item['quote']).'»';
+            }
+        }
     }
 
     private function openAgeLabel(array $item): string

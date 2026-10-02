@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class TelegramScheduledMessageDelivery extends Model
 {
@@ -24,6 +25,11 @@ class TelegramScheduledMessageDelivery extends Model
         'sent_at' => 'datetime',
         'telegram_message_id' => 'integer',
     ];
+
+    public function responses(): HasMany
+    {
+        return $this->hasMany(TelegramScheduledMessageResponse::class, 'delivery_id');
+    }
 
     public function scheduledMessage(): BelongsTo
     {

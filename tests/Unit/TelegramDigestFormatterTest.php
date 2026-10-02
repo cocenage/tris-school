@@ -152,3 +152,54 @@ it('hides empty editorial sections and refuses to infer from raw ledger sections
         ->not->toContain('Не работает дверь')
         ->not->toContain('Осталось сделать:');
 });
+
+it('separates current-day content from dated carry-over without rendering its old author or quote', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Como'],
+        'date' => '2026-09-30',
+        'timezone' => 'Europe/Rome',
+        'editorial_sections' => [
+            ['key' => 'day', 'items' => [[
+                'event_key' => 'today',
+                'context_label' => 'Via Roma 1',
+                'summary' => 'Не работает свет.',
+            ]]],
+            ['key' => 'carry_over', 'items' => [[
+                'event_key' => 'older',
+                'context_label' => 'Via Verdi 2',
+                'summary' => 'Требуется ремонт матраса.',
+                'open_since' => '2026-09-24T08:00:00+02:00',
+                'next_action' => 'Проверить замену матраса.',
+                'author_name' => 'Старый автор',
+                'quote' => 'Старая цитата из чата',
+            ]]],
+        ],
+    ]);
+    $day = str($text)->between('За день:', '⚠️ Осталось с прошлых дней:')->toString();
+    $carryOver = str($text)->after('⚠️ Осталось с прошлых дней:')->toString();
+
+    expect($text)->toContain('🌙 Como — итоги дня · 30.09.2026')
+        ->and($day)->toContain('Не работает свет.')
+        ->not->toContain('Требуется ремонт матраса.', 'Проверить замену матраса.')
+        ->and($carryOver)->toContain('с 24.09', 'Требуется ремонт матраса.', 'Проверить замену матраса.')
+        ->not->toContain('Старый автор', 'Старая цитата из чата');
+});
+
+it('states explicitly when there are no current-day events even if carry-over exists', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Como'],
+        'date' => '2026-09-30',
+        'timezone' => 'Europe/Rome',
+        'editorial_sections' => [[
+            'key' => 'carry_over',
+            'items' => [[
+                'event_key' => 'older',
+                'summary' => 'Дефект еще не устранен.',
+                'open_since' => '2026-09-24T08:00:00+02:00',
+            ]],
+        ]],
+    ]);
+
+    expect($text)->toContain('За день:', 'Новых значимых событий не зафиксировано.', '⚠️ Осталось с прошлых дней:', 'с 24.09')
+        ->and(strpos($text, 'Новых значимых событий не зафиксировано.'))->toBeLessThan(strpos($text, '⚠️ Осталось с прошлых дней:'));
+});

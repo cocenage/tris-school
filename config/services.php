@@ -39,6 +39,14 @@ return [
     'telegram' => [
         'bot_token' => env('TELEGRAM_BOT_TOKEN'),
         'scheduled_bot_token' => env('TELEGRAM_SCHEDULED_BOT_TOKEN'),
+        'scheduled_webhook_secret' => env('TELEGRAM_SCHEDULED_WEBHOOK_SECRET'),
+        'scheduled_webhook_allowed_chat_ids' => array_values(array_filter(array_map('trim', explode(',', env('TELEGRAM_SCHEDULED_WEBHOOK_ALLOWED_CHAT_IDS', ''))))),
+        'scheduled_response_window_minutes' => env('TELEGRAM_SCHEDULED_RESPONSE_WINDOW_MINUTES', 60),
+        'scheduled_summary_buffer_minutes' => env('TELEGRAM_SCHEDULED_SUMMARY_BUFFER_MINUTES', 5),
+        'scheduled_summary_cutoff' => env('TELEGRAM_SCHEDULED_SUMMARY_CUTOFF', '22:00'),
+        'scheduled_summary_enabled' => env('TELEGRAM_SCHEDULED_SUMMARY_ENABLED', false),
+        'scheduled_summary_chat_id' => env('TELEGRAM_SCHEDULED_SUMMARY_CHAT_ID'),
+        'scheduled_summary_thread_id' => env('TELEGRAM_SCHEDULED_SUMMARY_THREAD_ID'),
         'scheduled_delivery_grace_minutes' => env('TELEGRAM_SCHEDULED_DELIVERY_GRACE_MINUTES', 5),
         // Disabled by default until Rich Message delivery is proven reliable in production.
         'rich_messages_enabled' => env('TELEGRAM_RICH_MESSAGES_ENABLED', false),

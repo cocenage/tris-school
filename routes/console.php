@@ -40,6 +40,11 @@ Schedule::command('telegram:scheduled-messages-send')
     ->everyMinute()
     ->withoutOverlapping();
 
+Schedule::command('telegram:scheduled-controls-summary-send --only-if-due')
+    ->everyFifteenMinutes()
+    ->timezone('Europe/Rome')
+    ->withoutOverlapping();
+
 Schedule::command('queue:work database --queue=default --stop-when-empty --tries=8 --timeout=30 --max-time=50')
     ->everyMinute()
     ->withoutOverlapping();
