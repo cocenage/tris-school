@@ -6,6 +6,25 @@ use Illuminate\Support\Collection;
 
 class TelegramDistrictRouteRegistry
 {
+    /** Explicit operational chat allowlist plus configured district source forums. */
+    public function operationalChatIds(): array
+    {
+        return collect([
+            ...array_map('strval', config('services.telegram.operational_chat_ids', [])),
+            ...$this->sourceRoutes()->pluck('chat_id')->map('strval')->all(),
+        ])
+            ->map(fn (mixed $chatId): string => trim((string) $chatId))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    public function isOperationalChatId(string $chatId): bool
+    {
+        return in_array($chatId, $this->operationalChatIds(), true);
+    }
+
     /** @return Collection<int, array<string, mixed>> */
     public function routes(): Collection
     {

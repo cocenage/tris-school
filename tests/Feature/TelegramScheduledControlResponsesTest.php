@@ -22,20 +22,21 @@ use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Database\Schema\Blueprint;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function () {
     config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => ':memory:', 'queue.connections.database.connection' => null]);
     DB::purge('sqlite');
     TelegramOperationalTestDatabase::refresh();
-    foreach (['2026_09_27_000000_create_telegram_scheduled_messages_tables.php', '2026_10_01_020000_create_scheduled_control_response_tables.php'] as $file) {
+    foreach (['2026_09_27_000000_create_telegram_scheduled_messages_tables.php', '2026_10_01_020000_create_scheduled_control_response_tables.php', '2026_10_03_000000_allow_replyless_scheduled_control_responses.php'] as $file) {
         (require database_path('migrations/'.$file))->up();
     }
     config([
@@ -69,8 +70,9 @@ afterEach(function () {
 function controlDeliveryFixture(array $overrides = []): TelegramScheduledMessageDelivery
 {
     $chat = TelegramChat::firstOrCreate(['telegram_chat_id' => '-1001'], ['title' => 'Test control chat', 'type' => 'supergroup', 'is_enabled' => true]);
+    $controlType = $overrides['control_type'] ?? 'first_cleanings_started';
     $control = TelegramScheduledMessage::create([
-        'name' => 'Начало уборок', 'control_type' => 'cleaning_started', 'telegram_chat_record_id' => $chat->id,
+        'name' => 'Начало уборок', 'control_type' => $controlType, 'telegram_chat_record_id' => $chat->id,
         'message' => 'Все первые уборки начались?', 'send_time' => '09:30:00', 'weekdays' => [4], 'enabled' => true,
     ]);
 
@@ -185,6 +187,50 @@ it('captures multiple valid replies to one control occurrence', function () {
         ->and(TelegramScheduledMessageResponse::count())->toBe(2);
 });
 
+it('backfills no-reply responses through the same bounded window matcher', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $payload = controlReplyPayload($delivery, 'Да, всё проверено', 220, 101, '2026-10-01 10:05:00');
+    unset($payload['message']['reply_to_message']);
+    app(TelegramUpdateIngestService::class)->ingest($payload);
+
+    expect(runScheduledControlBackfill(true))->toBe(0)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0)
+        ->and(Artisan::output())->toContain('Would insert: 1');
+    expect(runScheduledControlBackfill())->toBe(0)
+        ->and(TelegramScheduledMessageResponse::sole()->delivery_id)->toBe($delivery->id)
+        ->and(TelegramScheduledMessageResponse::sole()->reply_to_message_id)->toBeNull();
+});
+
+it('counts ambiguous fallback candidates only for deliveries in the matching thread and window', function () {
+    $previousWindow = controlDeliveryFixture([
+        'control_type' => 'schedule_checked',
+        'scheduled_for' => '2026-10-01 09:00:00',
+        'sent_at' => '2026-10-01 09:00:00',
+    ]);
+    $otherThread = controlDeliveryFixture(['message_thread_id' => '12']);
+    $delivery = controlDeliveryFixture([
+        'scheduled_for' => '2026-10-01 10:00:00',
+        'sent_at' => '2026-10-01 10:00:00',
+    ]);
+    $conflicting = controlDeliveryFixture([
+        'control_type' => 'first_cleanings_finishing',
+        'scheduled_for' => '2026-10-01 10:00:00',
+        'sent_at' => '2026-10-01 10:00:00',
+    ]);
+    $payload = controlReplyPayload($delivery, 'Да, все начали', 222, 101, '2026-10-01 10:05:00');
+    unset($payload['message']['reply_to_message']);
+    app(TelegramUpdateIngestService::class)->ingest($payload);
+
+    expect(runScheduledControlBackfill(true))->toBe(0);
+    $output = Artisan::output();
+    expect($output)->toContain('Deliveries scanned: 4', 'Candidate replies found: 1', 'Unmatched/ambiguous: 1', 'Would insert: 0');
+
+    foreach ([[$previousWindow, 0], [$otherThread, 0], [$delivery, 1], [$conflicting, 1]] as [$occurrence, $expectedCount]) {
+        expect($output)->toContain(sprintf('  #%d (%s, message %s): %d', $occurrence->id, $occurrence->chat_id, $occurrence->telegram_message_id, $expectedCount));
+    }
+    expect(TelegramScheduledMessageResponse::count())->toBe(0);
+});
+
 it('dry run reports recoverable replies without writing any database rows', function () {
     $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
     storeBackfillReply($delivery, 207);
@@ -230,6 +276,7 @@ it('ignores unsupported and test control types', function () {
 it('does not capture a random chat message or unrelated reply', function () {
     $payload = controlReplyPayload(controlDeliveryFixture());
     unset($payload['message']['reply_to_message']);
+    $payload['message']['text'] = 'Мы поговорим после обеда';
     expect(captureControlReply($payload))->toBeNull();
     $payload['message']['reply_to_message'] = ['message_id' => 555];
     expect(captureControlReply($payload))->toBeNull();
@@ -241,7 +288,7 @@ it('deduplicates the same reply received by both bots', function () {
     $this->postJson('/telegram/work-webhook/work-test', $payload)->assertOk();
     $this->postJson(route('telegram.scheduled.webhook', ['secret' => 'scheduled-test']), $payload)->assertOk();
     expect(TelegramScheduledMessageResponse::count())->toBe(1);
-    expect(\App\Models\TelegramMessage::count())->toBe(1);
+    expect(TelegramMessage::count())->toBe(1);
     Http::assertNothingSent();
 });
 
@@ -264,9 +311,11 @@ it('reuses the existing staff mapping and preserves Telegram identity', function
 it('classifies bounded Russian responses with negation taking precedence', function ($text, $expected) {
     expect(app(ScheduledControlResponseClassifier::class)->classify($text)['classification'])->toBe($expected);
 })->with([
-    ['Да', 'confirmed'], ['Все начались', 'confirmed'], ['Готово', 'confirmed'], ['Проверено ✅', 'confirmed'],
+    ['Да', 'confirmed'], ['Да, всё проверено', 'confirmed'], ['Все начались', 'confirmed'], ['Готово', 'confirmed'], ['Проверено ✅', 'confirmed'],
     ['Все ок', 'confirmed'], ['Да, всё завершено', 'confirmed'], ['Все завершили', 'confirmed'],
     ['Нет, одна уборка еще не началась', 'problem'], ['Курьер не приехал', 'problem'],
+    ['Маша опоздает минут на 20', 'problem'], ['опоздает на 15 минут', 'problem'],
+    ['будет позже минут на 10', 'problem'], ['задержится примерно на 20 минут', 'problem'],
     ['Есть проблема с Via X', 'problem'], ['Не все завершили', 'problem'], ['Нет, не всё хорошо', 'problem'],
     ['4 из 5 начали', 'partial'], ['Почти все', 'partial'], ['Одна осталась', 'partial'], ['Все кроме Navigli', 'partial'],
     ['Сейчас уточню', 'unclear'], ['Не знаю', 'unclear'], ['?', 'unclear'], ['Проверяем', 'unclear'],
@@ -295,12 +344,142 @@ it('exposes the six canonical scheduled control types', function () {
     ]);
 });
 
+it('renders only the six canonical control types and describes zero captured data clearly', function () {
+    foreach (array_keys(ScheduledControlTypes::LABELS) as $controlType) {
+        controlDeliveryFixture(['control_type' => $controlType]);
+    }
+    controlDeliveryFixture(['control_type' => 'control_question']);
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+
+    expect($summary['controls'])->toHaveCount(6)
+        ->and(collect($summary['controls'])->pluck('control_type')->all())->toEqual(array_keys(ScheduledControlTypes::LABELS))
+        ->and($text)->toContain('Время уборок и заметки проверены: нет данных', 'Все доплаты произведены: нет данных')
+        ->and(substr_count($text, 'Ответы на контрольные сообщения за этот день не зафиксированы.'))->toBe(1);
+
+    expect($text)->not->toContain('control_question');
+    expect($text)->not->toContain('подтверждений нет');
+    expect($text)->not->toContain('Список ожидаемых участников не настроен');
+});
+
+it('keeps an explicit reply attached to its delivery even after a newer control starts', function () {
+    $original = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    controlDeliveryFixture([
+        'control_type' => 'first_cleanings_started',
+        'scheduled_for' => '2026-10-01 10:00:00',
+        'sent_at' => '2026-10-01 10:00:00',
+        'telegram_message_id' => 9910,
+    ]);
+    $payload = controlReplyPayload($original, 'Да, всё проверено', 212, 101, '2026-10-01 10:05:00');
+
+    $stored = app(TelegramUpdateIngestService::class)->ingest($payload);
+    $response = app(TelegramScheduledControlResponseService::class)->capture($stored, $payload['message']);
+
+    expect($response->delivery_id)->toBe($original->id);
+});
+
+it('uses a plausible no-reply response only inside its unique chat and thread window', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $payload = controlReplyPayload($delivery, 'Да, всё проверено', 213, 101, '2026-10-01 10:05:00');
+    unset($payload['message']['reply_to_message']);
+    $stored = app(TelegramUpdateIngestService::class)->ingest($payload);
+
+    $response = app(TelegramScheduledControlResponseService::class)->capture($stored, $payload['message']);
+
+    expect($response)->not->toBeNull()
+        ->and($response->delivery_id)->toBe($delivery->id)
+        ->and($response->reply_to_message_id)->toBeNull()
+        ->and($response->classification)->toBe('confirmed');
+});
+
+it('rejects no-reply fallback from another chat or forum thread', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+
+    foreach ([
+        ['chat' => ['id' => -1002, 'type' => 'supergroup']],
+        ['message_thread_id' => 12],
+    ] as $index => $overrides) {
+        $payload = controlReplyPayload($delivery, 'Да, всё проверено', 300 + $index, 101, '2026-10-01 10:05:00');
+        unset($payload['message']['reply_to_message']);
+        $payload['message'] = array_replace($payload['message'], $overrides);
+        $stored = app(TelegramUpdateIngestService::class)->ingest($payload);
+
+        expect(app(TelegramScheduledControlResponseService::class)->capture($stored, $payload['message']))->toBeNull();
+    }
+
+    expect(TelegramScheduledMessageResponse::count())->toBe(0);
+});
+
+it('does not fall back before a control delivery or after the next control starts', function (string $at, bool $withNext) {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $next = $withNext ? controlDeliveryFixture([
+        'control_type' => 'first_cleanings_started',
+        'scheduled_for' => '2026-10-01 10:30:00',
+        'sent_at' => '2026-10-01 10:30:00',
+        'telegram_message_id' => 9911,
+    ]) : null;
+    $payload = controlReplyPayload($delivery, 'Да, всё проверено', 214, 101, $at);
+    unset($payload['message']['reply_to_message']);
+    $stored = app(TelegramUpdateIngestService::class)->ingest($payload);
+
+    $response = app(TelegramScheduledControlResponseService::class)->capture($stored, $payload['message']);
+
+    expect($response?->delivery_id)->not->toBe($delivery->id);
+    if ($next && $at === '2026-10-01 10:35:00') {
+        expect($response?->delivery_id)->toBe($next->id);
+    } else {
+        expect($response)->toBeNull();
+    }
+})->with([
+    ['2026-10-01 09:34:00', false],
+    ['2026-10-01 10:35:00', true],
+]);
+
+it('skips ambiguous fallback windows, bot messages, and unrelated conversation', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    controlDeliveryFixture([
+        'control_type' => 'first_cleanings_started',
+        'scheduled_for' => '2026-10-01 09:30:00',
+        'sent_at' => $delivery->sent_at,
+        'telegram_message_id' => 9912,
+    ]);
+    foreach ([
+        ['Да, всё проверено', 215, ['from' => ['id' => 101, 'is_bot' => false]]],
+        ['Да, всё проверено', 216, ['from' => ['id' => 102, 'is_bot' => true]]],
+        ['Мы поговорим после обеда', 217, ['from' => ['id' => 103, 'is_bot' => false]]],
+    ] as [$text, $id, $from]) {
+        $payload = controlReplyPayload($delivery, $text, $id, 101, '2026-10-01 10:05:00');
+        unset($payload['message']['reply_to_message']);
+        $payload['message']['from'] = $from;
+        $stored = app(TelegramUpdateIngestService::class)->ingest($payload);
+        expect(app(TelegramScheduledControlResponseService::class)->capture($stored, $payload['message']))->toBeNull();
+    }
+
+    expect(TelegramScheduledMessageResponse::count())->toBe(0);
+});
+
+it('does not attach a late replyless message to the last delivery', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $payload = controlReplyPayload($delivery, 'Да, всё проверено', 221, 101, '2026-10-01 10:36:00');
+    unset($payload['message']['reply_to_message']);
+
+    expect(captureControlReply($payload))->toBeNull()
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0);
+});
+
 it('extracts partial district exceptions, delay and missing-key reasons from response evidence', function ($text, $expected) {
     expect(app(ScheduledControlResponseInterpreter::class)->interpret($text))->toMatchArray($expected);
 })->with([
     ['Все начали', ['status' => 'ok', 'district' => null, 'delay_minutes' => null, 'reason' => null]],
     ['Все начали кроме Комо', ['status' => 'partial', 'district' => 'Como']],
     ['Маша опоздает минут на 20', ['status' => 'problem', 'delay_minutes' => 20, 'reason' => 'задержка']],
+    ['опоздает на 15 минут', ['status' => 'problem', 'delay_minutes' => 15, 'reason' => 'задержка']],
+    ['Маша задержится 20 минут', ['status' => 'problem', 'delay_minutes' => 20, 'reason' => 'задержка']],
+    ['опоздает 15 мин', ['status' => 'problem', 'delay_minutes' => 15, 'reason' => 'задержка']],
+    ['Купит 20 полотенец', ['status' => 'unknown', 'delay_minutes' => null, 'reason' => null]],
+    ['будет позже минут на 10', ['status' => 'problem', 'delay_minutes' => 10, 'reason' => 'задержка']],
+    ['задержится примерно на 20 минут', ['status' => 'problem', 'delay_minutes' => 20, 'reason' => 'задержка']],
     ['Там нет ключей', ['status' => 'problem', 'reason' => 'нет ключей']],
     ['Да', ['status' => 'ok']],
     ['Сейчас проверю?', ['status' => 'unknown']],
@@ -420,6 +599,48 @@ it('keeps ingestion and existing observation available with main auto replies di
     Http::assertNothingSent();
 });
 
+it('persists and captures a control-topic message outside the work-chat allowlist exactly once', function () {
+    config(['services.telegram.work_allowed_chat_ids' => ['-1002'], 'services.telegram.operational_chat_ids' => ['-1002'], 'services.telegram.operational_observer_enabled' => true]);
+    Queue::fake();
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $payload = controlReplyPayload($delivery, 'Да, всё проверено', 218);
+
+    $this->postJson('/telegram/work-webhook/work-test', $payload)->assertOk();
+
+    expect(TelegramMessage::query()->where('message_id', '218')->count())->toBe(1)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(1);
+    Queue::assertNotPushed(ProcessTelegramOperationalMessage::class);
+});
+
+it('runs both operational observation and control capture for a shared source destination', function () {
+    config([
+        'services.telegram.work_allowed_chat_ids' => ['-1002'],
+        'services.telegram.operational_chat_ids' => ['-1001'],
+        'services.telegram.operational_observer_enabled' => true,
+    ]);
+    Queue::fake();
+    $payload = controlReplyPayload(controlDeliveryFixture(['control_type' => 'schedule_checked']), 'Да, всё проверено', 220);
+
+    $this->postJson('/telegram/work-webhook/work-test', $payload)->assertOk();
+
+    expect(TelegramMessage::query()->where('message_id', '220')->count())->toBe(1)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(1);
+    Queue::assertPushed(ProcessTelegramOperationalMessage::class, 1);
+});
+
+it('invokes scheduled response capture once after out-of-allowlist persistence', function () {
+    config(['services.telegram.work_allowed_chat_ids' => ['-1002'], 'services.telegram.operational_chat_ids' => ['-1002']]);
+    $service = Mockery::mock(TelegramScheduledControlResponseService::class);
+    $service->shouldReceive('isSupportedControlDestination')->once()->andReturn(true);
+    $service->shouldReceive('capture')->once()->andReturnNull();
+    $this->app->instance(TelegramScheduledControlResponseService::class, $service);
+    $payload = controlReplyPayload(controlDeliveryFixture(['control_type' => 'schedule_checked']), 'Да', 219);
+
+    $this->postJson('/telegram/work-webhook/work-test', $payload)->assertOk();
+
+    expect(TelegramMessage::query()->where('message_id', '219')->count())->toBe(1);
+});
+
 it('keeps callback queries out of response capture', function () {
     $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => ['id' => 'fixture', 'data' => 'unknown:callback']])->assertOk();
     expect(TelegramScheduledMessageResponse::count())->toBe(0);
@@ -467,7 +688,7 @@ it('waits for late active controls and actual late send windows before automatic
 });
 
 it('registers automatic summary with overlap protection without changing scheduled delivery worker', function () {
-    $events = collect(app(\Illuminate\Console\Scheduling\Schedule::class)->events());
+    $events = collect(app(Schedule::class)->events());
     $summary = $events->first(fn ($event) => str_contains($event->command ?? '', 'scheduled-controls-summary-send --only-if-due'));
     expect($summary->expression)->toBe('*/15 * * * *')->and($summary->withoutOverlapping)->toBeTrue();
     expect($events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:scheduled-messages-send'))->expression)->toBe('* * * * *');

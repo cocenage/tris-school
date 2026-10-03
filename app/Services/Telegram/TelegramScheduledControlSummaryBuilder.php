@@ -25,6 +25,7 @@ class TelegramScheduledControlSummaryBuilder
         $timezone = config('app.timezone', 'Europe/Rome');
         $query = TelegramScheduledMessageDelivery::query()
             ->with(['responses.telegramMessage.topic.apartment', 'scheduledMessage' => fn ($query) => $query->withTrashed()])
+            ->whereIn('control_type', array_keys(ScheduledControlTypes::LABELS))
             ->where('scheduled_for', '>=', $start->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->where('scheduled_for', '<', $end->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->when($scheduledMessageId !== null, fn ($query) => $query->where('scheduled_message_id', $scheduledMessageId))

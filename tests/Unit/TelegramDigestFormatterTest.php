@@ -1,6 +1,9 @@
 <?php
 
 use App\Services\Telegram\TelegramDigestFormatter;
+use Tests\TestCase;
+
+uses(TestCase::class);
 
 it('formats an empty morning using only the supplied contract', function () {
     $text = app(TelegramDigestFormatter::class)->morning([

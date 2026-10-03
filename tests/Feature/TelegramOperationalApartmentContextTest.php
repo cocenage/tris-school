@@ -38,7 +38,7 @@ afterEach(function () {
     DB::purge('sqlite');
 });
 
-it('carries mapped apartment topics into events and both evening handoff sections without crossing chats', function () {
+it('preserves mapped apartment topics in daily problem cards without crossing chats', function () {
     $viaX = Apartment::create(['name' => 'Via X']);
     $viaY = Apartment::create(['name' => 'Via Y']);
     $viaZ = Apartment::create(['name' => 'Via Z']);
@@ -74,7 +74,8 @@ it('carries mapped apartment topics into events and both evening handoff section
         ->and($navigliItems->get('У вытяжки не работает свет.')['apartment_id'])->toBe($viaY->id)
         ->and($navigliItems->get('Не работает кран в ванной.')['apartment_id'])->toBeNull()
         ->and($navigliText)->toContain('• Via Y — У вытяжки не работает свет.')
-        ->toContain('• Via X — Проверить доступ в квартиру.')
+        ->toContain('• Via X — Дверь закрыта, никто не открывает.')
+        ->toContain('https://t.me/c/1/1')
         ->toContain('• Via Unknown — Не работает кран в ванной.')
         ->not->toContain('Via Z')
         ->and($lodiText)->toContain('Via Z — Не работает замок в квартире.')
@@ -175,7 +176,7 @@ it('shows the source chat, topic, thread, apartment and mapping status in the to
     );
 });
 
-it('resolves a replied access problem with evidence and shows it as resolved instead of pending', function () {
+it('retains resolved access evidence in the ledger and omits it from daily problem cards', function () {
     $apartment = Apartment::create(['name' => 'Via X']);
     $root = TelegramOperationalTestDatabase::message('Не открывается дверь в квартире.', '2026-06-17 08:00:00', '101');
     $root->topic->update(['apartment_id' => $apartment->id]);
@@ -204,9 +205,9 @@ it('resolves a replied access problem with evidence and shows it as resolved ins
         ->and($event->evidence->last()->observation->message->id)->toBe($answer->id)
         ->and($preview['sections'][0]['key'])->toBe('resolved')
         ->and($preview['sections'][0]['items'][0]['evidence'][1]['transition'])->toBe('resolved')
-        ->and($text)->toContain('✅ Решено сегодня:')
-        ->toContain('• Via X — проблема с доступом решена.')
-        ->not->toContain('Осталось на контроле:');
+        ->and($preview['daily_problems'])->toBe([])
+        ->and($text)->toContain('🌙 Lambrate — проблемы за день · 17.06.2026', '✅ Незакрытых проблем за день не зафиксировано.')
+        ->not->toContain('✅ Решено сегодня:', '• Via X', 'Осталось на контроле:');
 });
 
 it('resolves access continuations so they no longer require apartment handoff attention', function (string $problem, string $answer) {
@@ -274,8 +275,9 @@ it('reopens the same event on confirmed recurrence and no longer presents it as 
     expect($result['outcome'])->toBe('reopened')
         ->and(TelegramOperationalEvent::query()->sole()->status)->toBe('reopened')
         ->and(TelegramOperationalEvent::query()->sole()->evidence()->pluck('transition')->all())->toBe(['created', 'resolved', 'reopened'])
-        ->and($text)->toContain('Осталось сделать:')
-        ->not->toContain('✅ Решено сегодня:');
+        ->and($preview['daily_problems'])->toHaveCount(1)
+        ->and($text)->toContain('Незакрытых проблем: 1', 'Не открывается дверь в квартире.', 'https://t.me/c/1/301')
+        ->not->toContain('✅ Решено сегодня:', 'Осталось сделать:');
 });
 
 it('recognizes a concrete linked resolution without losing its evidence', function (string $problem, string $answer) {
@@ -348,17 +350,25 @@ it('labels a resolution as today only on its evidence date, not on later activit
     $observer->observe($done);
     $builder = app(TelegramEveningIntelligenceBuilder::class);
     $formatter = app(TelegramDigestFormatter::class);
-    $resolutionDay = $formatter->eveningIntelligence($builder->build('2026-06-17'));
+    $resolutionPreview = $builder->build('2026-06-17');
+    $resolutionDay = $formatter->eveningIntelligence($resolutionPreview);
 
     $check = TelegramOperationalTestDatabase::message(
         'Я проверю замок ещё раз.', '2026-06-18 10:00:00', '603',
         ['message' => ['reply_to_message' => ['message_id' => 601]]],
     );
     $observer->observe($check);
-    $laterDay = $formatter->eveningIntelligence($builder->build('2026-06-18'));
+    $laterPreview = $builder->build('2026-06-18');
+    $laterDay = $formatter->eveningIntelligence($laterPreview);
 
-    expect($resolutionDay)->toContain('✅ Решено сегодня:')
-        ->not->toContain('• Не открывается дверь в квартире.')
-        ->and($laterDay)->not->toContain('✅ Решено сегодня:')
-        ->not->toContain('• Не открывается дверь в квартире.');
+    expect(TelegramOperationalEvent::query()->sole()->status)->toBe('resolved')
+        ->and(TelegramOperationalEvent::query()->sole()->resolved_at->toDateString())->toBe('2026-06-17')
+        ->and(collect($resolutionPreview['events'])->sole()['editorial']['render_outcome'])->toContain('resolved')
+        ->and(collect($laterPreview['events'])->sole()['editorial']['render_outcome'])->not->toContain('resolved')
+        ->and($resolutionPreview['daily_problems'])->toBe([])
+        ->and($laterPreview['daily_problems'])->toBe([])
+        ->and($resolutionDay)->toContain('✅ Незакрытых проблем за день не зафиксировано.')
+        ->not->toContain('✅ Решено сегодня:', '• Не открывается дверь в квартире.')
+        ->and($laterDay)->toContain('✅ Незакрытых проблем за день не зафиксировано.')
+        ->not->toContain('✅ Решено сегодня:', '• Не открывается дверь в квартире.');
 });

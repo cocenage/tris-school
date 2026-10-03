@@ -3,9 +3,14 @@
 use App\Models\TelegramOperationalEvent;
 use App\Models\TelegramOperationalEventEvidence;
 use App\Models\TelegramOperationalObservation;
+use App\Services\Telegram\TelegramOperationalEventObserver;
+use App\Services\Telegram\TelegramOperationalInterpreter;
+use Carbon\Carbon;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Tests\Support\TelegramOperationalTestDatabase;
 
@@ -36,7 +41,7 @@ afterEach(function (): void {
 
 it('compares stored links and current decisions without mutations, Telegram calls or jobs', function (): void {
     [$event, $message] = createOiAuditEvent('Не работает замок в квартире.', 'Не работает замок в квартире.');
-    $interpreter = app(\App\Services\Telegram\TelegramOperationalInterpreter::class);
+    $interpreter = app(TelegramOperationalInterpreter::class);
     $decision = $interpreter->interpret($message->text);
     $event->update(['subject_key' => $decision['subject_key']]);
     $new = TelegramOperationalTestDatabase::message('Не работает свет в комнате 2.', '2026-09-24 11:00:00', '102');
@@ -47,13 +52,13 @@ it('compares stored links and current decisions without mutations, Telegram call
     config(['services.telegram.digest_districts' => ['certosa' => [
         'label' => 'Certosa', 'chat_id' => '-1001', 'latitude' => 45, 'longitude' => 9,
     ]]]);
-    \Illuminate\Support\Facades\Http::fake();
-    \Illuminate\Support\Facades\Queue::fake();
-    $this->mock(\App\Services\Telegram\TelegramOperationalEventObserver::class)->shouldNotReceive('observe');
+    Http::fake();
+    Queue::fake();
+    $this->mock(TelegramOperationalEventObserver::class)->shouldNotReceive('observe');
     $tables = ['telegram_messages', 'telegram_operational_events', 'telegram_operational_observations', 'telegram_operational_event_evidence', 'telegram_topics'];
     $snapshot = fn () => collect($tables)->mapWithKeys(fn ($table) => [$table => DB::connection('analytics')->table($table)->orderBy('id')->get()->toJson()])->all();
     $before = $snapshot();
-    \Carbon\Carbon::setTestNow('2026-10-05');
+    Carbon::setTestNow('2026-10-05');
     try {
         expect(Artisan::call('telegram:oi-logic-audit', ['--date' => '2026-09-24', '--district' => 'certosa', '--compare-current' => true, '--json' => true]))->toBe(0);
         $audit = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
@@ -67,10 +72,10 @@ it('compares stored links and current decisions without mutations, Telegram call
             ->and($rows[$ignored->id]['current']['outcome'])->toBe('no_event')
             ->and($rows[$ignored->id]['current']['reason_code'])->not->toBeNull()
             ->and($snapshot())->toBe($before);
-        \Illuminate\Support\Facades\Http::assertNothingSent();
-        \Illuminate\Support\Facades\Queue::assertNothingPushed();
+        Http::assertNothingSent();
+        Queue::assertNothingPushed();
     } finally {
-        \Carbon\Carbon::setTestNow();
+        Carbon::setTestNow();
     }
 });
 
@@ -98,7 +103,7 @@ it('exposes stale historical events now ignored and every evidence link', functi
 
 it('reports concrete stored field differences', function (string $field, string $value, string $category): void {
     [$event, $message] = createOiAuditEvent('Не работает замок в квартире.', 'Не работает замок в квартире.');
-    $decision = app(\App\Services\Telegram\TelegramOperationalInterpreter::class)->interpret($message->text);
+    $decision = app(TelegramOperationalInterpreter::class)->interpret($message->text);
     $event->update(['subject_key' => $decision['subject_key']]);
     $link = $event->evidence()->firstOrFail();
     if (in_array($field, ['primary_type', 'subject_key'], true)) {
@@ -194,8 +199,10 @@ function createOiAuditEvent(string $summary, string $messageText, string $at = '
     return [$event, $message];
 }
 
-it('shows builder decisions, selected evidence, and only same-chat same-topic context without writing', function (): void {
-    [$event, $source] = createOiAuditEvent('Не работает замок в квартире.', 'Не работает замок в квартире.');
+it('shows builder decisions, selected evidence, and only same-chat same-topic context without writing', function (string $report, ?string $nextAction): void {
+    Http::fake();
+    Queue::fake();
+    [$event, $source] = createOiAuditEvent($report, $report);
     TelegramOperationalTestDatabase::message('До события: дверь была закрыта.', '2026-09-24 10:10:00', '100', threadId: '11');
     TelegramOperationalTestDatabase::message('Соседняя тема с похожим текстом.', '2026-09-24 10:14:00', '102', threadId: '12');
     TelegramOperationalTestDatabase::message('Другой чат.', '2026-09-24 10:15:00', '103', chatId: '-1002', threadId: '11');
@@ -207,23 +214,24 @@ it('shows builder decisions, selected evidence, and only same-chat same-topic co
         DB::connection('analytics')->table('telegram_operational_event_evidence')->count(),
     ];
 
-    $this->artisan('telegram:oi-logic-audit', ['--date' => '2026-09-24', '--json' => true])
-        ->assertExitCode(0)
-        ->expectsOutputToContain('Не работает замок в квартире.')
-        ->expectsOutputToContain('selected_quote')
-        ->expectsOutputToContain('Анна')
-        ->expectsOutputToContain('telegram_actions');
+    // The command writes one JSON document, not a separate console write per field.
+    expect(Artisan::call('telegram:oi-logic-audit', ['--date' => '2026-09-24', '--json' => true]))->toBe(0);
+    $output = Artisan::output();
+    expect($output)->toContain($report, 'selected_quote', 'Анна', 'telegram_actions');
 
-    $result = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+    $result = json_decode($output, true, flags: JSON_THROW_ON_ERROR);
     $audited = collect($result['events'])->firstWhere('event_key', $event->event_key);
     $conversation = collect($audited['related_conversation']);
 
     expect($audited['current_oi']['state'])->toBe('open')
-        ->and($audited['current_oi']['needs_attention'])->toBeTrue()
+        ->and($audited['current_oi']['needs_attention'])->toBe($nextAction !== null)
+        ->and($audited['current_oi']['next_action'])->toBe($nextAction)
+        ->and($audited['current_oi']['editorial_state'])->toBe($nextAction === null ? 'informational' : 'active')
         ->and($audited['current_oi']['selected_quote'])->not->toBeNull()
         ->and($audited['current_oi']['selected_evidence']['telegram_message_id'])->toBe($source->message_id)
         ->and($audited['current_oi']['author'])->toBe('Анна')
-        ->and($audited['current_oi']['rendered_in'])->toContain('Требует внимания')
+        ->and($audited['current_oi']['rendered_in'])->toContain('За день')
+        ->and(in_array('Требует внимания', $audited['current_oi']['rendered_in'], true))->toBe($nextAction !== null)
         ->and($conversation->pluck('telegram_message_id')->all())->toContain('100', '101', '104')
         ->and($conversation->pluck('telegram_message_id')->all())->not->toContain('102', '103')
         ->and($result['mode'])->toMatchArray(['read_only' => true, 'ledger_mutations' => 0, 'telegram_actions' => 0])
@@ -232,9 +240,17 @@ it('shows builder decisions, selected evidence, and only same-chat same-topic co
             DB::connection('analytics')->table('telegram_operational_observations')->count(),
             DB::connection('analytics')->table('telegram_operational_event_evidence')->count(),
         ])->toBe($before);
-});
+
+    Http::assertNothingSent();
+    Queue::assertNothingPushed();
+})->with([
+    'open defect without a composed next action' => ['Не работает замок в квартире.', null],
+    'open defect with a concrete next action' => ['Не работает свет в квартире.', 'Проверить неисправность света.'],
+]);
 
 it('reports resolution transitions and safely handles missing apartment, author, and evidence', function (): void {
+    Http::fake();
+    Queue::fake();
     [$event] = createOiAuditEvent('Не работает замок в квартире.', 'Не работает замок в квартире.');
     $resolution = TelegramOperationalTestDatabase::message(
         'Всё, дверь открыли.',
@@ -286,16 +302,16 @@ it('reports resolution transitions and safely handles missing apartment, author,
         'last_observed_at' => '2026-09-24 11:00:00',
     ]);
 
-    $this->artisan('telegram:oi-logic-audit', ['--date' => '2026-09-24', '--json' => true])
-        ->assertExitCode(0)
-        ->expectsOutputToContain('resolution')
-        ->expectsOutputToContain('telegram_actions');
+    expect(Artisan::call('telegram:oi-logic-audit', ['--date' => '2026-09-24', '--json' => true]))->toBe(0);
+    $output = Artisan::output();
+    expect($output)->toContain('resolution', 'telegram_actions');
 
-    $result = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+    $result = json_decode($output, true, flags: JSON_THROW_ON_ERROR);
     $resolved = collect($result['events'])->firstWhere('event_key', $event->event_key);
     $empty = collect($result['events'])->firstWhere('event_key', 'audit:no-evidence');
 
     expect($resolved['current_oi']['state'])->toBe('resolved')
+        ->and($resolved['current_oi']['resolution'])->not->toBeNull()
         ->and($resolved['current_oi']['rendered_in'])->toContain('Решено сегодня')
         ->and(collect($resolved['evidence'])->pluck('transition')->all())->toContain('created', 'resolved')
         ->and($empty['apartment'])->toBeNull()
@@ -304,4 +320,7 @@ it('reports resolution transitions and safely handles missing apartment, author,
         ->and($empty['related_conversation'])->toBe([])
         ->and($result['counts']['missing_evidence'])->toBe(1)
         ->and($result['mode']['telegram_actions'])->toBe(0);
+
+    Http::assertNothingSent();
+    Queue::assertNothingPushed();
 });

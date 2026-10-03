@@ -15,6 +15,7 @@ class TelegramOperationalEventObserver
 {
     public function __construct(
         protected TelegramOperationalInterpreter $interpreter,
+        protected TelegramDistrictRouteRegistry $districts,
     ) {}
 
     public function observe(
@@ -793,9 +794,9 @@ class TelegramOperationalEventObserver
     {
         $chatType = $message->chat?->type;
         $chatId = (string) ($message->chat?->telegram_chat_id ?? '');
-        $allowedChatIds = array_map('strval', config('services.telegram.operational_chat_ids', []));
+        $allowedChatIds = $this->districts->operationalChatIds();
 
-        if ($chatType === 'private' || ($allowedChatIds !== [] && ! in_array($chatId, $allowedChatIds, true))) {
+        if ($chatType === 'private' || ! in_array($chatId, $allowedChatIds, true)) {
             return 'private_or_disallowed_chat';
         }
 

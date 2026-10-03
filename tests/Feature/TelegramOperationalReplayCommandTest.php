@@ -52,6 +52,80 @@ it('catches up the frozen current day through the captured clock without duplica
         ->and(Http::recorded())->toHaveCount(0);
 });
 
+it('replays configured district forums and explicit supervisor sources without stale topic or timezone filtering', function () {
+    Carbon::setTestNow(Carbon::parse('2026-06-18 12:00:00', 'Europe/Rome'));
+    config([
+        'services.telegram.operational_chat_ids' => ['-1008'],
+        'services.telegram.digest_districts' => [
+            'navigli' => [
+                'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '285365',
+                'latitude' => 45.4514, 'longitude' => 9.1749,
+            ],
+        ],
+    ]);
+
+    $district = TelegramOperationalTestDatabase::message(
+        'Всем привет',
+        '2026-06-17 23:55:00',
+        '920',
+        chatId: '-1001',
+        threadId: '999999',
+    );
+    $supervisor = TelegramOperationalTestDatabase::message(
+        'Не работает замок в квартире',
+        '2026-06-17 12:00:00',
+        '921',
+        chatId: '-1008',
+    );
+    $previousDay = TelegramOperationalTestDatabase::message(
+        'Не работает свет',
+        '2026-06-16 23:59:00',
+        '922',
+        chatId: '-1001',
+    );
+    $unsupported = TelegramOperationalTestDatabase::message(
+        'Не работает дверь',
+        '2026-06-17 13:00:00',
+        '923',
+        chatId: '-1010',
+    );
+    app(TelegramOperationalEventObserver::class)->observe($district);
+
+    expect(Artisan::call('telegram:operational-replay', [
+        '--date' => '2026-06-17', '--json' => true,
+    ]))->toBe(0);
+
+    $result = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($result)->toMatchArray([
+        'examined' => 2,
+        'no_event' => 1,
+        'created' => 1,
+        'idempotent_reused' => 1,
+        'failed' => 0,
+        'telegram_actions' => 0,
+    ])->and($district->operationalObservations()->where('evaluation_kind', 'message')->count())->toBe(1)
+        ->and($supervisor->operationalObservations()->where('evaluation_kind', 'message')->count())->toBe(1)
+        ->and(TelegramOperationalObservation::query()->where('telegram_message_id', $district->id)->value('outcome'))->toBe('no_event')
+        ->and($previousDay->operationalObservations()->exists())->toBeFalse()
+        ->and($unsupported->operationalObservations()->exists())->toBeFalse()
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1)
+        ->and(Http::recorded())->toHaveCount(0);
+});
+
+it('selects no chats when no operational source is configured', function () {
+    Carbon::setTestNow(Carbon::parse('2026-06-18 12:00:00', 'Europe/Rome'));
+    config(['services.telegram.operational_chat_ids' => [], 'services.telegram.digest_districts' => []]);
+    $message = TelegramOperationalTestDatabase::message('Не работает замок', '2026-06-17 08:00:00');
+
+    expect(Artisan::call('telegram:operational-replay', ['--date' => '2026-06-17', '--json' => true]))->toBe(0);
+
+    $result = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+    expect($result['examined'])->toBe(0)
+        ->and($message->operationalObservations()->exists())->toBeFalse()
+        ->and(Http::recorded())->toHaveCount(0);
+});
+
 it('keeps the current-day guard unless through-now is explicit and rejects other through-now selectors', function () {
     Carbon::setTestNow(Carbon::parse('2026-07-23 12:00:00', 'Europe/Rome'));
     TelegramOperationalTestDatabase::message('Не работает замок в квартире', '2026-07-23 08:00:00', '911');
