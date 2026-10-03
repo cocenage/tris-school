@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\TelegramMessage;
+use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramOperationalEventObserver;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
@@ -19,8 +20,10 @@ class TelegramOperationalReplayCommand extends Command
 
     protected $description = 'Replay a bounded period of stored work Telegram messages into the operational event ledger';
 
-    public function handle(TelegramOperationalEventObserver $observer): int
-    {
+    public function handle(
+        TelegramOperationalEventObserver $observer,
+        TelegramDistrictRouteRegistry $districts,
+    ): int {
         $capturedNow = now(config('app.timezone', 'Europe/Rome'));
         $boundaries = $this->boundaries($capturedNow);
 
@@ -57,7 +60,7 @@ class TelegramOperationalReplayCommand extends Command
         $bucket = [];
         $bucketTimestamp = null;
 
-        foreach ($this->messages($from, $cutoff) as $message) {
+        foreach ($this->messages($from, $cutoff, $districts->operationalChatIds()) as $message) {
             $timestamp = $message->sent_at?->toIso8601String() ?? $message->created_at?->toIso8601String();
 
             if ($bucket !== [] && $timestamp !== $bucketTimestamp) {
@@ -153,18 +156,15 @@ class TelegramOperationalReplayCommand extends Command
         return [$from, $to, $to->copy()->endOfDay()];
     }
 
-    private function messages(Carbon $from, Carbon $cutoff): iterable
+    private function messages(Carbon $from, Carbon $cutoff, array $allowedChatIds): iterable
     {
-        $allowedChatIds = array_map('strval', config('services.telegram.operational_chat_ids', []));
         $query = TelegramMessage::query()
             ->with(['chat', 'topic', 'telegramUser', 'attachments'])
             ->whereBetween('sent_at', [$from->copy()->startOfDay(), $cutoff])
             ->whereHas('chat', function ($query) use ($allowedChatIds) {
                 $query->whereIn('type', ['group', 'supergroup', 'channel']);
 
-                if ($allowedChatIds !== []) {
-                    $query->whereIn('telegram_chat_id', $allowedChatIds);
-                }
+                $query->whereIn('telegram_chat_id', $allowedChatIds);
             })
             ->orderBy('sent_at')
             ->orderBy('id');

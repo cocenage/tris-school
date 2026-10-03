@@ -1,7 +1,13 @@
 <?php
 
+use App\Models\TelegramMessage;
+use App\Models\TelegramOperationalEvent;
+use App\Models\TelegramOperationalObservation;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramEveningHumanComposer;
+use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(fn () => TelegramOperationalTestDatabase::refresh());
@@ -19,9 +25,9 @@ it('uses several evidence messages to explain one access situation', function ()
 
     expect($human)->toMatchArray([
         'include' => true,
-        'summary' => 'Проблема с доступом: консьерж отсутствовал, дверь не открывали.',
         'follow_up' => 'Проверить доступ в квартиру.',
-    ]);
+    ])->and(mb_strtolower($human['summary']))->toContain('консьержа нет', 'не открывают')
+        ->not->toContain('замок', 'сломана', 'потому что');
 });
 
 it('returns explicit omit, composed, raw-safe, and technical-failure outcomes', function () {
@@ -32,7 +38,7 @@ it('returns explicit omit, composed, raw-safe, and technical-failure outcomes', 
         ['Не могу дозвониться.', ['problem'], 'omit'],
         ['Сфоткать не могу гости на диване.', ['problem'], 'omit'],
         ['Не могу тут к вай фаю подключиться, поэтому так отправляется 🥲', ['problem'], 'omit'],
-        ['Жалюзи упала не могу повесить так как очень высоко.', ['problem'], 'raw_safe'],
+        ['Жалюзи упала не могу повесить так как очень высоко.', ['problem'], 'composed'],
         ['Обнаружен брак маленького полотенца, замены нет.', ['quality_issue'], 'composed'],
         ['На кухне вытяжка не работает.', ['problem'], 'composed'],
     ];
@@ -42,6 +48,10 @@ it('returns explicit omit, composed, raw-safe, and technical-failure outcomes', 
         $result = $composer->compose(humanItem($text, [$message->id], $types));
 
         expect($result['decision'])->toBe($decision);
+        if (str_contains($text, 'Жалюзи')) {
+            expect($result['summary'])->toContain('Упали жалюзи', 'установить обратно не удалось', 'высоты')
+                ->not->toContain('сломаны', 'мастер');
+        }
     }
 
     expect($composer->compose(humanItem('Не работает свет.', [], ['problem']))['decision'])
@@ -63,19 +73,27 @@ it('does not let missing evidence trigger the formatter raw-summary fallback', f
         ->not->toContain('Открыто 8 дней.');
 });
 
-it('allows concrete object-and-fact summaries while omitting objectless or context chatter', function (string $text, string $decision) {
+it('allows concrete object-and-fact summaries while omitting objectless or context chatter', function (string $text, string $decision, array $facts) {
     $message = TelegramOperationalTestDatabase::message($text, messageId: (string) fake()->unique()->numberBetween(3000, 9999));
 
-    expect(app(TelegramEveningHumanComposer::class)->compose(humanItem($text, [$message->id], ['problem']))['decision'])
-        ->toBe($decision);
+    $human = app(TelegramEveningHumanComposer::class)->compose(humanItem($text, [$message->id], ['problem']));
+    expect($human['decision'])->toBe($decision);
+    if ($facts !== []) {
+        expect(mb_strtolower($human['summary']))->toContain(...$facts);
+    } else {
+        expect($human)->toMatchArray(['include' => false, 'summary' => null, 'follow_up' => null]);
+    }
+    if (str_contains($text, 'заменила')) {
+        expect($human)->toMatchArray(['completed' => true, 'follow_up' => null]);
+    }
 })->with([
-    ['Простынь большая, жёлтое пятно; заменила, брак.', 'raw_safe'],
-    ['Сломана вешалка.', 'raw_safe'],
-    ['В ванной треснула плитка.', 'raw_safe'],
-    ['Не работает.', 'omit'],
-    ['Он давно не работает.', 'omit'],
-    ['Сфоткать не могу гости на диване.', 'omit'],
-    ['Не могу тут к вай фаю подключиться, поэтому так отправляется.', 'omit'],
+    ['Простынь большая, жёлтое пятно; заменила, брак.', 'composed', ['простыня', 'пятном', 'заменена']],
+    ['Сломана вешалка.', 'raw_safe', ['сломана', 'вешалка']],
+    ['В ванной треснула плитка.', 'raw_safe', ['ванной', 'треснула', 'плитка']],
+    ['Не работает.', 'omit', []],
+    ['Он давно не работает.', 'omit', []],
+    ['Сфоткать не могу гости на диване.', 'omit', []],
+    ['Не могу тут к вай фаю подключиться, поэтому так отправляется.', 'omit', []],
 ]);
 
 it('turns courier evidence into a concise linen handoff', function () {
@@ -129,7 +147,16 @@ it('recovers a linen defect object from related evidence', function () {
     ));
 
     expect($human['include'])->toBeTrue()
-        ->and($human['summary'])->toBe('Обнаружен брак полотенца и пододеяльника.');
+        ->and($human['summary'])->toContain('брак', 'полотенца', 'пододеяльника')
+        ->not->toContain('наволочки', 'заменено');
+});
+
+it('does not add a clean textile mention to the coordinated defect list', function () {
+    $message = TelegramOperationalTestDatabase::message('Брак полотенца. Пододеяльник чистый.', messageId: '403');
+    $human = app(TelegramEveningHumanComposer::class)->compose(humanItem($message->text, [$message->id], ['quality_issue']));
+
+    expect($human['summary'])->toContain('бракованное полотенце')
+        ->not->toContain('брак пододеяльника', 'бракованное постельное бельё');
 });
 
 it('keeps concrete question follow-up and drops contextless chat questions', function () {
@@ -156,6 +183,8 @@ it('suppresses acknowledgement-only chatter without losing an operational fact a
         ->toMatchArray([
             'include' => true,
             'summary' => 'Курьер забрал грязное бельё.',
+            'completed' => true,
+            'follow_up' => null,
         ]);
 });
 
@@ -235,6 +264,8 @@ it('suppresses a dirty referent fragment unless bounded evidence establishes its
     ));
 
     $object = TelegramOperationalTestDatabase::message('Постельное владельца.', messageId: '606');
+    expect($composer->compose(humanItem('Нет..это грязное.', [$fragment->id], ['quality_issue'])))
+        ->toMatchArray(['include' => false, 'summary' => null]);
     $withObject = $composer->compose(humanItem(
         'Imbonati 88 DEER постельное владельца — Нет..это грязное.',
         [$object->id, $fragment->id],
@@ -247,11 +278,11 @@ it('suppresses a dirty referent fragment unless bounded evidence establishes its
     ]);
     $withObjectPreview = $formatter->eveningIntelligence([
         'district' => ['label' => 'Certosa'],
-        'editorial_sections' => [['key' => 'day', 'items' => [[
+        'daily_problems' => [[
             'event_key' => 'dirty-linen',
             'context_label' => 'Imbonati 88 DEER',
             'summary' => $withObject['summary'],
-        ]]]],
+        ]],
     ]);
 
     expect($withoutObject)->toMatchArray(['include' => false, 'handled' => true])
@@ -321,7 +352,23 @@ it('consolidates one apartment courier situation only in the human digest', func
         ->and($items[2]['summary'])->toContain('Нужно фото грязного белья');
 });
 
-it('renders the supplied September 20 five-district scenarios as shift handoffs', function () {
+it('recognizes a factual guest quality report without promoting instructions or questions', function (string $text, bool $expected) {
+    expect(app(TelegramEveningHumanComposer::class)->isProblemEvidence(
+        ['text' => $text, 'role' => 'report'],
+        ['quality_issue'],
+    ))->toBe($expected);
+})->with([
+    'guest report' => ['Гости оставили отзыв: на кухне грязно и много пыли.', true],
+    'conditional guidance' => ['Если гости оставят отзыв, что на кухне грязно, пришли фото.', false],
+    'photo instruction' => ['Пришли фото: гости сообщили о грязи на кухне.', false],
+    'question' => ['Гости спрашивают, на кухне грязно?', false],
+    'report before conditional follow-up' => ['Стою здесь, консьержа нет. Не открывают пока. Если сможешь открыть удалённо.', true],
+    'only a conditional defect' => ['Сегодня проверяем квартиру. Если на кухне грязно, гости оставят отзыв.', false],
+]);
+
+it('renders the supplied September 20 five-district scenarios as unresolved daily problem cards', function () {
+    Http::fake();
+    Queue::fake();
     $fixtures = [
         'Navigli' => [
             ['Стою здесь, консьержа нет. Не открывают пока. Если сможешь открыть удалённо.', 'Via N1', ['problem']],
@@ -359,62 +406,88 @@ it('renders the supplied September 20 five-district scenarios as shift handoffs'
     ];
     $previews = [];
     $messageId = 700;
+    $districtIndex = 0;
 
     foreach ($fixtures as $district => $events) {
-        $items = [];
+        $chatId = '-100'.(2000 + ++$districtIndex);
+        $route = ['key' => strtolower($district), 'label' => $district, 'chat_id' => $chatId, 'latitude' => 45, 'longitude' => 9];
+        config(['services.telegram.digest_districts.'.strtolower($district) => $route]);
+        $ledger = [];
 
         foreach ($events as $event) {
             [$text, $apartment, $types] = $event;
             $actor = $event[3] ?? null;
+            $topicId = (string) (array_search($apartment, array_values(array_unique(array_column($events, 1))), true) + 1);
             $message = TelegramOperationalTestDatabase::message(
                 $text,
                 sentAt: '2026-09-20 10:00:00',
                 messageId: (string) ++$messageId,
-                chatId: (string) (-2000 - $messageId),
+                chatId: $chatId,
+                threadId: $topicId,
+                userId: (string) $messageId,
             );
-            $items[] = [
-                ...humanItem($text, [$message->id], $types),
-                'context_label' => $apartment,
-                'actor_name' => $actor,
-            ];
+            $message->topic->update(['title' => $apartment]);
+            $message->telegramUser->update(['full_name' => $actor]);
+            // The supplied delay and ETA describe one already-correlated event.
+            $ledger[$apartment] = humanScenarioEvent($message, $types, $ledger[$apartment] ?? null);
         }
 
-        $previews[$district] = app(TelegramDigestFormatter::class)->eveningIntelligence([
-            'date' => '2026-09-20',
-            'timezone' => 'Europe/Rome',
-            'district' => ['label' => $district],
-            'editorial_sections' => humanEditorialSections($items),
-        ]);
+        expect(TelegramOperationalEvent::query()->where('telegram_chat_id', $message->telegram_chat_id)->count())->toBe(count($ledger));
+        $before = TelegramOperationalEvent::query()->orderBy('id')->get()->toArray();
+        $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-09-20', ['district' => $route]);
+        expect($preview['events_considered'])->toBe(count($ledger))
+            ->and($preview['daily_problems'])->not->toBeEmpty()
+            ->and(TelegramOperationalEvent::query()->orderBy('id')->get()->toArray())->toBe($before);
+        foreach ($preview['daily_problems'] as $card) {
+            $projection = collect($preview['events'])->firstWhere('event_key', $card['event_key']);
+            expect($projection['status'])->toBe('open');
+            if (! in_array('delay', $projection['types'], true)) {
+                expect($card['quote'])->not->toBeNull()
+                    ->and($card['source_url'])->not->toBeNull();
+            }
+        }
+        $previews[$district] = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+        expect($previews[$district])->toContain('🌙 '.$district.' — проблемы за день · 20.09.2026')
+            ->not->toContain('Решено сегодня:', 'Осталось сделать:', 'Осталось с прошлых дней:');
+        $nextDay = app(TelegramEveningIntelligenceBuilder::class)->build('2026-09-21', ['district' => $route]);
+        expect($nextDay['daily_problems'])->toBe([])
+            ->and($nextDay['no_material_events'])->toBeTrue();
     }
 
     expect($previews['Navigli'])
-        ->toContain('Via N1 — Проблема с доступом: консьерж отсутствовал, дверь не открывали.')
+        ->toContain('Via N1 — Стою здесь, консьержа нет. Не открывают пока.')
         ->toContain('Via N2 — Курьер привёз чистое бельё, но не забрал грязное.')
-        ->toContain('Via N3 — Анна задерживается примерно на 10 минут.')
+        ->toContain('Via N3 — Сотрудник сообщил о задержке примерно на 10 минут.')
         ->and(substr_count($previews['Navigli'], 'Via N3 —'))->toBe(1)
         ->and($previews['Navigli'])->not->toContain('ПМ ждать')
         ->not->toContain('сломано раньше')
         ->and($previews['Lodi'])->toContain('Via L1 — Не работает свет.')
-        ->toContain('Via L4 — Мария задерживается.')
+        ->toContain('Via L4 — Сотрудник сообщил о задержке.')
         ->not->toContain('это гости или ты')
         ->not->toContain('поняла, спасибо')
         ->not->toContain('Одеяла возьми')
         ->and($previews['Como'])->toContain('Via C1 — Гости сообщили о грязи на кухне и пыли.')
-        ->and($previews['Certosa'])->toContain('Via T1 — Проблема с доступом: дверь была закрыта, никто не открыл.')
+        ->and($previews['Certosa'])->toContain('Via T1 — Стою у двери, не открывают.')
         ->toContain('Via T2 — Курьер забрал не всё бельё.')
-        ->toContain('Via T3 — Ольга задерживается.')
+        ->toContain('Via T3 — Сотрудник сообщил о задержке.')
         ->not->toContain('Что это за звук')
         ->not->toContain('Скачай видео')
-        ->and($previews['Lambrate'])->toContain('Via B3 — Обнаружен брак полотенца.')
+        ->and($previews['Lambrate'])->toContain('Via B3 — Обнаружено бракованное полотенце.')
         ->toContain('Via B4 — Обнаружен брак пододеяльника.')
-        ->toContain('Via B5 — Уточняли наличие одеял в квартире.')
-        ->toContain('Via B5 — Уточнить наличие одеял в квартире.')
+        ->not->toContain('Via B5', 'Уточняли наличие одеял в квартире.', 'Уточнить наличие одеял в квартире.')
         ->not->toContain('Сломана')
         ->not->toContain('Это ошибка')
         ->not->toContain('Да, хорошо, спасибо')
         ->and(collect($previews)->implode("\n"))->not->toContain('@')
         ->not->toContain('☺️')
         ->not->toContain('Есть открытый вопрос, требующий уточнения.');
+    foreach (['Navigli' => 'Via N', 'Lodi' => 'Via L', 'Como' => 'Via C', 'Certosa' => 'Via T', 'Lambrate' => 'Via B'] as $district => $prefix) {
+        foreach (array_diff_key($previews, [$district => true]) as $otherPreview) {
+            expect($otherPreview)->not->toContain($prefix);
+        }
+    }
+    Http::assertNothingSent();
+    Queue::assertNothingPushed();
 });
 
 function humanItem(string $summary, array $messageIds, array $types, string $status = 'open'): array
@@ -435,47 +508,37 @@ function humanItem(string $summary, array $messageIds, array $types, string $sta
     ];
 }
 
-function humanEditorialSections(array $items): array
+function humanScenarioEvent(TelegramMessage $message, array $types, ?TelegramOperationalEvent $event = null): TelegramOperationalEvent
 {
-    $sections = [
-        'day' => ['key' => 'day', 'label' => 'За день', 'items' => []],
-        'resolved' => ['key' => 'resolved', 'label' => 'Решено сегодня', 'items' => []],
-        'positive' => ['key' => 'positive', 'label' => 'Хорошая работа', 'items' => []],
-        'attention' => ['key' => 'attention', 'label' => 'Требует внимания', 'items' => []],
-        'actions' => ['key' => 'actions', 'label' => 'Осталось сделать', 'items' => []],
-    ];
-    $composer = app(TelegramEveningHumanComposer::class);
+    $isNew = $event === null;
+    $event ??= TelegramOperationalEvent::query()->create([
+        'event_key' => 'human-scenario:'.$message->id,
+        'root_message_id' => $message->id,
+        'telegram_chat_id' => $message->telegram_chat_id,
+        'telegram_topic_id' => $message->telegram_topic_id,
+        'primary_type' => $types[0], 'types' => $types,
+        'summary' => $message->text, 'status' => 'open', 'confidence' => 'high',
+        'first_observed_at' => $message->sent_at, 'last_observed_at' => $message->sent_at,
+    ]);
+    $observation = TelegramOperationalObservation::query()->create([
+        'telegram_message_id' => $message->id,
+        'source_revision_hash' => hash('sha256', $message->text),
+        'evaluation_kind' => 'message', 'state' => 'completed', 'outcome' => 'created',
+        'reason_code' => match ($types[0]) {
+            'quality_issue' => 'quality_issue',
+            'delay' => 'operational_delay',
+            'problem' => 'operational_problem',
+            default => 'operational_question',
+        },
+        'confidence' => 'high', 'is_current_revision' => true, 'processed_at' => $message->sent_at,
+    ]);
+    $event->evidence()->create([
+        'observation_id' => $observation->id,
+        'role' => str_contains($message->text, '?') ? 'question' : 'report',
+        'transition' => $isNew ? 'created' : 'evidence',
+        'status_after' => 'open', 'confidence' => 'high',
+        'occurred_at' => $message->sent_at, 'is_current_revision' => true,
+    ]);
 
-    foreach ($items as $item) {
-        $human = $composer->compose($item);
-        if (($human['include'] ?? false) !== true || blank($human['summary'] ?? null)) {
-            continue;
-        }
-
-        $row = [
-            'event_key' => $item['event_key'],
-            'context_label' => $item['context_label'] ?? null,
-            'summary' => $human['summary'],
-        ];
-        $dayKey = in_array('delay', $item['types'] ?? [], true)
-            ? sha1('delay|'.($item['context_label'] ?? '').'|'.($item['actor_name'] ?? ''))
-            : (string) $item['event_key'];
-        $existing = collect($sections['day']['items'])->search(fn (array $candidate): bool => ($candidate['_group_key'] ?? null) === $dayKey);
-        $row['_group_key'] = $dayKey;
-
-        if ($existing === false) {
-            $sections['day']['items'][] = $row;
-        } elseif (mb_strlen($row['summary']) > mb_strlen($sections['day']['items'][$existing]['summary'])) {
-            $sections['day']['items'][$existing] = $row;
-        }
-
-        if (filled($human['follow_up'] ?? null)) {
-            $attention = [...$row, 'summary' => $human['summary']];
-            $action = [...$row, 'summary' => $human['follow_up']];
-            $sections['attention']['items'][] = $attention;
-            $sections['actions']['items'][] = $action;
-        }
-    }
-
-    return collect($sections)->filter(fn (array $section): bool => $section['items'] !== [])->values()->all();
+    return $event;
 }

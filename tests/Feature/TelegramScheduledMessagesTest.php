@@ -1,5 +1,6 @@
 <?php
 
+use App\Filament\Resources\TelegramScheduledMessages\Pages\CreateTelegramScheduledMessage;
 use App\Filament\Resources\TelegramScheduledMessages\TelegramScheduledMessageResource;
 use App\Jobs\DeliverScheduledTelegramMessage;
 use App\Models\TelegramChat;
@@ -413,7 +414,9 @@ it('does not catch up occurrences outside the grace window or from a previous da
 
 it('exposes searchable existing chat and topic selectors and persists the selected schedule fields', function (): void {
     $message = makeScheduledTelegramMessage();
-    $schema = TelegramScheduledMessageResource::form(FilamentSchema::make());
+    $page = new CreateTelegramScheduledMessage;
+    $page->data = ['telegram_chat_record_id' => $message->telegram_chat_record_id];
+    $schema = TelegramScheduledMessageResource::form(FilamentSchema::make($page)->model($message)->statePath('data'));
     $components = collect($schema->getComponents())->keyBy(fn ($component) => $component->getName());
 
     expect($components['telegram_chat_record_id'])->toBeInstanceOf(Select::class)
@@ -422,7 +425,10 @@ it('exposes searchable existing chat and topic selectors and persists the select
             $message->telegram_chat_record_id => 'Test work chat · -100000000001',
         ])
         ->and($components['telegram_topic_record_id'])->toBeInstanceOf(Select::class)
-        ->and($components['telegram_topic_record_id']->isSearchable())->toBeTrue();
+        ->and($components['telegram_topic_record_id']->isSearchable())->toBeTrue()
+        ->and($components['telegram_topic_record_id']->getOptions())->toBe([
+            $message->telegram_topic_record_id => 'Test topic · thread 42',
+        ]);
 
     $reloaded = TelegramScheduledMessage::query()->findOrFail($message->getKey());
 

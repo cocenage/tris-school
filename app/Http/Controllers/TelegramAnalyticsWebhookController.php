@@ -8,10 +8,12 @@ use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
 use App\Models\TelegramTopic;
 use App\Models\TelegramUser;
+use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramTopicTitleResolver;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class TelegramAnalyticsWebhookController extends Controller
 {
@@ -19,7 +21,7 @@ class TelegramAnalyticsWebhookController extends Controller
         private readonly TelegramTopicTitleResolver $topicTitleResolver,
     ) {}
 
-    public function __invoke(Request $request, string $secret): JsonResponse
+    public function __invoke(Request $request, string $secret, TelegramScheduledControlResponseService $responses): JsonResponse
     {
         if ($secret !== config('services.telegram.analytics_webhook_secret')) {
             abort(403);
@@ -97,6 +99,13 @@ class TelegramAnalyticsWebhookController extends Controller
         );
 
         $this->saveAttachments($telegramMessage, $message);
+        try {
+            $responses->capture($telegramMessage, $message);
+        } catch (\Throwable $error) {
+            Log::warning('Scheduled control response capture failed after analytics persistence', [
+                'exception' => class_basename($error),
+            ]);
+        }
 
         if (config('services.telegram.operational_observer_enabled', false)) {
             ProcessTelegramOperationalMessage::dispatch($telegramMessage->id);

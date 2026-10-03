@@ -6,23 +6,23 @@ use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\User;
-use App\Services\Telegram\TelegramUpdateIngestService;
-use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramRichMessageBuilder;
+use App\Services\Telegram\TelegramScheduledControlResponseService;
+use App\Services\Telegram\TelegramUpdateIngestService;
 use App\Services\TelegramUserNotificationService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class TelegramWorkWebhookController extends Controller
 {
     private ?int $callbackStartedAt = null;
-
 
     public function __invoke(
         Request $request,
@@ -30,6 +30,7 @@ class TelegramWorkWebhookController extends Controller
         TelegramUpdateIngestService $ingestService,
         TelegramAssistantService $assistantService,
         TelegramScheduledControlResponseService $responses,
+        TelegramDistrictRouteRegistry $districts,
     ) {
 
         $update = $request->all();
@@ -84,8 +85,12 @@ class TelegramWorkWebhookController extends Controller
         $chatId = (string) data_get($message, 'chat.id');
 
         $allowedChatIds = config('services.telegram.work_allowed_chat_ids', []);
+        $isWorkAllowed = in_array($chatId, $allowedChatIds, true);
+        $isOperationalChat = $districts->isOperationalChatId($chatId)
+            && in_array(data_get($message, 'chat.type'), ['group', 'supergroup', 'channel'], true);
+        $isControlDestination = ! $isWorkAllowed && $responses->isSupportedControlDestination($message);
 
-        if (! empty($allowedChatIds) && ! in_array($chatId, $allowedChatIds, true)) {
+        if (! $isWorkAllowed && ! $isOperationalChat && ! $isControlDestination) {
             return response()->json([
                 'ok' => true,
                 'skipped' => 'chat_not_allowed',
@@ -94,21 +99,20 @@ class TelegramWorkWebhookController extends Controller
         }
 
         try {
-            $activated = $assistantService->isActivated($message);
-            $savedMessage = $ingestService->ingest(
-                $update,
-                $activated && $this->isInstructionCommand($message),
-            );
+            $activated = $isWorkAllowed && $assistantService->isActivated($message);
+            $savedMessage = $ingestService->ingest($update, $activated && $this->isInstructionCommand($message));
 
             if ($savedMessage) {
-                $responses->capture($savedMessage, $message);
+                if ($isControlDestination || $isWorkAllowed) {
+                    $responses->capture($savedMessage, $message);
+                }
             }
 
-            if ($savedMessage && config('services.telegram.operational_observer_enabled', false)) {
+            if ($savedMessage && ($isOperationalChat || $isWorkAllowed) && config('services.telegram.operational_observer_enabled', false)) {
                 ProcessTelegramOperationalMessage::dispatch($savedMessage->id);
             }
 
-            if ($savedMessage && $activated) {
+            if ($savedMessage && $isWorkAllowed && $activated) {
                 try {
                     $assistantService->handle($savedMessage, $message);
                 } catch (\Throwable $e) {
@@ -522,12 +526,12 @@ class TelegramWorkWebhookController extends Controller
         $fallbackHtml = implode("\n", [
             '<b>Заявка на доступ</b>',
             '',
-            '<b>Имя:</b> ' . e($user->name ?: 'Без имени'),
-            '<b>Telegram:</b> ' . e($user->telegram_username ? '@' . $user->telegram_username : '—'),
+            '<b>Имя:</b> '.e($user->name ?: 'Без имени'),
+            '<b>Telegram:</b> '.e($user->telegram_username ? '@'.$user->telegram_username : '—'),
             '',
             $statusText,
-            '<b>Решение принял:</b> ' . e($moderatorText),
-            '<b>Время:</b> ' . now()->format('d.m.Y H:i'),
+            '<b>Решение принял:</b> '.e($moderatorText),
+            '<b>Время:</b> '.now()->format('d.m.Y H:i'),
         ]);
 
         return app(TelegramBotService::class)->editMessage(
@@ -539,167 +543,147 @@ class TelegramWorkWebhookController extends Controller
                 status: strip_tags($statusText),
                 fields: [
                     'Имя' => $user->name ?: 'Без имени',
-                    'Telegram' => $user->telegram_username ? '@' . $user->telegram_username : '—',
+                    'Telegram' => $user->telegram_username ? '@'.$user->telegram_username : '—',
                 ],
-                notice: 'Решение принял: ' . $moderatorText,
+                notice: 'Решение принял: '.$moderatorText,
             ),
             fallbackHtml: $fallbackHtml,
             replyMarkup: ['inline_keyboard' => []],
         );
+    }
 
-        Http::post($this->telegramApiUrl('editMessageText'), [
+    private function editDayOffRequestMessage(
+        array $callbackQuery,
+        DayOffRequest $dayOffRequest,
+        string $moderatorText
+    ): bool {
+        $chatId = data_get($callbackQuery, 'message.chat.id');
+        $messageId = data_get($callbackQuery, 'message.message_id');
+
+        if (! $chatId || ! $messageId) {
+            return false;
+        }
+
+        $user = $dayOffRequest->user;
+
+        Carbon::setLocale('ru');
+
+        $name = $user?->name ?: 'Неизвестный пользователь';
+
+        $employeeText = $user?->telegram_id
+            ? '<a href="tg://user?id='.e((string) $user->telegram_id).'">'.e($name).'</a>'
+            : e($name);
+
+        $dipText = isset($user?->dip)
+            ? ($user->dip ? 'dip' : 'no dip')
+            : '—';
+
+        $sortedDays = $dayOffRequest->days->sortBy('date');
+
+        $message = [];
+        $message[] = '📌 <b>Запрос на выходной</b>';
+        $message[] = '';
+        $message[] = '👤 <b>Сотрудник:</b> '.$employeeText;
+        $message[] = '🏷️ <b>Dip:</b> '.e($dipText);
+        $message[] = '';
+        $message[] = '📅 <b>Даты:</b>';
+
+        foreach ($sortedDays as $day) {
+            $icon = match ($day->status) {
+                'approved' => '✅',
+                'rejected' => '❌',
+                default => '⏳',
+            };
+
+            $date = Carbon::parse($day->date)->translatedFormat('d.m.Y (l)');
+
+            $message[] = "{$icon} <b>{$date}</b>";
+        }
+
+        if (filled($dayOffRequest->reason)) {
+            $message[] = '';
+            $message[] = '💬 <b>Причина:</b>';
+            $message[] = '<blockquote>'.e(trim((string) $dayOffRequest->reason)).'</blockquote>';
+        }
+
+        $message[] = '';
+        $message[] = '<b>Последнее решение:</b> '.e($moderatorText);
+        $message[] = '<b>Время:</b> '.now()->format('d.m.Y H:i');
+
+        $keyboard = [];
+
+        foreach ($sortedDays as $day) {
+            if ($day->status !== 'pending') {
+                continue;
+            }
+
+            $date = Carbon::parse($day->date)->format('d.m');
+
+            $keyboard[] = [
+                [
+                    'text' => "✅ {$date}",
+                    'callback_data' => 'dayoffday:approve:'.$day->id,
+                ],
+                [
+                    'text' => "❌ {$date}",
+                    'callback_data' => 'dayoffday:reject:'.$day->id,
+                ],
+            ];
+        }
+
+        $payload = [
             'chat_id' => $chatId,
             'message_id' => $messageId,
             'parse_mode' => 'HTML',
             'disable_web_page_preview' => true,
-            'text' => implode("\n", [
-                '👤 <b>Заявка на доступ</b>',
-                '',
-                '<b>Имя:</b> ' . e($user->name ?: 'Без имени'),
-                '<b>Telegram:</b> ' . e($user->telegram_username ? '@' . $user->telegram_username : '—'),
-                '',
-                $statusText,
-                '<b>Решение принял:</b> ' . e($moderatorText),
-                '<b>Время:</b> ' . now()->format('d.m.Y H:i'),
-            ]),
-            'reply_markup' => ['inline_keyboard' => []],
-        ]);
-    }
+            'text' => implode("\n", $message),
+        ];
 
-private function editDayOffRequestMessage(
-    array $callbackQuery,
-    DayOffRequest $dayOffRequest,
-    string $moderatorText
-): bool {
-    $chatId = data_get($callbackQuery, 'message.chat.id');
-    $messageId = data_get($callbackQuery, 'message.message_id');
-
-    if (! $chatId || ! $messageId) {
-        return false;
-    }
-
-    $user = $dayOffRequest->user;
-
-    Carbon::setLocale('ru');
-
-    $name = $user?->name ?: 'Неизвестный пользователь';
-
-    $employeeText = $user?->telegram_id
-        ? '<a href="tg://user?id=' . e((string) $user->telegram_id) . '">' . e($name) . '</a>'
-        : e($name);
-
-    $dipText = isset($user?->dip)
-        ? ($user->dip ? 'dip' : 'no dip')
-        : '—';
-
-    $sortedDays = $dayOffRequest->days->sortBy('date');
-
-    $message = [];
-    $message[] = '📌 <b>Запрос на выходной</b>';
-    $message[] = '';
-    $message[] = '👤 <b>Сотрудник:</b> ' . $employeeText;
-    $message[] = '🏷️ <b>Dip:</b> ' . e($dipText);
-    $message[] = '';
-    $message[] = '📅 <b>Даты:</b>';
-
-    foreach ($sortedDays as $day) {
-        $icon = match ($day->status) {
-            'approved' => '✅',
-            'rejected' => '❌',
-            default => '⏳',
-        };
-
-        $date = Carbon::parse($day->date)->translatedFormat('d.m.Y (l)');
-
-        $message[] = "{$icon} <b>{$date}</b>";
-    }
-
-    if (filled($dayOffRequest->reason)) {
-        $message[] = '';
-        $message[] = '💬 <b>Причина:</b>';
-        $message[] = '<blockquote>' . e(trim((string) $dayOffRequest->reason)) . '</blockquote>';
-    }
-
-    $message[] = '';
-    $message[] = '<b>Последнее решение:</b> ' . e($moderatorText);
-    $message[] = '<b>Время:</b> ' . now()->format('d.m.Y H:i');
-
-    $keyboard = [];
-
-    foreach ($sortedDays as $day) {
-        if ($day->status !== 'pending') {
-            continue;
+        if (! empty($keyboard)) {
+            $payload['reply_markup'] = [
+                'inline_keyboard' => $keyboard,
+            ];
+        } else {
+            $payload['reply_markup'] = [
+                'inline_keyboard' => [],
+            ];
         }
 
-        $date = Carbon::parse($day->date)->format('d.m');
+        $status = match ($dayOffRequest->status) {
+            'approved' => 'Одобрено',
+            'rejected' => 'Отклонено',
+            'partially_approved' => 'Частично одобрено',
+            default => 'Статус обновлён',
+        };
 
-        $keyboard[] = [
-            [
-                'text' => "✅ {$date}",
-                'callback_data' => 'dayoffday:approve:' . $day->id,
-            ],
-            [
-                'text' => "❌ {$date}",
-                'callback_data' => 'dayoffday:reject:' . $day->id,
-            ],
-        ];
+        return app(TelegramBotService::class)->editMessage(
+            chatId: (string) $chatId,
+            messageId: (int) $messageId,
+            forceLegacy: true,
+            richMessage: app(TelegramRichMessageBuilder::class)->build(
+                title: 'Заявка на выходной',
+                status: $status,
+                fields: [
+                    'Сотрудник' => $name,
+                    'Dip' => $dipText,
+                    'Даты' => $sortedDays->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))->implode(', '),
+                ],
+                body: $dayOffRequest->reason,
+                results: $sortedDays->map(function ($day) {
+                    $status = match ($day->status) {
+                        'approved' => 'одобрено',
+                        'rejected' => 'отклонено',
+                        default => 'ожидает решения',
+                    };
+
+                    return Carbon::parse($day->date)->translatedFormat('d F').' — '.$status;
+                })->all(),
+                notice: 'Последнее решение: '.$moderatorText,
+            ),
+            fallbackHtml: $payload['text'],
+            replyMarkup: $payload['reply_markup'],
+        );
     }
-
-    $payload = [
-        'chat_id' => $chatId,
-        'message_id' => $messageId,
-        'parse_mode' => 'HTML',
-        'disable_web_page_preview' => true,
-        'text' => implode("\n", $message),
-    ];
-
-    if (! empty($keyboard)) {
-        $payload['reply_markup'] = [
-            'inline_keyboard' => $keyboard,
-        ];
-    } else {
-        $payload['reply_markup'] = [
-            'inline_keyboard' => [],
-        ];
-    }
-
-    $status = match ($dayOffRequest->status) {
-        'approved' => 'Одобрено',
-        'rejected' => 'Отклонено',
-        'partially_approved' => 'Частично одобрено',
-        default => 'Статус обновлён',
-    };
-
-    return app(TelegramBotService::class)->editMessage(
-        chatId: (string) $chatId,
-        messageId: (int) $messageId,
-        forceLegacy: true,
-        richMessage: app(TelegramRichMessageBuilder::class)->build(
-            title: 'Заявка на выходной',
-            status: $status,
-            fields: [
-                'Сотрудник' => $name,
-                'Dip' => $dipText,
-                'Даты' => $sortedDays->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))->implode(', '),
-            ],
-            body: $dayOffRequest->reason,
-            results: $sortedDays->map(function ($day) {
-                $status = match ($day->status) {
-                    'approved' => 'одобрено',
-                    'rejected' => 'отклонено',
-                    default => 'ожидает решения',
-                };
-
-                return Carbon::parse($day->date)->translatedFormat('d F') . ' — ' . $status;
-            })->all(),
-            notice: 'Последнее решение: ' . $moderatorText,
-        ),
-        fallbackHtml: $payload['text'],
-        replyMarkup: $payload['reply_markup'],
-    );
-
-    Http::post($this->telegramApiUrl('editMessageText'), $payload);
-}
 
     private function answerCallback(array $callbackQuery, string $text): void
     {
@@ -755,7 +739,7 @@ private function editDayOffRequestMessage(
 
         $messageKey = data_get($message, 'message_id')
             ?: sha1(json_encode($message, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        $cacheKey = 'telegram_private_fallback_sent:' . $chatId . ':' . $messageKey;
+        $cacheKey = 'telegram_private_fallback_sent:'.$chatId.':'.$messageKey;
 
         if (! Cache::add($cacheKey, true, now()->addDay())) {
             return;
@@ -765,9 +749,9 @@ private function editDayOffRequestMessage(
             $response = Http::timeout(3)
                 ->connectTimeout(1)
                 ->post($this->telegramApiUrl('sendMessage'), [
-            'chat_id' => $chatId,
-            'text' => "\u{042F} \u{043D}\u{0435} \u{043E}\u{0431}\u{0440}\u{0430}\u{0431}\u{0430}\u{0442}\u{044B}\u{0432}\u{0430}\u{044E} \u{043B}\u{0438}\u{0447}\u{043D}\u{044B}\u{0435} \u{0441}\u{043E}\u{043E}\u{0431}\u{0449}\u{0435}\u{043D}\u{0438}\u{044F}. \u{0418}\u{0441}\u{043F}\u{043E}\u{043B}\u{044C}\u{0437}\u{0443}\u{0439}\u{0442}\u{0435} \u{0440}\u{0430}\u{0431}\u{043E}\u{0447}\u{0438}\u{0439} \u{0447}\u{0430}\u{0442}.",
-            'disable_web_page_preview' => true,
+                    'chat_id' => $chatId,
+                    'text' => "\u{042F} \u{043D}\u{0435} \u{043E}\u{0431}\u{0440}\u{0430}\u{0431}\u{0430}\u{0442}\u{044B}\u{0432}\u{0430}\u{044E} \u{043B}\u{0438}\u{0447}\u{043D}\u{044B}\u{0435} \u{0441}\u{043E}\u{043E}\u{0431}\u{0449}\u{0435}\u{043D}\u{0438}\u{044F}. \u{0418}\u{0441}\u{043F}\u{043E}\u{043B}\u{044C}\u{0437}\u{0443}\u{0439}\u{0442}\u{0435} \u{0440}\u{0430}\u{0431}\u{043E}\u{0447}\u{0438}\u{0439} \u{0447}\u{0430}\u{0442}.",
+                    'disable_web_page_preview' => true,
                 ]);
         } catch (\Throwable $e) {
             Cache::forget($cacheKey);
@@ -783,9 +767,9 @@ private function editDayOffRequestMessage(
     private function telegramApiUrl(string $method): string
     {
         return 'https://api.telegram.org/bot'
-            . config('services.telegram.bot_token')
-            . '/'
-            . $method;
+            .config('services.telegram.bot_token')
+            .'/'
+            .$method;
     }
 
     private function telegramUserText(array $from): string
@@ -796,7 +780,7 @@ private function editDayOffRequestMessage(
         ])->filter()->implode(' '));
 
         if (! empty($from['username'])) {
-            return '@' . $from['username'];
+            return '@'.$from['username'];
         }
 
         return $name ?: 'Неизвестно';

@@ -1260,9 +1260,11 @@ it('selects only unresolved daily problem cards while retaining excluded events 
 ]);
 
 it('attributes a daily card to the original report without inventing access details', function (bool $withMetadata) {
+    config(['services.telegram.operational_chat_ids' => [$withMetadata ? '-10012345' : '12345']]);
     $message = TelegramOperationalTestDatabase::message('Не работает замок', sentAt: '2026-09-30 10:42:00', messageId: '4201', chatId: $withMetadata ? '-10012345' : '12345');
     $message->telegramUser->update(['full_name' => $withMetadata ? 'Test Worker' : null]);
     $result = app(TelegramOperationalEventObserver::class)->observe($message);
+    expect($result['outcome'])->toBe('created');
     $event = TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->firstOrFail();
     $later = TelegramOperationalTestDatabase::message('Не работает замок, неисправность замка подтвердили.', sentAt: '2026-09-30 11:00:00', messageId: '4202', chatId: $withMetadata ? '-10012345' : '12345', userId: '202');
     $observation = TelegramOperationalObservation::query()->create([
@@ -1295,9 +1297,11 @@ it('attributes a daily card to the original report without inventing access deta
 })->with([true, false]);
 
 it('requires a factual condition even when legacy evidence is labelled as a problem report', function (string $source, bool $included, ?string $conclusion) {
+    config(['services.telegram.operational_chat_ids' => ['-10012345']]);
     $message = TelegramOperationalTestDatabase::message('Не работает свет.', sentAt: '2026-10-01 08:09:00', messageId: '4301', chatId: '-10012345');
     $message->telegramUser->update(['full_name' => 'Test Worker']);
     $result = app(TelegramOperationalEventObserver::class)->observe($message);
+    expect($result['outcome'])->toBe('created');
     $message->update(['text' => $source]);
     $event = TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->firstOrFail();
     $event->update(['summary' => $source, 'primary_type' => 'problem', 'types' => ['problem']]);

@@ -56,28 +56,22 @@ it('emits the JSON contract without changing source or ledger rows', function ()
         ->and(Artisan::output())->not->toContain('"raw"');
 });
 
-it('renders only non-empty human sections and an explicit read-only footer', function () {
+it('renders compact daily problem cards and an explicit read-only footer', function () {
+    Http::fake();
     $message = TelegramOperationalTestDatabase::message('Не работает замок в квартире');
     app(TelegramOperationalEventObserver::class)->observe($message);
 
-    $this->artisan('telegram:evening-intelligence-preview', ['--date' => '2026-06-17'])
-        ->expectsOutputToContain('TRIS — итоги дня')
-        ->expectsOutputToContain('За день:')
-        ->expectsOutputToContain('Не работает замок')
-        ->doesntExpectOutputToContain('🔄 Требует внимания:')
-        ->doesntExpectOutputToContain('Осталось сделать:')
-        ->doesntExpectOutputToContain('Открытых вопросов на конец дня нет.')
-        ->doesntExpectOutputToContain('Переходящие проблемы')
-        ->doesntExpectOutputToContain('Событие:')
-        ->doesntExpectOutputToContain('Доказательства:')
-        ->doesntExpectOutputToContain('статус:')
-        ->doesntExpectOutputToContain('уверенность:')
-        ->doesntExpectOutputToContain('Положительный вклад')
-        ->expectsOutputToContain('Предпросмотр: отправка в Telegram отключена')
-        ->assertExitCode(0);
+    expect(Artisan::call('telegram:evening-intelligence-preview', ['--date' => '2026-06-17']))->toBe(0);
+    expect(Artisan::output())
+        ->toContain('🌙 TRIS — проблемы за день · 17.06.2026', 'Незакрытых проблем: 1', 'Не работает замок', 'https://t.me/c/1/1')
+        ->toContain('Предпросмотр: отправка в Telegram отключена')
+        ->not->toContain('За день:', '🔄 Требует внимания:', 'Осталось сделать:', 'Решено сегодня:', 'Осталось с прошлых дней:')
+        ->not->toContain('Открытых вопросов на конец дня нет.', 'Переходящие проблемы', 'Событие:', 'Доказательства:', 'статус:', 'уверенность:', 'Положительный вклад');
+    Http::assertNothingSent();
 });
 
-it('keeps an open operational question visible with evidence and a concrete human follow-up', function () {
+it('retains an open disposal question in diagnostics without presenting it as a daily problem card', function () {
+    Http::fake();
     $message = TelegramOperationalTestDatabase::message('Очки сломаны выбрасывать? @Tris_Anastasiia_Radevych');
     app(TelegramOperationalEventObserver::class)->observe($message);
 
@@ -86,20 +80,26 @@ it('keeps an open operational question visible with evidence and a concrete huma
     ]))->toBe(0);
     $preview = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
 
-    expect($preview['events_included'])->toBe(1)
-        ->and($preview['sections'][0]['items'][0]['status'])->toBe('open')
-        ->and($preview['sections'][0]['items'][0]['evidence'][0]['telegram_message_id'])->toBe('1');
+    $event = collect($preview['events'])->sole();
+    expect($preview['events_included'])->toBe(0)
+        ->and($preview['no_material_events'])->toBeTrue()
+        ->and($preview['daily_problems'])->toBe([])
+        ->and($event['status'])->toBe('open')
+        ->and($event['evidence'][0]['telegram_message_id'])->toBe('1')
+        ->and($event['evidence'][0]['role'])->toBe('report')
+        ->and($event['editorial']['next_action'])->toBe('Уточнить, нужно ли выбрасывать сломанные очки.');
 
     expect(Artisan::call('telegram:evening-intelligence-preview', [
         '--date' => '2026-06-17',
     ]))->toBe(0);
     expect(Artisan::output())
-        ->toContain('Уточняли, что делать со сломанными очками.')
-        ->toContain('Уточнить, нужно ли выбрасывать сломанные очки.')
+        ->toContain('✅ Незакрытых проблем за день не зафиксировано.')
+        ->not->toContain('Уточняли, что делать со сломанными очками.', 'Уточнить, нужно ли выбрасывать сломанные очки.')
         ->not->toContain('@Tris_Anastasiia_Radevych')
         ->not->toContain('Открытых вопросов на конец дня нет.')
         ->not->toContain('Переходящие проблемы')
         ->not->toContain('Открыто');
+    Http::assertNothingSent();
 });
 
 it('filters a configured district while keeping complete technical evidence in json', function () {

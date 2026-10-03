@@ -47,19 +47,43 @@ class TelegramScheduledControlResponsesBackfillCommand extends Command
 
             TelegramMessage::query()
                 ->whereHas('chat', fn ($query) => $query->where('telegram_chat_id', (string) $delivery->chat_id))
-                ->where('sent_at', '>=', $delivery->sent_at)
                 ->whereNotNull('raw')
-                ->orderBy('sent_at')->orderBy('id')->get()
-                ->each(function (TelegramMessage $stored) use ($delivery, &$candidates, &$perDeliveryCounts): void {
+                ->orderBy('sent_at')->orderBy('id')->lazy(200)
+                ->each(function (TelegramMessage $stored) use ($delivery, $responses, &$candidates, &$perDeliveryCounts): void {
                     $message = $this->messagePayload($stored);
-                    $replyId = data_get($message, 'reply_to_message.message_id');
-
-                    if (! is_numeric($replyId) || (string) $replyId !== (string) $delivery->telegram_message_id) {
+                    if (! is_numeric($message['date'] ?? null)) {
                         return;
                     }
 
-                    $perDeliveryCounts[$delivery->id]++;
-                    $candidates[$stored->id] ??= ['stored' => $stored, 'message' => $message];
+                    $receivedAt = CarbonImmutable::createFromTimestamp((int) $message['date'], 'Europe/Rome');
+                    $deliverySentAt = CarbonImmutable::parse(
+                        $delivery->getRawOriginal('sent_at'),
+                        config('app.timezone', 'Europe/Rome'),
+                    );
+                    if ($receivedAt->lt($deliverySentAt)) {
+                        return;
+                    }
+
+                    $replyId = data_get($message, 'reply_to_message.message_id');
+
+                    if (array_key_exists('reply_to_message', $message) && $message['reply_to_message'] !== null) {
+                        if (! is_numeric($replyId) || (string) $replyId !== (string) $delivery->telegram_message_id) {
+                            return;
+                        }
+                        $perDeliveryCounts[$delivery->id]++;
+                        $candidates[$stored->id] ??= ['stored' => $stored, 'message' => $message];
+
+                        return;
+                    }
+
+                    $match = $responses->resolveDelivery($message);
+                    if ($match['status'] === 'matched' && $match['delivery']->id === $delivery->id) {
+                        $perDeliveryCounts[$delivery->id]++;
+                        $candidates[$stored->id] ??= ['stored' => $stored, 'message' => $message];
+                    } elseif ($match['status'] === 'ambiguous' && in_array($delivery->id, $match['candidate_delivery_ids'] ?? [], true)) {
+                        $perDeliveryCounts[$delivery->id]++;
+                        $candidates[$stored->id] ??= ['stored' => $stored, 'message' => $message];
+                    }
                 });
         }
 

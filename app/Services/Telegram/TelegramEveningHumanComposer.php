@@ -26,9 +26,11 @@ class TelegramEveningHumanComposer
     {
         $text = trim((string) ($source['text'] ?? ''));
 
-        // Conditional guidance does not establish that its condition is true.
+        // A conditional clause cannot establish a fact, but it must not erase
+        // an independent report before it ("Не открывают. Если сможешь...").
+        $text = trim((preg_split('/(?:^|[.!;]\s*)(?:получается[,\s]+)?если\b/iu', $text, 2) ?: [$text])[0]);
         // Routine requests can mention equipment or defects without reporting one.
-        if (preg_match('/(?:^|[.!;]\s*)(?:получается[,\s]+)?если\b/iu', $text) === 1
+        if ($text === ''
             || preg_match('/^(?:(?:[\pL-]+|пожалуйста)[,\s]+){0,2}(?:сделай(?:те)?|сними(?:те)?|пришли(?:те)?|отправь(?:те)?|покажи(?:те)?|проверь(?:те)?|оформи(?:те)?)\b/iu', $text) === 1) {
             return false;
         }
@@ -49,6 +51,7 @@ class TelegramEveningHumanComposer
         }
 
         return $this->isAccessIssue($text)
+            || $this->isKitchenDustIssue($text)
             || (preg_match('/не\s+(?:могу\s+)?найти|не\s+нашл/iu', $text) !== 1 && $this->hasConcreteOperationalObjectAndFact($text))
             || (in_array('delay', $types, true) && preg_match('/задерж|опозд|не\s+успе/iu', $text) === 1);
     }
@@ -104,6 +107,18 @@ class TelegramEveningHumanComposer
             return $this->result($summary, null, completed: true);
         }
 
+        // Resolve this bounded referent from linked evidence before the generic
+        // chatter guard; the summary/topic label alone cannot supply its object.
+        if ($this->isDirtyReferentFragment($summary)) {
+            $objectSummary = $this->dirtyReferentSummary($evidence->implode(' '));
+
+            if ($objectSummary === null) {
+                return $this->omit();
+            }
+
+            return $this->result($objectSummary, null);
+        }
+
         if ($this->isContextDependentChatter($summary)) {
             $concreteEvidence = $evidence->filter(fn (string $text): bool => $this->hasConcreteOperationalObjectAndFact($text));
 
@@ -124,16 +139,6 @@ class TelegramEveningHumanComposer
         if ($this->lifecyclePolicy->isStandaloneInstruction($summary)
             && $evidence->every(fn (string $text): bool => $this->lifecyclePolicy->isStandaloneInstruction($text))) {
             return $this->omit();
-        }
-
-        if ($this->isDirtyReferentFragment($summary)) {
-            $objectSummary = $this->dirtyReferentSummary($evidence->implode(' '));
-
-            if ($objectSummary === null) {
-                return $this->omit();
-            }
-
-            return $this->result($objectSummary, null);
         }
 
         if ($this->hasConfirmedInventoryShortage($summary, $evidence)) {
@@ -157,6 +162,10 @@ class TelegramEveningHumanComposer
         }
 
         if ($this->isAccessIssue($context)) {
+            if (preg_match('/консьерж/iu', $summary) !== 1
+                && $evidence->contains(fn (string $text): bool => preg_match('/консьерж\p{L}*\s+(?:нет|отсутствует)\b/iu', $text) === 1)) {
+                $summary = 'Консьержа нет. '.$summary;
+            }
             $detail = 'Проблема с доступом: '.$summary;
 
             return $this->result($detail, $isOpen ? 'Проверить доступ в квартиру.' : null);
@@ -164,7 +173,7 @@ class TelegramEveningHumanComposer
 
         if ($this->isLinenCourierIssue($context)) {
             if ($this->hasCompletedCourierPickup($evidence)) {
-                return $this->result('Курьер забрал оставшееся бельё.', null, completed: true);
+                return $this->result('Курьер забрал грязное бельё.', null, completed: true);
             }
 
             $broughtClean = preg_match('/(?:прив[её]з|прин[её]с).{0,50}(?:чист|бель)|(?:чист|бель).{0,50}(?:прив[её]з|прин[её]с)/iu', $context) === 1;
@@ -306,6 +315,19 @@ class TelegramEveningHumanComposer
         if ($this->isLinenDefect($context)) {
             $completed = $this->hasCompletedLinenReplacement($context);
             $replacementHandled = $completed || preg_match('/(?:сейчас\s+)?(?:поменяю|заменю|меняю|заменяю)/iu', $context) === 1;
+            // Preserve a coordinated defect list from one evidence message,
+            // rather than treating every textile mentioned in context as defective.
+            $linenObject = '(?:наволоч\p{L}*|простын\p{L}*|полотен\p{L}*|пододеял\p{L}*)';
+            if (! $replacementHandled) {
+                foreach ($evidence as $text) {
+                    if (preg_match('/\bбрак\s+('.$linenObject.'(?:\s*(?:,|и)\s*'.$linenObject.'){1,3})/iu', $text, $defects) === 1) {
+                        return $this->result(
+                            'Обнаружен брак '.$defects[1].'.',
+                            $isOpen ? 'Заменить повреждённое бельё.' : null,
+                        );
+                    }
+                }
+            }
             $object = match (true) {
                 preg_match('/наволоч/iu', $context) === 1 => 'наволочку',
                 preg_match('/простын/iu', $context) === 1 => 'простыню',

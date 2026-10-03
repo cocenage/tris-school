@@ -1,13 +1,26 @@
 <?php
 
 use App\Jobs\ProcessTelegramOperationalMessage;
+use App\Models\TelegramChat;
+use App\Models\TelegramMessage;
+use App\Models\TelegramScheduledMessage;
+use App\Models\TelegramScheduledMessageDelivery;
+use App\Models\TelegramScheduledMessageResponse;
 use App\Models\TelegramTopic;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function () {
     TelegramOperationalTestDatabase::refresh();
+    foreach ([
+        '2026_09_27_000000_create_telegram_scheduled_messages_tables.php',
+        '2026_10_01_020000_create_scheduled_control_response_tables.php',
+        '2026_10_03_000000_allow_replyless_scheduled_control_responses.php',
+    ] as $file) {
+        (require database_path('migrations/'.$file))->up();
+    }
     config([
         'services.telegram.analytics_webhook_secret' => 'analytics-test-secret',
         'services.telegram.operational_observer_enabled' => true,
@@ -16,7 +29,13 @@ beforeEach(function () {
     Http::fake();
 });
 
-afterEach(fn () => TelegramOperationalTestDatabase::purge());
+afterEach(function () {
+    Schema::dropIfExists('telegram_scheduled_control_summary_deliveries');
+    Schema::dropIfExists('telegram_scheduled_message_responses');
+    Schema::dropIfExists('telegram_scheduled_message_deliveries');
+    Schema::dropIfExists('telegram_scheduled_messages');
+    TelegramOperationalTestDatabase::purge();
+});
 
 function analyticsWebhookPayload(string $messageId = '601', string $chatType = 'supergroup'): array
 {
@@ -38,7 +57,7 @@ it('dispatches the reusable observer job after analytics persistence and attachm
 
     Queue::assertPushed(ProcessTelegramOperationalMessage::class, fn ($job) => $job->mode === 'message'
     );
-    expect(Http::recorded())->toHaveCount(0);
+    expect(TelegramMessage::count())->toBe(1)->and(Http::recorded())->toHaveCount(0);
 });
 
 it('keeps duplicate analytics webhook delivery safe by dispatching the same stored message', function () {
@@ -63,6 +82,32 @@ it('does not dispatch analytics observation when the independent flag is disable
         ->assertOk();
 
     Queue::assertNothingPushed();
+});
+
+it('captures scheduled control replies after the analytics webhook persists them', function () {
+    $chat = TelegramChat::firstOrCreate(
+        ['telegram_chat_id' => '-1001'],
+        ['title' => 'Work chat', 'type' => 'supergroup', 'is_enabled' => true],
+    );
+    $control = TelegramScheduledMessage::create([
+        'name' => 'Проверка расписания', 'control_type' => 'schedule_checked', 'telegram_chat_record_id' => $chat->id,
+        'message' => 'Время уборок проверено?', 'send_time' => '09:30:00', 'weekdays' => [4], 'enabled' => true,
+    ]);
+    $delivery = TelegramScheduledMessageDelivery::create([
+        'scheduled_message_id' => $control->id, 'control_type' => 'schedule_checked',
+        'chat_id' => '-1001', 'message_thread_id' => '11', 'scheduled_for' => now()->subHour(),
+        'sent_at' => now()->subHour(), 'telegram_message_id' => 9801, 'status' => 'sent',
+    ]);
+    $payload = analyticsWebhookPayload('614');
+    $payload['message']['date'] = now()->timestamp;
+    $payload['message']['message_thread_id'] = 11;
+    $payload['message']['reply_to_message'] = ['message_id' => 9801];
+    $payload['message']['text'] = 'Да, всё проверено';
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+
+    expect(TelegramScheduledMessageResponse::count())->toBe(1)
+        ->and(TelegramScheduledMessageResponse::sole()->delivery_id)->toBe($delivery->id);
 });
 
 it('persists topic create and edit titles without ordinary messages overwriting them', function () {

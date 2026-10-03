@@ -19,10 +19,7 @@ class TelegramOiCurrentInterpretationAudit
 
     public function build(Carbon $date, ?array $district, mixed $eventFilter = null, mixed $apartmentFilter = null): array
     {
-        $allowed = array_map('strval', config('services.telegram.operational_chat_ids', []));
-        if ($allowed === []) {
-            $allowed = $this->districts->sourceRoutes()->pluck('chat_id')->all();
-        }
+        $allowed = $this->districts->operationalChatIds();
         $start = $date->copy()->startOfDay();
         $end = $date->copy()->endOfDay();
         $messages = TelegramMessage::query()

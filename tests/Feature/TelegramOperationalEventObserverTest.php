@@ -97,6 +97,18 @@ it('still rejects a synthetic supergroup excluded by an explicit test allowlist'
     ]);
 });
 
+it('rejects group messages when no operational source is configured', function () {
+    config(['services.telegram.operational_chat_ids' => [], 'services.telegram.digest_districts' => []]);
+    $message = TelegramOperationalTestDatabase::message('Не работает замок');
+
+    $result = app(TelegramOperationalEventObserver::class)->observe($message);
+
+    expect($result)->toMatchArray([
+        'outcome' => 'no_event',
+        'reason_code' => 'private_or_disallowed_chat',
+    ])->and(TelegramOperationalEvent::query()->count())->toBe(0);
+});
+
 it('supports legacy json raw data and retains low-confidence uncertainty', function () {
     $message = TelegramOperationalTestDatabase::message('Кажется, с замком может быть проблема');
     DB::connection('analytics')->table('telegram_messages')->where('id', $message->id)->update([

@@ -217,8 +217,12 @@ it('routes five independently filtered district summaries to one central duty to
         ->and(collect($sent)->pluck('threadId')->unique()->all())->toBe(['99']);
 
     foreach (['Navigli', 'Lodi', 'Como', 'Certosa', 'Lambrate'] as $index => $label) {
-        expect($sent[$index]['text'])->toContain('🌙 '.$label.' — итоги дня')
-            ->toContain('Не работает замок в '.$label);
+        expect($sent[$index]['text'])->toContain('🌙 '.$label.' — проблемы за день · 17.06.2026')
+            ->toContain('Не работает замок в '.$label)
+            ->not->toContain('Осталось сделать:', 'Решено сегодня:', 'Осталось с прошлых дней:');
+        foreach (array_diff(['Navigli', 'Lodi', 'Como', 'Certosa', 'Lambrate'], [$label]) as $otherDistrict) {
+            expect($sent[$index]['text'])->not->toContain('Не работает замок в '.$otherDistrict);
+        }
     }
 });
 

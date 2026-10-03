@@ -46,3 +46,20 @@ it('returns only complete validated district routes', function () {
 it('keeps evening delivery disabled by default', function () {
     expect((bool) config('services.telegram.evening_intelligence_delivery_enabled', false))->toBeFalse();
 });
+
+it('unites explicit supervisors and district source chats without requiring a duty thread', function () {
+    config([
+        'services.telegram.operational_chat_ids' => ['-1008', '-1001'],
+        'services.telegram.digest_districts' => [
+            'navigli' => ['label' => 'Navigli', 'chat_id' => '-1001', 'latitude' => 45.45, 'longitude' => 9.17],
+            'como' => ['label' => 'Como', 'chat_id' => '-1003', 'latitude' => 45.80, 'longitude' => 9.08],
+            'broken' => ['label' => 'Broken', 'chat_id' => '-1004', 'latitude' => 120, 'longitude' => 9.08],
+        ],
+    ]);
+
+    $registry = app(TelegramDistrictRouteRegistry::class);
+
+    expect($registry->operationalChatIds())->toBe(['-1008', '-1001', '-1003'])
+        ->and($registry->isOperationalChatId('-1003'))->toBeTrue()
+        ->and($registry->isOperationalChatId('-1004'))->toBeFalse();
+});

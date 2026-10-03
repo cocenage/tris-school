@@ -31,6 +31,7 @@ class TelegramOperationalTestDatabase
             'services.telegram.work_allowed_chat_ids' => [],
             'services.telegram.operational_observer_enabled' => false,
             'services.telegram.operational_chat_ids' => self::SYNTHETIC_OPERATIONAL_CHAT_IDS,
+            'services.telegram.digest_districts' => [],
         ]);
 
         DB::purge('analytics');
