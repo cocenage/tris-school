@@ -54,6 +54,7 @@ it('bounds every human section to requested-day evidence while retaining histori
                 messageId: (string) (3000 + $index),
                 threadId: (string) (3000 + $index),
             );
+            $message->topic?->update(['title' => 'Via Test '.(3000 + $index)]);
             $result = $observer->observe($message);
             $message->update(['text' => $summary]);
             TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->update([
@@ -70,6 +71,7 @@ it('bounds every human section to requested-day evidence while retaining histori
                 messageId: '3010',
                 threadId: '3010',
             );
+            $current->topic?->update(['title' => 'Via Test 3010']);
             $currentKey = $observer->observe($current)['event_key'];
         }
         $before = TelegramOperationalEvent::query()->orderBy('id')->get()->toArray();
@@ -598,6 +600,7 @@ it('renders raw-safe switch failures, composes pronouns only from linked evidenc
             $messageId,
             threadId: $threadId,
         );
+        $message->topic?->update(['title' => 'Via Test '.$threadId]);
         $result = $observer->observe($message, 'message', Carbon::parse('2026-06-16 09:00:00', 'Europe/Rome'));
         $event = TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->firstOrFail();
         $message->update(['text' => $evidenceText]);
@@ -891,6 +894,7 @@ it('keeps current-day attention separate from carry-over items', function () {
         messageId: '902',
         threadId: '12',
     );
+    $today->topic?->update(['title' => 'Via Test 12']);
     $observer->observe($yesterday);
     $observer->observe($today);
 
@@ -1032,6 +1036,7 @@ it('filters legacy unusable and contextless events from the final built and form
                 threadId: $threadId,
                 chatId: $chatId,
             );
+            $message->topic?->update(['title' => 'Via Test '.$threadId]);
             $result = $observer->observe($message);
             $event = TelegramOperationalEvent::query()->where('event_key', $result['event_key'])->firstOrFail();
 

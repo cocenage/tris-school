@@ -252,7 +252,7 @@ it('keeps ordinary lateness out of daily problems unless the source proves opera
 
 it('composes a linen shortage with courier dependency and decodes entities in human text', function () {
     $message = TelegramOperationalTestDatabase::message(
-        'И мне кур&#039;ера ждать, у меня один комплект белья, второй брак.',
+        'И мне кур&#039;эра ждать, у меня один комплект белья, второй брак.',
         messageId: '6101',
     );
     $result = app(TelegramEveningHumanComposer::class)->compose(humanItem($message->text, [$message->id], ['quality_issue']));
@@ -267,7 +267,7 @@ it('composes a linen shortage with courier dependency and decodes entities in hu
 
     expect($result['summary'])->toContain('Не хватало пригодного белья', 'один комплект', 'второй оказался бракованным', 'курьера')
         ->not->toBe($message->text)
-        ->and($preview)->toContain("кур'ера")->not->toContain('&#039;');
+        ->and($preview)->toContain("кур'эра")->not->toContain('&#039;');
 });
 
 it('requires a meaningful location and factual source before a daily problem is rendered', function () {
@@ -279,6 +279,11 @@ it('requires a meaningful location and factual source before a daily problem is 
         'types' => ['problem'],
         '_citation_candidates' => [['text' => 'Не работает свет.', 'role' => 'report']],
     ];
+    expect($formatter->eveningIntelligence([
+        'district' => ['label' => 'Como'], 'date' => '2026-09-20', 'daily_problems' => [$item],
+    ]))->toContain('Незакрытых проблем за день не зафиксировано.');
+    $item['context_label'] = null;
+    $item['quote'] = 'Не работает свет.';
     expect($formatter->eveningIntelligence([
         'district' => ['label' => 'Como'], 'date' => '2026-09-20', 'daily_problems' => [$item],
     ]))->toContain('Незакрытых проблем за день не зафиксировано.');

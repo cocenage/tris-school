@@ -249,8 +249,9 @@ class TelegramDigestFormatter
 
         foreach ($problems as $problem) {
             $context = $this->value($problem['context_label'] ?? null);
+            $summary = html_entity_decode($this->value($problem['summary']), ENT_QUOTES | ENT_HTML5, 'UTF-8');
             $lines[] = '';
-            $lines[] = '• '.htmlspecialchars(($context !== '' ? $context.' — ' : '').$this->value($problem['summary']), ENT_QUOTES, 'UTF-8');
+            $lines[] = '• '.htmlspecialchars(($context !== '' ? $context.' — ' : '').$summary, ENT_COMPAT, 'UTF-8');
             $author = $this->value($problem['author_name'] ?? null);
             $time = filled($problem['source_time'] ?? null)
                 ? Carbon::parse($problem['source_time'])->setTimezone($timezone)->format('H:i')
@@ -276,7 +277,7 @@ class TelegramDigestFormatter
     {
         $location = trim($this->value($problem['context_label'] ?? null));
         $quote = trim($this->value($problem['quote'] ?? null));
-        if (preg_match('/^\d+$/u', $location) === 1 || $quote === '') {
+        if ($location === '' || preg_match('/^\d+$/u', $location) === 1 || $quote === '') {
             return false;
         }
 
