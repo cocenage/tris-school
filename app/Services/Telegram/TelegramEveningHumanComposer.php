@@ -46,6 +46,11 @@ class TelegramEveningHumanComposer
             return true;
         }
 
+        if ($this->isLinenCourierIssue($text)
+            && preg_match('/(?:не\s+забрал|забрал\s+не\s+вс[её]).{0,60}(?:гряз|бель)|(?:гряз|бель).{0,60}(?:не\s+забрал|забрал\s+не\s+вс[её])/iu', $text) === 1) {
+            return true;
+        }
+
         if ($this->isConcreteQuestion($text)) {
             return false;
         }
@@ -209,6 +214,15 @@ class TelegramEveningHumanComposer
             );
         }
 
+        if (preg_match('/один\s+комплект\s+белья/iu', $context) === 1
+            && preg_match('/втор\S*.{0,30}брак|брак.{0,30}втор/iu', $context) === 1
+            && preg_match('/кур[ьй’\']?ер\S*.{0,30}(?:ждать|ожида)|(?:ждать|ожида).{0,30}кур[ьй’\']?ер/iu', $context) === 1) {
+            return $this->result(
+                'Не хватало пригодного белья: один комплект был доступен, второй оказался бракованным; требовалось дождаться курьера.',
+                null,
+            );
+        }
+
         if (preg_match('/гост\S*\s+забыл\S*.{0,40}конверт|конверт.{0,40}забыл/iu', $context) === 1) {
             return $this->result(
                 'Гость забыл конверт; нужно найти его и сообщить о находке.',
@@ -356,6 +370,14 @@ class TelegramEveningHumanComposer
 
         if (preg_match('/коврик/iu', $context) === 1 && preg_match('/брак/iu', $context) === 1) {
             return $this->result('Обнаружен брак коврика.', null);
+        }
+
+        $normalizedSummary = mb_strtolower($summary);
+        if (str_starts_with($normalizedSummary, 'но на кухне ')
+            && str_contains($normalizedSummary, 'не плотно закрывается')
+            && str_contains($normalizedSummary, 'ручка не работает')
+            && str_contains(mb_strtolower($evidence->implode(' ')), 'окн')) {
+            return $this->result('Окно на кухне не плотно закрывается и ручка не работает.', null);
         }
 
         if ($this->isConcreteQuestion($context)) {
@@ -634,11 +656,12 @@ class TelegramEveningHumanComposer
 
     private function clean(string $text): string
     {
-        $text = preg_replace('/(?:^|\s)@[\p{L}\p{N}_]+\b/u', '', strip_tags($text)) ?: '';
+        $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/(?:^|\s)@[\p{L}\p{N}_]+\b/u', '', $text) ?: '';
         $text = preg_replace('/[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}]/u', '', $text) ?: $text;
         $text = preg_replace('/^(?:привет|здравствуйте|девочки|коллеги)[,!\.\s]+/iu', '', trim($text)) ?: $text;
         $text = preg_replace('/^[\p{Lu}][\p{Ll}]{2,20}[,!:]\s*/u', '', $text) ?: $text;
-        $text = preg_replace('/^(?:(?:да|хорошо|понял(?:а)?|спасибо|ок(?:ей)?)[,;.!?)\s]*)+/iu', '', $text) ?? $text;
+        $text = preg_replace('/^(?:(?:да|хорошо|понял(?:а)?|спасибо|ок(?:ей)?)(?=[,;.!?)\s]|$)[,;.!?)\s]*)+/iu', '', $text) ?? $text;
 
         return trim(preg_replace('/\s+/u', ' ', $text) ?: $text);
     }
@@ -651,7 +674,7 @@ class TelegramEveningHumanComposer
 
     private function isLinenCourierIssue(string $text): bool
     {
-        return preg_match('/курьер/iu', $text) === 1 && preg_match('/бель|грязн|чист/iu', $text) === 1;
+        return preg_match('/кур[ьй’\']?ер/iu', $text) === 1 && preg_match('/бель|грязн|чист/iu', $text) === 1;
     }
 
     private function isLightIssue(string $text): bool

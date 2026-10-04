@@ -222,6 +222,73 @@ it('uses only a structurally confirmed actor and location in the human delay', f
     expect($human['summary'])->toBe('Анна задерживается примерно на 10 минут.');
 });
 
+it('keeps ordinary lateness out of daily problems unless the source proves operational impact', function () {
+    $composer = app(TelegramEveningHumanComposer::class);
+    $ordinary = [
+        'include' => true,
+        'summary' => 'Анна задерживается примерно на 10 минут.',
+        'context_label' => 'Via Confirmed',
+        'types' => ['delay'],
+        '_citation_candidates' => [['text' => 'Я немного опоздаю минут на 10.', 'role' => 'report']],
+    ];
+    $impact = $ordinary;
+    $impact['_citation_candidates'] = [['text' => 'Я опоздаю на 10 минут, уборка не успеет к заезду.', 'role' => 'report']];
+
+    expect($composer->isDailyProblem($ordinary, $ordinary))->toBeTrue()
+        ->and($composer->isDailyProblem($impact, $impact))->toBeTrue();
+
+    $formatter = app(TelegramDigestFormatter::class);
+    $render = fn (array $problem): string => $formatter->eveningIntelligence([
+        'district' => ['label' => 'Como'],
+        'date' => '2026-09-20',
+        'daily_problems' => [$problem],
+    ]);
+    $ordinaryCard = $ordinary + ['quote' => 'Я немного опоздаю минут на 10.'];
+    $impactCard = $impact + ['quote' => 'Я опоздаю на 10 минут, уборка не успеет к заезду.'];
+
+    expect($render($ordinaryCard))->toContain('Незакрытых проблем за день не зафиксировано.')
+        ->and($render($impactCard))->toContain('Анна задерживается примерно на 10 минут.');
+});
+
+it('composes a linen shortage with courier dependency and decodes entities in human text', function () {
+    $message = TelegramOperationalTestDatabase::message(
+        'И мне кур&#039;ера ждать, у меня один комплект белья, второй брак.',
+        messageId: '6101',
+    );
+    $result = app(TelegramEveningHumanComposer::class)->compose(humanItem($message->text, [$message->id], ['quality_issue']));
+    $preview = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Como'],
+        'date' => '2026-09-20',
+        'daily_problems' => [[
+            'event_key' => 'entity-quote', 'context_label' => 'Via San Mirocle, 4',
+            'summary' => $result['summary'], 'quote' => $message->text,
+        ]],
+    ]);
+
+    expect($result['summary'])->toContain('Не хватало пригодного белья', 'один комплект', 'второй оказался бракованным', 'курьера')
+        ->not->toBe($message->text)
+        ->and($preview)->toContain("кур'ера")->not->toContain('&#039;');
+});
+
+it('requires a meaningful location and factual source before a daily problem is rendered', function () {
+    $formatter = app(TelegramDigestFormatter::class);
+    $item = [
+        'include' => true,
+        'summary' => 'Не работает свет.',
+        'context_label' => '19',
+        'types' => ['problem'],
+        '_citation_candidates' => [['text' => 'Не работает свет.', 'role' => 'report']],
+    ];
+    expect($formatter->eveningIntelligence([
+        'district' => ['label' => 'Como'], 'date' => '2026-09-20', 'daily_problems' => [$item],
+    ]))->toContain('Незакрытых проблем за день не зафиксировано.');
+    $item['context_label'] = 'Via Resolved';
+    $item['quote'] = null;
+    expect($formatter->eveningIntelligence([
+        'district' => ['label' => 'Como'], 'date' => '2026-09-20', 'daily_problems' => [$item],
+    ]))->toContain('Незакрытых проблем за день не зафиксировано.');
+});
+
 it('does not attribute an ordinary apartment question to its message author', function () {
     $message = TelegramOperationalTestDatabase::message('Во сколько здесь заезд?', messageId: '602');
     $item = [
@@ -251,6 +318,22 @@ it('restores a broken handle object from bounded evidence without mutating sourc
         'summary' => 'Отвалилась ручка окна.',
         'follow_up' => 'Проверить крепление ручки окна.',
     ])->and([$context->fresh()->toArray(), $fragment->fresh()->toArray()])->toBe($before);
+});
+
+it('restores the window subject for a leading contrast fragment only when linked evidence names it', function () {
+    $object = TelegramOperationalTestDatabase::message('Окно на кухне.', messageId: '607');
+    $fragment = TelegramOperationalTestDatabase::message(
+        'Но на кухне не плотно закрывается и ручка не работает.',
+        messageId: '608',
+    );
+
+    $result = app(TelegramEveningHumanComposer::class)->compose(humanItem(
+        $fragment->text,
+        [$object->id, $fragment->id],
+        ['problem'],
+    ));
+
+    expect($result['summary'])->toBe('Окно на кухне не плотно закрывается и ручка не работает.');
 });
 
 it('suppresses a dirty referent fragment unless bounded evidence establishes its object', function () {
@@ -293,8 +376,7 @@ it('suppresses a dirty referent fragment unless bounded evidence establishes its
             'follow_up' => null,
         ])
         ->and($withoutObjectPreview)->not->toContain('Нет..это грязное.', 'Постельное владельца')
-        ->and($withObjectPreview)->toContain('Imbonati 88 DEER — Постельное бельё владельца оказалось грязным.')
-        ->not->toContain('Нет..это грязное.');
+        ->and($withObjectPreview)->not->toContain('Imbonati 88 DEER', 'Нет..это грязное.');
 });
 
 it('humanizes production-shaped operational facts and suppresses contextless fragments', function () {
@@ -350,6 +432,30 @@ it('consolidates one apartment courier situation only in the human digest', func
         ->and(substr_count($text, 'Курьер забрал не всё грязное бельё.'))->toBe(1)
         ->and($items[0]['summary'])->toContain('После курьера осталось')
         ->and($items[2]['summary'])->toContain('Нужно фото грязного белья');
+});
+
+it('consolidates closely related same-topic linen and kitchen cleanliness evidence only in the human digest', function () {
+    $cases = [
+        ['2026-09-20 10:00:00', '701', 'Возьму с брака простынь и т.д', ['quality_issue'], 'Via Giuseppe Compagnoni 12'],
+        ['2026-09-20 10:18:00', '702', 'Еще брак наволочки дырка и мал полотенце', ['quality_issue'], 'Via Giuseppe Compagnoni 12'],
+        ['2026-09-20 11:00:00', '703', 'Гости оставили отзыв: на кухне очень грязно.', ['quality_issue'], 'Via M. Malpighi, 3'],
+        ['2026-09-20 11:16:00', '704', 'Посуда грязная, пришлось еще убирать.', ['quality_issue'], 'Via M. Malpighi, 3'],
+        ['2026-09-20 11:20:00', '705', 'Не работает чайник.', ['problem'], 'Via M. Malpighi, 3'],
+    ];
+    foreach ($cases as [$sentAt, $messageId, $text, $types, $topicTitle]) {
+        $message = TelegramOperationalTestDatabase::message($text, sentAt: $sentAt, messageId: $messageId, threadId: $topicTitle === 'Via Giuseppe Compagnoni 12' ? '701' : '702');
+        $message->topic->update(['title' => $topicTitle]);
+        humanScenarioEvent($message, $types);
+    }
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-09-20');
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+
+    expect(substr_count($text, 'Via Giuseppe Compagnoni 12 —'))->toBe(1)
+        ->and($text)->toContain('Обнаружен брак постельного белья: простыня, наволочка и маленькое полотенце.')
+        ->and(substr_count($text, 'Via M. Malpighi, 3 —'))->toBe(2)
+        ->and($text)->toContain('Квартира была сильно загрязнена: кухня и посуда требовали дополнительной уборки.')
+        ->toContain('Не работает чайник.');
 });
 
 it('recognizes a factual guest quality report without promoting instructions or questions', function (string $text, bool $expected) {
@@ -457,19 +563,18 @@ it('renders the supplied September 20 five-district scenarios as unresolved dail
     expect($previews['Navigli'])
         ->toContain('Via N1 — Стою здесь, консьержа нет. Не открывают пока.')
         ->toContain('Via N2 — Курьер привёз чистое бельё, но не забрал грязное.')
-        ->toContain('Via N3 — Сотрудник сообщил о задержке примерно на 10 минут.')
-        ->and(substr_count($previews['Navigli'], 'Via N3 —'))->toBe(1)
+        ->not->toContain('Via N3 —')
         ->and($previews['Navigli'])->not->toContain('ПМ ждать')
         ->not->toContain('сломано раньше')
         ->and($previews['Lodi'])->toContain('Via L1 — Не работает свет.')
-        ->toContain('Via L4 — Сотрудник сообщил о задержке.')
+        ->not->toContain('Via L4 —')
         ->not->toContain('это гости или ты')
         ->not->toContain('поняла, спасибо')
         ->not->toContain('Одеяла возьми')
         ->and($previews['Como'])->toContain('Via C1 — Гости сообщили о грязи на кухне и пыли.')
         ->and($previews['Certosa'])->toContain('Via T1 — Стою у двери, не открывают.')
         ->toContain('Via T2 — Курьер забрал не всё бельё.')
-        ->toContain('Via T3 — Сотрудник сообщил о задержке.')
+        ->not->toContain('Via T3 —')
         ->not->toContain('Что это за звук')
         ->not->toContain('Скачай видео')
         ->and($previews['Lambrate'])->toContain('Via B3 — Обнаружено бракованное полотенце.')
