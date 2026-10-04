@@ -231,7 +231,9 @@ class TelegramDigestFormatter
 
     private function renderEditorialEvening(array $preview, string $district): string
     {
-        $problems = collect($preview['daily_problems'] ?? []);
+        $problems = $this->consolidateHumanProblems(collect($preview['daily_problems'] ?? [])
+            ->filter(fn (array $problem): bool => $this->isRenderableHumanProblem($problem))
+            ->values());
         $timezone = (string) ($preview['timezone'] ?? config('app.timezone', 'Europe/Rome'));
         $date = filled($preview['date'] ?? null)
             ? Carbon::parse((string) $preview['date'], $timezone)->format('d.m.Y')
@@ -245,7 +247,6 @@ class TelegramDigestFormatter
             return implode("\n", $lines);
         }
 
-        $lines[] = 'Незакрытых проблем: '.$problems->count();
         foreach ($problems as $problem) {
             $context = $this->value($problem['context_label'] ?? null);
             $lines[] = '';
@@ -260,7 +261,8 @@ class TelegramDigestFormatter
                 $lines[] = '  🕒 '.$time;
             }
             if (filled($problem['quote'] ?? null)) {
-                $lines[] = '  💬 «'.htmlspecialchars($this->value($problem['quote']), ENT_QUOTES, 'UTF-8').'»';
+                $quote = html_entity_decode($this->value($problem['quote']), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $lines[] = '  💬 «'.htmlspecialchars($quote, ENT_COMPAT, 'UTF-8').'»';
             }
             if (filled($problem['source_url'] ?? null)) {
                 $lines[] = '  🔗 '.$problem['source_url'];
@@ -268,6 +270,129 @@ class TelegramDigestFormatter
         }
 
         return implode("\n", $lines);
+    }
+
+    private function isRenderableHumanProblem(array $problem): bool
+    {
+        $location = trim($this->value($problem['context_label'] ?? null));
+        $quote = trim($this->value($problem['quote'] ?? null));
+        if (preg_match('/^\d+$/u', $location) === 1 || $quote === '') {
+            return false;
+        }
+
+        $text = mb_strtolower($this->value($problem['summary'] ?? null).' '.$quote);
+        $isDelay = preg_match('/задерж|опозд|опозда/iu', $text) === 1;
+
+        return ! $isDelay || preg_match('/(?:уборк\S*.{0,70}(?:не\s+усп|задерж|сорв)|заезд\S*.{0,70}(?:жд|задерж|сорв)|гост\S*.{0,70}(?:жд|не\s+мож)|квартир\S*.{0,70}(?:не\s+подготов|не\s+усп)|из-за\s+задерж\S*.{0,70}(?:не\s+усп|сорв))/iu', $quote) === 1;
+    }
+
+    /** Consolidate adjacent linen-defect or kitchen/dishes cards for the human summary only. */
+    private function consolidateHumanProblems(Collection $problems): Collection
+    {
+        $groups = [];
+        foreach ($problems as $problem) {
+            $domain = $this->humanProblemDomain($problem);
+            $time = filled($problem['source_time'] ?? null) ? Carbon::parse($problem['source_time']) : null;
+            $groupIndex = null;
+            if ($domain !== null && $time !== null) {
+                foreach ($groups as $index => $group) {
+                    $first = $group[0];
+                    $groupDomains = collect($group)->pluck('_cluster_domain');
+                    $sameLinen = $domain === 'linen' && $groupDomains->contains('linen');
+                    $pairedCleanliness = in_array($domain, ['kitchen', 'dishes'], true)
+                        && $groupDomains->intersect(['kitchen', 'dishes'])->contains(fn (string $existing): bool => $existing !== $domain);
+                    if (($sameLinen || $pairedCleanliness)
+                        && ($first['context_label'] ?? null) === ($problem['context_label'] ?? null)
+                        && abs($time->diffInMinutes(Carbon::parse($first['source_time']), false)) <= 60) {
+                        $groupIndex = $index;
+                        break;
+                    }
+                }
+            }
+
+            $problem['_cluster_domain'] = $domain;
+            if ($groupIndex === null) {
+                $groups[] = [$problem];
+            } else {
+                $groups[$groupIndex][] = $problem;
+            }
+        }
+
+        return collect($groups)->flatMap(function (array $group): array {
+            if (count($group) === 1) {
+                return [$this->cleanClusterFields($group[0])];
+            }
+
+            $quotes = collect($group)->pluck('quote')->filter()->unique()->values();
+            $summary = ($group[0]['_cluster_domain'] ?? null) === 'linen'
+                ? $this->linenProblemSummary($quotes)
+                : (preg_match('/очень\s+грязн|сильно\s+грязн/iu', $quotes->implode(' ')) === 1
+                    ? 'Квартира была сильно загрязнена: кухня и посуда требовали дополнительной уборки.'
+                    : 'Кухня и посуда были грязными; требовалась дополнительная уборка.');
+
+            if ($summary === null) {
+                return collect($group)->map(fn (array $item): array => $this->cleanClusterFields($item))->all();
+            }
+
+            return [$this->cleanClusterFields([
+                ...$group[0],
+                'summary' => $summary,
+                'quote' => $quotes->take(2)->implode('»; «'),
+            ])];
+        })->values();
+    }
+
+    private function humanProblemDomain(array $problem): ?string
+    {
+        $quote = $this->value($problem['quote'] ?? null);
+        if (preg_match('/(?:брак|дефект|поврежд).{0,50}(?:наволоч|простын|полотен|пододеял)|(?:наволоч|простын|полотен|пододеял).{0,50}(?:брак|дефект|поврежд)/iu', $quote) === 1) {
+            return 'linen';
+        }
+        if (preg_match('/кухн.{0,40}грязн|грязн.{0,40}кухн/iu', $quote) === 1) {
+            return 'kitchen';
+        }
+        if (preg_match('/посуд.{0,40}грязн|грязн.{0,40}посуд/iu', $quote) === 1) {
+            return 'dishes';
+        }
+
+        return null;
+    }
+
+    private function linenProblemSummary(Collection $quotes): ?string
+    {
+        $objects = [];
+        foreach ($quotes as $quote) {
+            if (preg_match('/(?:брак|дефект|поврежд).{0,50}(?:наволоч|простын|полотен|пододеял)|(?:наволоч|простын|полотен|пододеял).{0,50}(?:брак|дефект|поврежд)/iu', $quote) !== 1) {
+                continue;
+            }
+            foreach ([
+                'простын' => 'простыня',
+                'наволоч' => 'наволочка',
+                'мал.{0,10}полотен' => 'маленькое полотенце',
+                'полотен' => 'полотенце',
+                'пододеял' => 'пододеяльник',
+            ] as $pattern => $label) {
+                if (preg_match('/'.$pattern.'/iu', $quote) === 1) {
+                    $objects[] = $label;
+                }
+            }
+        }
+        $objects = array_values(array_unique($objects));
+        if (in_array('маленькое полотенце', $objects, true)) {
+            $objects = array_values(array_diff($objects, ['полотенце']));
+        }
+        if (count($objects) < 2) {
+            return null;
+        }
+
+        return 'Обнаружен брак постельного белья: '.implode(', ', array_slice($objects, 0, -1)).' и '.end($objects).'.';
+    }
+
+    private function cleanClusterFields(array $problem): array
+    {
+        unset($problem['_cluster_domain']);
+
+        return $problem;
     }
 
     private function openAgeLabel(array $item): string

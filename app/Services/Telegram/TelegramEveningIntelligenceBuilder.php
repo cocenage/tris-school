@@ -167,8 +167,8 @@ class TelegramEveningIntelligenceBuilder
             ->map(fn (array $item): array => $this->editorialLine($item, $item['editorial']['summary'], 'problem'))
             ->values()
             ->all();
-        $recurrences = $this->recurrences($recurrenceStart, $cutoff, $district);
         $included = count($dailyProblems);
+        $recurrences = $this->recurrences($recurrenceStart, $cutoff, $district);
 
         return [
             'date' => $day->toDateString(),
@@ -749,7 +749,8 @@ class TelegramEveningIntelligenceBuilder
 
     private function cleanEvidenceQuote(string $text): string
     {
-        $text = preg_replace('/\s+/u', ' ', strip_tags($text)) ?: '';
+        $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/\s+/u', ' ', $text) ?: '';
         $text = preg_replace('/(?<!\S)@[\pL\pN_]+/u', '', $text) ?: $text;
 
         $clauses = preg_split('/(?<=[.!?;])\s+|,\s*(?=(?:а|но|и|поэтому|значит|тогда|он|она|оно|они|это|так)\b)/iu', $text) ?: [$text];
@@ -934,7 +935,7 @@ class TelegramEveningIntelligenceBuilder
     {
         $value = $this->compact((string) $value, 80);
 
-        if ($value === '' || preg_match('/^(?:тема\s*#?\d+|operations|общая тема)$/iu', $value)) {
+        if ($value === '' || preg_match('/^(?:\d+|тема\s*#?\d+|operations|общая тема)$/iu', $value)) {
             return null;
         }
 
@@ -943,8 +944,9 @@ class TelegramEveningIntelligenceBuilder
 
     private function eventContextLabel(TelegramOperationalEvent $event): ?string
     {
-        if (filled($event->apartment?->name)) {
-            return $this->contextLabel($event->apartment->name);
+        $apartmentLabel = $this->contextLabel($event->apartment?->name);
+        if ($apartmentLabel !== null && preg_match('/^\d+$/u', $apartmentLabel) !== 1) {
+            return $apartmentLabel;
         }
 
         if ($event->topic === null

@@ -122,7 +122,7 @@ it('renders one daily problem card with source metadata and no legacy sections',
         ],
     ]);
 
-    expect($text)->toBe("🌙 Como — проблемы за день · 30.09.2026\nНезакрытых проблем: 1\n\n• Via Test 1 — Не работает замок.\n  👤 Test Worker · 10:42\n  💬 «Не работает замок»\n  🔗 https://t.me/c/12345/42")
+    expect($text)->toBe("🌙 Como — проблемы за день · 30.09.2026\n\n• Via Test 1 — Не работает замок.\n  👤 Test Worker · 10:42\n  💬 «Не работает замок»\n  🔗 https://t.me/c/12345/42")
         ->not->toContain('Исторический дефект', 'Проверить замок', 'Полотенце заменено', 'Осталось сделать');
 });
 
@@ -137,7 +137,7 @@ it('renders a clean empty state and never falls back to diagnostic sections', fu
     expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано.");
 })->with([null, 'Navigli']);
 
-it('omits missing source metadata without inventing a person or link', function () {
+it('omits human problem cards without a source quote or meaningful location', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'date' => '2026-09-30', 'daily_problems' => [[
             'event_key' => 'current', 'summary' => 'Не работает свет.',
@@ -145,17 +145,18 @@ it('omits missing source metadata without inventing a person or link', function 
         ]],
     ]);
 
-    expect($text)->toContain('• Не работает свет.', 'Незакрытых проблем: 1')
+    expect($text)->toBe("🌙 TRIS — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано.")
         ->not->toContain('👤', '🕒', '💬', '🔗', 'Unknown', '#');
 });
 
 it('escapes source text for the existing HTML Telegram transport', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'date' => '2026-09-30', 'daily_problems' => [[
-            'event_key' => 'current', 'summary' => 'Не работает свет & вытяжка.',
-            'author_name' => 'Test & Worker', 'quote' => 'Свет & вытяжка не работают',
+            'event_key' => 'current', 'context_label' => 'Via Test', 'summary' => 'Не работает свет & вытяжка.',
+            'author_name' => 'Test & Worker', 'quote' => 'Курьер ждёт кур&#039;ера',
         ]],
     ]);
 
-    expect($text)->toContain('свет &amp; вытяжка', 'Test &amp; Worker', 'Свет &amp; вытяжка не работают');
+    expect($text)->toContain('свет &amp; вытяжка', 'Test &amp; Worker', "Курьер ждёт кур'ера")
+        ->not->toContain('&#039;');
 });

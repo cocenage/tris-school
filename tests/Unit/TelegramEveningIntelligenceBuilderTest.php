@@ -405,7 +405,7 @@ it('retains only durable prior-day issues in audit carry-over and hides them fro
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence($followingDay);
 
     expect(collect($sameDay['events'])->pluck('summary'))->toContain('Задержка примерно на 10 минут.', 'Во сколько здесь заезд?')
-        ->and($sameDayText)->toContain('Сотрудник сообщил о задержке примерно на 10 минут.')
+        ->and($sameDayText)->not->toContain('Сотрудник сообщил о задержке примерно на 10 минут.')
         ->not->toContain('Уточняли время заезда.')
         ->and($bySummary->keys()->all())->toEqualCanonicalizing([
             'Не открывается дверь в квартиру.',
@@ -1224,7 +1224,6 @@ it('builds a district shift handoff from explicit editorial states', function ()
     }
 });
 
-
 it('selects only unresolved daily problem cards while retaining excluded events for audit', function (string $source, string $date, string $status, bool $included) {
     $message = TelegramOperationalTestDatabase::message('Не работает свет.', sentAt: $date.' 10:42:00', messageId: '4101');
     $result = app(TelegramOperationalEventObserver::class)->observe($message);
@@ -1262,6 +1261,7 @@ it('selects only unresolved daily problem cards while retaining excluded events 
 it('attributes a daily card to the original report without inventing access details', function (bool $withMetadata) {
     config(['services.telegram.operational_chat_ids' => [$withMetadata ? '-10012345' : '12345']]);
     $message = TelegramOperationalTestDatabase::message('Не работает замок', sentAt: '2026-09-30 10:42:00', messageId: '4201', chatId: $withMetadata ? '-10012345' : '12345');
+    $message->topic?->update(['title' => 'Via Test']);
     $message->telegramUser->update(['full_name' => $withMetadata ? 'Test Worker' : null]);
     $result = app(TelegramOperationalEventObserver::class)->observe($message);
     expect($result['outcome'])->toBe('created');
@@ -1286,7 +1286,8 @@ it('attributes a daily card to the original report without inventing access deta
     expect($card['quote'])->toBe('Не работает замок')
         ->and($card['author_name'])->toBe($withMetadata ? 'Test Worker' : null)
         ->and($card['source_url'])->toBe($withMetadata ? 'https://t.me/c/12345/4201' : null)
-        ->and($text)->toContain('10:42', '💬 «Не работает замок»', 'Незакрытых проблем: 1')
+        ->and($text)->toContain('10:42', '💬 «Не работает замок»')
+        ->not->toContain('Незакрытых проблем:')
         ->not->toContain('входной', 'электронный', 'не может попасть', 'дверь закрыта', 'Осталось сделать:')
         ->and(substr_count($text, '• '))->toBe(1);
     if ($withMetadata) {
@@ -1299,6 +1300,7 @@ it('attributes a daily card to the original report without inventing access deta
 it('requires a factual condition even when legacy evidence is labelled as a problem report', function (string $source, bool $included, ?string $conclusion) {
     config(['services.telegram.operational_chat_ids' => ['-10012345']]);
     $message = TelegramOperationalTestDatabase::message('Не работает свет.', sentAt: '2026-10-01 08:09:00', messageId: '4301', chatId: '-10012345');
+    $message->topic?->update(['title' => 'Via Test']);
     $message->telegramUser->update(['full_name' => 'Test Worker']);
     $result = app(TelegramOperationalEventObserver::class)->observe($message);
     expect($result['outcome'])->toBe('created');
