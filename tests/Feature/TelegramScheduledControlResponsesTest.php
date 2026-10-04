@@ -19,11 +19,14 @@ use App\Services\Telegram\TelegramScheduledControlStatistics;
 use App\Services\Telegram\TelegramScheduledControlSummaryBuilder;
 use App\Services\Telegram\TelegramScheduledControlSummaryDeliveryService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
+use App\Services\Telegram\TelegramScheduledInboundProcessor;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Client\ResponseSequence;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -117,6 +120,14 @@ function runScheduledControlBackfill(bool $dryRun = false, bool $apply = true): 
         '--dry-run' => $dryRun ? true : null,
         '--apply' => ! $dryRun && $apply ? true : null,
     ], fn ($value) => $value !== null));
+}
+
+function fakeScheduledPollResponses(): ResponseSequence
+{
+    $factory = new HttpFactory;
+    Http::swap($factory);
+
+    return $factory->fakeSequence();
 }
 
 it('links an exact scheduled delivery reply and measures from actual send', function () {
@@ -678,6 +689,101 @@ it('keeps callback queries out of response capture', function () {
     expect(TelegramScheduledMessageResponse::count())->toBe(0);
 });
 
+it('polls scheduled updates in order through the shared inbound path and confirms the successful batch', function () {
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-poll-token']);
+    $explicitDelivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $fallbackDelivery = controlDeliveryFixture([
+        'control_type' => 'couriers_completed',
+        'scheduled_for' => '2026-10-01 10:30:00',
+        'sent_at' => '2026-10-01 10:30:00',
+        'telegram_message_id' => 9951,
+    ]);
+    $explicit = controlReplyPayload($explicitDelivery, 'Да, всё проверено', 251);
+    $explicit['update_id'] = 501;
+    $replyless = controlReplyPayload($fallbackDelivery, 'Да, все завершили', 252, 102, '2026-10-01 10:35:00');
+    $replyless['update_id'] = 502;
+    unset($replyless['message']['reply_to_message']);
+
+    fakeScheduledPollResponses()
+        ->push(['ok' => true, 'result' => [$replyless, $explicit]])
+        ->push(['ok' => true, 'result' => []]);
+
+    expect(Artisan::call('telegram:scheduled-poll'))->toBe(0)
+        ->and(TelegramScheduledMessageResponse::query()->orderBy('id')->pluck('telegram_message_id')->all())->toBe(['251', '252']);
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    expect($summary['totals']['response_messages'])->toBe(2)
+        ->and(collect($summary['controls'])->keyBy('control_type')['schedule_checked']['responses'])->toHaveCount(1)
+        ->and(collect($summary['controls'])->keyBy('control_type')['couriers_completed']['responses'])->toHaveCount(1);
+
+    $requests = Http::recorded()->pluck(0)->values();
+    expect($requests)->toHaveCount(2)
+        ->and($requests[0]['allowed_updates'])->toBe(['message', 'edited_message'])
+        ->and($requests[0]['limit'])->toBe(50)
+        ->and($requests[0]->data())->not->toHaveKey('offset')
+        ->and($requests[1]['offset'])->toBe(503);
+});
+
+it('keeps repeated polled updates idempotent', function () {
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-poll-token']);
+    $payload = controlReplyPayload(controlDeliveryFixture(), 'Да, все начали', 253);
+    $payload['update_id'] = 503;
+
+    fakeScheduledPollResponses()
+        ->push(['ok' => true, 'result' => [$payload]])
+        ->push(['ok' => true, 'result' => []])
+        ->push(['ok' => true, 'result' => [$payload]])
+        ->push(['ok' => true, 'result' => []]);
+
+    expect(Artisan::call('telegram:scheduled-poll'))->toBe(0)
+        ->and(Artisan::call('telegram:scheduled-poll'))->toBe(0)
+        ->and(TelegramMessage::query()->where('message_id', '253')->count())->toBe(1)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(1);
+});
+
+it('stops at a failed polled update and confirms only earlier successes', function () {
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-poll-token']);
+    $updates = collect([12, 10, 11])->map(fn (int $id): array => ['update_id' => $id, 'message' => ['message_id' => $id]])->all();
+    fakeScheduledPollResponses()
+        ->push(['ok' => true, 'result' => $updates])
+        ->push(['ok' => true, 'result' => []]);
+
+    $processor = Mockery::mock(TelegramScheduledInboundProcessor::class);
+    $processor->shouldReceive('process')->once()->withArgs(fn (array $update): bool => $update['update_id'] === 10)->andReturn(['ok' => true])->ordered();
+    $processor->shouldReceive('process')->once()->withArgs(fn (array $update): bool => $update['update_id'] === 11)->andThrow(new RuntimeException('fixture failure'))->ordered();
+    $processor->shouldReceive('process')->never()->withArgs(fn (array $update): bool => $update['update_id'] === 12);
+    $this->app->instance(TelegramScheduledInboundProcessor::class, $processor);
+
+    expect(Artisan::call('telegram:scheduled-poll'))->toBe(1)
+        ->and(Artisan::output())->toContain('update 11 failed', 'remain unconfirmed');
+
+    $requests = Http::recorded()->pluck(0)->values();
+    expect($requests)->toHaveCount(2)
+        ->and($requests[1]['offset'])->toBe(11);
+});
+
+it('returns cleanly for an empty poll without issuing a confirmation request', function () {
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-poll-token']);
+    fakeScheduledPollResponses()->push(['ok' => true, 'result' => []]);
+
+    expect(Artisan::call('telegram:scheduled-poll'))->toBe(0)
+        ->and(Artisan::output())->toContain('0 update(s) processed')
+        ->and(Http::recorded())->toHaveCount(1);
+});
+
+it('fails a Telegram polling API error without processing or confirming updates', function () {
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-poll-token']);
+    fakeScheduledPollResponses()->push(['ok' => false, 'description' => 'Conflict'], 409);
+    $processor = Mockery::mock(TelegramScheduledInboundProcessor::class);
+    $processor->shouldNotReceive('process');
+    $this->app->instance(TelegramScheduledInboundProcessor::class, $processor);
+
+    expect(Artisan::call('telegram:scheduled-poll'))->toBe(1)
+        ->and(Artisan::output())->toContain('updates remain unconfirmed')
+        ->and(Http::recorded())->toHaveCount(1)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(0);
+});
+
 it('does not mark failed summary delivery sent and allows queue retry', function () {
     controlDeliveryFixture();
     app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01');
@@ -720,6 +826,8 @@ it('waits for late active controls and actual late send windows before automatic
 it('registers automatic summary with overlap protection without changing scheduled delivery worker', function () {
     $events = collect(app(Schedule::class)->events());
     $summary = $events->first(fn ($event) => str_contains($event->command ?? '', 'scheduled-controls-summary-send --only-if-due'));
+    $poll = $events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:scheduled-poll'));
     expect($summary->expression)->toBe('*/15 * * * *')->and($summary->withoutOverlapping)->toBeTrue();
+    expect($poll->expression)->toBe('* * * * *')->and($poll->withoutOverlapping)->toBeTrue();
     expect($events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:scheduled-messages-send'))->expression)->toBe('* * * * *');
 });
