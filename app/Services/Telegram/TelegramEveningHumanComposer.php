@@ -216,7 +216,7 @@ class TelegramEveningHumanComposer
 
         if (preg_match('/один\s+комплект\s+белья/iu', $context) === 1
             && preg_match('/втор\S*.{0,30}брак|брак.{0,30}втор/iu', $context) === 1
-            && preg_match('/кур[ьй’\']?ер\S*.{0,30}(?:ждать|ожида)|(?:ждать|ожида).{0,30}кур[ьй’\']?ер/iu', $context) === 1) {
+            && preg_match('/кур[ьй’\']?[еэ]р\S*.{0,30}(?:ждать|ожида)|(?:ждать|ожида).{0,30}кур[ьй’\']?[еэ]р/iu', $context) === 1) {
             return $this->result(
                 'Не хватало пригодного белья: один комплект был доступен, второй оказался бракованным; требовалось дождаться курьера.',
                 null,
@@ -674,7 +674,7 @@ class TelegramEveningHumanComposer
 
     private function isLinenCourierIssue(string $text): bool
     {
-        return preg_match('/кур[ьй’\']?ер/iu', $text) === 1 && preg_match('/бель|грязн|чист/iu', $text) === 1;
+        return preg_match('/кур[ьй’\']?[еэ]р/iu', $text) === 1 && preg_match('/бель|грязн|чист/iu', $text) === 1;
     }
 
     private function isLightIssue(string $text): bool

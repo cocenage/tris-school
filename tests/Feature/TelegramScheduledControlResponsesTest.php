@@ -292,6 +292,36 @@ it('deduplicates the same reply received by both bots', function () {
     Http::assertNothingSent();
 });
 
+it('captures explicit and bounded replyless responses through the scheduled bot webhook and exposes them to the summary', function () {
+    $explicitDelivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $explicit = controlReplyPayload($explicitDelivery, 'Да, всё проверено', 223);
+
+    $this->postJson(route('telegram.scheduled.webhook', ['secret' => 'scheduled-test']), $explicit)->assertOk();
+    $this->postJson(route('telegram.scheduled.webhook', ['secret' => 'scheduled-test']), $explicit)->assertOk();
+
+    $fallbackDelivery = controlDeliveryFixture([
+        'control_type' => 'couriers_completed',
+        'scheduled_for' => '2026-10-01 10:30:00',
+        'sent_at' => '2026-10-01 10:30:00',
+        'telegram_message_id' => 9923,
+    ]);
+    $replyless = controlReplyPayload($fallbackDelivery, 'Да, все завершили', 224, 102, '2026-10-01 10:35:00');
+    unset($replyless['message']['reply_to_message']);
+
+    $this->postJson(route('telegram.scheduled.webhook', ['secret' => 'scheduled-test']), $replyless)->assertOk();
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $controls = collect($summary['controls'])->keyBy('control_type');
+
+    expect(TelegramMessage::query()->whereIn('message_id', ['223', '224'])->count())->toBe(2)
+        ->and(TelegramScheduledMessageResponse::count())->toBe(2)
+        ->and(TelegramScheduledMessageResponse::query()->where('delivery_id', $explicitDelivery->id)->count())->toBe(1)
+        ->and(TelegramScheduledMessageResponse::query()->where('delivery_id', $fallbackDelivery->id)->sole()->reply_to_message_id)->toBeNull()
+        ->and($summary['totals']['response_messages'])->toBe(2)
+        ->and($controls['schedule_checked']['responses'])->toHaveCount(1)
+        ->and($controls['couriers_completed']['responses'])->toHaveCount(1);
+});
+
 it('isolates both Telegram chat and topic identifiers', function () {
     $payload = controlReplyPayload(controlDeliveryFixture());
     $payload['message']['chat']['id'] = -1002;
