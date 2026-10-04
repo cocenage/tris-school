@@ -40,6 +40,10 @@ Schedule::command('telegram:scheduled-messages-send')
     ->everyMinute()
     ->withoutOverlapping();
 
+Schedule::command('telegram:scheduled-poll')
+    ->everyMinute()
+    ->withoutOverlapping();
+
 Schedule::command('telegram:scheduled-controls-summary-send --only-if-due')
     ->everyFifteenMinutes()
     ->timezone('Europe/Rome')
@@ -49,4 +53,4 @@ Schedule::command('queue:work database --queue=default --stop-when-empty --tries
     ->everyMinute()
     ->withoutOverlapping();
 
-app(EmergencyScheduleRegistrar::class)->register(app(\Illuminate\Console\Scheduling\Schedule::class));
+app(EmergencyScheduleRegistrar::class)->register(app(Illuminate\Console\Scheduling\Schedule::class));
