@@ -37,7 +37,7 @@ Treat a request for code implementation as no authorization for a RED action.
 
 ## Database map and checks
 
-- Primary connection: normal application models and the database queue.
+- Primary connection: normal application models. The database queue defaults to it, but may use an independently configured `DB_QUEUE_CONNECTION`.
 - Analytics connection: Telegram chats, topics, users, messages, attachments, assistant data, operational observations/events/evidence.
 - Pest primary DB: SQLite `:memory:` from `phpunit.xml`.
 - Telegram analytics tests: must override `database.connections.analytics.database` to `:memory:` before opening the connection and purge it afterward.

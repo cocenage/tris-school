@@ -92,8 +92,8 @@ class MobilityStrikeSyncService
                 if ($dryRun) {
                     $apply();
                 } else {
-                    // Database jobs and reservations commit together. Queue insertion
-                    // failure rolls back this item; the next sync can safely retry.
+                    // Persist the durable reservation first. The queued job is added
+                    // after commit and stale reservations are recovered below.
                     DB::transaction($apply);
                 }
             } catch (\Throwable $error) {
@@ -127,12 +127,8 @@ class MobilityStrikeSyncService
         if ($message->sent_at || ($message->queued_at && $message->queued_at->gt(now()->subHour()))) {
             return 0;
         }
-        $queueConnection = config('queue.connections.database.connection') ?: config('database.default');
-        if ($queueConnection !== $message->getConnection()->getName()) {
-            throw new \RuntimeException('Mobility outbox requires database queue on the primary connection.');
-        }
         $message->forceFill(['queued_at' => now()])->save();
-        DeliverMobilityAlert::dispatch($message->id)->onConnection('database')->onQueue('default')->beforeCommit();
+        DeliverMobilityAlert::dispatch($message->id)->onConnection('database')->onQueue('default')->afterCommit();
 
         return 1;
     }

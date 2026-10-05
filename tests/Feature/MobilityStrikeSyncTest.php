@@ -4,8 +4,12 @@ use App\Jobs\DeliverMobilityAlert;
 use App\Models\MobilityAlert;
 use App\Models\MobilityAlertMessage;
 use App\Services\Mobility\MitStrikeSource;
+use App\Services\Mobility\MobilityAlertSyncService;
 use App\Services\Mobility\MobilityStrikeSyncService;
 use App\Services\Telegram\TelegramBotService;
+use Carbon\Carbon;
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
@@ -27,7 +31,7 @@ function mitStrikeTable(array $overrides = [], bool $duplicate = false): string
 }
 
 beforeEach(function () {
-    $this->travelTo(\Carbon\Carbon::parse('2026-10-01 10:00:00', 'Europe/Rome'));
+    $this->travelTo(Carbon::parse('2026-10-01 10:00:00', 'Europe/Rome'));
     config(['services.telegram.mobility_admin_targets' => '-100123:17', 'services.telegram.analytics_bot_token' => null, 'queue.connections.database.connection' => null]);
     foreach (['2026_05_27_174319_create_mobility_alerts_table.php', '2026_07_02_042735_create_mobility_alert_messages_table.php', '2026_10_01_010000_add_strike_delivery_tracking_to_mobility_tables.php'] as $file) {
         (require database_path('migrations/'.$file))->up();
@@ -48,6 +52,19 @@ it('queues a future ATM strike on discovery rather than its occurrence day', fun
     expect(MobilityAlert::sole()->starts_at->toDateString())->toBe('2026-10-09');
     expect(MobilityAlertMessage::sole()->sent_at)->toBeNull();
     Bus::assertDispatched(DeliverMobilityAlert::class, fn ($job) => $job->connection === 'database' && $job->queue === 'default');
+});
+
+it('queues mobility delivery after commit when the database queue uses a separate connection', function () {
+    config(['queue.connections.database.connection' => 'mysql']);
+
+    $counts = app(MobilityStrikeSyncService::class)->sync();
+
+    expect($counts['queued'])->toBe(1)
+        ->and($counts['failed'])->toBe(0);
+    Bus::assertDispatched(DeliverMobilityAlert::class, fn ($job): bool => $job->connection === 'database'
+        && $job->queue === 'default'
+        && $job->afterCommit === true
+    );
 });
 
 it('does not queue unchanged records again including source reception changes', function () {
@@ -152,14 +169,14 @@ it('parses Rome dates independently of application timezone', function () {
 });
 
 it('keeps the existing fifteen minute scheduler and overlap protection', function () {
-    $events = app(\Illuminate\Console\Scheduling\Schedule::class)->events();
+    $events = app(Schedule::class)->events();
     $event = collect($events)->first(fn ($event) => str_contains($event->command ?? '', 'mobility:sync'));
     expect($event)->not->toBeNull();
     expect($event->expression)->toBe('*/15 * * * *')->and($event->withoutOverlapping)->toBeTrue();
 });
 
 it('rolls back alert and reservation when queue insertion fails', function () {
-    $dispatcher = Mockery::mock(\Illuminate\Contracts\Bus\Dispatcher::class);
+    $dispatcher = Mockery::mock(Dispatcher::class);
     $dispatcher->shouldReceive('dispatch')->once()->andThrow(new RuntimeException('Queue unavailable'));
     Bus::swap($dispatcher);
     expect(app(MobilityStrikeSyncService::class)->sync()['failed'])->toBe(1);
@@ -272,7 +289,7 @@ it('omits explicitly cancelled strikes from existing mobility read sets without 
     app(MobilityStrikeSyncService::class)->sync();
     Http::fake(['*' => Http::response(mitStrikeTable(['Note' => 'SCIOPERO REVOCATO']))]);
     app(MobilityStrikeSyncService::class)->sync();
-    $visible = app(\App\Services\Mobility\MobilityAlertSyncService::class)->filterRepresentedRawAlerts(MobilityAlert::all());
+    $visible = app(MobilityAlertSyncService::class)->filterRepresentedRawAlerts(MobilityAlert::all());
     expect($visible)->toHaveCount(0)->and(MobilityAlert::count())->toBe(1);
 });
 

@@ -27,7 +27,11 @@ class TelegramAnalyticsWebhookController extends Controller
             abort(403);
         }
 
-        $update = $request->all();
+        return $this->processUpdate($request->all(), $responses);
+    }
+
+    public function processUpdate(array $update, TelegramScheduledControlResponseService $responses): JsonResponse
+    {
 
         $message = $update['message']
             ?? $update['edited_message']

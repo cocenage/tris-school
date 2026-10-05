@@ -44,6 +44,16 @@ Schedule::command('telegram:scheduled-poll')
     ->everyMinute()
     ->withoutOverlapping();
 
+Schedule::command('telegram:analytics-poll')
+    ->everyMinute()
+    ->when(fn (): bool => (bool) config('services.telegram.analytics_polling_enabled', false))
+    ->withoutOverlapping();
+
+Schedule::command('telegram:work-poll')
+    ->everyMinute()
+    ->when(fn (): bool => (bool) config('services.telegram.work_polling_enabled', false))
+    ->withoutOverlapping();
+
 Schedule::command('telegram:scheduled-controls-summary-send --only-if-due')
     ->everyFifteenMinutes()
     ->timezone('Europe/Rome')

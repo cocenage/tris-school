@@ -32,8 +32,26 @@ class TelegramWorkWebhookController extends Controller
         TelegramScheduledControlResponseService $responses,
         TelegramDistrictRouteRegistry $districts,
     ) {
+        if ($secret !== config('services.telegram.work_webhook_secret')) {
+            abort(403);
+        }
 
-        $update = $request->all();
+        return $this->processUpdate(
+            $request->all(),
+            $ingestService,
+            $assistantService,
+            $responses,
+            $districts,
+        );
+    }
+
+    public function processUpdate(
+        array $update,
+        TelegramUpdateIngestService $ingestService,
+        TelegramAssistantService $assistantService,
+        TelegramScheduledControlResponseService $responses,
+        TelegramDistrictRouteRegistry $districts,
+    ) {
         $updateType = match (true) {
             isset($update['callback_query']) => 'callback_query',
             isset($update['message']) => 'message',
@@ -47,10 +65,6 @@ class TelegramWorkWebhookController extends Controller
             'update_type' => $updateType,
             'has_callback_query' => $updateType === 'callback_query',
         ]);
-
-        if ($secret !== config('services.telegram.work_webhook_secret')) {
-            abort(403);
-        }
 
         if (isset($update['callback_query'])) {
             return $this->handleCallbackQuery($update['callback_query']);

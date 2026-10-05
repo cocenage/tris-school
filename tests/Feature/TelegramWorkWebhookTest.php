@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
@@ -9,6 +10,8 @@ use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\Request as ClientRequest;
+use Illuminate\Http\Client\ResponseSequence;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -106,6 +109,28 @@ function privateWebhookPayload(int $messageId = 42): array
             'text' => 'Я заболела',
         ],
     ];
+}
+
+function workPollingPayload(int $messageId, int $updateId, string $chatId = '-100'): array
+{
+    return [
+        'update_id' => $updateId,
+        'message' => [
+            'message_id' => $messageId,
+            'date' => now()->timestamp,
+            'chat' => ['id' => (int) $chatId, 'type' => 'supergroup', 'title' => 'Work chat'],
+            'from' => ['id' => 777, 'first_name' => 'Worker', 'is_bot' => false],
+            'text' => 'Не работает замок',
+        ],
+    ];
+}
+
+function fakeWorkPollResponses(): ResponseSequence
+{
+    $sequence = Http::sequence();
+    Http::fake(['api.telegram.org/*' => $sequence]);
+
+    return $sequence;
 }
 
 it('dispatches operational observation only after a persisted work message when enabled', function () {
@@ -604,4 +629,137 @@ it('keeps a committed day-off decision when Telegram cannot edit the original me
 
     expect($day->refresh()->status)->toBe('approved')
         ->and($request->refresh()->status)->toBe('approved');
+});
+
+it('polls an allowed work message through the existing ingest path', function () {
+    TelegramOperationalTestDatabase::refresh();
+    config(['services.telegram.work_allowed_chat_ids' => ['-100']]);
+    Queue::fake();
+    $assistant = Mockery::mock(TelegramAssistantService::class);
+    $assistant->shouldReceive('isActivated')->once()->andReturnFalse();
+    $assistant->shouldReceive('handle')->never();
+    $this->app->instance(TelegramAssistantService::class, $assistant);
+
+    fakeWorkPollResponses()
+        ->push(['ok' => true, 'result' => [workPollingPayload(701, 201)]])
+        ->push(['ok' => true, 'result' => []]);
+
+    expect(Artisan::call('telegram:work-poll'))->toBe(0)
+        ->and(TelegramMessage::query()->where('message_id', '701')->count())->toBe(1);
+
+    $requests = Http::recorded()->pluck(0)->values();
+    expect($requests[0]['allowed_updates'])->toBe(['message', 'edited_message', 'channel_post', 'callback_query'])
+        ->and($requests[1]['offset'])->toBe(202);
+});
+
+it('processes work callback queries through polling', function () {
+    $payload = [
+        'update_id' => 202,
+        'callback_query' => [
+            'id' => 'polled-callback',
+            'data' => 'unknown:action:1',
+            'from' => ['id' => 999],
+            'message' => ['message_id' => 11, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ],
+    ];
+    $pollRequests = 0;
+    Http::fake(function (ClientRequest $request) use (&$pollRequests, $payload) {
+        if (str_ends_with($request->url(), '/getUpdates')) {
+            $pollRequests++;
+
+            return Http::response(['ok' => true, 'result' => $pollRequests === 1 ? [$payload] : []]);
+        }
+
+        return Http::response(['ok' => true]);
+    });
+
+    expect(Artisan::call('telegram:work-poll'))->toBe(0);
+    Http::assertSent(fn (ClientRequest $request): bool => str_ends_with($request->url(), '/answerCallbackQuery')
+        && $request['callback_query_id'] === 'polled-callback'
+    );
+});
+
+it('polls an OI-only district source without invoking the assistant', function () {
+    TelegramOperationalTestDatabase::refresh();
+    config([
+        'services.telegram.operational_observer_enabled' => true,
+        'services.telegram.digest_districts' => [
+            'navigli' => [
+                'label' => 'Navigli', 'chat_id' => '-200', 'duty_thread_id' => '285365',
+                'latitude' => 45.4514, 'longitude' => 9.1749,
+            ],
+        ],
+    ]);
+    Queue::fake();
+    $assistant = Mockery::mock(TelegramAssistantService::class);
+    $assistant->shouldReceive('isActivated')->never();
+    $assistant->shouldReceive('handle')->never();
+    $this->app->instance(TelegramAssistantService::class, $assistant);
+
+    fakeWorkPollResponses()
+        ->push(['ok' => true, 'result' => [workPollingPayload(702, 203, '-200')]])
+        ->push(['ok' => true, 'result' => []]);
+
+    expect(Artisan::call('telegram:work-poll'))->toBe(0);
+    $saved = TelegramMessage::query()->where('message_id', '702')->sole();
+    Queue::assertPushed(ProcessTelegramOperationalMessage::class, fn ($job): bool => $job->telegramMessageId === $saved->id);
+});
+
+it('ignores irrelevant and disallowed polled work updates safely', function () {
+    config([
+        'services.telegram.work_allowed_chat_ids' => [],
+        'services.telegram.operational_chat_ids' => [],
+        'services.telegram.digest_districts' => [],
+    ]);
+    $ingest = Mockery::mock(TelegramUpdateIngestService::class);
+    $ingest->shouldNotReceive('ingest');
+    $this->app->instance(TelegramUpdateIngestService::class, $ingest);
+
+    fakeWorkPollResponses()
+        ->push(['ok' => true, 'result' => [
+            workPollingPayload(703, 205, '-300'),
+            ['update_id' => 204, 'poll_answer' => ['poll_id' => 'legacy']],
+        ]])
+        ->push(['ok' => true, 'result' => []]);
+
+    expect(Artisan::call('telegram:work-poll'))->toBe(0)
+        ->and(Http::recorded())->toHaveCount(2);
+});
+
+it('keeps duplicate polled work messages idempotent', function () {
+    TelegramOperationalTestDatabase::refresh();
+    config(['services.telegram.work_allowed_chat_ids' => ['-100']]);
+    $assistant = Mockery::mock(TelegramAssistantService::class);
+    $assistant->shouldReceive('isActivated')->twice()->andReturnFalse();
+    $assistant->shouldReceive('handle')->never();
+    $this->app->instance(TelegramAssistantService::class, $assistant);
+    $payload = workPollingPayload(704, 206);
+
+    fakeWorkPollResponses()
+        ->push(['ok' => true, 'result' => [$payload]])
+        ->push(['ok' => true, 'result' => []])
+        ->push(['ok' => true, 'result' => [$payload]])
+        ->push(['ok' => true, 'result' => []]);
+
+    expect(Artisan::call('telegram:work-poll'))->toBe(0)
+        ->and(Artisan::call('telegram:work-poll'))->toBe(0)
+        ->and(TelegramMessage::query()->where('message_id', '704')->count())->toBe(1);
+});
+
+it('does not acknowledge past a failed work update', function () {
+    fakeWorkPollResponses()->push(['ok' => true, 'result' => [
+        ['update_id' => 22, 'message' => ['message_id' => 22]],
+        ['update_id' => 20, 'message' => ['message_id' => 20]],
+        ['update_id' => 21, 'message' => ['message_id' => 21]],
+    ]]);
+
+    $processor = Mockery::mock(TelegramWorkWebhookController::class);
+    $processor->shouldReceive('processUpdate')->once()->withArgs(fn (array $update): bool => $update['update_id'] === 20)->andReturn(response()->json(['ok' => true]))->ordered();
+    $processor->shouldReceive('processUpdate')->once()->withArgs(fn (array $update): bool => $update['update_id'] === 21)->andThrow(new RuntimeException('fixture failure'))->ordered();
+    $processor->shouldReceive('processUpdate')->never()->withArgs(fn (array $update): bool => $update['update_id'] === 22);
+    $this->app->instance(TelegramWorkWebhookController::class, $processor);
+
+    expect(Artisan::call('telegram:work-poll'))->toBe(1)
+        ->and(Artisan::output())->toContain('update 21 failed', 'remain unconfirmed')
+        ->and(Http::recorded())->toHaveCount(1);
 });

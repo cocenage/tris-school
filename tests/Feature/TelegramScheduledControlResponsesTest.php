@@ -878,6 +878,18 @@ it('does not mark failed summary delivery sent and allows queue retry', function
     expect($job->tries)->toBe(8)->and($job->backoff())->toBe([30, 60, 120, 300, 600, 600, 600]);
 });
 
+it('queues a control summary after commit when the database queue uses a separate connection', function () {
+    config(['queue.connections.database.connection' => 'mysql']);
+    controlDeliveryFixture();
+
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01')['queued'])->toBe(1)
+        ->and(TelegramScheduledControlSummaryDelivery::sole()->status)->toBe('queued');
+    Bus::assertDispatched(DeliverScheduledControlSummary::class, fn ($job): bool => $job->connection === 'database'
+        && $job->queue === 'default'
+        && $job->afterCommit === true
+    );
+});
+
 it('uses Europe Rome calendar boundaries with UTC database timestamps', function () {
     config(['app.timezone' => 'UTC']);
     controlDeliveryFixture(['scheduled_for' => '2026-09-30 22:30:00', 'sent_at' => '2026-09-30 22:35:00']);
@@ -901,10 +913,26 @@ it('waits for late active controls and actual late send windows before automatic
 });
 
 it('registers automatic summary with overlap protection without changing scheduled delivery worker', function () {
+    config([
+        'services.telegram.analytics_polling_enabled' => false,
+        'services.telegram.work_polling_enabled' => false,
+    ]);
     $events = collect(app(Schedule::class)->events());
     $summary = $events->first(fn ($event) => str_contains($event->command ?? '', 'scheduled-controls-summary-send --only-if-due'));
     $poll = $events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:scheduled-poll'));
+    $analyticsPoll = $events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:analytics-poll'));
+    $workPoll = $events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:work-poll'));
     expect($summary->expression)->toBe('*/15 * * * *')->and($summary->withoutOverlapping)->toBeTrue();
     expect($poll->expression)->toBe('* * * * *')->and($poll->withoutOverlapping)->toBeTrue();
+    expect($analyticsPoll->expression)->toBe('* * * * *')->and($analyticsPoll->withoutOverlapping)->toBeTrue();
+    expect($workPoll->expression)->toBe('* * * * *')->and($workPoll->withoutOverlapping)->toBeTrue();
+    expect($analyticsPoll->filtersPass($this->app))->toBeFalse();
+    expect($workPoll->filtersPass($this->app))->toBeFalse();
+    config([
+        'services.telegram.analytics_polling_enabled' => true,
+        'services.telegram.work_polling_enabled' => true,
+    ]);
+    expect($analyticsPoll->filtersPass($this->app))->toBeTrue();
+    expect($workPoll->filtersPass($this->app))->toBeTrue();
     expect($events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:scheduled-messages-send'))->expression)->toBe('* * * * *');
 });
