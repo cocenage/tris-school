@@ -107,12 +107,8 @@ class TelegramScheduledControlSummaryDeliveryService
         if ($delivery->sent_at || ($delivery->queued_at && $delivery->queued_at->gt(now()->subHour()))) {
             return 0;
         }
-        $queueConnection = config('queue.connections.database.connection') ?: config('database.default');
-        if ($queueConnection !== $delivery->getConnection()->getName()) {
-            throw new RuntimeException('Summary database queue must use the primary connection.');
-        }
         $delivery->update(['queued_at' => now(), 'status' => 'queued']);
-        $job = (new DeliverScheduledControlSummary($delivery->id))->onConnection('database')->onQueue('default')->beforeCommit();
+        $job = (new DeliverScheduledControlSummary($delivery->id))->onConnection('database')->onQueue('default')->afterCommit();
         Bus::dispatch($job);
 
         return 1;

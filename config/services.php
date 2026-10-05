@@ -68,6 +68,7 @@ return [
         'thread_id_calendar' => env('TELEGRAM_THREAD_ID_CALENDAR'),
 
         'work_webhook_secret' => env('TELEGRAM_WORK_WEBHOOK_SECRET'),
+        'work_polling_enabled' => env('TELEGRAM_WORK_POLLING_ENABLED', false),
 
         'work_allowed_chat_ids' => array_filter(array_map(
             'trim',
@@ -132,6 +133,7 @@ return [
 
         'analytics_bot_token' => env('TELEGRAM_ANALYTICS_BOT_TOKEN'),
         'analytics_webhook_secret' => env('TELEGRAM_ANALYTICS_WEBHOOK_SECRET'),
+        'analytics_polling_enabled' => env('TELEGRAM_ANALYTICS_POLLING_ENABLED', false),
 
         // Read-only forum digest route. Values are intentionally optional;
         // preview remains usable when no delivery route is configured.
