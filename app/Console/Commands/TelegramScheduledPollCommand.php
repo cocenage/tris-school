@@ -11,7 +11,7 @@ use Throwable;
 
 class TelegramScheduledPollCommand extends Command
 {
-    protected $signature = 'telegram:scheduled-poll {--limit=50 : Maximum updates fetched per run (1-100)}';
+    protected $signature = 'telegram:scheduled-poll {--limit=50 : Maximum updates fetched by the first poll (1-100)}';
 
     protected $description = 'Poll a bounded batch of inbound updates for the dedicated Scheduled Telegram bot';
 
@@ -42,6 +42,47 @@ class TelegramScheduledPollCommand extends Command
             return self::FAILURE;
         }
 
+        $processed = $this->processUpdates($updates, $processor);
+
+        if (! $processed['ok']) {
+            return self::FAILURE;
+        }
+
+        // The offset acknowledges the previous batch and this same request may
+        // return the next update. Process it instead of treating getUpdates as
+        // a confirmation-only endpoint.
+        if ($processed['last_update_id'] !== null) {
+            try {
+                $nextUpdates = $this->getUpdates($token, [
+                    'offset' => $processed['last_update_id'] + 1,
+                    'limit' => 1,
+                ]);
+            } catch (Throwable $error) {
+                $this->reportFailure('acknowledge', $error);
+
+                return self::FAILURE;
+            }
+
+            $next = $this->processUpdates($nextUpdates, $processor);
+
+            if (! $next['ok']) {
+                return self::FAILURE;
+            }
+
+            $processed['count'] += $next['count'];
+        }
+
+        $this->info('Scheduled Telegram polling completed: '.$processed['count'].' update(s) processed.');
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $updates
+     * @return array{ok: bool, count: int, last_update_id: int|null}
+     */
+    private function processUpdates(array $updates, TelegramScheduledInboundProcessor $processor): array
+    {
         usort($updates, fn (array $left, array $right): int => ((int) ($left['update_id'] ?? -1)) <=> ((int) ($right['update_id'] ?? -1)));
 
         $lastSuccessfulUpdateId = null;
@@ -51,7 +92,9 @@ class TelegramScheduledPollCommand extends Command
             $updateId = $update['update_id'] ?? null;
 
             if (! is_numeric($updateId)) {
-                return $this->stopAfterFailure($token, $lastSuccessfulUpdateId, 'Scheduled Telegram update has no valid update_id.');
+                $this->error('Scheduled Telegram update has no valid update_id; this batch remains unconfirmed.');
+
+                return ['ok' => false, 'count' => $processed, 'last_update_id' => null];
             }
 
             try {
@@ -61,52 +104,16 @@ class TelegramScheduledPollCommand extends Command
                     'update_id' => (int) $updateId,
                     'exception' => class_basename($error),
                 ]);
+                $this->error('Scheduled Telegram update '.$updateId.' failed; it and later updates remain unconfirmed.');
 
-                return $this->stopAfterFailure(
-                    $token,
-                    $lastSuccessfulUpdateId,
-                    'Scheduled Telegram update '.$updateId.' failed; it and later updates remain unconfirmed.',
-                );
+                return ['ok' => false, 'count' => $processed, 'last_update_id' => null];
             }
 
             $lastSuccessfulUpdateId = (int) $updateId;
             $processed++;
         }
 
-        if ($lastSuccessfulUpdateId !== null && ! $this->confirmUpdates($token, $lastSuccessfulUpdateId)) {
-            return self::FAILURE;
-        }
-
-        $this->info('Scheduled Telegram polling completed: '.$processed.' update(s) processed.');
-
-        return self::SUCCESS;
-    }
-
-    private function stopAfterFailure(string $token, ?int $lastSuccessfulUpdateId, string $message): int
-    {
-        if ($lastSuccessfulUpdateId !== null) {
-            $this->confirmUpdates($token, $lastSuccessfulUpdateId);
-        }
-
-        $this->error($message);
-
-        return self::FAILURE;
-    }
-
-    private function confirmUpdates(string $token, int $lastSuccessfulUpdateId): bool
-    {
-        try {
-            $this->getUpdates($token, [
-                'offset' => $lastSuccessfulUpdateId + 1,
-                'limit' => 1,
-            ]);
-
-            return true;
-        } catch (Throwable $error) {
-            $this->reportFailure('confirm', $error);
-
-            return false;
-        }
+        return ['ok' => true, 'count' => $processed, 'last_update_id' => $lastSuccessfulUpdateId];
     }
 
     /** @return list<array<string, mixed>> */
@@ -151,6 +158,6 @@ class TelegramScheduledPollCommand extends Command
             'reason' => str_starts_with($error->getMessage(), 'telegram_') ? $error->getMessage() : null,
             'http_status' => $error->getCode() > 0 ? $error->getCode() : null,
         ]);
-        $this->error('Scheduled Telegram polling failed during '.$stage.'; updates remain unconfirmed.');
+        $this->error('Scheduled Telegram polling failed during '.$stage.'; pending updates remain available for retry.');
     }
 }
