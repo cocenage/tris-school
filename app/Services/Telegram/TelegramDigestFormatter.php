@@ -242,7 +242,7 @@ class TelegramDigestFormatter
 
         if ($problems->isEmpty()) {
             $lines[] = '';
-            $lines[] = '✅ Незакрытых проблем за день не зафиксировано.';
+            $lines[] = '✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.';
 
             return implode("\n", $lines);
         }

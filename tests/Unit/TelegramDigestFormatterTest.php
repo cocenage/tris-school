@@ -134,7 +134,7 @@ it('renders a clean empty state and never falls back to diagnostic sections', fu
         'editorial_sections' => [['key' => 'carry_over', 'items' => [['summary' => 'Старый дефект.']]]],
     ]);
 
-    expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано.");
+    expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.");
 })->with([null, 'Navigli']);
 
 it('omits human problem cards without a source quote or meaningful location', function () {
@@ -145,7 +145,7 @@ it('omits human problem cards without a source quote or meaningful location', fu
         ]],
     ]);
 
-    expect($text)->toBe("🌙 TRIS — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано.")
+    expect($text)->toBe("🌙 TRIS — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.")
         ->not->toContain('👤', '🕒', '💬', '🔗', 'Unknown', '#');
 });
 
