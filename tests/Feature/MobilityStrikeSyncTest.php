@@ -168,11 +168,11 @@ it('parses Rome dates independently of application timezone', function () {
     expect($dateMethod->invoke(app(MitStrikeSource::class), '09/10/2026')->timezoneName)->toBe('Europe/Rome');
 });
 
-it('keeps the existing fifteen minute scheduler and overlap protection', function () {
+it('runs the sync hourly with overlap protection', function () {
     $events = app(Schedule::class)->events();
     $event = collect($events)->first(fn ($event) => str_contains($event->command ?? '', 'mobility:sync'));
     expect($event)->not->toBeNull();
-    expect($event->expression)->toBe('*/15 * * * *')->and($event->withoutOverlapping)->toBeTrue();
+    expect($event->expression)->toBe('0 * * * *')->and($event->withoutOverlapping)->toBeTrue();
 });
 
 it('rolls back alert and reservation when queue insertion fails', function () {

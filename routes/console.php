@@ -15,7 +15,7 @@ Schedule::command('calendar:notify-tomorrow')
 Schedule::command('tasks:check-deadlines')->everyFifteenMinutes();
 
 Schedule::command('mobility:sync')
-    ->everyFifteenMinutes()
+    ->hourly()
     ->withoutOverlapping();
 
 Schedule::command('mobility:digest')
@@ -44,15 +44,17 @@ Schedule::command('telegram:scheduled-poll')
     ->everyMinute()
     ->withoutOverlapping();
 
-Schedule::command('telegram:analytics-poll')
-    ->everyMinute()
-    ->when(fn (): bool => (bool) config('services.telegram.analytics_polling_enabled', false))
-    ->withoutOverlapping();
+if ((bool) config('services.telegram.analytics_polling_enabled', false)) {
+    Schedule::command('telegram:analytics-poll')
+        ->everyMinute()
+        ->withoutOverlapping();
+}
 
-Schedule::command('telegram:work-poll')
-    ->everyMinute()
-    ->when(fn (): bool => (bool) config('services.telegram.work_polling_enabled', false))
-    ->withoutOverlapping();
+if ((bool) config('services.telegram.work_polling_enabled', false)) {
+    Schedule::command('telegram:work-poll')
+        ->everyMinute()
+        ->withoutOverlapping();
+}
 
 Schedule::command('telegram:scheduled-controls-summary-send --only-if-due')
     ->everyFifteenMinutes()
@@ -60,7 +62,7 @@ Schedule::command('telegram:scheduled-controls-summary-send --only-if-due')
     ->withoutOverlapping();
 
 Schedule::command('queue:work database --queue=default --stop-when-empty --tries=8 --timeout=30 --max-time=50')
-    ->everyMinute()
+    ->everyFiveMinutes()
     ->withoutOverlapping();
 
 app(EmergencyScheduleRegistrar::class)->register(app(Illuminate\Console\Scheduling\Schedule::class));
