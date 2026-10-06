@@ -89,12 +89,6 @@ class TelegramEveningIntelligenceSendCommand extends Command
                 continue;
             }
 
-            if ($preview['no_material_events']) {
-                $results[] = $this->result($route, $date, 'skipped_empty', 0, 0);
-
-                continue;
-            }
-
             $text = $formatter->eveningIntelligence($preview);
             $materialEvents = (int) $preview['events_included'];
 

@@ -54,6 +54,13 @@ beforeEach(function () {
         'services.telegram.scheduled_summary_enabled' => true,
         'services.telegram.scheduled_summary_chat_id' => '-2001',
         'services.telegram.scheduled_summary_thread_id' => '17',
+        'services.telegram.digest_districts' => [
+            'navigli' => ['label' => 'Navigli'],
+            'lodi' => ['label' => 'Lodi'],
+            'certosa' => ['label' => 'Certosa'],
+            'lambrate' => ['label' => 'Lambrate'],
+            'como' => ['label' => 'Como'],
+        ],
     ]);
     $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
     Http::fake();
@@ -361,8 +368,113 @@ it('classifies bounded Russian responses with negation taking precedence', funct
     ['4 из 5 начали', 'partial'], ['Почти все', 'partial'], ['Одна осталась', 'partial'], ['Все кроме Navigli', 'partial'],
     ['Сейчас уточню', 'unclear'], ['Не знаю', 'unclear'], ['?', 'unclear'], ['Проверяем', 'unclear'],
     ['Да, все начали, но курьер не приехал', 'problem'], ['Да, не все начали', 'problem'],
+    ["🟢 Lambrate - да\n🟢 Navigli - да\n🟢 Lodi - да\n🟢 Certosa - да\n🟢 Como - да", 'confirmed'],
+    ["🟢Lambrate да\n🔴Lambrate нет", 'problem'],
     ['Возможно всё хорошо', 'unclear'],
 ]);
+
+it('parses district markers with inline and following operational details', function () {
+    $interpreter = app(ScheduledControlResponseInterpreter::class);
+    $inline = $interpreter->interpret('🔴 Como нет, клинер опоздала из-за поезда', 'first_cleanings_started');
+    $following = $interpreter->interpret(
+        "🔴 Lambrate нет\nSirtori в 13 начали квартира большая, закончим в 16/16:30\nSolferino начали только в 12:00",
+        'first_cleanings_started',
+    );
+
+    expect($inline['status'])->toBe('problem')
+        ->and($inline['districts'][0])->toMatchArray([
+            'district' => 'Como', 'status' => 'problem', 'reason' => 'задержка',
+            'details' => ['клинер опоздала из-за поезда'],
+        ])
+        ->and($following['districts'][0])->toMatchArray([
+            'district' => 'Lambrate', 'status' => 'problem',
+            'details' => [
+                'Sirtori в 13 начали квартира большая, закончим в 16/16:30',
+                'Solferino начали только в 12:00',
+            ],
+        ]);
+});
+
+it('aggregates all five district confirmations into one compact control line', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $text = "🟢 Lambrate - да\n🟢 Navigli - да\n🟢 Lodi - да\n🟢 Certosa - да\n🟢 Como - да";
+    $response = captureControlReply(controlReplyPayload($delivery, $text));
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $control = collect($summary['controls'])->firstWhere('control_type', 'first_cleanings_started');
+    $rendered = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+
+    expect($response->classification)->toBe('confirmed')
+        ->and($control['status'])->toBe('ok')
+        ->and($control['district_results'])->toHaveCount(5)
+        ->and($rendered)->toContain('🧹 TRIS — Контроль уборок · 01.10.2026', '✅ Все первые уборки начались')
+        ->not->toContain('Lambrate да', 'Navigli да', 'Список ожидаемых участников не настроен')
+        ->and(mb_strlen($rendered))->toBeLessThan(800);
+});
+
+it('merges district evidence from multiple supervisors and preserves no-payment details', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed']);
+    captureControlReply(controlReplyPayload(
+        $delivery,
+        "🟢Lambrate да\nMonte Lungo за ожидание выезда гостей\n🟢Lodi не было\n🟢Como не было",
+        801,
+        101,
+        '2026-10-01 10:00:00',
+    ));
+    captureControlReply(controlReplyPayload(
+        $delivery,
+        "🟢 Certosa да\nPalazzi — ожидание гостя",
+        802,
+        102,
+        '2026-10-01 10:01:00',
+    ));
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $control = collect($summary['controls'])->firstWhere('control_type', 'extra_payments_completed');
+    $rendered = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+
+    expect($control['district_results'])->toHaveCount(4)
+        ->and(collect($control['district_results'])->firstWhere('district', 'Lambrate')['details'])
+        ->toContain('Monte Lungo за ожидание выезда гостей')
+        ->and(collect($control['district_results'])->firstWhere('district', 'Lodi')['status'])->toBe('no_data')
+        ->and($rendered)->toContain('💶 Доплаты: Lambrate — Monte Lungo за ожидание выезда гостей')
+        ->toContain('доплат не было: Lodi и Como')
+        ->not->toContain('⚠️ Доплаты');
+});
+
+it('keeps partial district coverage explicit and does not guess from unassigned details', function () {
+    $partial = app(ScheduledControlResponseInterpreter::class)->interpret('🟢 Lambrate да', 'couriers_completed');
+    $unassigned = app(ScheduledControlResponseInterpreter::class)->interpret(
+        "Palazzi начали в 11:00\nSirtori закончили в 16:00",
+        'first_cleanings_started',
+    );
+
+    expect($partial['status'])->toBe('partial')
+        ->and($partial['districts'][0]['district'])->toBe('Lambrate')
+        ->and($unassigned['districts'])->toBe([])
+        ->and($unassigned['unassigned_details'])->toBe([
+            'Palazzi начали в 11:00', 'Sirtori закончили в 16:00',
+        ]);
+});
+
+it('applies a later same-supervisor correction but surfaces conflicting supervisors', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    captureControlReply(controlReplyPayload($delivery, '🔴Lambrate нет', 803, 101, '2026-10-01 10:00:00'));
+    captureControlReply(controlReplyPayload($delivery, '🟢Lambrate да', 804, 101, '2026-10-01 10:05:00'));
+    $corrected = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $correctedDistrict = collect($corrected['controls'])->firstWhere('control_type', 'first_cleanings_started')['district_results'][0];
+
+    expect($correctedDistrict['status'])->toBe('ok')
+        ->and($correctedDistrict['history'])->toBe(['problem', 'ok']);
+
+    TelegramScheduledMessageResponse::query()->delete();
+    captureControlReply(controlReplyPayload($delivery, '🔴Lambrate нет', 805, 101, '2026-10-01 10:10:00'));
+    captureControlReply(controlReplyPayload($delivery, '🟢Lambrate да', 806, 102, '2026-10-01 10:11:00'));
+    $conflicted = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $conflictDistrict = collect($conflicted['controls'])->firstWhere('control_type', 'first_cleanings_started')['district_results'][0];
+
+    expect($conflictDistrict['status'])->toBe('conflict')
+        ->and(app(TelegramScheduledControlSummaryFormatter::class)->format($conflicted))
+        ->toContain('конфликтующие статусы — Lambrate');
+});
 
 it('preserves later replies but uses each responders first reply for median latency', function () {
     $delivery = controlDeliveryFixture();
@@ -396,7 +508,7 @@ it('renders only the six canonical control types and describes zero captured dat
 
     expect($summary['controls'])->toHaveCount(6)
         ->and(collect($summary['controls'])->pluck('control_type')->all())->toEqual(array_keys(ScheduledControlTypes::LABELS))
-        ->and($text)->toContain('Время уборок и заметки проверены: нет данных', 'Все доплаты произведены: нет данных')
+        ->and($text)->toContain('График и заметки: нет данных', 'Доплаты: нет данных')
         ->and(substr_count($text, 'Ответы на контрольные сообщения за этот день не зафиксированы.'))->toBe(1);
 
     expect($text)->not->toContain('control_question');
@@ -539,7 +651,7 @@ it('renders aggregate control points and exceptions without inventing expected r
         ->and($summary['exceptions'][0]['delay_minutes'])->toBe(20)
         ->and($summary['expected_responders'])->toBeNull()
         ->and($summary['no_response_available'])->toBeFalse()
-        ->and($text)->toContain('📊 TRIS — контроль дня · 01.10.2026', 'Отклонения', '20 мин', 'не рассчитывается')
+        ->and($text)->toContain('🧹 TRIS — Контроль уборок · 01.10.2026', 'Отклонения', '20 мин', 'не рассчитывается')
         ->not->toContain("\nНет ответа\n", 'Маша опоздает', '1/5');
 });
 
@@ -578,7 +690,7 @@ it('builds daily totals and a human summary without a fabricated denominator', f
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
     expect($summary['totals'])->toMatchArray(['controls' => 2, 'responded' => 1, 'problem' => 1, 'no_response' => 1]);
     $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
-    expect($text)->toContain('TRIS — контроль дня', '01.10.2026', 'Курьер не приехал', 'не рассчитывается')
+    expect($text)->toContain('🧹 TRIS — Контроль уборок', '01.10.2026', 'Курьер не приехал', 'не рассчитывается')
         ->not->toContain('Нет ответа', 'Ответили: 1 сотрудника', '1/5');
     expect(mb_strlen(html_entity_decode($text)))->toBeLessThan(4096);
 });

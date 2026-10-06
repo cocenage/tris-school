@@ -43,7 +43,7 @@ class TelegramScheduledControlSummaryBuilder
             $responses = $delivery->responses->map(function (TelegramScheduledMessageResponse $response) use ($delivery): array {
                 $telegramMessage = $response->telegramMessage;
                 $topic = $telegramMessage?->topic;
-                $interpretation = $this->interpreter->interpret((string) $response->text);
+                $interpretation = $this->interpreter->interpret((string) $response->text, $delivery->control_type);
                 $interpretation['apartment_id'] = $topic?->apartment_id;
                 $interpretation['apartment'] = $topic?->apartment?->name;
 
@@ -89,24 +89,117 @@ class TelegramScheduledControlSummaryBuilder
             $responses = collect($rows)->flatMap(fn (array $row) => $row['interpreted_responses']);
             $statuses = $responses->pluck('status')->countBy();
             $label = ScheduledControlTypes::LABELS[$type] ?? $type;
+            $districtResults = $this->mergeDistrictResults($responses);
+            $status = $districtResults !== []
+                ? $this->districtOverallStatus($districtResults)
+                : ($statuses->get('problem', 0) + $statuses->get('partial', 0) > 0 ? 'problem'
+                    : ($statuses->get('unknown', 0) > 0 ? 'unknown' : ($statuses->get('ok', 0) > 0 ? 'ok' : 'no_responses')));
 
             return [
                 'control_type' => $type,
                 'label' => $label,
                 'count' => $rows->count(),
-                'status' => $statuses->get('problem', 0) + $statuses->get('partial', 0) > 0 ? 'problem'
-                    : ($statuses->get('unknown', 0) > 0 ? 'unknown' : ($statuses->get('ok', 0) > 0 ? 'ok' : 'no_responses')),
+                'status' => $status,
+                'district_results' => $districtResults,
                 'responses' => $responses->all(),
             ];
         })->values()->all();
+
+        $districtResponseIds = collect($deliveries)
+            ->flatMap(fn (array $delivery) => $delivery['interpreted_responses'])
+            ->filter(fn (array $response): bool => ($response['districts'] ?? []) !== [])
+            ->pluck('source_message_id')
+            ->map(fn (mixed $id): string => (string) $id)
+            ->all();
 
         return ['date' => $date, 'through_date' => $throughDate ?? $date, 'timezone' => 'Europe/Rome',
             'expected_responders' => null, 'no_response_available' => false, 'totals' => $totals,
             'by_scheduled_message' => $groups, 'controls' => $controls,
             'exceptions' => collect($this->mergeExceptions(collect($deliveries)->flatMap(fn (array $row) => $row['interpreted_responses'])->values()->all()))
+                ->reject(fn (array $exception): bool => in_array((string) ($exception['source_message_id'] ?? ''), $districtResponseIds, true))
                 ->filter(fn (array $exception): bool => isset($exception['latest_problem']))
                 ->values()->all(),
             'deliveries' => $deliveries];
+    }
+
+    private function mergeDistrictResults($responses): array
+    {
+        $entries = $responses
+            ->flatMap(fn (array $response): array => collect($response['districts'] ?? [])
+                ->map(fn (array $district): array => $district + [
+                    'responded_at' => $response['responded_at'],
+                    'responder_key' => $response['responder_key'],
+                    'source_message_id' => $response['source_message_id'],
+                    'source_text' => $response['text'],
+                ])->all())
+            ->sortBy(fn (array $entry): string => (string) $entry['responded_at'])
+            ->values();
+        $districts = [];
+
+        foreach ($entries as $entry) {
+            $name = $entry['district'];
+            if (! isset($districts[$name])) {
+                $districts[$name] = $entry + [
+                    'conflict' => false,
+                    'history' => [$entry['status']],
+                    'source_message_ids' => [(string) $entry['source_message_id']],
+                ];
+
+                continue;
+            }
+
+            $current = &$districts[$name];
+            $current['source_message_ids'][] = (string) $entry['source_message_id'];
+            $current['details'] = array_values(array_unique([...$current['details'], ...$entry['details']]));
+            $current['history'][] = $entry['status'];
+            if ($current['status'] !== $entry['status']) {
+                $isLaterSameResponder = filled($entry['responder_key'])
+                    && $entry['responder_key'] === $current['responder_key']
+                    && (string) $entry['source_message_id'] !== (string) $current['source_message_id'];
+                $isExplicitCorrection = preg_match('/уточн|исправ|поправ|ошибк|на\s+самом\s+деле/iu', $entry['source_text']) === 1;
+
+                if ($isLaterSameResponder || $isExplicitCorrection) {
+                    $current['status'] = $entry['status'];
+                    $current['reason'] = $entry['reason'] ?? null;
+                    $current['no_payment'] = $entry['no_payment'];
+                    $current['conflict'] = false;
+                } else {
+                    $current['status'] = 'conflict';
+                    $current['conflict'] = true;
+                }
+            }
+            $current['responded_at'] = $entry['responded_at'];
+            $current['responder_key'] = $entry['responder_key'];
+            $current['source_message_id'] = $entry['source_message_id'];
+            unset($current);
+        }
+
+        return array_values($districts);
+    }
+
+    private function districtOverallStatus(array $districts): string
+    {
+        if (collect($districts)->contains(fn (array $district): bool => $district['status'] === 'problem')) {
+            return 'problem';
+        }
+        if (collect($districts)->contains(fn (array $district): bool => $district['status'] === 'conflict')) {
+            return 'unknown';
+        }
+
+        $configured = collect(config('services.telegram.digest_districts', []))
+            ->map(fn (mixed $district): string => mb_strtolower((string) (is_array($district) ? ($district['label'] ?? '') : '')))
+            ->filter()->unique()->values();
+        $covered = collect($districts)->pluck('district')->map(fn (string $district): string => mb_strtolower($district))->unique();
+
+        if ($configured->isNotEmpty() && $configured->diff($covered)->isNotEmpty()) {
+            return 'partial';
+        }
+
+        if (collect($districts)->contains(fn (array $district): bool => $district['status'] === 'unknown')) {
+            return 'unknown';
+        }
+
+        return 'ok';
     }
 
     private function mergeExceptions(array $responses): array

@@ -1222,7 +1222,7 @@ it('builds a district shift handoff from explicit editorial states', function ()
             ->not->toContain('Via Editorial 102', 'Via Editorial 109', 'Via Editorial 103', 'Via Editorial 104', 'Via Editorial 108')
             ->not->toContain('Осталось сделать:', '🔄 Требует внимания:', '⚠️ Осталось с прошлых дней:', 'грязная посуда', 'Думаю не проблема будет')
             ->and(collect($preview['daily_problems'])->pluck('context_label'))->toContain('Via Editorial 105')
-            ->and($renderedNextDay)->toBe("🌙 Navigli — проблемы за день · 24.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано.")
+            ->and($renderedNextDay)->toBe("🌙 Navigli — проблемы за день · 24.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.")
             ->and($attentionAndActionEventKeys)->not->toContain($paperEventKey);
     } finally {
         Carbon::setTestNow();

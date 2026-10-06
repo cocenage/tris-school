@@ -23,7 +23,8 @@ it('requires one explicit valid date before projection', function (array $argume
 
 it('emits the JSON contract without changing source or ledger rows', function () {
     Http::fake();
-    $message = TelegramOperationalTestDatabase::message('Не работает замок в квартире');
+    $message = TelegramOperationalTestDatabase::message('Не работает замок в квартире', threadId: '12');
+    $message->topic->update(['title' => 'Via Navigli 10']);
     app(TelegramOperationalEventObserver::class)->observe($message);
 
     $tables = [
@@ -58,12 +59,13 @@ it('emits the JSON contract without changing source or ledger rows', function ()
 
 it('renders compact daily problem cards and an explicit read-only footer', function () {
     Http::fake();
-    $message = TelegramOperationalTestDatabase::message('Не работает замок в квартире');
+    $message = TelegramOperationalTestDatabase::message('Не работает замок в квартире', threadId: '12');
+    $message->topic->update(['title' => 'Via Navigli 10']);
     app(TelegramOperationalEventObserver::class)->observe($message);
 
     expect(Artisan::call('telegram:evening-intelligence-preview', ['--date' => '2026-06-17']))->toBe(0);
     expect(Artisan::output())
-        ->toContain('🌙 TRIS — проблемы за день · 17.06.2026', 'Незакрытых проблем: 1', 'Не работает замок', 'https://t.me/c/1/1')
+        ->toContain('🌙 TRIS — проблемы за день · 17.06.2026', 'Не работает замок', 'https://t.me/c/1/1')
         ->toContain('Предпросмотр: отправка в Telegram отключена')
         ->not->toContain('За день:', '🔄 Требует внимания:', 'Осталось сделать:', 'Решено сегодня:', 'Осталось с прошлых дней:')
         ->not->toContain('Открытых вопросов на конец дня нет.', 'Переходящие проблемы', 'Событие:', 'Доказательства:', 'статус:', 'уверенность:', 'Положительный вклад');
