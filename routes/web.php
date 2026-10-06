@@ -1,19 +1,21 @@
 <?php
 
-use App\Http\Controllers\LogoutController;
 use App\Http\Controllers\ApartmentAttachmentController;
 use App\Http\Controllers\FormGuideController;
+use App\Http\Controllers\KnowledgeController;
+use App\Http\Controllers\LogoutController;
 use App\Http\Controllers\TelegramAnalyticsWebhookController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
 use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
-use App\Models\Task;
+use App\Models\Instruction;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    if (!auth()->check()) {
+    if (! auth()->check()) {
         return redirect()->route('landing.page');
     }
 
@@ -49,10 +51,20 @@ Route::livewire('/access/rejected', 'access.rejected')
     ->middleware('auth')
     ->name('access.rejected');
 
+Route::get('/instruction/obiazatelnye-foto', function () {
+    $instruction = Instruction::query()
+        ->where('slug', 'novyi-spisok-obiazatelnyx-foto')
+        ->where('status', 'published')
+        ->where('is_public', true)
+        ->firstOrFail();
+
+    return redirect()->route('page-home.instructions.single', $instruction->slug, 301);
+});
+
 Route::middleware(['auth', 'approved'])->group(function () {
-    Route::get('/knowledge', [\App\Http\Controllers\KnowledgeController::class, 'roadmap'])->name('knowledge.roadmap');
-    Route::get('/knowledge/entities', [\App\Http\Controllers\KnowledgeController::class, 'catalog'])->name('knowledge.entities');
-    Route::get('/knowledge/entities/{entity}', [\App\Http\Controllers\KnowledgeController::class, 'show'])->name('knowledge.show');
+    Route::get('/knowledge', [KnowledgeController::class, 'roadmap'])->name('knowledge.roadmap');
+    Route::get('/knowledge/entities', [KnowledgeController::class, 'catalog'])->name('knowledge.entities');
+    Route::get('/knowledge/entities/{entity}', [KnowledgeController::class, 'show'])->name('knowledge.show');
 
     Route::livewire('/home', 'page-home')->name('page-home');
 
@@ -112,18 +124,18 @@ Route::middleware(['auth', 'approved'])->group(function () {
 
 Route::post('/telegram/analytics-webhook/{secret}', TelegramAnalyticsWebhookController::class)
     ->withoutMiddleware([
-        \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
+        VerifyCsrfToken::class,
     ])
     ->name('telegram.analytics-webhook');
 
 Route::post('/telegram/work-webhook/{secret}', TelegramWorkWebhookController::class)
     ->withoutMiddleware([
-        \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class,
+        VerifyCsrfToken::class,
     ])
     ->name('telegram.work-webhook');
 
 Route::fallback(function () {
-    if (!Auth::check()) {
+    if (! Auth::check()) {
         return redirect()->route('landing.page');
     }
 
@@ -133,6 +145,5 @@ Route::fallback(function () {
         'rejected' => 'access.rejected',
         default => 'landing.page',
     });
-
 
 });
