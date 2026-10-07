@@ -234,6 +234,15 @@ class TelegramDigestFormatter
         $problems = $this->consolidateHumanProblems(collect($preview['daily_problems'] ?? [])
             ->filter(fn (array $problem): bool => $this->isRenderableHumanProblem($problem))
             ->values());
+        $carryOver = collect($preview['editorial_sections'] ?? [])
+            ->firstWhere('key', 'carry_over')['items'] ?? [];
+        $carryOver = collect($carryOver)
+            ->filter(function (array $item): bool {
+                $location = trim($this->value($item['context_label'] ?? null));
+
+                return $location !== '' && preg_match('/^\d+$/u', $location) !== 1
+                    && filled($item['summary'] ?? null) && filled($item['open_since'] ?? null);
+            });
         $timezone = (string) ($preview['timezone'] ?? config('app.timezone', 'Europe/Rome'));
         $date = filled($preview['date'] ?? null)
             ? Carbon::parse((string) $preview['date'], $timezone)->format('d.m.Y')
@@ -242,9 +251,17 @@ class TelegramDigestFormatter
 
         if ($problems->isEmpty()) {
             $lines[] = '';
-            $lines[] = '✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.';
+            if ($carryOver->isEmpty()) {
+                $lines[] = '✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.';
 
-            return implode("\n", $lines);
+                return implode("\n", $lines);
+            }
+
+            $lines[] = 'За сегодня:';
+            $lines[] = '✅ Новых значимых событий не зафиксировано.';
+        } elseif ($carryOver->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = 'За сегодня:';
         }
 
         foreach ($problems as $problem) {
@@ -267,6 +284,21 @@ class TelegramDigestFormatter
             }
             if (filled($problem['source_url'] ?? null)) {
                 $lines[] = '  🔗 '.$problem['source_url'];
+            }
+        }
+
+        if ($carryOver->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = '⚠️ Осталось с прошлых дней:';
+            foreach ($carryOver as $item) {
+                $context = html_entity_decode($this->value($item['context_label']), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $summary = html_entity_decode($this->value($item['summary']), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $openSince = Carbon::parse($item['open_since'], $timezone)->format('d.m');
+                $lines[] = '• '.htmlspecialchars($context.' — '.$summary, ENT_COMPAT, 'UTF-8').' Не закрыто с '.$openSince.'.';
+                if (filled($item['next_action'] ?? null)) {
+                    $action = html_entity_decode($this->value($item['next_action']), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    $lines[] = '  ↳ '.htmlspecialchars($action, ENT_COMPAT, 'UTF-8');
+                }
             }
         }
 
