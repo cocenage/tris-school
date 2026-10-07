@@ -489,18 +489,17 @@ it('preserves a disabled current destination only while editing its schedule', f
         ->toBe([$topic->getKey() => 'Test topic · thread 42 · отключена (текущий адресат)']);
 });
 
-it('registers the sender every minute and short-lived queue worker every five minutes', function (): void {
+it('registers the sender and scheduled poll every minute without scheduling a queue worker', function (): void {
     $events = collect(app(Schedule::class)->events());
     $senderPosition = $events->search(fn ($event): bool => str_contains($event->command ?? '', 'telegram:scheduled-messages-send'));
-    $workerPosition = $events->search(fn ($event): bool => str_contains($event->command ?? '', 'queue:work database'));
+    $poll = $events->first(fn ($event): bool => str_contains($event->command ?? '', 'telegram:scheduled-poll'));
     $event = $senderPosition === false ? null : $events->get($senderPosition);
-    $worker = $workerPosition === false ? null : $events->get($workerPosition);
+    $worker = $events->first(fn ($event): bool => str_contains($event->command ?? '', 'queue:work'));
 
     expect($event)->not->toBeNull()
         ->and($event->expression)->toBe('* * * * *')
-        ->and($worker)->not->toBeNull()
-        ->and($worker->command)->toContain('--queue=default --stop-when-empty --tries=8 --timeout=30 --max-time=50')
-        ->and($worker->expression)->toBe('*/5 * * * *')
-        ->and($worker->withoutOverlapping)->toBeTrue()
-        ->and($workerPosition)->toBeGreaterThan($senderPosition);
+        ->and($poll)->not->toBeNull()
+        ->and($poll->expression)->toBe('* * * * *')
+        ->and($poll->withoutOverlapping)->toBeTrue()
+        ->and($worker)->toBeNull();
 });
