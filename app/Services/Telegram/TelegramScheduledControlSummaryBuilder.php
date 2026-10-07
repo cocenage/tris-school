@@ -23,17 +23,26 @@ class TelegramScheduledControlSummaryBuilder
             throw new InvalidArgumentException('Invalid summary date range.');
         }
         $timezone = config('app.timezone', 'Europe/Rome');
+        $cutoff = $this->day($throughDate ?? $date)
+            ->setTimeFromTimeString((string) config('services.telegram.scheduled_summary_cutoff', '22:00'));
         $query = TelegramScheduledMessageDelivery::query()
             ->with(['responses.telegramMessage.topic.apartment', 'scheduledMessage' => fn ($query) => $query->withTrashed()])
-            ->whereIn('control_type', array_keys(ScheduledControlTypes::LABELS))
+            ->whereNotNull('control_type')->where('control_type', '!=', '')->where('control_type', '!=', 'control_question')
             ->where('scheduled_for', '>=', $start->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->where('scheduled_for', '<', $end->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->when($scheduledMessageId !== null, fn ($query) => $query->where('scheduled_message_id', $scheduledMessageId))
             ->when(filled($controlType), fn ($query) => $query->where('control_type', $controlType))
             ->when(filled($chatId), fn ($query) => $query->where('chat_id', $chatId))
             ->orderBy('scheduled_for')->orderBy('id');
-        $deliveries = $query->get()->map(function ($delivery) use ($timezone): array {
-            $stats = $this->statistics->delivery($delivery);
+        $deliveries = $query->get()->map(function ($delivery) use ($timezone, $cutoff): array {
+            $sentAt = $delivery->sent_at
+                ? CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone)
+                : null;
+            $delivery->setRelation('responses', $delivery->responses->filter(fn (TelegramScheduledMessageResponse $response): bool => $delivery->status === 'sent' && $sentAt !== null && $response->responded_at !== null
+                && $response->responded_at->greaterThanOrEqualTo($sentAt)
+                && $response->responded_at->lessThanOrEqualTo($cutoff)
+            )->values());
+            $stats = $this->statistics->delivery($delivery, $cutoff);
             $exceptions = $delivery->responses->whereIn('classification', ['problem', 'partial'])->take(3)->map(fn ($response) => [
                 'classification' => $response->classification,
                 'author_name' => $response->author_name,
@@ -79,7 +88,8 @@ class TelegramScheduledControlSummaryBuilder
                 'control_type' => $delivery->control_type, 'name' => $delivery->scheduledMessage?->name ?? 'Удалённое сообщение',
                 'scheduled_for' => CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->setTimezone('Europe/Rome')->toIso8601String(),
                 'sent_at' => $delivery->sent_at ? CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone)->setTimezone('Europe/Rome')->toIso8601String() : null,
-                'delivery_status' => $delivery->status, 'exceptions' => $exceptions, 'interpreted_responses' => $responses,
+                'delivery_status' => $delivery->status, 'eligible_for_statistics' => $delivery->status === 'sent' && $sentAt !== null && $sentAt->lessThanOrEqualTo($cutoff),
+                'exceptions' => $exceptions, 'interpreted_responses' => $responses,
             ];
         })->all();
         $totals = $this->aggregate($deliveries);
@@ -99,6 +109,7 @@ class TelegramScheduledControlSummaryBuilder
                 'control_type' => $type,
                 'label' => $label,
                 'count' => $rows->count(),
+                'statistics' => $this->aggregate($rows->all()),
                 'status' => $status,
                 'district_results' => $districtResults,
                 'responses' => $responses->all(),
@@ -264,16 +275,19 @@ class TelegramScheduledControlSummaryBuilder
     private function aggregate(array $deliveries): array
     {
         $rows = collect($deliveries);
+        $sent = $rows->where('eligible_for_statistics', true);
+        $responded = $sent->where('response_count', '>', 0);
         $totals = [
-            'controls' => count($deliveries), 'responded' => $rows->where('response_count', '>', 0)->count(),
-            'no_response' => $rows->where('result', 'no_response')->count(),
-            'pending' => $rows->where('result', 'pending')->where('delivery_status', 'sent')->count(),
-            'not_delivered' => $rows->where('delivery_status', '!=', 'sent')->count(),
-            'response_messages' => $rows->sum('response_count'),
-            'median_response_latency_seconds' => $this->statistics->median($rows->pluck('latency_samples')->flatten()->all()),
+            'controls' => count($deliveries), 'expected' => count($deliveries), 'sent' => $sent->count(), 'responded' => $responded->count(),
+            'response_rate_percent' => $sent->isEmpty() ? null : (int) round($responded->count() * 100 / $sent->count()),
+            'no_response' => $sent->where('result', 'no_response')->count(),
+            'pending' => $sent->where('result', 'pending')->count(),
+            'not_delivered' => $rows->count() - $sent->count(),
+            'response_messages' => $sent->sum('response_count'),
+            'median_response_latency_seconds' => $this->statistics->median($responded->pluck('first_response_latency_seconds')->filter(fn ($value) => $value !== null)->all()),
         ];
         foreach (['confirmed', 'problem', 'partial', 'unclear'] as $category) {
-            $totals[$category] = $rows->where('result', $category)->count();
+            $totals[$category] = $sent->where('result', $category)->count();
         }
 
         return $totals;

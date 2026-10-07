@@ -37,7 +37,7 @@ class TelegramScheduledControlResponseService
         }
         $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
         $candidates = TelegramScheduledMessageDelivery::query()->where('status', 'sent')->whereNotNull('sent_at')
-            ->whereIn('control_type', array_keys(ScheduledControlTypes::LABELS))
+            ->whereNotNull('control_type')->where('control_type', '!=', '')
             ->where('chat_id', (string) $chatId)->where('telegram_message_id', $replyId)
             ->where('message_thread_id', $threadId)->limit(2)->get();
 
@@ -59,7 +59,7 @@ class TelegramScheduledControlResponseService
         $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
 
         return TelegramScheduledMessageDelivery::query()->where('status', 'sent')->whereNotNull('sent_at')
-            ->whereIn('control_type', array_keys(ScheduledControlTypes::LABELS))
+            ->whereNotNull('control_type')->where('control_type', '!=', '')
             ->where('chat_id', (string) $chatId)->where('message_thread_id', $threadId)->exists();
     }
 

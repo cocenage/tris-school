@@ -145,6 +145,54 @@ it('links an exact scheduled delivery reply and measures from actual send', func
         ->and($response->classification)->toBe('confirmed');
 });
 
+it('captures explicit replies for future control types and keeps occurrences distinct', function () {
+    $first = controlDeliveryFixture(['control_type' => 'couriers_finished']);
+    $second = controlDeliveryFixture([
+        'control_type' => 'couriers_finished', 'scheduled_for' => '2026-10-01 10:30:00',
+        'sent_at' => '2026-10-01 10:35:00',
+    ]);
+    $third = controlDeliveryFixture(['control_type' => 'supplements_paid']);
+    $processor = app(TelegramScheduledInboundProcessor::class);
+
+    foreach ([
+        [$first, 401, 701, '2026-10-01 09:41:00'],
+        [$first, 402, 702, '2026-10-01 09:41:00'],
+        [$second, 403, 703, '2026-10-01 10:41:00'],
+        [$third, 404, 704, '2026-10-01 09:41:00'],
+    ] as [$delivery, $replyId, $authorId, $at]) {
+        $payload = controlReplyPayload($delivery, 'Ответ по контролю', $replyId, $authorId, $at);
+        expect($processor->process($payload)['ok'])->toBeTrue();
+    }
+
+    $processor->process(controlReplyPayload($first, 'Ответ по контролю', 401, 701));
+    $responses = TelegramScheduledMessageResponse::query()->orderBy('telegram_message_id')->get();
+
+    expect($responses)->toHaveCount(4)
+        ->and($responses->pluck('delivery_id')->all())->toBe([$first->id, $first->id, $second->id, $third->id])
+        ->and($responses->first()->delivery->control_type)->toBe('couriers_finished')
+        ->and($responses->first()->delivery->telegram_message_id)->toBe($first->telegram_message_id)
+        ->and($responses->first()->delivery->scheduled_message_id)->toBe($first->scheduled_message_id)
+        ->and($responses->first()->telegram_user_id)->toBe('701')
+        ->and($responses->first()->user_id)->toBeNull()
+        ->and($responses->first()->telegramMessage->raw['update_id'])->toBe(1401);
+});
+
+it('rejects explicit replies for a future control type outside its chat or thread', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_finished']);
+
+    foreach ([
+        ['chat' => ['id' => -1002, 'type' => 'supergroup']],
+        ['message_thread_id' => 12],
+        ['reply_to_message' => ['message_id' => 9999]],
+    ] as $index => $change) {
+        $payload = controlReplyPayload($delivery, 'Ответ по контролю', 410 + $index);
+        $payload['message'] = array_replace($payload['message'], $change);
+        expect(captureControlReply($payload))->toBeNull();
+    }
+
+    expect(TelegramScheduledMessageResponse::count())->toBe(0);
+});
+
 it('backfills only an exact reply to a supported sent control occurrence', function () {
     $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
     storeBackfillReply($delivery, 201);
@@ -685,6 +733,7 @@ it('does not call failed delivery an unanswered staff control', function () {
 });
 
 it('builds daily totals and a human summary without a fabricated denominator', function () {
+    $this->travelTo(Carbon::parse('2026-10-01 23:00:00', 'Europe/Rome'));
     captureControlReply(controlReplyPayload(controlDeliveryFixture(), 'Курьер не приехал'));
     controlDeliveryFixture();
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
@@ -693,6 +742,59 @@ it('builds daily totals and a human summary without a fabricated denominator', f
     expect($text)->toContain('🧹 TRIS — Контроль уборок', '01.10.2026', 'Курьер не приехал', 'не рассчитывается')
         ->not->toContain('Нет ответа', 'Ответили: 1 сотрудника', '1/5');
     expect(mb_strlen(html_entity_decode($text)))->toBeLessThan(4096);
+});
+
+it('aggregates first qualifying replies once per sent occurrence across generic control types', function () {
+    $this->travelTo(Carbon::parse('2026-10-01 23:00:00', 'Europe/Rome'));
+    $first = controlDeliveryFixture(['control_type' => 'couriers_finished']);
+    $second = controlDeliveryFixture([
+        'control_type' => 'supplements_paid', 'scheduled_for' => '2026-10-01 10:30:00',
+        'sent_at' => '2026-10-01 10:35:00',
+    ]);
+    controlDeliveryFixture([
+        'control_type' => 'couriers_finished', 'scheduled_for' => '2026-10-01 11:30:00',
+        'sent_at' => '2026-10-01 11:35:00',
+    ]);
+    controlDeliveryFixture(['control_type' => 'supplements_paid', 'status' => 'failed', 'sent_at' => null, 'telegram_message_id' => null]);
+
+    captureControlReply(controlReplyPayload($first, 'Да', 501, 101, '2026-10-01 09:39:00'));
+    captureControlReply(controlReplyPayload($first, 'Курьер не приехал', 502, 101, '2026-10-01 09:50:00'));
+    captureControlReply(controlReplyPayload($second, 'Да', 503, 102, '2026-10-01 10:40:00'));
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $totals = $summary['totals'];
+    $types = collect($summary['controls'])->keyBy('control_type');
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+
+    expect($totals)->toMatchArray([
+        'controls' => 4, 'expected' => 4, 'sent' => 3, 'responded' => 2, 'response_rate_percent' => 67,
+        'median_response_latency_seconds' => 270.0, 'problem' => 1, 'confirmed' => 1,
+        'partial' => 0, 'unclear' => 0, 'no_response' => 1, 'not_delivered' => 1,
+        'response_messages' => 3,
+    ])
+        ->and($types['couriers_finished']['statistics']['responded'])->toBe(1)
+        ->and($types['couriers_finished']['statistics']['sent'])->toBe(2)
+        ->and($types['supplements_paid']['statistics']['responded'])->toBe(1)
+        ->and($types['supplements_paid']['statistics']['sent'])->toBe(1)
+        ->and($text)->toContain('Контролей: 4 ожидалось · 3 отправлено', 'Ответы: 2/3 · 67%', 'Медиана первого ответа: 4,5 мин', 'couriers_finished — 1/2', 'supplements_paid — 1/1');
+});
+
+it('uses the daily cutoff for unanswered controls and excludes replies or sends after it', function () {
+    $sent = controlDeliveryFixture(['control_type' => 'couriers_finished']);
+    controlDeliveryFixture([
+        'control_type' => 'supplements_paid', 'scheduled_for' => '2026-10-01 21:55:00',
+        'sent_at' => '2026-10-01 22:10:00',
+    ]);
+    captureControlReply(controlReplyPayload($sent, 'Да', 504, 101, '2026-10-01 22:30:00'));
+
+    $beforeCutoff = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    expect($beforeCutoff['totals'])->toMatchArray(['sent' => 1, 'responded' => 0, 'pending' => 1, 'no_response' => 0]);
+
+    $this->travelTo(Carbon::parse('2026-10-01 23:00:00', 'Europe/Rome'));
+    $afterCutoff = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    expect($afterCutoff['totals'])->toMatchArray(['sent' => 1, 'responded' => 0, 'pending' => 0, 'no_response' => 1])
+        ->and($afterCutoff['totals']['median_response_latency_seconds'])->toBeNull()
+        ->and($afterCutoff['deliveries'][0]['interpreted_responses'])->toBeEmpty();
 });
 
 it('merges a confirmed first-cleaning follow-up only for the same apartment and responder', function () {
@@ -792,6 +894,17 @@ it('invokes scheduled response capture once after out-of-allowlist persistence',
     $this->postJson('/telegram/work-webhook/work-test', $payload)->assertOk();
 
     expect(TelegramMessage::query()->where('message_id', '219')->count())->toBe(1);
+});
+
+it('accepts an exact future-control reply through the shared work webhook', function () {
+    config(['services.telegram.work_allowed_chat_ids' => ['-1002'], 'services.telegram.operational_chat_ids' => ['-1002']]);
+    $delivery = controlDeliveryFixture(['control_type' => 'supplements_paid']);
+
+    $this->postJson('/telegram/work-webhook/work-test', controlReplyPayload($delivery, 'Доплаты выполнены', 431))
+        ->assertOk();
+
+    expect(TelegramScheduledMessageResponse::sole()->delivery_id)->toBe($delivery->id)
+        ->and(TelegramScheduledMessageResponse::sole()->delivery->control_type)->toBe('supplements_paid');
 });
 
 it('keeps callback queries out of response capture', function () {
