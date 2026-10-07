@@ -137,6 +137,31 @@ it('renders a clean empty state and never falls back to diagnostic sections', fu
     expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.");
 })->with([null, 'Navigli']);
 
+it('separates current cards from dated carry-over without repeating old source evidence', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'district' => ['label' => 'Como'], 'date' => '2026-09-30', 'timezone' => 'Europe/Rome',
+        'daily_problems' => [[
+            'event_key' => 'current', 'context_label' => 'Via Today', 'summary' => 'Не работает замок.',
+            'quote' => 'Не работает замок', 'author_name' => 'Today Worker',
+        ]],
+        'editorial_sections' => [[
+            'key' => 'carry_over', 'items' => [[
+                'event_key' => 'old', 'context_label' => 'Via Old', 'summary' => 'Не работает свет.',
+                'open_since' => '2026-09-24', 'next_action' => 'Проверить свет.',
+                'author_name' => 'Old Worker', 'quote' => 'Старое сообщение',
+            ]],
+        ]],
+    ]);
+
+    $today = str($text)->before('⚠️ Осталось с прошлых дней:')->toString();
+    $old = str($text)->after('⚠️ Осталось с прошлых дней:')->toString();
+
+    expect($today)->toContain('Via Today — Не работает замок.', 'Today Worker')
+        ->not->toContain('Via Old')
+        ->and($old)->toContain('Via Old — Не работает свет. Не закрыто с 24.09.', 'Проверить свет.')
+        ->not->toContain('Old Worker', 'Старое сообщение', '👤', '💬');
+});
+
 it('omits human problem cards without a source quote or meaningful location', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'date' => '2026-09-30', 'daily_problems' => [[
