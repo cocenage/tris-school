@@ -7,7 +7,7 @@ use Carbon\CarbonImmutable;
 
 class TelegramScheduledControlStatistics
 {
-    public function delivery(TelegramScheduledMessageDelivery $delivery): array
+    public function delivery(TelegramScheduledMessageDelivery $delivery, ?CarbonImmutable $summaryCutoff = null): array
     {
         $responses = $delivery->responses->sortBy(fn ($response) => $response->getRawOriginal('responded_at').'|'.str_pad((string) $response->id, 20, '0', STR_PAD_LEFT));
         $categories = array_fill_keys(['confirmed', 'problem', 'partial', 'unclear'], 0);
@@ -35,7 +35,7 @@ class TelegramScheduledControlStatistics
         } else {
             $expires = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), config('app.timezone', 'Europe/Rome'))
                 ->addMinutes(max(1, (int) config('services.telegram.scheduled_response_window_minutes', 60)));
-            $result = CarbonImmutable::now()->lt($expires) ? 'pending' : 'no_response';
+            $result = CarbonImmutable::now()->lt($summaryCutoff ?? $expires) ? 'pending' : 'no_response';
         }
 
         return [

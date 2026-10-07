@@ -13,6 +13,23 @@ class TelegramScheduledControlSummaryFormatter
             return $text."\n✅ Контрольных сообщений за день не было.\n";
         }
 
+        $totals = $summary['totals'];
+        $rate = $totals['response_rate_percent'] === null ? '—' : $totals['response_rate_percent'].'%';
+        $median = $totals['median_response_latency_seconds'];
+        $medianText = $median === null ? '—' : str_replace('.', ',', (string) round($median / 60, 1)).' мин';
+        $text .= "\nКонтролей: {$totals['expected']} ожидалось · {$totals['sent']} отправлено\n";
+        $text .= "📊 Ответы: {$totals['responded']}/{$totals['sent']} · {$rate}\n";
+        $text .= "⏱ Медиана первого ответа: {$medianText}\n";
+        $text .= "✅ {$totals['confirmed']} · ⚠️ {$totals['problem']} · 🟡 {$totals['partial']} · ❓ {$totals['unclear']} · 🔕 {$totals['no_response']} без ответа\n";
+        if (count($summary['controls']) > 1) {
+            $text .= "\nПо типам:\n";
+            foreach ($summary['controls'] as $control) {
+                $statistics = $control['statistics'];
+                $text .= "• {$control['control_type']} — {$statistics['responded']}/{$statistics['sent']}\n";
+            }
+        }
+        $text .= "\n";
+
         foreach ($summary['controls'] as $control) {
             $text .= $this->controlLine($control);
         }
@@ -48,7 +65,7 @@ class TelegramScheduledControlSummaryFormatter
             $text .= "\nℹ️ Ответы на контрольные сообщения за этот день не зафиксированы.\n";
         } elseif ($summary['no_response_available'] === false
             && ! collect($summary['controls'])->contains(fn (array $control): bool => ($control['district_results'] ?? []) !== [])) {
-            $text .= "\nℹ️ Список ожидаемых участников не настроен; отсутствие ответа не рассчитывается.\n";
+            $text .= "\nℹ️ Список ожидаемых участников не настроен; отсутствие ответа по сотрудникам не рассчитывается.\n";
         }
 
         return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');

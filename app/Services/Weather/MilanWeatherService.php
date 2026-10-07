@@ -2,7 +2,6 @@
 
 namespace App\Services\Weather;
 
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -11,43 +10,6 @@ class MilanWeatherService
     protected int $shiftStartHour = 8;
 
     protected int $shiftEndHour = 17;
-
-    protected array $rainAdvice = [
-        '☂️ Не забудьте зонтик',
-        '🌧 Сегодня пригодится зонт',
-        '☔ Лучше взять что-нибудь непромокаемое',
-        '🚶 На улице мокро, будьте осторожны',
-    ];
-
-    protected array $heavyRainAdvice = [
-        '☂️ Возьмите зонтик и заложите немного больше времени на дорогу',
-        '🌧 Возможны задержки из-за погоды',
-        '🚦 Из-за дождя движение может быть медленнее обычного',
-    ];
-
-    protected array $hotAdvice = [
-        '💧 Не забывайте пить воду',
-        '🥤 Сегодня будет жарко',
-        '☀️ Старайтесь не оставаться долго на солнце',
-        '🌡 Жаркий день впереди',
-    ];
-
-    protected array $coldAdvice = [
-        '🧥 Утром может быть прохладно',
-        '🌬 Возьмите что-нибудь потеплее',
-    ];
-
-    protected array $windAdvice = [
-        '💨 Сегодня ветрено',
-        '🌬 На улице сильнее ветер, чем обычно',
-    ];
-
-    protected array $goodWeatherAdvice = [
-        '😎 Сегодня отличная погода',
-        '🌤 Погода радует',
-        '☀️ Приятный день впереди',
-        '🙂 С погодой сегодня повезло',
-    ];
 
     public function today(
         float $latitude = 45.4642,
@@ -164,8 +126,8 @@ class MilanWeatherService
         ?int $rainStartHour
     ): array {
         $tempText = $minTemp === $maxTemp
-            ? "+{$maxTemp}°C"
-            : "+{$minTemp}…+{$maxTemp}°C";
+            ? sprintf('%+d°C', $maxTemp)
+            : sprintf('%+d…%+d°C', $minTemp, $maxTemp);
 
         $hasRain = $totalRain > 0 || $maxRainProbability >= 50;
         $hasHeavyRain = $totalRain >= 4 || $maxRainProbability >= 75;
@@ -173,13 +135,32 @@ class MilanWeatherService
         $isColdMorning = $minTemp <= 8;
         $isWindy = $maxWind >= 30;
 
+        $isIcy = in_array($mainCode, [56, 57, 66, 67], true);
+        if ($isIcy || in_array($mainCode, [71, 73, 75, 77, 85, 86], true)) {
+            return [
+                'emoji' => '❄️',
+                'summary' => $tempText.($isIcy ? ', гололёд' : ', снег'),
+                'advice' => '❄️ На дорогу между квартирами лучше заложить дополнительное время.',
+            ];
+        }
+
         if ($hasHeavyRain) {
             return [
                 'emoji' => '⛈',
                 'summary' => $rainStartHour
-                    ? "{$tempText}, сильный дождь после {$rainStartHour}:00"
+                    ? "{$tempText}, после {$rainStartHour}:00 сильный дождь"
                     : "{$tempText}, сильный дождь",
-                'advice' => Arr::random($this->heavyRainAdvice),
+                'advice' => $rainStartHour !== null && $rainStartHour >= 12
+                    ? '🌧 После обеда лучше заложить больше времени на дорогу между квартирами.'
+                    : '🌧 На дорогу между квартирами лучше заложить больше времени.',
+            ];
+        }
+
+        if ($isWindy) {
+            return [
+                'emoji' => '💨',
+                'summary' => "{$tempText}, сильный ветер",
+                'advice' => '💨 На улице сильный ветер — аккуратнее с балконами, окнами и перемещением между квартирами.',
             ];
         }
 
@@ -189,7 +170,7 @@ class MilanWeatherService
                 'summary' => $rainStartHour
                     ? "{$tempText}, дождь после {$rainStartHour}:00"
                     : "{$tempText}, возможен дождь",
-                'advice' => Arr::random($this->rainAdvice),
+                'advice' => null,
             ];
         }
 
@@ -197,7 +178,7 @@ class MilanWeatherService
             return [
                 'emoji' => '☀️',
                 'summary' => "{$tempText}, жарко",
-                'advice' => Arr::random($this->hotAdvice),
+                'advice' => null,
             ];
         }
 
@@ -205,15 +186,7 @@ class MilanWeatherService
             return [
                 'emoji' => '🥶',
                 'summary' => "{$tempText}, прохладно утром",
-                'advice' => Arr::random($this->coldAdvice),
-            ];
-        }
-
-        if ($isWindy) {
-            return [
-                'emoji' => '💨',
-                'summary' => "{$tempText}, ветрено",
-                'advice' => Arr::random($this->windAdvice),
+                'advice' => null,
             ];
         }
 
@@ -221,7 +194,7 @@ class MilanWeatherService
             return [
                 'emoji' => '☀️',
                 'summary' => "{$tempText}, солнечно",
-                'advice' => Arr::random($this->goodWeatherAdvice),
+                'advice' => null,
             ];
         }
 
@@ -229,14 +202,14 @@ class MilanWeatherService
             return [
                 'emoji' => '🌤',
                 'summary' => "{$tempText}, облачно",
-                'advice' => Arr::random($this->goodWeatherAdvice),
+                'advice' => null,
             ];
         }
 
         return [
             'emoji' => '🌤',
             'summary' => $tempText,
-            'advice' => Arr::random($this->goodWeatherAdvice),
+            'advice' => null,
         ];
     }
 
@@ -248,6 +221,7 @@ class MilanWeatherService
 
         $priority = [
             95, 96, 99,
+            56, 57, 66, 67, 71, 73, 75, 77, 85, 86,
             80, 81, 82,
             61, 63, 65,
             51, 53, 55,

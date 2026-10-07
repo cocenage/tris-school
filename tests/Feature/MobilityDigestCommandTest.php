@@ -5,6 +5,7 @@ use App\Models\MobilityAlert;
 use App\Services\Mobility\MobilityAlertSyncService;
 use App\Services\Operations\OperationalContextBuilder;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Weather\MilanWeatherService;
 use Carbon\Carbon;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
@@ -273,6 +274,22 @@ it('keeps a regional morning digest useful when weather is unavailable', functio
         ->toMatch('/Хорошей смены|Удачного дня|Отличной смены|Легкого рабочего дня|Пусть день пройдет спокойно/');
 });
 
+it('renders severe weather with a concrete district travel impact and no generic warning', function () {
+    $this->mock(MilanWeatherService::class, fn (MockInterface $mock) => $mock->shouldReceive('today')->once()->andReturn([
+        'emoji' => '⛈', 'summary' => '+16…+18°C, после 13:00 сильный дождь',
+        'advice' => '🌧 После обеда лучше заложить больше времени на дорогу между квартирами.',
+    ]));
+    $command = app(MobilityDigestCommand::class);
+    $method = new ReflectionMethod($command, 'buildMessage');
+    $message = $method->invoke($command, Carbon::parse('2026-10-07'), collect(), [
+        'key' => 'navigli', 'label' => 'Navigli', 'latitude' => 45.45, 'longitude' => 9.17,
+    ]);
+
+    expect($message)->toContain('⛈ +16…+18°C, после 13:00 сильный дождь')
+        ->toContain('🌧 После обеда лучше заложить больше времени на дорогу между квартирами.')
+        ->not->toContain('Возможны задержки из-за погоды', 'Будьте осторожны из-за погоды');
+});
+
 it('shows a city-wide strike once in each district and omits routine M1-M5 statuses', function () {
     config(['services.telegram.digest_districts' => [
         'navigli' => [
@@ -356,4 +373,64 @@ it('uses the existing sender and matching duty topics for regional morning deliv
     $this->artisan('mobility:digest', ['--date' => '2026-08-03'])
         ->expectsOutputToContain('District morning digests sent')
         ->assertExitCode(0);
+});
+
+it('attempts the morning summary for every configured district', function () {
+    config(['services.telegram.digest_districts' => collect(['navigli', 'lodi', 'certosa', 'lambrate', 'como'])
+        ->mapWithKeys(fn (string $key, int $index): array => [$key => [
+            'label' => ucfirst($key), 'chat_id' => (string) (-1001 - $index),
+            'duty_thread_id' => (string) (11 + $index),
+            'latitude' => 45.45, 'longitude' => 9.17,
+        ]])->all()]);
+    $sent = [];
+    $this->mock(TelegramBotService::class, function (MockInterface $mock) use (&$sent): void {
+        $mock->shouldReceive('sendMessage')->times(5)
+            ->andReturnUsing(function (string $chatId, string $text, string $threadId) use (&$sent): int {
+                $sent[] = [$chatId, $threadId, $text];
+
+                return count($sent);
+            });
+    });
+
+    $this->artisan('mobility:digest', ['--date' => '2026-10-07'])->assertExitCode(0);
+
+    expect(collect($sent)->pluck('0')->all())->toBe(['-1001', '-1002', '-1003', '-1004', '-1005'])
+        ->and(collect($sent)->pluck('1')->all())->toBe(['11', '12', '13', '14', '15']);
+});
+
+it('continues to later districts when an earlier morning send fails', function () {
+    config(['services.telegram.digest_districts' => [
+        'navigli' => ['label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11', 'latitude' => 45.45, 'longitude' => 9.17],
+        'lodi' => ['label' => 'Lodi', 'chat_id' => '-1002', 'duty_thread_id' => '22', 'latitude' => 45.45, 'longitude' => 9.17],
+        'como' => ['label' => 'Como', 'chat_id' => '-1003', 'duty_thread_id' => '33', 'latitude' => 45.45, 'longitude' => 9.17],
+    ]]);
+    $attempted = [];
+    $this->mock(TelegramBotService::class, function (MockInterface $mock) use (&$attempted): void {
+        $mock->shouldReceive('sendMessage')->times(3)
+            ->andReturnUsing(function (string $chatId) use (&$attempted): ?int {
+                $attempted[] = $chatId;
+                if ($chatId === '-1001') {
+                    throw new RuntimeException('Transport failed');
+                }
+
+                return $chatId === '-1002' ? null : 103;
+            });
+    });
+
+    $this->artisan('mobility:digest', ['--date' => '2026-10-07'])->assertExitCode(1);
+
+    expect($attempted)->toBe(['-1001', '-1002', '-1003']);
+});
+
+it('reports incomplete district routes instead of silently sending only the first valid route', function () {
+    config(['services.telegram.digest_districts' => [
+        'navigli' => ['label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11', 'latitude' => 45.45, 'longitude' => 9.17],
+        'lodi' => ['label' => 'Lodi', 'chat_id' => '-1002', 'latitude' => 45.45, 'longitude' => 9.17],
+    ]]);
+    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
+        ->shouldReceive('sendMessage')->once()->with('-1001', Mockery::type('string'), '11')->andReturn(101));
+
+    $this->artisan('mobility:digest', ['--date' => '2026-10-07'])
+        ->expectsOutputToContain('District lodi skipped: missing_duty_thread_id')
+        ->assertExitCode(1);
 });

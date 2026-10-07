@@ -10,6 +10,7 @@ use App\Services\Weather\MilanWeatherService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Arr;
+use Throwable;
 
 class MobilityDigestCommand extends Command
 {
@@ -60,6 +61,17 @@ class MobilityDigestCommand extends Command
             ->filter(fn (MobilityAlert $alert) => $this->shouldShowInWorkerDigest($alert))
             ->values();
 
+        $configured = $districts->diagnostics();
+        if (filled($this->option('district'))) {
+            $selectedDistrict = mb_strtolower(trim((string) $this->option('district')));
+            $configured = $configured->filter(fn (array $route): bool => $route['key'] === $selectedDistrict);
+        }
+
+        $invalidRoutes = $configured->reject(fn (array $route): bool => $route['valid']);
+        foreach ($invalidRoutes as $route) {
+            $this->error('District '.$route['key'].' skipped: '.implode(', ', $route['errors']));
+        }
+
         $routes = $districts->routes();
 
         if ($routes->isNotEmpty()) {
@@ -75,36 +87,48 @@ class MobilityDigestCommand extends Command
                 $routes = collect([$route]);
             }
 
-            $failed = false;
+            $failed = $invalidRoutes->isNotEmpty();
 
             foreach ($routes as $route) {
-                $message = $this->buildMessage(
-                    $date,
-                    $this->alertsForDistrict($alerts, $route, $routes),
-                    $route,
-                );
+                try {
+                    $message = $this->buildMessage(
+                        $date,
+                        $this->alertsForDistrict($alerts, $route, $routes),
+                        $route,
+                    );
 
-                if ($this->option('dry-run')) {
-                    $this->renderDryRun($route['label'], $message);
+                    if ($this->option('dry-run')) {
+                        $this->renderDryRun($route['label'], $message);
 
-                    continue;
+                        continue;
+                    }
+
+                    $messageId = $bot->sendMessage(
+                        (string) $route['chat_id'],
+                        $message,
+                        (string) $route['duty_thread_id'],
+                    );
+                    if ($messageId === null) {
+                        $failed = true;
+                        $this->error('District '.$route['key'].' morning digest was not sent.');
+                    }
+                } catch (Throwable) {
+                    $failed = true;
+                    $this->error('District '.$route['key'].' morning digest failed.');
                 }
-
-                $messageId = $bot->sendMessage(
-                    (string) $route['chat_id'],
-                    $message,
-                    (string) $route['duty_thread_id'],
-                );
-                $failed = $failed || $messageId === null;
             }
 
             if ($this->option('dry-run')) {
-                return self::SUCCESS;
+                return $failed ? self::FAILURE : self::SUCCESS;
             }
 
             $failed ? $this->error('One or more district morning digests failed.') : $this->info('District morning digests sent.');
 
             return $failed ? self::FAILURE : self::SUCCESS;
+        }
+
+        if ($configured->isNotEmpty()) {
+            return self::FAILURE;
         }
 
         if (filled($this->option('district'))) {
