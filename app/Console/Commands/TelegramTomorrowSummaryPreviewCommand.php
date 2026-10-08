@@ -2,8 +2,8 @@
 
 namespace App\Console\Commands;
 
-use App\Services\Telegram\TelegramTomorrowSummaryBuilder;
-use App\Services\Telegram\TelegramTomorrowSummaryFormatter;
+use App\Services\Calendar\CalendarSummaryService;
+use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Throwable;
@@ -12,9 +12,9 @@ class TelegramTomorrowSummaryPreviewCommand extends Command
 {
     protected $signature = 'telegram:tomorrow-summary-preview {--date= : Target date in Europe/Rome, YYYY-MM-DD} {--json : Print structured preview}';
 
-    protected $description = 'Preview known facts for tomorrow without Telegram delivery';
+    protected $description = 'Preview the existing staff summary for tomorrow without Telegram delivery';
 
-    public function handle(TelegramTomorrowSummaryBuilder $builder, TelegramTomorrowSummaryFormatter $formatter): int
+    public function handle(CalendarSummaryService $calendarSummary, SendTomorrowCalendarEventsNotification $calendarNotification): int
     {
         $timezone = 'Europe/Rome';
         $value = $this->option('date');
@@ -34,12 +34,21 @@ class TelegramTomorrowSummaryPreviewCommand extends Command
             }
         }
 
-        $summary = $builder->build($date);
+        $summary = $calendarSummary->build(Carbon::instance($date->toDateTime()));
 
         if ($this->option('json')) {
-            $this->line(json_encode($summary, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+            $this->line(json_encode([
+                'date' => $date->toDateString(),
+                'timezone' => $timezone,
+                'shift' => $summary['shift'],
+                'not_working' => collect($summary['workers']['not_working'])->map(fn ($user): array => [
+                    'name' => $user->name,
+                    'role' => $user->role,
+                    'reason' => $user->not_working_reason,
+                ])->all(),
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         } else {
-            $this->line($formatter->format($summary));
+            $this->line($calendarNotification->renderStaffSummary(Carbon::instance($date->toDateTime()), $summary));
         }
 
         return self::SUCCESS;

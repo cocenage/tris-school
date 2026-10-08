@@ -64,7 +64,8 @@ class SendTomorrowCalendarEventsNotification extends Command
         $lines = [];
 
         $lines[] = '📅 <b>Сводка на завтра</b>';
-        $lines[] = '<b>' . e(mb_convert_case($date->translatedFormat('l, j F Y'), MB_CASE_TITLE, 'UTF-8')) . '</b>';
+        $dateLabel = $date->translatedFormat('l, j F Y');
+        $lines[] = '<b>'.e(mb_strtoupper(mb_substr($dateLabel, 0, 1)).mb_substr($dateLabel, 1)).'</b>';
         $lines[] = '';
 
         $this->appendShiftBlock($lines, $summary);
@@ -80,6 +81,11 @@ class SendTomorrowCalendarEventsNotification extends Command
         return trim(implode("\n", $lines));
     }
 
+    public function renderStaffSummary(Carbon $date, array $summary): string
+    {
+        return $this->buildMessage($date, collect(), $summary);
+    }
+
     protected function appendShiftBlock(array &$lines, array $summary): void
     {
         $shift = $summary['shift'] ?? null;
@@ -89,9 +95,15 @@ class SendTomorrowCalendarEventsNotification extends Command
         }
 
         $lines[] = '👥 <b>Смена</b>';
-        $lines[] = 'Работают: <b>' . ($shift['working'] ?? 0) . '/' . ($shift['total'] ?? 0) . '</b>';
-        $lines[] = 'Не работают: <b>' . ($shift['not_working'] ?? 0) . '</b>';
-        $lines[] = 'Статус: <b>' . e($shift['label'] ?? 'Без статуса') . '</b>';
+        $lines[] = 'Работают: <b>'.($shift['working'] ?? 0).' из '.($shift['total'] ?? 0).'</b>';
+        $lines[] = 'Не работают: <b>'.($shift['not_working'] ?? 0).'</b>';
+        $indicator = match ($shift['level'] ?? null) {
+            'good' => '🟢 ',
+            'warning' => '🟡 ',
+            'critical' => '🔴 ',
+            default => '',
+        };
+        $lines[] = 'Статус: <b>'.$indicator.e($shift['label'] ?? 'Без статуса').'</b>';
         $lines[] = '';
     }
 
@@ -121,6 +133,7 @@ class SendTomorrowCalendarEventsNotification extends Command
         ];
 
         $lines[] = '🚫 <b>Кто не работает</b>';
+        $lines[] = '';
 
         foreach ($groups as $group => $title) {
             $users = $grouped->get($group, collect());
@@ -129,13 +142,13 @@ class SendTomorrowCalendarEventsNotification extends Command
                 continue;
             }
 
-            $lines[] = $title . ' — <b>' . $users->count() . '</b>';
+            $lines[] = $title.' — <b>'.$users->count().'</b>';
 
             foreach ($users as $user) {
                 $name = data_get($user, 'name', 'Без имени');
                 $reason = data_get($user, 'normalized_reason', 'Не работает');
 
-                $lines[] = '• ' . e($name) . ' — ' . e($reason);
+                $lines[] = '• '.e($name).' — '.e($reason);
             }
         }
 
@@ -145,7 +158,7 @@ class SendTomorrowCalendarEventsNotification extends Command
     protected function appendEventsBlock(array &$lines, Collection $events, Collection $grouped): void
     {
         $lines[] = '📌 <b>События</b>';
-        $lines[] = 'Всего событий: <b>' . $events->count() . '</b>';
+        $lines[] = 'Всего событий: <b>'.$events->count().'</b>';
         $lines[] = '';
 
         $knownTypes = $this->eventTypeOrder();
@@ -169,7 +182,7 @@ class SendTomorrowCalendarEventsNotification extends Command
                 continue;
             }
 
-            $lines[] = $this->typeIcon($type) . ' <b>' . e($this->typeLabel($type)) . '</b>';
+            $lines[] = $this->typeIcon($type).' <b>'.e($this->typeLabel($type)).'</b>';
 
             foreach ($items as $event) {
                 $lines[] = $this->formatTelegramEventLine($event);
@@ -194,7 +207,7 @@ class SendTomorrowCalendarEventsNotification extends Command
 
             return [
                 'type' => $this->detectNotWorkingType($rawReason),
-                'title' => $name . ' — ' . $reason,
+                'title' => $name.' — '.$reason,
                 'description' => null,
                 'start' => null,
                 'end' => null,
@@ -301,7 +314,7 @@ class SendTomorrowCalendarEventsNotification extends Command
             str_contains($lower, 'vacation') ||
             str_contains($lower, 'ferie')
         ) {
-            return 'Отпуск';
+            return 'отпуск';
         }
 
         if (
@@ -309,7 +322,7 @@ class SendTomorrowCalendarEventsNotification extends Command
             str_contains($lower, 'day off') ||
             str_contains($lower, 'riposo')
         ) {
-            return 'Выходной';
+            return 'выходной';
         }
 
         if (
@@ -317,17 +330,17 @@ class SendTomorrowCalendarEventsNotification extends Command
             str_contains($lower, 'sick') ||
             str_contains($lower, 'malatt')
         ) {
-            return 'Больничный';
+            return 'больничный';
         }
 
-        return 'Не работает';
+        return 'не работает';
     }
 
     protected function formatTelegramEventLine(array $event): string
     {
         $lines = [];
 
-        $lines[] = '• <b>' . e($event['title'] ?? 'Без названия') . '</b>';
+        $lines[] = '• <b>'.e($event['title'] ?? 'Без названия').'</b>';
 
         $range = $this->formatTelegramEventRange($event);
 
@@ -337,7 +350,7 @@ class SendTomorrowCalendarEventsNotification extends Command
 
         if (! empty($event['description'])) {
             $description = mb_strimwidth(trim($event['description']), 0, 180, '...');
-            $lines[] = '<blockquote>' . e($description) . '</blockquote>';
+            $lines[] = '<blockquote>'.e($description).'</blockquote>';
         }
 
         return implode("\n", $lines);
@@ -357,14 +370,14 @@ class SendTomorrowCalendarEventsNotification extends Command
         }
 
         if ($start->year === $end->year && $start->month === $end->month) {
-            return $start->translatedFormat('j') . '–' . $end->translatedFormat('j F Y');
+            return $start->translatedFormat('j').'–'.$end->translatedFormat('j F Y');
         }
 
         if ($start->year === $end->year) {
-            return $start->translatedFormat('j F') . ' — ' . $end->translatedFormat('j F Y');
+            return $start->translatedFormat('j F').' — '.$end->translatedFormat('j F Y');
         }
 
-        return $start->translatedFormat('j F Y') . ' — ' . $end->translatedFormat('j F Y');
+        return $start->translatedFormat('j F Y').' — '.$end->translatedFormat('j F Y');
     }
 
     protected function eventTypeOrder(): array

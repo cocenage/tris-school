@@ -13,59 +13,13 @@ class TelegramScheduledControlSummaryFormatter
             return $text."\n✅ Контрольных сообщений за день не было.\n";
         }
 
-        $totals = $summary['totals'];
-        $rate = $totals['response_rate_percent'] === null ? '—' : $totals['response_rate_percent'].'%';
-        $median = $totals['median_response_latency_seconds'];
-        $medianText = $median === null ? '—' : str_replace('.', ',', (string) round($median / 60, 1)).' мин';
-        $text .= "\nКонтролей: {$totals['expected']} ожидалось · {$totals['sent']} отправлено\n";
-        $text .= "📊 Ответы: {$totals['responded']}/{$totals['sent']} · {$rate}\n";
-        $text .= "⏱ Медиана первого ответа: {$medianText}\n";
-        $text .= "✅ {$totals['confirmed']} · ⚠️ {$totals['problem']} · 🟡 {$totals['partial']} · ❓ {$totals['unclear']} · 🔕 {$totals['no_response']} без ответа\n";
-        if (count($summary['controls']) > 1) {
-            $text .= "\nПо типам:\n";
-            foreach ($summary['controls'] as $control) {
-                $statistics = $control['statistics'];
-                $text .= "• {$control['control_type']} — {$statistics['responded']}/{$statistics['sent']}\n";
-            }
-        }
         $text .= "\n";
 
         foreach ($summary['controls'] as $control) {
             $text .= $this->controlLine($control);
         }
-        $shown = 0;
-        $headingAdded = false;
-        foreach ($summary['exceptions'] as $exception) {
-            $section = $headingAdded ? '' : "\nОтклонения\n";
-            $where = $exception['district'] ?? $exception['apartment'] ?? null;
-            $controlLabel = ScheduledControlTypes::LABELS[$exception['control_type']] ?? $exception['control_type'];
-            $section .= '• '.($where ? $where.' — ' : '').$this->issueLine($exception)."\n";
-            if ($exception['reason']) {
-                $section .= '  Причина: '.$exception['reason']."\n";
-            }
-            if ($exception['delay_minutes'] !== null) {
-                $section .= '  Задержка: '.$exception['delay_minutes'].' мин'."\n";
-            }
-            if ($exception['resolved_later'] ?? false) {
-                $section .= '  ✅ Позже подтверждено завершение на контроле «'.$controlLabel.'».'."\n";
-            } else {
-                $section .= '  ⚠️ На последнем связанном контроле отклонение не закрыто.'."\n";
-            }
-            $author = filled($exception['author_name'] ?? null) ? $exception['author_name'].' · ' : '';
-            $section .= '  Источник: '.$author.CarbonImmutable::parse($exception['responded_at'])->format('H:i')
-                .' · сообщение '.$exception['source_message_id']."\n";
-            if ($shown >= 12 || mb_strlen($text.$section) > 3400) {
-                break;
-            }
-            $text .= $section;
-            $headingAdded = true;
-            $shown++;
-        }
         if (($summary['totals']['response_messages'] ?? 0) === 0) {
             $text .= "\nℹ️ Ответы на контрольные сообщения за этот день не зафиксированы.\n";
-        } elseif ($summary['no_response_available'] === false
-            && ! collect($summary['controls'])->contains(fn (array $control): bool => ($control['district_results'] ?? []) !== [])) {
-            $text .= "\nℹ️ Список ожидаемых участников не настроен; отсутствие ответа по сотрудникам не рассчитывается.\n";
         }
 
         return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
@@ -78,11 +32,11 @@ class TelegramScheduledControlSummaryFormatter
         $districts = collect($control['district_results'] ?? []);
 
         if ($districts->isEmpty()) {
-            $exceptionCount = collect($control['responses'])->whereIn('status', ['problem', 'partial'])->count();
+            $exception = collect($control['responses'])->first(fn (array $response): bool => in_array($response['status'], ['problem', 'partial'], true));
 
             return match ($control['status']) {
                 'ok' => '✅ '.$label."\n",
-                'problem' => '⚠️ '.$this->problemLabel($type, $label).' — '.$exceptionCount.' '.$this->exceptionNoun($exceptionCount)."\n",
+                'problem' => '⚠️ '.$this->shortLabel($type, $label).': '.($exception ? $this->issueLine($exception) : 'есть отклонение')."\n",
                 'unknown' => '⚪ '.$this->shortLabel($type, $label).": ответы неоднозначны\n",
                 default => '⚪ '.$this->shortLabel($type, $label).": нет данных\n",
             };
@@ -96,7 +50,6 @@ class TelegramScheduledControlSummaryFormatter
         $problems = $districts->where('status', 'problem')->values();
         $conflicts = $districts->where('status', 'conflict')->values();
         $unknown = $districts->where('status', 'unknown')->values();
-        $knownOk = $districts->where('status', 'ok')->values();
         $noPayments = $districts->filter(fn (array $district): bool => $district['no_payment'] ?? false)->values();
 
         if ($type === 'extra_payments_completed') {
@@ -136,9 +89,7 @@ class TelegramScheduledControlSummaryFormatter
         }
 
         if ($missing->isNotEmpty()) {
-            $confirmed = $knownOk->isNotEmpty() ? ' подтверждены: '.$this->districtNames($knownOk) : '';
-
-            return '⚪ '.$label.': нет данных по '.$this->joinNames($missing->all()).$confirmed."\n";
+            return '⚠️ '.$this->shortLabel($type, $label).': нет подтверждения по '.$this->joinNames($missing->all()).".\n";
         }
 
         if ($noPayments->isNotEmpty()) {
@@ -247,22 +198,6 @@ class TelegramScheduledControlSummaryFormatter
             'couriers_completed' => 'Курьеры',
             'extra_payments_completed' => 'Доплаты',
             default => $label,
-        };
-    }
-
-    private function exceptionNoun(int $count): string
-    {
-        $lastTwo = $count % 100;
-        $last = $count % 10;
-
-        if ($lastTwo >= 11 && $lastTwo <= 14) {
-            return 'отклонений';
-        }
-
-        return match ($last) {
-            1 => 'отклонение',
-            2, 3, 4 => 'отклонения',
-            default => 'отклонений',
         };
     }
 }

@@ -35,7 +35,8 @@ class TelegramScheduledControlStatistics
         } else {
             $expires = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), config('app.timezone', 'Europe/Rome'))
                 ->addMinutes(max(1, (int) config('services.telegram.scheduled_response_window_minutes', 60)));
-            $result = CarbonImmutable::now()->lt($summaryCutoff ?? $expires) ? 'pending' : 'no_response';
+            $due = $summaryCutoff !== null && $summaryCutoff->lt($expires) ? $summaryCutoff : $expires;
+            $result = CarbonImmutable::now()->lt($due) ? 'pending' : 'no_response';
         }
 
         return [
