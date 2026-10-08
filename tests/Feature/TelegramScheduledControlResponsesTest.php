@@ -699,8 +699,8 @@ it('renders aggregate control points and exceptions without inventing expected r
         ->and($summary['exceptions'][0]['delay_minutes'])->toBe(20)
         ->and($summary['expected_responders'])->toBeNull()
         ->and($summary['no_response_available'])->toBeFalse()
-        ->and($text)->toContain('🧹 TRIS — Контроль уборок · 01.10.2026', 'Отклонения', '20 мин', 'не рассчитывается')
-        ->not->toContain("\nНет ответа\n", 'Маша опоздает', '1/5');
+        ->and($text)->toContain('🧹 TRIS — Контроль уборок · 01.10.2026', '⚠️ Первые уборки: Маша опоздает минут на 20')
+        ->not->toContain('Отклонения', 'не рассчитывается', 'Контролей:', 'Медиана', 'По типам');
 });
 
 it('exposes the requested read-only preview command and a compact empty state', function () {
@@ -739,8 +739,8 @@ it('builds daily totals and a human summary without a fabricated denominator', f
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
     expect($summary['totals'])->toMatchArray(['controls' => 2, 'responded' => 1, 'problem' => 1, 'no_response' => 1]);
     $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
-    expect($text)->toContain('🧹 TRIS — Контроль уборок', '01.10.2026', 'Курьер не приехал', 'не рассчитывается')
-        ->not->toContain('Нет ответа', 'Ответили: 1 сотрудника', '1/5');
+    expect($text)->toContain('🧹 TRIS — Контроль уборок', '01.10.2026', 'Курьер не приехал')
+        ->not->toContain('не рассчитывается', 'Контролей:', 'Ответы:', 'Медиана', 'По типам');
     expect(mb_strlen(html_entity_decode($text)))->toBeLessThan(4096);
 });
 
@@ -776,7 +776,8 @@ it('aggregates first qualifying replies once per sent occurrence across generic 
         ->and($types['couriers_finished']['statistics']['sent'])->toBe(2)
         ->and($types['supplements_paid']['statistics']['responded'])->toBe(1)
         ->and($types['supplements_paid']['statistics']['sent'])->toBe(1)
-        ->and($text)->toContain('Контролей: 4 ожидалось · 3 отправлено', 'Ответы: 2/3 · 67%', 'Медиана первого ответа: 4,5 мин', 'couriers_finished — 1/2', 'supplements_paid — 1/1');
+        ->and($text)->toContain('Курьер не приехал', '✅ Начало уборок')
+        ->not->toContain('Контролей:', 'Ответы:', 'Медиана', 'По типам', 'couriers_finished', 'supplements_paid');
 });
 
 it('uses the daily cutoff for unanswered controls and excludes replies or sends after it', function () {
@@ -788,13 +789,44 @@ it('uses the daily cutoff for unanswered controls and excludes replies or sends 
     captureControlReply(controlReplyPayload($sent, 'Да', 504, 101, '2026-10-01 22:30:00'));
 
     $beforeCutoff = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
-    expect($beforeCutoff['totals'])->toMatchArray(['sent' => 1, 'responded' => 0, 'pending' => 1, 'no_response' => 0]);
+    expect($beforeCutoff['totals'])->toMatchArray(['sent' => 1, 'responded' => 0, 'pending' => 0, 'no_response' => 1, 'partial' => 0]);
 
     $this->travelTo(Carbon::parse('2026-10-01 23:00:00', 'Europe/Rome'));
     $afterCutoff = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
     expect($afterCutoff['totals'])->toMatchArray(['sent' => 1, 'responded' => 0, 'pending' => 0, 'no_response' => 1])
         ->and($afterCutoff['totals']['median_response_latency_seconds'])->toBeNull()
         ->and($afterCutoff['deliveries'][0]['interpreted_responses'])->toBeEmpty();
+});
+
+it('sends a concise human exception for one missing district while retaining statistics in JSON', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    captureControlReply(controlReplyPayload($delivery, "🟢 Lambrate - да\n🟢 Navigli - да\n🟢 Lodi - да\n🟢 Certosa - да"));
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+    expect($text)->toContain('⚠️ График и заметки: нет подтверждения по Como.')
+        ->not->toContain('подтверждены: Lambrate', 'Контролей:', 'Ответы:', 'Медиана', 'По типам', 'schedule_checked');
+
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01')['queued'])->toBe(1);
+    expect(TelegramScheduledControlSummaryDelivery::query()->sole()->text)->toBe($text);
+    expect(Artisan::call('telegram:scheduled-controls-summary-send', ['--date' => '2026-10-01', '--dry-run' => true, '--json' => true]))->toBe(0);
+    $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+    expect($json['totals'])->toMatchArray(['response_rate_percent' => 100, 'median_response_latency_seconds' => 360.0])
+        ->and($json['controls'][0]['control_type'])->toBe('schedule_checked')
+        ->and($json['controls'][0]['statistics']['responded'])->toBe(1);
+    Http::assertNothingSent();
+});
+
+it('counts due unanswered sent controls by occurrence without making them partial', function () {
+    foreach (['first_cleanings_finishing', 'second_cleanings_finishing', 'couriers_completed', 'extra_payments_completed'] as $type) {
+        controlDeliveryFixture(['control_type' => $type]);
+    }
+    $this->travelTo(Carbon::parse('2026-10-01 21:00:00', 'Europe/Rome'));
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    expect($summary['totals'])->toMatchArray([
+        'sent' => 4, 'responded' => 0, 'no_response' => 4, 'partial' => 0, 'unclear' => 0,
+    ])->and(collect($summary['deliveries'])->pluck('result')->all())->toBe(array_fill(0, 4, 'no_response'));
 });
 
 it('merges a confirmed first-cleaning follow-up only for the same apartment and responder', function () {

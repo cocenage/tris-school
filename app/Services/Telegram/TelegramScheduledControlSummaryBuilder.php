@@ -98,7 +98,7 @@ class TelegramScheduledControlSummaryBuilder
         $controls = collect($deliveries)->groupBy('control_type')->map(function ($rows, string $type): array {
             $responses = collect($rows)->flatMap(fn (array $row) => $row['interpreted_responses']);
             $statuses = $responses->pluck('status')->countBy();
-            $label = ScheduledControlTypes::LABELS[$type] ?? $type;
+            $label = ScheduledControlTypes::LABELS[$type] ?? $rows->first()['name'];
             $districtResults = $this->mergeDistrictResults($responses);
             $status = $districtResults !== []
                 ? $this->districtOverallStatus($districtResults)
