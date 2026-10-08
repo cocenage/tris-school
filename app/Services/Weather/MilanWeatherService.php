@@ -2,6 +2,7 @@
 
 namespace App\Services\Weather;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -16,6 +17,33 @@ class MilanWeatherService
         float $longitude = 9.1900,
         string $timezone = 'Europe/Rome',
     ): array {
+        return $this->forecast($latitude, $longitude, $timezone, ['forecast_days' => 1]);
+    }
+
+    public function forDate(
+        CarbonImmutable $date,
+        float $latitude = 45.4642,
+        float $longitude = 9.1900,
+        string $timezone = 'Europe/Rome',
+    ): ?array {
+        $today = CarbonImmutable::now($timezone)->startOfDay();
+        $target = $date->setTimezone($timezone)->startOfDay();
+        $daysAhead = $today->diffInDays($target, false);
+
+        if ($daysAhead < 0 || $daysAhead > 15) {
+            return null;
+        }
+
+        $result = $this->forecast($latitude, $longitude, $timezone, [
+            'start_date' => $target->toDateString(),
+            'end_date' => $target->toDateString(),
+        ]);
+
+        return $result['summary'] === 'погода временно недоступна' ? null : $result;
+    }
+
+    private function forecast(float $latitude, float $longitude, string $timezone, array $period): array
+    {
         if ($latitude < -90 || $latitude > 90 || $longitude < -180 || $longitude > 180) {
             Log::warning('Weather request skipped: invalid coordinates.');
 
@@ -25,13 +53,12 @@ class MilanWeatherService
         try {
             $response = Http::timeout(15)
                 ->retry(2, 1000)
-                ->get('https://api.open-meteo.com/v1/forecast', [
+                ->get('https://api.open-meteo.com/v1/forecast', array_merge([
                     'latitude' => $latitude,
                     'longitude' => $longitude,
                     'hourly' => 'temperature_2m,precipitation_probability,rain,weather_code,wind_speed_10m',
                     'timezone' => $timezone,
-                    'forecast_days' => 1,
-                ]);
+                ], $period));
         } catch (\Throwable $e) {
             Log::warning('Weather request failed', [
                 'exception' => class_basename($e),
