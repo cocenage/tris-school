@@ -122,7 +122,7 @@ it('renders one daily problem card with source metadata and no legacy sections',
         ],
     ]);
 
-    expect($text)->toBe("🌙 Como — проблемы за день · 30.09.2026\n\n• Via Test 1 — Не работает замок.\n  👤 Test Worker · 10:42\n  💬 «Не работает замок»\n  🔗 https://t.me/c/12345/42")
+    expect($text)->toBe("🌙 Como — проблемы за день · 30.09.2026\n\nЗа сегодня:\n\n• Via Test 1 — Не работает замок.\n  👤 Test Worker · 10:42\n  💬 «Не работает замок»\n  🔗 https://t.me/c/12345/42")
         ->not->toContain('Исторический дефект', 'Проверить замок', 'Полотенце заменено', 'Осталось сделать');
 });
 
@@ -134,10 +134,10 @@ it('renders a clean empty state and never falls back to diagnostic sections', fu
         'editorial_sections' => [['key' => 'carry_over', 'items' => [['summary' => 'Старый дефект.']]]],
     ]);
 
-    expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.");
+    expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\nЗа сегодня:\n✅ Новых значимых событий не зафиксировано.");
 })->with([null, 'Navigli']);
 
-it('separates current cards from dated carry-over without repeating old source evidence', function () {
+it('renders only current cards and omits dated carry-over with its source evidence', function () {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'district' => ['label' => 'Como'], 'date' => '2026-09-30', 'timezone' => 'Europe/Rome',
         'daily_problems' => [[
@@ -153,13 +153,8 @@ it('separates current cards from dated carry-over without repeating old source e
         ]],
     ]);
 
-    $today = str($text)->before('⚠️ Осталось с прошлых дней:')->toString();
-    $old = str($text)->after('⚠️ Осталось с прошлых дней:')->toString();
-
-    expect($today)->toContain('Via Today — Не работает замок.', 'Today Worker')
-        ->not->toContain('Via Old')
-        ->and($old)->toContain('Via Old — Не работает свет. Не закрыто с 24.09.', 'Проверить свет.')
-        ->not->toContain('Old Worker', 'Старое сообщение', '👤', '💬');
+    expect($text)->toContain("За сегодня:\n", 'Via Today — Не работает замок.', 'Today Worker')
+        ->not->toContain('Via Old', 'Не закрыто с 24.09.', 'Проверить свет.', 'Old Worker', 'Старое сообщение', '⚠️ Осталось с прошлых дней:');
 });
 
 it('omits human problem cards without a source quote or meaningful location', function () {
@@ -170,7 +165,7 @@ it('omits human problem cards without a source quote or meaningful location', fu
         ]],
     ]);
 
-    expect($text)->toBe("🌙 TRIS — проблемы за день · 30.09.2026\n\n✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.")
+    expect($text)->toBe("🌙 TRIS — проблемы за день · 30.09.2026\n\nЗа сегодня:\n✅ Новых значимых событий не зафиксировано.")
         ->not->toContain('👤', '🕒', '💬', '🔗', 'Unknown', '#');
 });
 
