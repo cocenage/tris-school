@@ -206,7 +206,7 @@ it('retains resolved access evidence in the ledger and omits it from daily probl
         ->and($preview['sections'][0]['key'])->toBe('resolved')
         ->and($preview['sections'][0]['items'][0]['evidence'][1]['transition'])->toBe('resolved')
         ->and($preview['daily_problems'])->toBe([])
-        ->and($text)->toContain('🌙 Lambrate — проблемы за день · 17.06.2026', '✅ Незакрытых проблем за день не зафиксировано.')
+        ->and($text)->toContain('🌙 Lambrate — проблемы за день · 17.06.2026', '✅ Новых значимых событий не зафиксировано.')
         ->not->toContain('✅ Решено сегодня:', '• Via X', 'Осталось на контроле:');
 });
 
@@ -258,6 +258,7 @@ it('does not close another topic with a bare resolution, but accepts a direct re
 it('reopens the same event on confirmed recurrence and no longer presents it as resolved', function () {
     $observer = app(TelegramOperationalEventObserver::class);
     $root = TelegramOperationalTestDatabase::message('Не открывается дверь в квартире.', messageId: '301');
+    $root->topic?->update(['title' => 'Via Reopen 1']);
     $observer->observe($root);
     $answer = TelegramOperationalTestDatabase::message(
         'Дверь открыли.', messageId: '302',
@@ -276,7 +277,7 @@ it('reopens the same event on confirmed recurrence and no longer presents it as 
         ->and(TelegramOperationalEvent::query()->sole()->status)->toBe('reopened')
         ->and(TelegramOperationalEvent::query()->sole()->evidence()->pluck('transition')->all())->toBe(['created', 'resolved', 'reopened'])
         ->and($preview['daily_problems'])->toHaveCount(1)
-        ->and($text)->toContain('Незакрытых проблем: 1', 'Не открывается дверь в квартире.', 'https://t.me/c/1/301')
+        ->and($text)->toContain('За сегодня:', 'Via Reopen 1 — Не открывается дверь в квартире.', 'https://t.me/c/1/301')
         ->not->toContain('✅ Решено сегодня:', 'Осталось сделать:');
 });
 
@@ -367,8 +368,8 @@ it('labels a resolution as today only on its evidence date, not on later activit
         ->and(collect($laterPreview['events'])->sole()['editorial']['render_outcome'])->not->toContain('resolved')
         ->and($resolutionPreview['daily_problems'])->toBe([])
         ->and($laterPreview['daily_problems'])->toBe([])
-        ->and($resolutionDay)->toContain('✅ Незакрытых проблем за день не зафиксировано.')
+        ->and($resolutionDay)->toContain('✅ Новых значимых событий не зафиксировано.')
         ->not->toContain('✅ Решено сегодня:', '• Не открывается дверь в квартире.')
-        ->and($laterDay)->toContain('✅ Незакрытых проблем за день не зафиксировано.')
+        ->and($laterDay)->toContain('✅ Новых значимых событий не зафиксировано.')
         ->not->toContain('✅ Решено сегодня:', '• Не открывается дверь в квартире.');
 });

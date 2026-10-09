@@ -100,7 +100,7 @@ it('sends the zero-state for an empty district using the requested historical da
         'telegram_actions' => 1,
     ])->and($sentText)
         ->toContain('🌙 Navigli — проблемы за день · 17.06.2026')
-        ->toContain('✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.');
+        ->toContain('✅ Новых значимых событий не зафиксировано.');
 });
 
 it('sends an empty zero-state to every configured district', function () {
@@ -142,7 +142,7 @@ it('sends an empty zero-state to every configured district', function () {
     foreach (['Navigli', 'Lodi', 'Como', 'Certosa', 'Lambrate'] as $index => $label) {
         expect($sent[$index]['text'])
             ->toContain('🌙 '.$label.' — проблемы за день · 17.06.2026')
-            ->toContain('✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.');
+            ->toContain('✅ Новых значимых событий не зафиксировано.');
     }
 });
 
@@ -177,7 +177,7 @@ it('previews an empty district without making a telegram action', function () {
     ]))->toBe(0)
         ->and(Artisan::output())
         ->toContain('🌙 Navigli — проблемы за день · 17.06.2026')
-        ->toContain('✅ Незакрытых проблем за день не зафиксировано. Всё в порядке.')
+        ->toContain('✅ Новых значимых событий не зафиксировано.')
         ->toContain('Предпросмотр: отправка в Telegram отключена.');
 });
 

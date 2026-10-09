@@ -95,7 +95,7 @@ it('retains an open disposal question in diagnostics without presenting it as a 
         '--date' => '2026-06-17',
     ]))->toBe(0);
     expect(Artisan::output())
-        ->toContain('✅ Незакрытых проблем за день не зафиксировано.')
+        ->toContain('✅ Новых значимых событий не зафиксировано.')
         ->not->toContain('Уточняли, что делать со сломанными очками.', 'Уточнить, нужно ли выбрасывать сломанные очки.')
         ->not->toContain('@Tris_Anastasiia_Radevych')
         ->not->toContain('Открытых вопросов на конец дня нет.')

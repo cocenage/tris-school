@@ -246,7 +246,7 @@ it('keeps ordinary lateness out of daily problems unless the source proves opera
     $ordinaryCard = $ordinary + ['quote' => 'Я немного опоздаю минут на 10.'];
     $impactCard = $impact + ['quote' => 'Я опоздаю на 10 минут, уборка не успеет к заезду.'];
 
-    expect($render($ordinaryCard))->toContain('Незакрытых проблем за день не зафиксировано.')
+    expect($render($ordinaryCard))->toContain('Новых значимых событий не зафиксировано.')
         ->and($render($impactCard))->toContain('Анна задерживается примерно на 10 минут.');
 });
 
@@ -281,17 +281,17 @@ it('requires a meaningful location and factual source before a daily problem is 
     ];
     expect($formatter->eveningIntelligence([
         'district' => ['label' => 'Como'], 'date' => '2026-09-20', 'daily_problems' => [$item],
-    ]))->toContain('Незакрытых проблем за день не зафиксировано.');
+    ]))->toContain('Новых значимых событий не зафиксировано.');
     $item['context_label'] = null;
     $item['quote'] = 'Не работает свет.';
     expect($formatter->eveningIntelligence([
         'district' => ['label' => 'Como'], 'date' => '2026-09-20', 'daily_problems' => [$item],
-    ]))->toContain('Незакрытых проблем за день не зафиксировано.');
+    ]))->toContain('Новых значимых событий не зафиксировано.');
     $item['context_label'] = 'Via Resolved';
     $item['quote'] = null;
     expect($formatter->eveningIntelligence([
         'district' => ['label' => 'Como'], 'date' => '2026-09-20', 'daily_problems' => [$item],
-    ]))->toContain('Незакрытых проблем за день не зафиксировано.');
+    ]))->toContain('Новых значимых событий не зафиксировано.');
 });
 
 it('does not attribute an ordinary apartment question to its message author', function () {
