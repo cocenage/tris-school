@@ -102,7 +102,7 @@ class CalendarEventsService
 
                     if ($date && $date->betweenIncluded($rangeStart, $rangeEnd)) {
                         $expanded->push([
-                            'id' => 'birthday_' . $user->id . '_' . $year,
+                            'id' => 'birthday_'.$user->id.'_'.$year,
                             'title' => "{$user->name}{$this->formatUserDip($user)} — День рождения",
                             'description' => null,
                             'short' => mb_strimwidth("🎂 {$user->name}", 0, 12, '...'),
@@ -126,7 +126,7 @@ class CalendarEventsService
                         $years = Carbon::parse($user->work_started_at)->diffInYears($date);
 
                         $expanded->push([
-                            'id' => 'work_' . $user->id . '_' . $year,
+                            'id' => 'work_'.$user->id.'_'.$year,
                             'title' => "{$user->name}{$this->formatUserDip($user)} — {$years} лет в компании",
                             'description' => null,
                             'short' => mb_strimwidth("🏢 {$user->name}", 0, 12, '...'),
@@ -147,6 +147,7 @@ class CalendarEventsService
                 $rangeStart->copy()->toDateString(),
                 $rangeEnd->copy()->toDateString(),
             ])
+            ->where('status', 'approved')
             ->whereHas('request', function ($query) {
                 $query->whereIn('status', ['approved', 'partially_approved']);
             })
@@ -164,10 +165,10 @@ class CalendarEventsService
             };
 
             $expanded->push([
-                'id' => 'day_off_' . $dayOffDay->id,
+                'id' => 'day_off_'.$dayOffDay->id,
                 'title' => "{$user?->name}{$this->formatUserDip($user)} — {$statusLabel}",
                 'description' => $dayOffDay->request?->reason,
-                'short' => mb_strimwidth("🌿 " . ($user?->name ?? 'Выходной'), 0, 12, '...'),
+                'short' => mb_strimwidth('🌿 '.($user?->name ?? 'Выходной'), 0, 12, '...'),
                 'type' => 'vacation',
                 'priority' => 85,
                 'start' => $date->copy(),
@@ -176,25 +177,25 @@ class CalendarEventsService
             ]);
         }
 
-$vacationRequests = VacationRequest::query()
-    ->with(['user', 'days'])
-    ->whereIn('status', ['approved', 'partially_approved'])
-    ->whereHas('user', function ($q) {
-        $q->where('is_active', true);
-    })
-    ->whereHas('days', function ($q) use ($rangeStart, $rangeEnd) {
-        $q->whereBetween('date', [
-            $rangeStart->toDateString(),
-            $rangeEnd->toDateString(),
-        ])->where('status', 'approved');
-    })
-    ->get();    
+        $vacationRequests = VacationRequest::query()
+            ->with(['user', 'days'])
+            ->whereIn('status', ['approved', 'partially_approved'])
+            ->whereHas('user', function ($q) {
+                $q->where('is_active', true);
+            })
+            ->whereHas('days', function ($q) use ($rangeStart, $rangeEnd) {
+                $q->whereBetween('date', [
+                    $rangeStart->toDateString(),
+                    $rangeEnd->toDateString(),
+                ])->where('status', 'approved');
+            })
+            ->get();
 
         foreach ($vacationRequests as $vacationRequest) {
             $user = $vacationRequest->user;
 
             $vacationDays = $vacationRequest->days
-                ->filter(fn($day) => Carbon::parse($day->date)->betweenIncluded($rangeStart, $rangeEnd))
+                ->filter(fn ($day) => Carbon::parse($day->date)->betweenIncluded($rangeStart, $rangeEnd))
                 ->sortBy('date')
                 ->values();
 
@@ -212,10 +213,10 @@ $vacationRequests = VacationRequest::query()
             };
 
             $expanded->push([
-                'id' => 'vacation_' . $vacationRequest->id . '_' . $start->format('Ymd'),
+                'id' => 'vacation_'.$vacationRequest->id.'_'.$start->format('Ymd'),
                 'title' => "{$user?->name}{$this->formatUserDip($user)} — {$statusLabel}",
                 'description' => $vacationRequest->reason,
-                'short' => mb_strimwidth("🏖 " . ($user?->name ?? 'Отпуск'), 0, 12, '...'),
+                'short' => mb_strimwidth('🏖 '.($user?->name ?? 'Отпуск'), 0, 12, '...'),
                 'type' => 'vacation',
                 'priority' => 80,
                 'start' => $start,
@@ -226,7 +227,7 @@ $vacationRequests = VacationRequest::query()
 
         if ($filter !== 'all') {
             $expanded = $expanded
-                ->filter(fn(array $event) => $event['type'] === $filter)
+                ->filter(fn (array $event) => $event['type'] === $filter)
                 ->values();
         }
 
@@ -237,7 +238,7 @@ $vacationRequests = VacationRequest::query()
 
     protected function formatUserDip(?User $user): string
     {
-        if (!$user) {
+        if (! $user) {
             return '';
         }
 
@@ -332,7 +333,7 @@ $vacationRequests = VacationRequest::query()
             for ($year = $startYear; $year <= $endYear; $year++) {
                 $occurrenceStart = $this->safeDateForYear($start, $year);
 
-                if (!$occurrenceStart) {
+                if (! $occurrenceStart) {
                     continue;
                 }
 
@@ -367,11 +368,11 @@ $vacationRequests = VacationRequest::query()
         $title = $event->title;
 
         if ($user) {
-            $title .= ' — ' . $user->name . $this->formatUserDip($user);
+            $title .= ' — '.$user->name.$this->formatUserDip($user);
         }
 
         return [
-            'id' => $event->id . '_' . $start->format('Ymd'),
+            'id' => $event->id.'_'.$start->format('Ymd'),
             'title' => $title,
             'description' => $event->description,
             'short' => mb_strimwidth($title, 0, 12, '...'),
