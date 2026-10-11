@@ -136,7 +136,7 @@ function mountControlWorkflow(): array
     return [$supervisor, $cleaner, $apartment, $control];
 }
 
-it('requires all corrective fields for a negative answer on the server', function () {
+it('shows required corrective details in the final check and still blocks an incomplete submission', function () {
     [, $cleaner, $apartment, $control] = mountControlWorkflow();
 
     Livewire::test('forms.page-control')
@@ -145,7 +145,29 @@ it('requires all corrective fields for a negative answer on the server', functio
         ->set('answers.0.0.selected', 'no')
         ->call('openReview')
         ->assertHasErrors('answers.0.0')
-        ->assertSet('reviewSheetOpen', false);
+        ->assertSet('reviewSheetOpen', true)
+        ->assertSee('Уточнить исправление')
+        ->assertSee('Пунктов для проверки: 1')
+        ->call('confirmSubmit')
+        ->assertHasErrors('answers.0.0')
+        ->assertSet('reviewSheetOpen', true)
+        ->assertSet('successSheetOpen', false);
+});
+
+it('lists unanswered required questions in the final check and opens their room', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('openReview')
+        ->assertSet('reviewSheetOpen', true)
+        ->assertSee('Пунктов для проверки: 1')
+        ->assertSee('Ответьте на вопрос')
+        ->assertSee('Перейти к вопросу')
+        ->call('goToQuestion', 0, 0)
+        ->assertSet('reviewSheetOpen', false)
+        ->assertSet('openRoomIndex', 0);
 });
 
 it('persists corrective fields in a draft and restores them on reload', function () {
