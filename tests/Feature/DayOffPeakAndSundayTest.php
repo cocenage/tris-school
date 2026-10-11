@@ -1,23 +1,41 @@
 <?php
 
+use App\Jobs\SendTelegramNotificationJob;
 use App\Models\CalendarEvent;
+use App\Models\DayOffRequest;
 use App\Models\User;
 use App\Services\Calendar\CalendarEventsService;
+use App\Services\Forms\DayOffRequestTelegramService;
 use Carbon\Carbon;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Livewire\Livewire;
 
 beforeEach(function () {
     Schema::dropIfExists('day_off_request_days');
     Schema::dropIfExists('day_off_requests');
+    Schema::dropIfExists('vacation_request_days');
+    Schema::dropIfExists('vacation_requests');
     Schema::dropIfExists('activity_log');
     Schema::dropIfExists('calendar_events');
+    Schema::dropIfExists('users');
+
+    Schema::create('users', function (Blueprint $table) {
+        $table->id();
+        $table->string('name')->nullable();
+        $table->boolean('dip')->default(false);
+        $table->boolean('is_active')->default(true);
+        $table->date('birthday')->nullable();
+        $table->date('work_started_at')->nullable();
+        $table->timestamps();
+    });
 
     Schema::create('calendar_events', function (Blueprint $table) {
         $table->id();
+        $table->unsignedBigInteger('user_id')->nullable();
         $table->string('type');
         $table->string('title');
         $table->text('description')->nullable();
@@ -52,6 +70,22 @@ beforeEach(function () {
         $table->timestamps();
     });
 
+    Schema::create('vacation_requests', function (Blueprint $table) {
+        $table->id();
+        $table->unsignedBigInteger('user_id');
+        $table->text('reason')->nullable();
+        $table->string('status')->default('pending');
+        $table->timestamps();
+    });
+
+    Schema::create('vacation_request_days', function (Blueprint $table) {
+        $table->id();
+        $table->unsignedBigInteger('vacation_request_id');
+        $table->date('date');
+        $table->string('status')->default('pending');
+        $table->timestamps();
+    });
+
     Schema::create('activity_log', function (Blueprint $table) {
         $table->id();
         $table->string('log_name')->nullable();
@@ -70,13 +104,16 @@ beforeEach(function () {
 afterEach(function () {
     Schema::dropIfExists('day_off_request_days');
     Schema::dropIfExists('day_off_requests');
+    Schema::dropIfExists('vacation_request_days');
+    Schema::dropIfExists('vacation_requests');
     Schema::dropIfExists('activity_log');
     Schema::dropIfExists('calendar_events');
+    Schema::dropIfExists('users');
 });
 
 function dayOffTestUser(): User
 {
-    $user = new User();
+    $user = new User;
     $user->setAttribute('id', 1001);
 
     return $user;
@@ -119,6 +156,7 @@ it('expands active peak events and ignores inactive or non-peak events', functio
 });
 
 it('does not add a peak date when a user selects it', function () {
+    $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Rome'));
     $this->actingAs(dayOffTestUser());
 
     CalendarEvent::create([
@@ -159,6 +197,7 @@ it('rejects a peak date in a direct range submission', function () {
 });
 
 it('allows Sunday selection but asks for confirmation before submission', function () {
+    $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Rome'));
     $this->actingAs(dayOffTestUser());
 
     Livewire::test('forms.page-weekend')
@@ -190,6 +229,7 @@ it('does not submit a Sunday request after returning from the warning', function
 
 it('creates a Sunday request after explicit confirmation', function () {
     Http::fake();
+    Queue::fake();
     $this->actingAs(dayOffTestUser());
 
     Livewire::test('forms.page-weekend')
@@ -207,4 +247,50 @@ it('creates a Sunday request after explicit confirmation', function () {
     expect(DB::table('day_off_requests')->count())->toBe(1)
         ->and(DB::table('day_off_request_days')->count())->toBe(1)
         ->and(Carbon::parse(DB::table('day_off_request_days')->value('date'))->toDateString())->toBe('2026-08-23');
+
+    Queue::assertPushed(SendTelegramNotificationJob::class, fn (SendTelegramNotificationJob $job): bool => $job->serviceClass === DayOffRequestTelegramService::class
+        && $job->method === 'sendCreated'
+        && $job->modelClass === DayOffRequest::class
+        && $job->modelId === (int) DB::table('day_off_requests')->value('id')
+    );
+});
+
+it('adds only approved dates from a partially approved request to the calendar', function () {
+    $employeeId = DB::table('users')->insertGetId([
+        'name' => 'Cleaner',
+        'is_active' => true,
+        'dip' => false,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    $request = DayOffRequest::create([
+        'user_id' => $employeeId,
+        'reason' => 'Частично согласованные даты',
+        'status' => 'partially_approved',
+    ]);
+    DB::table('day_off_request_days')->insert([
+        [
+            'day_off_request_id' => $request->id,
+            'user_id' => $employeeId,
+            'date' => '2026-08-23',
+            'status' => 'approved',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+        [
+            'day_off_request_id' => $request->id,
+            'user_id' => $employeeId,
+            'date' => '2026-08-24',
+            'status' => 'rejected',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+    ]);
+
+    $calendar = app(CalendarEventsService::class);
+    $approvedDate = Carbon::parse('2026-08-23', config('app.timezone'));
+    $rejectedDate = Carbon::parse('2026-08-24', config('app.timezone'));
+
+    expect($calendar->getEventsForDay($approvedDate, 'vacation'))->toHaveCount(1)
+        ->and($calendar->getEventsForDay($rejectedDate, 'vacation'))->toBeEmpty();
 });

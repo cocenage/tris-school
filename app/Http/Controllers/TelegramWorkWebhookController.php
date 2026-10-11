@@ -361,13 +361,17 @@ class TelegramWorkWebhookController extends Controller
         [, $action, $dayId] = $parts;
 
         $chatId = (string) data_get($callbackQuery, 'message.chat.id');
-        $allowedChatIds = config('services.telegram.work_allowed_chat_ids', []);
+        $requestChatId = (string) config('services.telegram.chat_id_formweekend', '');
+        $requestThreadId = config('services.telegram.thread_id_formweekend');
+        $callbackThreadId = data_get($callbackQuery, 'message.message_thread_id');
 
-        if (! empty($allowedChatIds) && ! in_array($chatId, $allowedChatIds, true)) {
-            $this->logCallbackEvent($data, null, null, false, 'chat_not_allowed');
-            $this->answerCallback($callbackQuery, 'Нет доступа к этому чату');
+        if (blank($requestChatId)
+            || $chatId !== $requestChatId
+            || (filled($requestThreadId) && (string) $callbackThreadId !== (string) $requestThreadId)) {
+            $this->logCallbackEvent($data, null, null, false, 'dayoffday_wrong_destination');
+            $this->answerCallback($callbackQuery, 'Кнопка не из чата заявок');
 
-            return response()->json(['ok' => true, 'skipped' => 'chat_not_allowed']);
+            return response()->json(['ok' => true, 'skipped' => 'dayoffday_wrong_destination']);
         }
 
         if (! in_array($action, ['approve', 'reject'], true)) {
@@ -420,11 +424,6 @@ class TelegramWorkWebhookController extends Controller
 
         $status = $action === 'approve' ? 'approved' : 'rejected';
 
-        $this->answerCallback(
-            $callbackQuery,
-            $status === 'approved' ? 'Обрабатываем одобрение' : 'Обрабатываем отклонение',
-        );
-
         $decisionApplied = false;
 
         DB::transaction(function () use (&$day, &$dayOffRequest, $status, $reviewer, &$decisionApplied): void {
@@ -465,6 +464,11 @@ class TelegramWorkWebhookController extends Controller
 
             return response()->json(['ok' => true, 'skipped' => 'dayoffday_already_reviewed']);
         }
+
+        $this->answerCallback(
+            $callbackQuery,
+            $status === 'approved' ? 'Дата одобрена' : 'Дата отклонена',
+        );
 
         $dayOffRequest->refresh();
         $dayOffRequest->load(['user', 'days']);
