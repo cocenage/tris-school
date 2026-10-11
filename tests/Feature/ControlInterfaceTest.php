@@ -5,15 +5,27 @@ it('keeps control navigation anchored to the internal scroll container', functio
 
     expect($view)
         ->toContain('id="control-scroll-area" data-control-scroll-area')
-        ->toContain('data-control-sticky-nav')
-        ->toContain('data-control-room-nav=')
+        ->toContain('wire:click="toggleRoom({{ $roomIndex }})"')
+        ->toContain('aria-expanded="{{ $isOpen ? \'true\' : \'false\' }}"')
         ->toContain('data-control-room-section=')
         ->toContain('data-control-anchor="question-')
         ->toContain('Открыть инструкцию')
         ->toContain('Сбросить контроль')
         ->toContain('x-model="query"')
-        ->not->toContain('Только незаполненные')
-        ->not->toContain('Следующий незаполненный')
+        ->toContain('min-h-[56px] w-full')
+        ->toContain('whitespace-normal break-words leading-[1.35]')
+        ->toContain("@if(\$type === 'text' || \$type === 'both')")
+        ->toContain('correctiveOpen: false')
+        ->toContain('x-show="correctiveOpen"')
+        ->toContain('wire:click="goToQuestion({{ $issue[\'room\'] }}, {{ $issue[\'question\'] }})"')
+        ->toContain('Отправить контроль');
+
+    expect($view)->not->toContain('data-control-sticky-nav');
+    expect($view)->not->toContain('data-control-room-nav=');
+    expect($view)->not->toContain('Только незаполненные');
+    expect($view)->not->toContain('Следующий незаполненный');
+
+    expect($view)
         ->toContain('Что исправить')
         ->toContain('Ошибка уже повторялась?')
         ->toContain('Что нужно делать иначе?')

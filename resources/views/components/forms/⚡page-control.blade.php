@@ -563,7 +563,7 @@ protected function getDraftPayload(?array $media = null): array
 
     public function getFormButtonTextProperty(): string
     {
-        return $this->formReady ? 'Проверить и отправить' : 'Продолжить';
+        return 'Проверить контроль';
     }
 
     public function getIncompleteQuestionsProperty(): array
@@ -698,6 +698,7 @@ protected function getDraftPayload(?array $media = null): array
     {
         $this->ensureCanConductControl();
 
+        $this->reviewSheetOpen = false;
         $this->openRoomIndex = $roomIndex;
 
         $this->dispatch(
@@ -1061,43 +1062,52 @@ protected function getDraftPayload(?array $media = null): array
         }, $analysis['errors'] ?? []);
     }
 
-    public function continueForm(): void
+    public function getReviewIssuesProperty(): array
     {
-        $this->ensureCanConductControl();
+        $issues = [];
 
-        $this->resetErrorBag();
+        foreach ($this->getErrorBag()->toArray() as $field => $messages) {
+            if (preg_match('/^(?:answers|queuedPhotos)\.(\d+)\.(\d+)/', $field, $matches)) {
+                $roomIndex = (int) $matches[1];
+                $questionIndex = (int) $matches[2];
+                $room = $this->rooms[$roomIndex] ?? [];
+                $question = $room['items'][$questionIndex] ?? [];
+                $key = $roomIndex.':'.$questionIndex;
 
-        $this->validateMeta();
-
-        if ($this->getErrorBag()->isNotEmpty()) {
-            $this->dispatch('toast', type: 'error', message: 'Заполните основную информацию');
-            $this->scrollToFirstError();
-            return;
-        }
-
-        foreach ($this->rooms as $roomIndex => $room) {
-            foreach (($room['items'] ?? []) as $questionIndex => $question) {
-                if ($this->questionIsOptional($room, $question)) {
-                    continue;
+                if (! isset($issues[$key])) {
+                    $issues[$key] = [
+                        'room' => $roomIndex,
+                        'question' => $questionIndex,
+                        'title' => $room['title'] ?? ('Комната '.($roomIndex + 1)),
+                        'question_title' => $question['question'] ?? 'Вопрос',
+                        'messages' => [],
+                    ];
                 }
 
-                $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
+                $issues[$key]['messages'] = array_values(array_unique([
+                    ...$issues[$key]['messages'],
+                    ...$messages,
+                ]));
 
-                if (! $this->isQuestionFilled($question, $answer)) {
-                    $this->openRoomIndex = $roomIndex;
+                continue;
+            }
 
-                    $this->dispatch(
-                        'control-scroll',
-                        type: 'question',
-                        room: $roomIndex,
-                        q: $questionIndex
-                    );
-
-                    return;
-                }
+            if ($field === 'photoUploads') {
+                $issues['photoUploads'] = [
+                    'room' => null,
+                    'question' => null,
+                    'title' => 'Фото и видео',
+                    'question_title' => null,
+                    'messages' => array_values(array_unique($messages)),
+                ];
             }
         }
 
+        return array_values($issues);
+    }
+
+    public function continueForm(): void
+    {
         $this->openReview();
     }
 
@@ -1221,21 +1231,16 @@ protected function getDraftPayload(?array $media = null): array
         $this->resetErrorBag();
 
         $this->validateMeta();
-        $this->validateRooms();
 
         if ($this->getErrorBag()->isNotEmpty()) {
             $this->isSubmitting = false;
-            $this->dispatch('toast', type: 'error', message: 'Вы заполнили не все обязательные поля');
+            $this->dispatch('toast', type: 'error', message: 'Заполните основную информацию');
             $this->scrollToFirstError();
             return;
         }
 
-        if (! $this->validateQueuedPhotosLimits()) {
-            $this->isSubmitting = false;
-            $this->dispatch('toast', type: 'error', message: 'Проверьте загруженные файлы');
-            $this->scrollToFirstError();
-            return;
-        }
+        $this->validateRooms();
+        $this->validateQueuedPhotosLimits();
 
         $this->reviewSheetOpen = true;
     }
@@ -1244,7 +1249,6 @@ protected function getDraftPayload(?array $media = null): array
     {
         $this->ensureCanConductControl();
 
-        $this->reviewSheetOpen = false;
         $this->submit();
     }
 
@@ -1510,8 +1514,9 @@ protected function getDraftPayload(?array $media = null): array
     }
 
     #control-scroll-area {
-        --control-sticky-offset: 92px;
+        --control-sticky-offset: 16px;
         scroll-padding-top: var(--control-sticky-offset);
+        scroll-padding-bottom: 136px;
         scroll-behavior: smooth;
         overscroll-behavior-y: contain;
     }
@@ -1520,56 +1525,22 @@ protected function getDraftPayload(?array $media = null): array
         scroll-margin-top: var(--control-sticky-offset, 92px);
     }
 
-[data-control-room-nav][data-active="true"] {
-        background: #EEF5FC;
-        color: #285B86;
-        box-shadow: inset 0 0 0 1px #8FB5D5;
-    }
-
-    [data-control-room-nav][data-status="done"] {
-        background: #E7F8EF;
-        color: #16834B;
-    }
-
-    [data-control-room-nav][data-status="done"][data-active="true"] {
-        background: #EDF9F2;
-        color: #257A4B;
-        box-shadow: inset 0 0 0 1px #9DD4B2;
-    }
-
-    [data-control-room-nav][data-status="error"] {
-        border: 1px solid #F04438;
-        color: #B42318;
-    }
-
-    [data-control-room-nav][data-active="true"] .control-room-progress {
-        color: rgba(255, 255, 255, 0.55);
-    }
-
     .control-scroll-highlight {
         animation: control-scroll-highlight 1.8s ease-out;
     }
 
     @keyframes control-scroll-highlight {
-        0% { box-shadow: 0 0 0 3px rgba(33, 50, 89, 0.24); }
-        100% { box-shadow: 0 0 0 0 rgba(33, 50, 89, 0); }
+        0% { box-shadow: 0 0 0 3px rgba(28, 125, 79, 0.18); }
+        100% { box-shadow: 0 0 0 0 rgba(28, 125, 79, 0); }
     }
 
     [x-cloak] {
         display: none !important;
     }
 
-    .no-scrollbar::-webkit-scrollbar {
-        display: none;
-    }
-
-    .no-scrollbar {
-        -ms-overflow-style: none;
-        scrollbar-width: none;
-    }
 </style>
 
-<div class="flex h-full min-h-0 flex-col bg-[#F6F8FB]">
+<div class="flex h-full min-h-0 flex-col bg-[#F7F8F7]">
     <form
         wire:submit.prevent="submit"
         x-data="{
@@ -1603,31 +1574,21 @@ protected function getDraftPayload(?array $media = null): array
             <div class="min-h-full rounded-t-[34px] bg-white">
                 <div class=" pb-[120px]">
 
-                    <div class="mb-[18px] bg-white px-[16px] pt-[8px]">
-                        <div class="text-center">
-                            <h1 class="truncate text-[23px] font-semibold tracking-[-0.04em] text-[#111827]">
-                                {{ $control?->name ?? 'Контроль качества' }}
-                            </h1>
-
-                            <p class="mt-[7px] text-[14px] leading-[1.45] text-[#64748B]">
-                                Заполните данные, пройдите комнаты и отправьте результат проверки.
-                            </p>
+                    <div class="mb-[16px] bg-white px-[16px] pb-[4px] pt-[8px]">
+                        <div class="mb-[7px] flex items-center justify-between gap-[12px] text-[12px] font-medium text-[#64748B]">
+                            <span>Обязательные ответы</span>
+                            <span class="shrink-0 font-semibold text-[#344054]">{{ $this->requiredQuestionsDone }} из {{ $this->requiredQuestionsTotal }}</span>
                         </div>
 
-                        <div class="mt-[14px] h-[8px] overflow-hidden rounded-full bg-[#E2E8F0]">
+                        <div class="h-[6px] overflow-hidden rounded-full bg-[#EEF1EF]">
                             <div
-                                class="h-full rounded-full bg-[#6F9FC4] transition-all duration-300"
+                                class="h-full rounded-full bg-[#25845A] transition-all duration-300"
                                 style="width: {{ $this->formProgress }}%"
                             ></div>
                         </div>
-
-                        <div class="mt-[10px] flex items-center justify-between gap-[10px] text-[12px] font-medium text-[#64748B]">
-                            <span>Заполнено {{ $this->requiredQuestionsDone }} из {{ $this->requiredQuestionsTotal }}</span>
-                            <span>{{ $this->queuedPhotosTotal }} файлов</span>
-                        </div>
                     </div>
 
-<div class="control-section mb-[20px] mx-[16px]" id="meta-block" data-control-anchor="meta">
+<div class="control-section mx-[16px] mb-[20px]" id="meta-block" data-control-anchor="meta">
 
 
                         <div class="bg-white p-0">
@@ -1898,53 +1859,6 @@ protected function getDraftPayload(?array $media = null): array
                     </div>
 
                     @if(count($rooms))
-                        <div class="sticky left-[16px] top-[0px] z-40 mb-[16px]" data-control-sticky-nav>
-                            <div class="rounded-[30px] bg-white/95 pt-[15px] pb-[15px] backdrop-blur">
-                                <div class="flex gap-[8px] overflow-x-auto no-scrollbar" data-control-nav-strip aria-label="Разделы контроля">
-                                    @foreach($rooms as $roomIndex => $roomTab)
-                                        @php
-                                            $status = $this->getRoomStatus($roomIndex);
-                                            $progress = $this->getRoomProgress($roomIndex);
-                                            $isActive = $openRoomIndex === $roomIndex;
-
-                                            $dotClass = match($status) {
-                                                'done' => 'bg-[#2DBE72]',
-                                                'partial' => 'bg-[#3B82F6]',
-                                                'error' => 'bg-[#EF4444]',
-                                                default => 'bg-[#CBD5E1]',
-                                            };
-                                        @endphp
-
-                                        <button
-                                            type="button"
-                                            wire:click="openRoom({{ $roomIndex }})"
-                                            data-control-room-nav="{{ $roomIndex }}"
-                                            data-status="{{ $status }}"
-                                            data-active="{{ $isActive ? 'true' : 'false' }}"
-                                            aria-current="{{ $isActive ? 'true' : 'false' }}"
-                                            class="relative isolate flex min-h-[44px] shrink-0 items-center gap-[8px] overflow-hidden rounded-full bg-[#F1F5F9] px-[13px] text-left text-[#213259] transition"
-                                        >
-                                            <span
-                                                aria-hidden="true"
-                                                class="pointer-events-none absolute inset-y-0 left-0 -z-10 bg-current/10 transition-[width] duration-300"
-                                                style="width: {{ $progress['total'] > 0 ? round(($progress['done'] / $progress['total']) * 100) : 0 }}%;"
-                                            ></span>
-
-                                            <div class="relative flex items-center gap-[8px]">
-                                                <span class="max-w-[118px] truncate text-[13px] font-semibold">
-                                                    {{ $roomTab['title'] ?? ('Комната ' . ($roomIndex + 1)) }}
-                                                </span>
-
-                                                <span class="control-room-progress text-[11px] font-semibold text-[#64748B]">
-                                                   {{ $progress['done'] }}/{{ $progress['total'] }}
-                                                </span>
-                                            </div>
-                                        </button>
-                                    @endforeach
-                                </div>
-                            </div>
-                        </div>
-
                         <div class="px-[16px] space-y-[12px]">
                             @foreach($rooms as $roomIndex => $room)
                                 @php
@@ -1954,9 +1868,9 @@ protected function getDraftPayload(?array $media = null): array
 
                                     $statusClass = match($roomStatus) {
                                         'done' => 'bg-[#E7F8EF] text-[#16834B]',
-                                        'partial' => 'bg-[#EAF2FF] text-[#2563EB]',
-                                        'error' => 'bg-[#FEECEC] text-[#DC2626]',
-                                        default => 'bg-[#F1F5F9] text-[#64748B]',
+                                        'partial' => 'bg-[#F0F3F1] text-[#536159]',
+                                        'error' => 'bg-[#FFF0ED] text-[#A33B32]',
+                                        default => 'bg-[#F3F5F3] text-[#68736C]',
                                     };
                                 @endphp
 
@@ -1966,47 +1880,45 @@ protected function getDraftPayload(?array $media = null): array
                                     data-control-room-section="{{ $roomIndex }}"
                                     wire:key="control-room-{{ $roomIndex }}"
                                     @class([
-                                        'control-section overflow-hidden rounded-[24px] border',
-                                        'border-[#B8DEC5] bg-white' => $roomStatus === 'done',
-                                        'border-[#E9A6A0] bg-white' => $roomStatus === 'error',
-                                        'border-[#E6ECF2] bg-white' => ! in_array($roomStatus, ['done', 'error'], true),
+                                        'control-section overflow-hidden rounded-[22px] bg-white',
+                                        'ring-1 ring-inset ring-[#D9EDE0]' => $roomStatus === 'done',
+                                        'ring-1 ring-inset ring-[#F1D4D1]' => $roomStatus === 'error',
                                     ])
                                 >
                                     <button
                                         type="button"
                                         wire:click="toggleRoom({{ $roomIndex }})"
+                                        aria-expanded="{{ $isOpen ? 'true' : 'false' }}"
                                         @class([
-                                            'flex min-h-[72px] w-full items-center justify-between gap-[14px] px-[18px] py-[14px] text-left',
-                                            'bg-[#F7FCF8]' => $roomStatus === 'done',
+                                            'flex min-h-[58px] w-full items-center justify-between gap-[12px] px-[14px] py-[12px] text-left transition active:bg-[#F6F8F6]',
+                                            'bg-[#F6FBF7]' => $roomStatus === 'done',
+                                            'bg-[#FFF9F8]' => $roomStatus === 'error',
+                                            'bg-white' => ! in_array($roomStatus, ['done', 'error'], true),
                                         ])
                                     >
                                         <div class="min-w-0">
-                                            <div class="truncate text-[18px] font-semibold tracking-[-0.025em] text-[#111827]">
+                                            <div class="truncate text-[17px] font-semibold tracking-[-0.02em] text-[#111827]">
                                                 {{ $room['title'] ?? ('Комната ' . ($roomIndex + 1)) }}
                                             </div>
 
-                                            <div class="mt-[5px] text-[13px] font-medium text-[#64748B]">
-                                                {{ $roomProgress['done'] }} / {{ $roomProgress['total'] }}
+                                            <div class="mt-[3px] text-[12px] font-medium text-[#64748B]">
+                                                {{ $roomProgress['done'] }} из {{ $roomProgress['total'] }} вопросов
                                             </div>
                                         </div>
 
                                         <div class="flex shrink-0 items-center gap-[8px]">
-                                            <span class="rounded-full px-[10px] py-[6px] text-[12px] font-semibold {{ $statusClass }}">
-                                                {{ $roomStatus === 'done' ? '✓ готово' : ($roomStatus === 'error' ? '! проверить' : ($roomStatus === 'partial' ? 'в работе' : 'не начато')) }}
+                                            <span class="rounded-full px-[9px] py-[5px] text-[11px] font-semibold {{ $statusClass }}">
+                                                {{ $roomStatus === 'done' ? 'Готово' : ($roomStatus === 'error' ? 'Проверить' : ($roomStatus === 'partial' ? 'В работе' : 'Не начато')) }}
                                             </span>
 
-                                            <span class="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[#F1F5F9] text-[20px] font-medium text-[#64748B]">
+                                            <span aria-hidden="true" class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-[#F1F4F2] text-[18px] font-medium leading-none text-[#68736C]">
                                                 {{ $isOpen ? '−' : '+' }}
                                             </span>
                                         </div>
                                     </button>
 
                                     @if($isOpen)
-                                        <div @class([
-                                            'border-t p-[10px]',
-                                            'border-[#D3E8DA] bg-white' => $roomStatus === 'done',
-                                            'border-[#E6ECF2] bg-[#FCFDFE]' => $roomStatus !== 'done',
-                                        ])>
+                                        <div class="px-[12px] pb-[14px] pt-[2px]">
                                             @if(!empty($room['description']))
                                                 <div class="mb-[12px] border-l-2 border-[#D9E3EE] px-[12px] py-[4px] text-[13px] leading-[1.45] text-[#64748B]">
                                                     {{ $room['description'] }}
@@ -2038,25 +1950,21 @@ protected function getDraftPayload(?array $media = null): array
                                                         data-control-anchor="question-{{ $roomIndex }}-{{ $questionIndex }}"
                                                         wire:key="control-question-{{ $roomIndex }}-{{ $questionIndex }}"
                                                         @class([
-                                                            'control-section rounded-[18px] bg-white p-[8px]',
-                                                            'border border-[#E9A6A0] bg-[#FFF9F8]' => $errors->has("answers.$roomIndex.$questionIndex"),
+                                                            'control-section rounded-[18px] bg-[#F8FAF9] p-[12px]',
+                                                            'ring-1 ring-inset ring-[#E9A6A0] bg-[#FFF9F8]' => $errors->has("answers.$roomIndex.$questionIndex"),
                                                         ])
                                                     >
-                                                            <div class="mb-[12px] flex items-start justify-between gap-[10px]">
-                                                            <div class="min-w-0 text-[15px] font-semibold leading-[1.35] tracking-[-0.01em] text-[#111827]">
+                                                        <div class="mb-[11px] flex items-start gap-[6px]">
+                                                            <div class="min-w-0 flex-1 whitespace-normal break-words text-[16px] font-semibold leading-[1.4] tracking-[-0.01em] text-[#17201A]">
                                                                 {{ $question['question'] ?? 'Вопрос' }}
 
                                                                 @if(!$optional)
                                                                     <span class="text-[#2D6494]">*</span>
                                                                 @else
-                                                                    <span class="ml-[4px] text-[12px] font-medium text-[#94A3B8]">
-                                                                        необязательно
+                                                                    <span class="ml-[5px] text-[11px] font-medium text-[#8A948E]">
+                                                                        · необязательно
                                                                     </span>
                                                                 @endif
-                                                            </div>
-
-                                                            <div class="shrink-0 rounded-full px-[9px] py-[5px] text-[11px] font-semibold {{ $isFilled ? 'bg-[#E7F8EF] text-[#16834B]' : 'bg-[#F1F5F9] text-[#64748B]' }}">
-                                                                {{ $isFilled ? 'готово' : 'пусто' }}
                                                             </div>
                                                         </div>
 
@@ -2099,40 +2007,56 @@ protected function getDraftPayload(?array $media = null): array
     >
         <button
             type="button"
-            @click="choose(); save();"
+            @click="choose(); save()"
             wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
             wire:loading.attr="disabled"
+            wire:target="setAnswer"
+            :aria-pressed="active.toString()"
             :class="active
-                ? 'border-[#6F9FC4] bg-[#EEF5FC] text-[#285B86]'
-                : 'border-transparent bg-[#F1F5F9] text-[#334155]'"
-            class="flex min-h-[50px] w-full items-center justify-between rounded-[16px] border px-[13px] text-left text-[14px] font-semibold transition"
+                ? 'bg-[#EAF6EE] text-[#176B43] ring-1 ring-inset ring-[#B8DEC5]'
+                : 'bg-[#F0F3F1] text-[#34423A]'"
+            class="flex min-h-[56px] w-full items-center gap-[12px] rounded-[16px] px-[14px] py-[12px] text-left text-[15px] font-semibold transition active:scale-[0.995] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#25845A]/30"
         >
-            <span class="flex min-w-0 items-center gap-[9px]">
-                <span class="flex h-[16px] w-[16px] shrink-0 items-center justify-center rounded-full border border-[#CBD5E1] bg-white">
-                    <span x-show="active" x-cloak class="h-[8px] w-[8px] rounded-full bg-[#4B83AD]"></span>
-                </span>
-                <span class="truncate">{{ $opt['label'] ?? 'Вариант' }}</span>
+            <span class="flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-full bg-white/90 ring-1 ring-inset ring-[#C8D1CB]">
+                <span x-show="active" x-cloak class="h-[10px] w-[10px] rounded-full bg-[#25845A]"></span>
             </span>
+            <span class="min-w-0 whitespace-normal break-words leading-[1.35]">{{ $opt['label'] ?? 'Вариант' }}</span>
         </button>
     </div>
 @endforeach
                                                             </div>
                                                         @endif
 
-<textarea
-    wire:model.blur="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom"
-    rows="3"
-    placeholder="Текстовый ответ / комментарий"
-    class="mt-[10px] w-full rounded-[20px] border-0 bg-[#F1F5F9] px-[15px] py-[13px] text-[14px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
-></textarea>
+                                                        @if($type === 'text' || $type === 'both')
+                                                            <textarea
+                                                                wire:model.blur="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom"
+                                                                rows="3"
+                                                                maxlength="{{ $answerTextLimit }}"
+                                                                placeholder="{{ $question['custom_answer_label'] ?? 'Текстовый ответ / комментарий' }}"
+                                                                class="mt-[10px] min-h-[88px] w-full resize-y rounded-[16px] border-0 bg-white px-[14px] py-[12px] text-[15px] leading-[1.4] text-[#17201A] placeholder:text-[#8A948E] focus:ring-2 focus:ring-[#25845A]/20"
+                                                            ></textarea>
+                                                        @endif
 
                                                         @if($this->answerIsNegative($question, $answer))
                                                             @php
                                                                 $corrective = is_array($answer['corrective'] ?? null) ? $answer['corrective'] : [];
                                                             @endphp
-                                                            <div class="mt-[10px] border-l-2 border-[#E5BE67] bg-[#FFFDF5] px-[10px] py-[9px]">
-                                                                <div class="text-[12px] font-semibold uppercase tracking-[0.04em] text-[#8A6116]">Что исправить</div>
-                                                                <div class="mt-[8px] space-y-[7px]">
+                                                            <div class="mt-[10px] rounded-[15px] bg-[#F8F6EE] p-[10px]" x-data="{ correctiveOpen: false }">
+                                                                <button
+                                                                    type="button"
+                                                                    class="flex min-h-[42px] w-full items-center justify-between gap-[10px] rounded-[11px] px-[2px] text-left"
+                                                                    x-on:click="correctiveOpen = ! correctiveOpen"
+                                                                    :aria-expanded="correctiveOpen.toString()"
+                                                                >
+                                                                    <span class="min-w-0">
+                                                                        <span class="block text-[13px] font-semibold text-[#604D1B]">Уточнить исправление</span>
+                                                                        <span class="mt-[2px] block text-[11px] text-[#7C6A39]">Обязательно для ответа «Нет»</span>
+                                                                    </span>
+                                                                    <span aria-hidden="true" class="shrink-0 text-[18px] leading-none text-[#7C6A39]" x-text="correctiveOpen ? '−' : '+'"></span>
+                                                                </button>
+                                                                <div x-show="correctiveOpen" x-cloak class="mt-[9px] space-y-[10px]">
+                                                                    <div class="text-[12px] font-semibold text-[#604D1B]">Что исправить?</div>
+                                                                <div class="space-y-[8px]">
                                                                     <div>
                                                                         <div class="flex flex-col gap-[5px] sm:flex-row sm:items-center sm:justify-between">
                                                                             <div class="text-[12px] font-medium text-[#6B7280]">Ошибка уже повторялась?</div>
@@ -2188,22 +2112,23 @@ protected function getDraftPayload(?array $media = null): array
                                                                         </div>
                                                                     </div>
                                                                 </div>
+                                                                </div>
                                                             </div>
                                                         @endif
 
-                                                        <div class="mt-[10px] rounded-[16px] bg-[#F6F7F8] p-[10px]">
+                        <div class="mt-[10px] rounded-[16px] bg-[#F4F6F4] p-[10px]">
                                                             <div class="flex items-center justify-between gap-[10px]">
                                                                 <div class="min-w-0">
                                                                     <div class="text-[13px] font-semibold text-[#111827]">
-                                                                        Фото и видео к вопросу
+                                                                        Фото и видео
                                                                     </div>
                                                                     <div class="mt-[2px] text-[12px] font-medium text-[#64748B]">
                                                                         {{ count($questionPhotos) }} / {{ $photoLimit }} файлов
                                                                     </div>
                                                                 </div>
 
-                                                                <label class="shrink-0 cursor-pointer rounded-full bg-white px-[12px] py-[8px] text-[12px] font-semibold text-[#285B86] ring-1 ring-inset ring-[#C8D8E8]">
-                                                                    Добавить
+                                                                <label class="shrink-0 cursor-pointer rounded-full bg-white px-[13px] py-[9px] text-[12px] font-semibold text-[#236B49] ring-1 ring-inset ring-[#D4E3D9] active:bg-[#EFF7F1]">
+                                                                    Фото или видео
 <input
     type="file"
     multiple
@@ -2325,7 +2250,7 @@ protected function getDraftPayload(?array $media = null): array
             </div>
         </div>
 
-        <div class="shrink-0 border-t border-[#E6ECF2] bg-white/95 px-[16px] pb-[16px] pt-[12px] backdrop-blur">
+        <div class="shrink-0 border-t border-[#E7ECE8] bg-white/95 px-[16px] pt-[10px] backdrop-blur" style="padding-bottom: calc(10px + env(safe-area-inset-bottom))">
             <div class="grid grid-cols-3 gap-[10px]">
                 <div class="col-span-1">
                     <x-ui.button
@@ -2333,14 +2258,18 @@ protected function getDraftPayload(?array $media = null): array
                         variant="secondary"
                         wire:click="saveDraft"
                         wire:loading.attr="disabled"
-                        wire:target="saveDraft,saveDraftAuto,continueForm,submit"
+                        wire:target="saveDraft,saveDraftAuto,continueForm,submit,photoUploads,finishPhotoUpload"
                     >
-                        <span wire:loading.remove wire:target="saveDraft">
+                        <span wire:loading.remove wire:target="saveDraft,saveDraftAuto">
                             Сохранить
                         </span>
 
-                        <span wire:loading wire:target="saveDraft">
-                            ...
+                        <span wire:loading wire:target="saveDraft,saveDraftAuto">
+                            Сохраняем…
+                        </span>
+
+                        <span wire:loading wire:target="photoUploads,finishPhotoUpload">
+                            Файл…
                         </span>
                     </x-ui.button>
                 </div>
@@ -2352,21 +2281,25 @@ protected function getDraftPayload(?array $media = null): array
                         :progress="$this->formProgress"
                         wire:click="continueForm"
                         wire:loading.attr="disabled"
-                        wire:target="continueForm,openReview,confirmSubmit,submit"
+                        wire:target="continueForm,openReview,confirmSubmit,submit,photoUploads,finishPhotoUpload"
                       :disabled="$isSubmitting"
                     >
-                        <span wire:loading.remove wire:target="continueForm,openReview,confirmSubmit,submit">
+                        <span wire:loading.remove wire:target="continueForm,openReview,confirmSubmit,submit,photoUploads,finishPhotoUpload">
                             {{ $this->formButtonText }}
                         </span>
 
                         <span wire:loading wire:target="continueForm,openReview,confirmSubmit,submit">
-                            Проверяем...
+                            Проверяем…
+                        </span>
+
+                        <span wire:loading wire:target="photoUploads,finishPhotoUpload">
+                            Загружается файл…
                         </span>
                     </x-ui.button>
                 </div>
             </div>
 
-            <div class="mt-[8px] min-h-[17px] text-center text-[12px] font-medium text-[#94A3B8]">
+            <div class="mt-[8px] min-h-[17px] text-center text-[12px] font-medium text-[#738078]" role="status" aria-live="polite">
                 @if($draftState === 'saving')
                     Сохраняем черновик...
                 @elseif($draftState === 'dirty')
@@ -2388,13 +2321,13 @@ protected function getDraftPayload(?array $media = null): array
     $summary = $this->reviewSummary;
 @endphp
 
-            <div class="p-5">
-                <h1 class="text-[22px] font-semibold tracking-[-0.02em] text-[#111111]">
+            <div class="max-h-[82dvh] overflow-y-auto overscroll-contain px-[16px] pb-[calc(20px+env(safe-area-inset-bottom))] pt-[12px]">
+                <h1 class="text-[21px] font-semibold tracking-[-0.02em] text-[#17201A]">
                     Проверка перед отправкой
                 </h1>
 
-                <p class="mt-[8px] text-[14px] leading-[1.45] text-black/55">
-                    Проверьте основные данные. После отправки контроль сохранится как финальный результат.
+                <p class="mt-[6px] text-[13px] leading-[1.45] text-[#66736B]">
+                    Проверьте ответы и вложения. Отправка сохранит контроль как финальный результат.
                 </p>
 
                 <div class="mt-[18px] space-y-[8px] rounded-[26px] bg-[#F8FAFC] p-[14px] text-[14px] font-medium text-[#111827]">
@@ -2448,11 +2381,48 @@ protected function getDraftPayload(?array $media = null): array
                     </div>
                 @endif
 
-                @if($this->incompleteQuestionsCount > 0)
-                    <div class="mt-[14px] rounded-[22px] bg-[#FEECEC] p-[14px] text-[13px] font-semibold text-[#B42318]">
-                        Остались незаполненные вопросы: {{ $this->incompleteQuestionsCount }}
+                @if(count($this->reviewIssues) > 0)
+                <div class="mt-[14px] rounded-[18px] bg-[#FFF5F3] p-[12px]" aria-live="polite">
+                        <div class="text-[13px] font-semibold text-[#A33B32]">
+                            Пунктов для проверки: {{ count($this->reviewIssues) }}
+                        </div>
+                        <div class="mt-[8px] space-y-[7px]">
+                            @foreach($this->reviewIssues as $issue)
+                                @if($issue['room'] !== null && $issue['question'] !== null)
+                                    <button
+                                        type="button"
+                                        wire:click="goToQuestion({{ $issue['room'] }}, {{ $issue['question'] }})"
+                                        wire:loading.attr="disabled"
+                                        wire:target="goToQuestion"
+                                        class="block min-h-[48px] w-full rounded-[13px] bg-white px-[11px] py-[8px] text-left ring-1 ring-inset ring-[#F1D9D6]"
+                                    >
+                                        <span class="block text-[11px] font-semibold text-[#7A625E]">{{ $issue['title'] }}</span>
+                                        <span class="mt-[2px] block whitespace-normal break-words text-[13px] font-medium leading-[1.35] text-[#27322B]">{{ $issue['question_title'] }}</span>
+                                        @foreach($issue['messages'] as $message)
+                                            <span class="mt-[3px] block text-[11px] text-[#A33B32]">{{ $message }}</span>
+                                        @endforeach
+                                        <span class="mt-[5px] block text-[11px] font-semibold text-[#25845A]">Перейти к вопросу</span>
+                                    </button>
+                                @else
+                                    <div class="rounded-[13px] bg-white px-[11px] py-[9px] text-[12px] text-[#A33B32]">
+                                        <span class="font-semibold">{{ $issue['title'] }}</span>
+                                        @foreach($issue['messages'] as $message)
+                                            <span class="mt-[2px] block">{{ $message }}</span>
+                                        @endforeach
+                                    </div>
+                                @endif
+                            @endforeach
+                        </div>
+                    </div>
+                @else
+                    <div class="mt-[14px] rounded-[16px] bg-[#EFF8F2] px-[12px] py-[10px] text-[13px] font-medium text-[#26704A]">
+                        Все обязательные ответы и вложения готовы к отправке.
                     </div>
                 @endif
+
+                <div class="mt-[10px] rounded-[13px] bg-[#FFF8E8] px-[11px] py-[9px] text-[12px] font-medium text-[#765F23]" wire:loading.flex wire:target="photoUploads,finishPhotoUpload">
+                    Фото или видео ещё загружается. Дождитесь завершения загрузки.
+                </div>
 
                 <div class="mt-[22px] grid grid-cols-2 gap-[10px]">
                     <x-ui.button
@@ -2468,11 +2438,14 @@ protected function getDraftPayload(?array $media = null): array
                         variant="primary"
                         wire:click="confirmSubmit"
                         wire:loading.attr="disabled"
-                        wire:target="confirmSubmit,submit"
-                       :disabled="$isSubmitting"
+                        wire:target="confirmSubmit,submit,photoUploads,finishPhotoUpload"
+                        :disabled="$isSubmitting || count($this->reviewIssues) > 0"
                     >
-                        <span wire:loading.remove wire:target="confirmSubmit,submit">Отправить</span>
+                        <span wire:loading.remove wire:target="confirmSubmit,submit,photoUploads,finishPhotoUpload">
+                            {{ count($this->reviewIssues) > 0 ? 'Заполните пункты' : 'Отправить контроль' }}
+                        </span>
                         <span wire:loading wire:target="confirmSubmit,submit">Отправляем...</span>
+                        <span wire:loading wire:target="photoUploads,finishPhotoUpload">Ждём файл…</span>
                     </x-ui.button>
                 </div>
             </div>
@@ -2633,59 +2606,6 @@ protected function getDraftPayload(?array $media = null): array
     const initializeControlNavigation = () => {
         const getScrollArea = () => document.getElementById('control-scroll-area');
 
-        const getStickyOffset = (area) => {
-            const stickyNav = area?.querySelector('[data-control-sticky-nav]');
-
-            if (!stickyNav) {
-                return 16;
-            }
-
-            const gap = 12;
-            const offset = stickyNav.getBoundingClientRect().height + gap;
-
-            area.style.setProperty('--control-sticky-offset', `${offset}px`);
-
-            return offset;
-        };
-
-        const updateActiveRoom = (area) => {
-            if (!area) {
-                return;
-            }
-
-            const stickyOffset = getStickyOffset(area);
-            const areaTop = area.getBoundingClientRect().top;
-            const sections = Array.from(area.querySelectorAll('[data-control-room-section]'));
-            let activeRoom = sections[0]?.dataset.controlRoomSection ?? null;
-
-            for (const section of sections) {
-                if (section.getBoundingClientRect().top <= areaTop + stickyOffset + 8) {
-                    activeRoom = section.dataset.controlRoomSection;
-                } else {
-                    break;
-                }
-            }
-
-            area.querySelectorAll('[data-control-room-nav]').forEach((button) => {
-                const active = button.dataset.controlRoomNav === activeRoom;
-
-                button.dataset.active = active ? 'true' : 'false';
-                button.setAttribute('aria-current', active ? 'true' : 'false');
-            });
-
-            const activeButton = activeRoom
-                ? area.querySelector(`[data-control-room-nav="${activeRoom}"]`)
-                : null;
-            const strip = area.querySelector('[data-control-nav-strip]');
-
-            if (activeButton && strip && activeButton.dataset.userSelected === 'true') {
-                const left = activeButton.offsetLeft - ((strip.clientWidth - activeButton.offsetWidth) / 2);
-
-                strip.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
-                delete activeButton.dataset.userSelected;
-            }
-        };
-
         const scrollToControlTarget = (payload) => {
             const area = getScrollArea();
 
@@ -2693,7 +2613,6 @@ protected function getDraftPayload(?array $media = null): array
                 return;
             }
 
-            const stickyOffset = getStickyOffset(area);
             let target = null;
 
             if (payload?.type === 'meta') {
@@ -2706,7 +2625,6 @@ protected function getDraftPayload(?array $media = null): array
 
             if (payload?.type === 'room') {
                 target = document.getElementById(`room-${payload.room}`);
-                area.querySelector(`[data-control-room-nav="${payload.room}"]`)?.setAttribute('data-user-selected', 'true');
             }
 
             if (payload?.type === 'question') {
@@ -2729,7 +2647,7 @@ protected function getDraftPayload(?array $media = null): array
 
             const areaRect = area.getBoundingClientRect();
             const targetRect = target.getBoundingClientRect();
-            const top = area.scrollTop + (targetRect.top - areaRect.top) - stickyOffset;
+            const top = area.scrollTop + (targetRect.top - areaRect.top) - 16;
 
             area.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
             target.classList.remove('control-scroll-highlight');
@@ -2739,35 +2657,6 @@ protected function getDraftPayload(?array $media = null): array
                 window.setTimeout(() => target.classList.remove('control-scroll-highlight'), 1900);
             });
         };
-
-        const area = getScrollArea();
-
-        if (area && ! area.dataset.controlNavigationReady) {
-            area.dataset.controlNavigationReady = 'true';
-
-            let scrollFrame = null;
-            area.addEventListener('scroll', () => {
-                if (scrollFrame) {
-                    return;
-                }
-
-                scrollFrame = requestAnimationFrame(() => {
-                    scrollFrame = null;
-                    updateActiveRoom(area);
-                });
-            }, { passive: true });
-
-            area.addEventListener('click', (event) => {
-                const button = event.target.closest('[data-control-room-nav]');
-
-                if (button) {
-                    button.dataset.userSelected = 'true';
-                }
-            });
-
-            window.addEventListener('resize', () => updateActiveRoom(getScrollArea()));
-            updateActiveRoom(area);
-        }
 
         Livewire.on('control-scroll', (event) => {
             const payload = Array.isArray(event) ? event[0] : event;
