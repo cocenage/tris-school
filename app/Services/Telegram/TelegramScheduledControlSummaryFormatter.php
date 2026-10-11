@@ -22,7 +22,7 @@ class TelegramScheduledControlSummaryFormatter
             $text .= "\nℹ️ Ответы на контрольные сообщения за этот день не зафиксированы.\n";
         }
 
-        return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UvTF-8');
     }
 
     private function controlLine(array $control): string

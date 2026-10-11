@@ -133,6 +133,7 @@ new class extends Component {
     $color = $this->color();
     $zoneLabel = $this->zoneLabel();
     $errors = $this->errors();
+    $mediaItems = $record->mediaItems();
     $roomSummary = $this->roomSummary();
 
     $apartmentName = $record->apartment?->name ?? 'Квартира не указана';
@@ -255,6 +256,30 @@ new class extends Component {
                     </div>
                 @endif
 
+                @if($mediaItems !== [])
+                    <section class="mb-[18px]">
+                        <h2 class="mb-[10px] text-[16px] font-semibold text-[#111111]">Фото и видео</h2>
+                        <div class="space-y-[12px]">
+                            @foreach($mediaItems as $item)
+                                <div class="rounded-[18px] bg-[#F8F8F8] p-[12px]">
+                                    <div class="text-[13px] font-semibold">{{ $item['room'] }} · {{ $item['question'] }}</div>
+                                    <div class="mt-[10px] flex gap-[8px] overflow-x-auto">
+                                        @foreach($item['media'] as $file)
+                                            <a href="{{ $file['url'] }}" target="_blank" class="shrink-0" aria-label="Открыть вложение">
+                                                @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
+                                                    <video src="{{ $file['url'] }}" controls preload="metadata" class="h-[92px] w-[92px] rounded-[18px] object-cover"></video>
+                                                @else
+                                                    <img src="{{ $file['url'] }}" alt="Фото к вопросу" class="h-[92px] w-[92px] rounded-[18px] object-cover">
+                                                @endif
+                                            </a>
+                                        @endforeach
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+                    </section>
+                @endif
+
                 @if(empty($errors))
                     <div class="rounded-[28px] bg-[#F0FDF4] px-[18px] py-[20px] text-center text-[15px] font-semibold text-[#166534]">
                         Ошибок нет. Контроль в зелёной зоне.
@@ -267,7 +292,6 @@ new class extends Component {
                     <div class="space-y-[12px]">
                         @foreach($errors as $error)
                             @php
-                                $media = is_array($error['media'] ?? null) ? $error['media'] : [];
                                 $corrective = is_array($error['corrective'] ?? null) ? $error['corrective'] : [];
                             @endphp
 
@@ -312,25 +336,6 @@ new class extends Component {
                                         </div>
                                     @endif
 
-                                    @if(! empty($media))
-                                        <div class="mt-[12px] flex gap-[8px] overflow-x-auto pb-[2px]">
-                                            @foreach($media as $photo)
-                                                @php
-                                                    $url = (string) ($photo['url'] ?? '');
-                                                @endphp
-
-                                                @if($url !== '')
-                                                    <a href="{{ $url }}" target="_blank" class="shrink-0">
-                                                        <img
-                                                            src="{{ $url }}"
-                                                            alt=""
-                                                            class="h-[92px] w-[92px] rounded-[18px] border border-[#FECACA] object-cover"
-                                                        >
-                                                    </a>
-                                                @endif
-                                            @endforeach
-                                        </div>
-                                    @endif
                                 </div>
                             </div>
                         @endforeach

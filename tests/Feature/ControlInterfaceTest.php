@@ -23,7 +23,8 @@ it('keeps control navigation anchored to the internal scroll container', functio
         ->toContain("is_bool(\$corrective['repeats'])")
         ->toContain("is_bool(\$corrective['recheck'])")
         ->toContain("trim((string) (\$corrective['action'] ?? '')) === ''")
-        ->toContain("'responses' => \$this->normalizedAnswers(\$this->answers)")
+        ->toContain("'responses' => \$responses")
+        ->toContain('getDraftPayload(')
         ->toContain('array_replace_recursive($this->answers, $draft->responses)')
         ->toContain('getReviewProblemsProperty')
         ->toContain('scroll-padding-top: var(--control-sticky-offset)')
@@ -49,7 +50,8 @@ it('renders corrective metadata on result and Filament views without requiring a
         ->toContain('Повторный контроль')
         ->toContain("['corrective']")
         ->and($infolist)
-        ->toContain('ControlResponse::resolveMediaUrl')
+        ->toContain('mediaItems()')
+        ->toContain('renderMedia($record)')
         ->toContain('Корректирующие действия');
 });
 

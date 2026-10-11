@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ApartmentAttachmentController;
+use App\Http\Controllers\ControlMediaController;
 use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\LogoutController;
@@ -75,7 +76,14 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-home.instructions.single');
 
     Route::livewire('/checks', 'page-checks')->name('page-checks');
+    Route::get('/checks/control/draft-media/{control}/{room}/{question}/{media}', [ControlMediaController::class, 'draft'])
+        ->whereNumber(['room', 'question', 'media'])
+        ->name('page-checks.control.draft-media');
+    Route::get('/checks/control/result-media/{controlResponse}/{room}/{question}/{media}', [ControlMediaController::class, 'result'])
+        ->whereNumber(['room', 'question', 'media'])
+        ->name('page-checks.control.result-media');
     Route::livewire('/checks/control', 'forms.page-control')->name('page-checks.control');
+    Route::livewire('/checks/control/focus', 'forms.page-control-focus')->name('page-checks.control.focus');
 
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');

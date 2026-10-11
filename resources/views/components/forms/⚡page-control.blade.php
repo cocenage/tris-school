@@ -180,8 +180,54 @@ new class extends Component {
         }
     }
 
-protected function getDraftPayload(): array
+protected function draftMedia(): array
 {
+    if (! $this->control || ! Auth::check()) {
+        return [];
+    }
+
+    $draft = ControlResponseDraft::query()
+        ->where('control_id', $this->control->id)
+        ->where('supervisor_id', Auth::id())
+        ->first();
+
+    $media = [];
+    foreach (($draft?->responses ?? []) as $roomIndex => $questions) {
+        foreach (($questions ?? []) as $questionIndex => $answer) {
+            if (! isset($this->rooms[$roomIndex]['items'][$questionIndex])) {
+                continue;
+            }
+
+            foreach (($answer['media'] ?? []) as $item) {
+                $path = is_array($item) ? (string) ($item['path'] ?? '') : '';
+                $disk = $item['disk'] ?? null;
+                $privatePrefix = 'control-drafts/'.$this->control->id.'/'.Auth::id().'/';
+                $publicPrefix = 'controls/'.$this->control->id.'/';
+
+                if (! str_contains($path, '..') && ! str_contains($path, '\\')
+                    && (($disk === 'local' && str_starts_with($path, $privatePrefix))
+                        || ($disk === 'public' && str_starts_with($path, $publicPrefix)))) {
+                    $media[$roomIndex][$questionIndex][] = $item;
+                }
+            }
+        }
+    }
+
+    return $media;
+}
+
+protected function getDraftPayload(?array $media = null): array
+{
+    $responses = $this->normalizedAnswers($this->answers);
+    $media ??= $this->draftMedia();
+    foreach ($responses as $roomIndex => &$questions) {
+        foreach ($questions as $questionIndex => &$answer) {
+            $answer['media'] = array_values($media[$roomIndex][$questionIndex] ?? []);
+        }
+        unset($answer);
+    }
+    unset($questions);
+
     return [
         'cleaner_id' => $this->cleaner_id,
         'apartment_id' => $this->apartment_id,
@@ -190,7 +236,7 @@ protected function getDraftPayload(): array
         'cleaning_date' => $this->cleaning_date,
         'inspection_date' => $this->inspection_date,
         'comment' => $this->comment,
-        'responses' => $this->normalizedAnswers($this->answers),
+        'responses' => $responses,
         'schema_snapshot' => $this->rooms,
     ];
 }
@@ -223,7 +269,8 @@ protected function getDraftPayload(): array
 
                 if (
                     filled(trim((string) ($answer['selected'] ?? ''))) ||
-                    filled(trim((string) ($answer['custom'] ?? '')))
+                    filled(trim((string) ($answer['custom'] ?? ''))) ||
+                    ! empty($answer['media'])
                 ) {
                     return true;
                 }
@@ -326,6 +373,14 @@ protected function getDraftPayload(): array
 
         if (is_array($draft->responses)) {
             $this->answers = array_replace_recursive($this->answers, $draft->responses);
+            $trustedMedia = $this->draftMedia();
+            foreach ($this->answers as $roomIndex => &$questions) {
+                foreach ($questions as $questionIndex => &$answer) {
+                    $answer['media'] = array_values($trustedMedia[$roomIndex][$questionIndex] ?? []);
+                }
+                unset($answer);
+            }
+            unset($questions);
         }
 
         $this->draftSavedAt = optional($draft->updated_at)->format('H:i');
@@ -337,10 +392,21 @@ protected function getDraftPayload(): array
     protected function clearDraft(): void
     {
         if ($this->control && Auth::check()) {
+            $media = $this->draftMedia();
             ControlResponseDraft::query()
                 ->where('control_id', $this->control->id)
                 ->where('supervisor_id', Auth::id())
                 ->delete();
+
+            foreach ($media as $questions) {
+                foreach ($questions as $files) {
+                    foreach ($files as $file) {
+                        if (($file['disk'] ?? null) === 'local') {
+                            Storage::disk('local')->delete($file['path']);
+                        }
+                    }
+                }
+            }
         }
 
         $this->draftId = null;
@@ -706,9 +772,9 @@ protected function getDraftPayload(): array
     {
         $total = 0;
 
-        foreach ($this->queuedPhotos as $questions) {
-            foreach (($questions ?? []) as $files) {
-                $total += is_array($files) ? count($files) : 0;
+        foreach ($this->answers as $questions) {
+            foreach (($questions ?? []) as $answer) {
+                $total += count($answer['media'] ?? []);
             }
         }
 
@@ -720,28 +786,29 @@ protected function getDraftPayload(): array
         $valid = true;
         $total = 0;
 
-        foreach ($this->queuedPhotos as $roomIndex => $questions) {
+        foreach ($this->draftMedia() as $roomIndex => $questions) {
             foreach (($questions ?? []) as $questionIndex => $files) {
                 $files = is_array($files) ? $files : [];
                 $total += count($files);
 
                 if (count($files) > $this->photoLimit) {
-                    $this->addError("queuedPhotos.$roomIndex.$questionIndex", "Максимум {$this->photoLimit} фото на один вопрос");
+                    $this->addError("queuedPhotos.$roomIndex.$questionIndex", "Максимум {$this->photoLimit} файлов на один вопрос");
                     $valid = false;
                 }
 
                 foreach ($files as $file) {
-                    if (! $file instanceof TemporaryUploadedFile) {
-                        continue;
-                    }
-
-                    if (! str_starts_with((string) $file->getMimeType(), 'image/')) {
-                        $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Можно загружать только изображения');
+                    if (! Storage::disk($file['disk'])->exists($file['path'])) {
+                        $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Файл черновика недоступен. Загрузите его повторно.');
                         $valid = false;
                     }
 
-                    if ($file->getSize() > 10 * 1024 * 1024) {
-                        $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Одно фото не должно быть больше 10 МБ');
+                    if (! $this->isSupportedMime((string) ($file['mime'] ?? ''))) {
+                        $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Можно загружать только фото и видео');
+                        $valid = false;
+                    }
+
+                    if (($file['size'] ?? 0) > 10 * 1024 * 1024) {
+                        $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Один файл не должен быть больше 10 МБ');
                         $valid = false;
                     }
                 }
@@ -772,39 +839,97 @@ protected function getDraftPayload(): array
             $incoming = [];
         }
 
-        $existing = $this->queuedPhotos[$roomIndex][$questionIndex] ?? [];
-        $merged = array_values(array_filter(array_merge($existing, $incoming)));
+        if (! isset($this->rooms[$roomIndex]['items'][$questionIndex])) {
+            return;
+        }
 
-        $valid = [];
+        $media = $this->draftMedia();
+        $existing = $media[$roomIndex][$questionIndex] ?? [];
+        $storedPaths = [];
 
-        foreach ($merged as $file) {
+        foreach ($incoming as $file) {
             if (! $file instanceof TemporaryUploadedFile) {
                 continue;
             }
 
-            if (! str_starts_with((string) $file->getMimeType(), 'image/')) {
-                $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Можно загружать только изображения');
+            if (! $this->isSupportedMedia($file)) {
+                $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Можно загружать только фото и видео');
                 continue;
             }
 
             if ($file->getSize() > 10 * 1024 * 1024) {
-                $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Одно фото не должно быть больше 10 МБ');
+                $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Один файл не должен быть больше 10 МБ');
                 continue;
             }
 
-            $valid[] = $file;
+            if (count($existing) >= $this->photoLimit) {
+                $this->addError("queuedPhotos.$roomIndex.$questionIndex", "Максимум {$this->photoLimit} файлов на один вопрос");
+                break;
+            }
+
+            try {
+                $originalName = mb_substr($file->getClientOriginalName(), 0, 180);
+                $mime = $file->getMimeType();
+                $size = $file->getSize();
+                $path = $file->store('control-drafts/'.$this->control->id.'/'.Auth::id(), 'local');
+            } catch (\Throwable $e) {
+                report($e);
+                $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Не удалось сохранить файл. Повторите загрузку.');
+                break;
+            }
+            if (! $path) {
+                $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Не удалось сохранить файл. Повторите загрузку.');
+                break;
+            }
+
+            $storedPaths[] = $path;
+            $existing[] = [
+                'disk' => 'local',
+                'path' => $path,
+                'original_name' => $originalName,
+                'mime' => $mime,
+                'size' => $size,
+                'uploaded_at' => now()->toDateTimeString(),
+            ];
         }
 
-        if (count($valid) > $this->photoLimit) {
-            $valid = array_slice($valid, 0, $this->photoLimit);
-            $this->addError("queuedPhotos.$roomIndex.$questionIndex", "Максимум {$this->photoLimit} фото на один вопрос");
+        if ($storedPaths === []) {
+            $this->photoUploads[$roomIndex][$questionIndex] = [];
+            return;
         }
 
+        $media[$roomIndex][$questionIndex] = $existing;
+        try {
+            ControlResponseDraft::updateOrCreate(
+                ['control_id' => $this->control->id, 'supervisor_id' => Auth::id()],
+                $this->getDraftPayload($media)
+            );
+        } catch (\Throwable $e) {
+            Storage::disk('local')->delete($storedPaths);
+            report($e);
+            $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Не удалось сохранить файл. Повторите загрузку.');
+            $this->draftState = 'error';
+            $this->photoUploads[$roomIndex][$questionIndex] = [];
+            return;
+        }
 
-        $this->queuedPhotos[$roomIndex][$questionIndex] = $valid;
+        $this->answers[$roomIndex][$questionIndex]['media'] = $existing;
         $this->photoUploads[$roomIndex][$questionIndex] = [];
+        $this->draftSavedAt = now()->format('H:i');
+        $this->draftState = 'saved';
+        $this->lastDraftHash = $this->getDraftHash();
+        $this->hasUnsavedChanges = false;
+    }
 
-        $this->touchAutosave();
+    protected function isSupportedMedia(TemporaryUploadedFile $file): bool
+    {
+        return $this->isSupportedMime((string) $file->getMimeType());
+    }
+
+    protected function isSupportedMime(string $mime): bool
+    {
+        return str_starts_with($mime, 'image/')
+            || in_array($mime, ['video/mp4', 'video/quicktime', 'video/webm'], true);
     }
 
     public function finishPhotoUpload(int $roomIndex, int $questionIndex): void
@@ -818,43 +943,62 @@ protected function getDraftPayload(): array
     {
         $this->ensureCanConductControl();
 
-        if (! isset($this->queuedPhotos[$roomIndex][$questionIndex][$photoIndex])) {
+        $media = $this->draftMedia();
+        $removed = $media[$roomIndex][$questionIndex][$photoIndex] ?? null;
+        if (! is_array($removed)) {
             return;
         }
 
-        unset($this->queuedPhotos[$roomIndex][$questionIndex][$photoIndex]);
-        $this->queuedPhotos[$roomIndex][$questionIndex] = array_values($this->queuedPhotos[$roomIndex][$questionIndex]);
+        unset($media[$roomIndex][$questionIndex][$photoIndex]);
+        $media[$roomIndex][$questionIndex] = array_values($media[$roomIndex][$questionIndex]);
+        ControlResponseDraft::updateOrCreate(
+            ['control_id' => $this->control->id, 'supervisor_id' => Auth::id()],
+            $this->getDraftPayload($media)
+        );
+
+        $this->answers[$roomIndex][$questionIndex]['media'] = $media[$roomIndex][$questionIndex];
+        Storage::disk($removed['disk'])->delete($removed['path']);
 
         $this->resetErrorBag("queuedPhotos.$roomIndex.$questionIndex");
-        $this->touchAutosave();
+        $this->lastDraftHash = $this->getDraftHash();
     }
 
     protected function storeQueuedPhotos(array &$storedPaths): array
     {
         $answers = $this->normalizedAnswers($this->answers);
 
-        foreach ($this->queuedPhotos as $roomIndex => $questions) {
+        foreach ($answers as &$questions) {
+            foreach ($questions as &$answer) {
+                $answer['media'] = [];
+            }
+            unset($answer);
+        }
+        unset($questions);
+
+        foreach ($this->draftMedia() as $roomIndex => $questions) {
             foreach (($questions ?? []) as $questionIndex => $files) {
                 foreach (($files ?? []) as $file) {
-                    if (! $file instanceof TemporaryUploadedFile) {
-                        continue;
+                    if ($file['disk'] === 'local') {
+                        $stream = Storage::disk('local')->readStream($file['path']);
+                        if (! is_resource($stream)) {
+                            throw new \RuntimeException('Draft media is unavailable.');
+                        }
+
+                        $path = 'controls/'.$this->control->id.'/'.now()->format('Y/m').'/'.basename($file['path']);
+                        try {
+                            if (! Storage::disk('local')->put($path, $stream)) {
+                                throw new \RuntimeException('Control media could not be stored.');
+                            }
+                        } finally {
+                            fclose($stream);
+                        }
+
+                        $storedPaths[] = $path;
+                        $file['disk'] = 'local';
+                        $file['path'] = $path;
                     }
 
-                    $path = $file->store(
-                        'controls/' . $this->control->id . '/' . now()->format('Y/m'),
-                        'public'
-                    );
-
-                    $storedPaths[] = $path;
-
-                    $answers[$roomIndex][$questionIndex]['media'][] = [
-                        'disk' => 'public',
-                        'path' => $path,
-                        'original_name' => mb_substr($file->getClientOriginalName(), 0, 180),
-                        'mime' => $file->getMimeType(),
-                        'size' => $file->getSize(),
-                        'uploaded_at' => now()->toDateTimeString(),
-                    ];
+                    $answers[$roomIndex][$questionIndex]['media'][] = $file;
                 }
             }
         }
@@ -1088,7 +1232,7 @@ protected function getDraftPayload(): array
 
         if (! $this->validateQueuedPhotosLimits()) {
             $this->isSubmitting = false;
-            $this->dispatch('toast', type: 'error', message: 'Проверьте загруженные фото');
+            $this->dispatch('toast', type: 'error', message: 'Проверьте загруженные файлы');
             $this->scrollToFirstError();
             return;
         }
@@ -1128,7 +1272,7 @@ protected function getDraftPayload(): array
 
         if (! $this->validateQueuedPhotosLimits()) {
             $this->isSubmitting = false;
-            $this->dispatch('toast', type: 'error', message: 'Проверьте загруженные фото');
+            $this->dispatch('toast', type: 'error', message: 'Проверьте загруженные файлы');
             $this->scrollToFirstError();
             return;
         }
@@ -1214,7 +1358,7 @@ protected function getDraftPayload(): array
             Cache::put($submitLockKey . ':completed', true, now()->addMinutes(10));
         } catch (\Throwable $e) {
             foreach ($storedPaths as $path) {
-                Storage::disk('public')->delete($path);
+                Storage::disk('local')->delete($path);
             }
 
             report($e);
@@ -1479,7 +1623,7 @@ protected function getDraftPayload(): array
 
                         <div class="mt-[10px] flex items-center justify-between gap-[10px] text-[12px] font-medium text-[#64748B]">
                             <span>Заполнено {{ $this->requiredQuestionsDone }} из {{ $this->requiredQuestionsTotal }}</span>
-                            <span>{{ $this->queuedPhotosTotal }} фото</span>
+                            <span>{{ $this->queuedPhotosTotal }} файлов</span>
                         </div>
                     </div>
 
@@ -1886,7 +2030,7 @@ protected function getDraftPayload(): array
                                                         $answer = $answers[$roomIndex][$questionIndex] ?? [];
                                                         $selected = (string) ($answer['selected'] ?? '');
                                                         $isFilled = $this->isQuestionFilled($question, $answer);
-                                                        $questionPhotos = $queuedPhotos[$roomIndex][$questionIndex] ?? [];
+                                                        $questionPhotos = $answer['media'] ?? [];
                                                     @endphp
 
                                                     <div
@@ -2051,10 +2195,10 @@ protected function getDraftPayload(): array
                                                             <div class="flex items-center justify-between gap-[10px]">
                                                                 <div class="min-w-0">
                                                                     <div class="text-[13px] font-semibold text-[#111827]">
-                                                                        Фото к вопросу
+                                                                        Фото и видео к вопросу
                                                                     </div>
                                                                     <div class="mt-[2px] text-[12px] font-medium text-[#64748B]">
-                                                                        {{ count($questionPhotos) }} / {{ $photoLimit }} фото
+                                                                        {{ count($questionPhotos) }} / {{ $photoLimit }} файлов
                                                                     </div>
                                                                 </div>
 
@@ -2063,7 +2207,7 @@ protected function getDraftPayload(): array
 <input
     type="file"
     multiple
-    accept="image/*"
+    accept="image/*,video/mp4,video/quicktime,video/webm"
     x-on:change="
         window.controlUploadCompressedPhotos(
             $event,
@@ -2083,7 +2227,7 @@ protected function getDraftPayload(): array
                                                                 wire:loading
                                                                 wire:target="photoUploads.{{ $roomIndex }}.{{ $questionIndex }}"
                                                             >
-                                                                Загружаем фото...
+                                                                Загружаем файл...
                                                             </div>
 
                                                             @error("queuedPhotos.$roomIndex.$questionIndex")
@@ -2101,12 +2245,17 @@ protected function getDraftPayload(): array
                                                             @if(!empty($questionPhotos))
                                                                 <div class="mt-[10px] grid grid-cols-3 gap-[8px]">
                                                                     @foreach($questionPhotos as $photoIndex => $photo)
+                                                                        @php
+                                                                            $mediaUrl = route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $photoIndex]);
+                                                                        @endphp
                                                                         <div class="relative overflow-hidden rounded-[16px] bg-white">
-                                                                            <img
-                                                                                src="{{ $photo->temporaryUrl() }}"
-                                                                                alt="Фото контроля"
-                                                                                class="h-[88px] w-full object-cover"
-                                                                            >
+                                                                            @if(str_starts_with((string) ($photo['mime'] ?? ''), 'video/'))
+                                                                                <video src="{{ $mediaUrl }}" muted preload="metadata" class="h-[88px] w-full object-cover"></video>
+                                                                            @else
+                                                                                <img src="{{ $mediaUrl }}" alt="Фото контроля" class="h-[88px] w-full object-cover">
+                                                                            @endif
+
+                                                                            <span class="absolute bottom-[5px] left-[5px] rounded-full bg-black/65 px-[6px] py-[2px] text-[10px] font-semibold text-white">Готово</span>
 
                                                                             <button
                                                                                 type="button"
@@ -2280,9 +2429,16 @@ protected function getDraftPayload(): array
                                 @endif
                                 @if(is_array($problem['media'] ?? null) && count($problem['media']) > 0)
                                     <div class="mt-[8px] flex gap-[6px] overflow-x-auto">
-                                        @foreach($problem['media'] as $photo)
-                                            @if($photoUrl = ControlResponse::resolveMediaUrl(is_array($photo) ? $photo : []))
-                                                <img src="{{ $photoUrl }}" alt="" class="h-[48px] w-[48px] shrink-0 rounded-[10px] object-cover">
+                                        @foreach($problem['media'] as $photoIndex => $photo)
+                                            @if(is_array($photo))
+                                                @php
+                                                    $photoUrl = route('page-checks.control.draft-media', [$control, $problem['room_index'], $problem['question_index'], $photoIndex]);
+                                                @endphp
+                                                @if(str_starts_with((string) ($photo['mime'] ?? ''), 'video/'))
+                                                    <video src="{{ $photoUrl }}" muted preload="metadata" class="h-[48px] w-[48px] shrink-0 rounded-[10px] object-cover"></video>
+                                                @else
+                                                    <img src="{{ $photoUrl }}" alt="" class="h-[48px] w-[48px] shrink-0 rounded-[10px] object-cover">
+                                                @endif
                                             @endif
                                         @endforeach
                                     </div>
@@ -2467,7 +2623,7 @@ protected function getDraftPayload(): array
                 input.value = '';
             },
             () => {
-                alert('Не удалось загрузить фото');
+                alert('Не удалось загрузить файл');
                 input.value = '';
             }
         );

@@ -30,6 +30,14 @@ class ControlResponseInfolist
                             ->html()
                             ->columnSpanFull(),
                     ]),
+                Section::make('Фото и видео')
+                    ->schema([
+                        TextEntry::make('media_rendered')
+                            ->label('')
+                            ->state(fn (ControlResponse $record) => self::renderMedia($record))
+                            ->html()
+                            ->columnSpanFull(),
+                    ]),
             ]);
     }
 
@@ -55,8 +63,8 @@ class ControlResponseInfolist
 
         $html = '
             <div style="
-                border:1px solid ' . $zoneColor['border'] . ';
-                background:' . $zoneColor['bg'] . ';
+                border:1px solid '.$zoneColor['border'].';
+                background:'.$zoneColor['bg'].';
                 border-radius:24px;
                 padding:18px;
                 display:flex;
@@ -86,7 +94,7 @@ class ControlResponseInfolist
                             font-weight:900;
                             line-height:1.15;
                         ">
-                            ' . $name . '
+                            '.$name.'
                         </div>
 
                         <div style="
@@ -94,12 +102,12 @@ class ControlResponseInfolist
                             font-size:14px;
                             margin-top:6px;
                         ">
-                            ' . $apartment . ' · ' . $date . '
+                            '.$apartment.' · '.$date.'
                         </div>
                     </div>
 
                     <div style="
-                        background:' . $zoneColor['text'] . ';
+                        background:'.$zoneColor['text'].';
                         color:white;
                         border-radius:999px;
                         padding:8px 12px;
@@ -107,7 +115,7 @@ class ControlResponseInfolist
                         font-weight:900;
                         white-space:nowrap;
                     ">
-                        ' . $zone . '
+                        '.$zone.'
                     </div>
                 </div>
 
@@ -116,18 +124,18 @@ class ControlResponseInfolist
                     grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
                     gap:10px;
                 ">
-                    ' . self::summaryItem('Ошибок', (string) $errors) . '
-                    ' . self::summaryItem('Штраф', (string) $penalty) . '
-                    ' . self::summaryItem('Проверил', $supervisor) . '
-                    ' . self::summaryItem('Форма', $control) . '
+                    '.self::summaryItem('Ошибок', (string) $errors).'
+                    '.self::summaryItem('Штраф', (string) $penalty).'
+                    '.self::summaryItem('Проверил', $supervisor).'
+                    '.self::summaryItem('Форма', $control).'
                 </div>
 
                 <div style="
-                    border-top:1px solid ' . $zoneColor['border'] . ';
+                    border-top:1px solid '.$zoneColor['border'].';
                     padding-top:14px;
                 ">
                     <div style="
-                        color:' . $zoneColor['text'] . ';
+                        color:'.$zoneColor['text'].';
                         font-size:13px;
                         font-weight:800;
                         margin-bottom:4px;
@@ -141,7 +149,7 @@ class ControlResponseInfolist
                         font-weight:700;
                         line-height:1.4;
                     ">
-                        ' . $reason . '
+                        '.$reason.'
                     </div>
                 </div>
         ';
@@ -149,7 +157,7 @@ class ControlResponseInfolist
         if ($comment !== '') {
             $html .= '
                 <div style="
-                    border-top:1px solid ' . $zoneColor['border'] . ';
+                    border-top:1px solid '.$zoneColor['border'].';
                     padding-top:14px;
                 ">
                     <div style="
@@ -166,7 +174,7 @@ class ControlResponseInfolist
                         font-size:15px;
                         line-height:1.45;
                     ">
-                        ' . nl2br(e($comment)) . '
+                        '.nl2br(e($comment)).'
                     </div>
                 </div>
             ';
@@ -192,7 +200,7 @@ class ControlResponseInfolist
                     font-weight:800;
                     margin-bottom:4px;
                 ">
-                    ' . e($label) . '
+                    '.e($label).'
                 </div>
 
                 <div style="
@@ -201,7 +209,7 @@ class ControlResponseInfolist
                     font-weight:800;
                     line-height:1.3;
                 ">
-                    ' . e($value) . '
+                    '.e($value).'
                 </div>
             </div>
         ';
@@ -245,7 +253,7 @@ class ControlResponseInfolist
                 padding:14px 16px;
                 font-weight:700;
             ">
-                Найдено ошибок: ' . count($errors) . ' · Штрафных баллов: ' . (int) $analysis['penalty_points'] . '
+                Найдено ошибок: '.count($errors).' · Штрафных баллов: '.(int) $analysis['penalty_points'].'
             </div>
         ';
 
@@ -256,7 +264,6 @@ class ControlResponseInfolist
             $penalty = (int) ($error['penalty_points'] ?? 0);
             $max = (int) ($error['max_points'] ?? 0);
             $isCritical = (bool) ($error['is_critical'] ?? false);
-            $media = is_array($error['media'] ?? null) ? $error['media'] : [];
             $rawAnswer = data_get($responses, "{$error['room_index']}.{$error['question_index']}", []);
             $rawAnswer = is_array($rawAnswer) ? $rawAnswer : [];
             $corrective = is_array($rawAnswer['corrective'] ?? null) ? $rawAnswer['corrective'] : [];
@@ -278,12 +285,12 @@ class ControlResponseInfolist
                         justify-content:space-between;
                         gap:12px;
                     ">
-                        <span>' . $roomTitle . '</span>
-                        <span>−' . $penalty . ' / ' . $max . '</span>
+                        <span>'.$roomTitle.'</span>
+                        <span>−'.$penalty.' / '.$max.'</span>
                     </div>
 
                     <div style="padding:14px 16px;">
-                        ' . ($isCritical ? '
+                        '.($isCritical ? '
                             <div style="
                                 display:inline-flex;
                                 margin-bottom:10px;
@@ -296,7 +303,7 @@ class ControlResponseInfolist
                             ">
                                 Критическая ошибка
                             </div>
-                        ' : '') . '
+                        ' : '').'
 
                         <div style="
                             color:#6b7280;
@@ -304,7 +311,7 @@ class ControlResponseInfolist
                             margin-bottom:6px;
                             line-height:1.35;
                         ">
-                            ' . $question . '
+                            '.$question.'
                         </div>
 
                         <div style="
@@ -313,7 +320,7 @@ class ControlResponseInfolist
                             font-weight:800;
                             line-height:1.4;
                         ">
-                            ' . $answer . '
+                            '.$answer.'
                         </div>
             ';
 
@@ -321,45 +328,11 @@ class ControlResponseInfolist
                 $html .= '
                     <div style="margin-top:12px;border-radius:16px;background:#fffaeb;color:#6b4f12;padding:10px 12px;font-size:13px;line-height:1.45;">
                         <div style="font-weight:800;">Корректирующие действия</div>
-                        ' . (filled($corrective['action'] ?? null) ? '<div style="margin-top:4px;"><strong>Что сделать:</strong> ' . e((string) $corrective['action']) . '</div>' : '') . '
-                        ' . (($corrective['repeats'] ?? null) !== null ? '<div style="margin-top:3px;">Ошибка повторяется: ' . (($corrective['repeats'] ?? false) ? 'да' : 'нет') . '</div>' : '') . '
-                        ' . (($corrective['recheck'] ?? null) !== null ? '<div style="margin-top:3px;">Повторный контроль: ' . (($corrective['recheck'] ?? false) ? 'нужен' : 'не нужен') . '</div>' : '') . '
+                        '.(filled($corrective['action'] ?? null) ? '<div style="margin-top:4px;"><strong>Что сделать:</strong> '.e((string) $corrective['action']).'</div>' : '').'
+                        '.(($corrective['repeats'] ?? null) !== null ? '<div style="margin-top:3px;">Ошибка повторяется: '.(($corrective['repeats'] ?? false) ? 'да' : 'нет').'</div>' : '').'
+                        '.(($corrective['recheck'] ?? null) !== null ? '<div style="margin-top:3px;">Повторный контроль: '.(($corrective['recheck'] ?? false) ? 'нужен' : 'не нужен').'</div>' : '').'
                     </div>
                 ';
-            }
-
-            if (! empty($media)) {
-                $html .= '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;">';
-
-                foreach ($media as $photo) {
-                    if (! is_array($photo)) {
-                        continue;
-                    }
-
-                    $url = e((string) (ControlResponse::resolveMediaUrl($photo) ?? ''));
-
-                    if ($url === '') {
-                        continue;
-                    }
-
-                    $html .= '
-                        <a href="' . $url . '" target="_blank" style="display:block;">
-                            <img
-                                src="' . $url . '"
-                                alt=""
-                                style="
-                                    width:120px;
-                                    height:120px;
-                                    object-fit:cover;
-                                    border-radius:16px;
-                                    border:1px solid #fecaca;
-                                "
-                            >
-                        </a>
-                    ';
-                }
-
-                $html .= '</div>';
             }
 
             $html .= '
@@ -371,5 +344,30 @@ class ControlResponseInfolist
         $html .= '</div>';
 
         return $html;
+    }
+
+    protected static function renderMedia(ControlResponse $record): string
+    {
+        $items = $record->mediaItems();
+        if ($items === []) {
+            return 'Вложений нет.';
+        }
+
+        $html = '<div style="display:flex;flex-direction:column;gap:14px;">';
+        foreach ($items as $item) {
+            $html .= '<div><strong>'.e($item['room']).' · '.e($item['question']).'</strong>';
+            $html .= '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">';
+            foreach ($item['media'] as $file) {
+                $url = e($file['url']);
+                if (str_starts_with((string) ($file['mime'] ?? ''), 'video/')) {
+                    $html .= '<video src="'.$url.'" controls preload="metadata" style="width:160px;height:120px;border-radius:12px;"></video>';
+                } else {
+                    $html .= '<a href="'.$url.'" target="_blank"><img src="'.$url.'" alt="Фото контроля" style="width:120px;height:120px;object-fit:cover;border-radius:12px;"></a>';
+                }
+            }
+            $html .= '</div></div>';
+        }
+
+        return $html.'</div>';
     }
 }
