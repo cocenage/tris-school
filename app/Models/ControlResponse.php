@@ -128,7 +128,7 @@ class ControlResponse extends Model
         $errors = [];
 
         foreach ($schema as $roomIndex => $room) {
-            $roomTitle = (string) ($room['title'] ?? ('Комната ' . ((int) $roomIndex + 1)));
+            $roomTitle = (string) ($room['title'] ?? ('Комната '.((int) $roomIndex + 1)));
             $roomOptional = (bool) ($room['is_optional'] ?? false);
             $items = Arr::get($room, 'items', []);
 
@@ -206,34 +206,35 @@ class ControlResponse extends Model
         ];
     }
 
-public static function resolveResultZoneData(int $penaltyPoints, bool $hasCriticalFailure): array
-{
-    if ($penaltyPoints <= 0) {
+    public static function resolveResultZoneData(int $penaltyPoints, bool $hasCriticalFailure): array
+    {
+        if ($penaltyPoints <= 0) {
+            return [
+                'zone' => 'green',
+                'reason' => 'Ошибок нет',
+            ];
+        }
+
+        if ($hasCriticalFailure) {
+            return [
+                'zone' => 'red',
+                'reason' => 'Критическая ошибка в первых двух вопросах блока “Спальные места”',
+            ];
+        }
+
+        if ($penaltyPoints >= 8) {
+            return [
+                'zone' => 'red',
+                'reason' => 'Набрано 8 или больше штрафных баллов',
+            ];
+        }
+
         return [
-            'zone' => 'green',
-            'reason' => 'Ошибок нет',
+            'zone' => 'yellow',
+            'reason' => 'Есть ошибки, но меньше 8 штрафных баллов',
         ];
     }
 
-    if ($hasCriticalFailure) {
-        return [
-            'zone' => 'red',
-            'reason' => 'Критическая ошибка в первых двух вопросах блока “Спальные места”',
-        ];
-    }
-
-    if ($penaltyPoints >= 8) {
-        return [
-            'zone' => 'red',
-            'reason' => 'Набрано 8 или больше штрафных баллов',
-        ];
-    }
-
-    return [
-        'zone' => 'yellow',
-        'reason' => 'Есть ошибки, но меньше 8 штрафных баллов',
-    ];
-}
     public static function resolveResultZone(int $penaltyPoints, bool $hasCriticalFailure): string
     {
         return self::resolveResultZoneData($penaltyPoints, $hasCriticalFailure)['zone'];
@@ -250,7 +251,7 @@ public static function resolveResultZoneData(int $penaltyPoints, bool $hasCritic
 
             $optionValue = trim((string) ($option['value'] ?? $option['label'] ?? ''));
             $optionLabel = trim((string) ($option['label'] ?? ''));
-            $legacyValue = 'option_' . $optionIndex;
+            $legacyValue = 'option_'.$optionIndex;
 
             if (
                 $selected !== ''
@@ -296,7 +297,7 @@ public static function resolveResultZoneData(int $penaltyPoints, bool $hasCritic
         $label = $selected;
 
         foreach (($question['answer_options_scored'] ?? []) as $optIndex => $opt) {
-            $value = trim((string) ($opt['value'] ?? ($opt['label'] ?? ('option_' . $optIndex))));
+            $value = trim((string) ($opt['value'] ?? ($opt['label'] ?? ('option_'.$optIndex))));
             $optionLabel = trim((string) ($opt['label'] ?? ''));
 
             if (
@@ -304,7 +305,7 @@ public static function resolveResultZoneData(int $penaltyPoints, bool $hasCritic
                 && (
                     $selected === $value
                     || $selected === $optionLabel
-                    || $selected === 'option_' . $optIndex
+                    || $selected === 'option_'.$optIndex
                 )
             ) {
                 $label = $optionLabel;
@@ -313,7 +314,7 @@ public static function resolveResultZoneData(int $penaltyPoints, bool $hasCritic
         }
 
         if ($label !== '' && $custom !== '') {
-            return $label . ' / ' . $custom;
+            return $label.' / '.$custom;
         }
 
         return $label !== '' ? $label : ($custom !== '' ? $custom : '—');
@@ -365,6 +366,49 @@ public static function resolveResultZoneData(int $penaltyPoints, bool $hasCritic
         }
 
         return null;
+    }
+
+    public function mediaItems(): array
+    {
+        $items = [];
+        $schema = is_array($this->schema_snapshot) ? $this->schema_snapshot : [];
+        $responses = is_array($this->responses) ? $this->responses : [];
+
+        foreach ($schema as $roomIndex => $room) {
+            foreach (($room['items'] ?? []) as $questionIndex => $question) {
+                $answer = $responses[$roomIndex][$questionIndex] ?? [];
+                $media = [];
+
+                foreach (($answer['media'] ?? []) as $mediaIndex => $file) {
+                    if (! is_array($file) || ! in_array($file['disk'] ?? null, ['local', 'public'], true)
+                        || ! str_starts_with((string) ($file['path'] ?? ''), 'controls/'.$this->control_id.'/')
+                        || str_contains((string) ($file['path'] ?? ''), '..')
+                        || ! Storage::disk($file['disk'])->exists($file['path'])) {
+                        continue;
+                    }
+
+                    $media[] = [
+                        ...$file,
+                        'url' => route('page-checks.control.result-media', [
+                            $this,
+                            $roomIndex,
+                            $questionIndex,
+                            $mediaIndex,
+                        ]),
+                    ];
+                }
+
+                if ($media !== []) {
+                    $items[] = [
+                        'room' => (string) ($room['title'] ?? 'Комната'),
+                        'question' => (string) ($question['question'] ?? 'Вопрос'),
+                        'media' => $media,
+                    ];
+                }
+            }
+        }
+
+        return $items;
     }
 
     public function rewardPointEvents(): MorphMany

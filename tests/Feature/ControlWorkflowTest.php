@@ -1,10 +1,13 @@
 <?php
 
 use App\Models\Control;
+use App\Models\ControlResponse;
 use App\Models\User;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 
 beforeEach(function () {
@@ -185,4 +188,430 @@ it('saves corrective fields for the matching problem on submit', function () {
 
     expect($responses[0][0]['corrective'])
         ->toMatchArray(['repeats' => false, 'action' => 'Исправить замок', 'recheck' => true]);
+});
+
+it('stores a short video with its Classic control question', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('public');
+    Storage::fake('local');
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->create('clip.mp4', 512, 'video/mp4')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertCount('answers.0.0.media', 1)
+        ->call('openReview')
+        ->assertSet('reviewSheetOpen', true)
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    $responses = json_decode((string) DB::table('control_responses')->value('responses'), true);
+    expect($responses[0][0]['media'])->toHaveCount(1)
+        ->and($responses[0][0]['media'][0]['mime'])->toBe('video/mp4');
+    expect($responses[0][0]['media'][0]['disk'])->toBe('local');
+    Storage::disk('local')->assertExists($responses[0][0]['media'][0]['path']);
+});
+
+it('rejects unsupported Classic attachments', function () {
+    mountControlWorkflow();
+    Storage::fake('local');
+
+    Livewire::test('forms.page-control')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->create('document.pdf', 50, 'application/pdf')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertCount('answers.0.0.media', 0)
+        ->assertHasErrors('queuedPhotos.0.0');
+});
+
+it('restores, removes and submits Classic draft media without accepting a foreign path', function () {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    Storage::fake('local');
+    Storage::fake('public');
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('first.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->set('photoUploads.0.0', [UploadedFile::fake()->create('clip.mp4', 512, 'video/mp4')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->call('saveDraft')
+        ->assertCount('answers.0.0.media', 2);
+
+    $draftMedia = json_decode((string) DB::table('control_response_drafts')->value('responses'), true)[0][0]['media'];
+    expect($draftMedia)->toHaveCount(2);
+    Storage::disk('local')->assertExists($draftMedia[0]['path']);
+    Storage::disk('local')->assertExists($draftMedia[1]['path']);
+    $draftUrl = route('page-checks.control.draft-media', [$control, 0, 0, 0]);
+    $this->get($draftUrl)->assertOk();
+
+    $otherSupervisor = User::create(['name' => 'Other', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($otherSupervisor)->get($draftUrl)->assertNotFound();
+    Livewire::actingAs($otherSupervisor)->test('forms.page-control')
+        ->assertCount('answers.0.0.media', 0)
+        ->call('removeQueuedPhoto', 0, 0, 0);
+    Storage::disk('local')->assertExists($draftMedia[0]['path']);
+
+    Livewire::actingAs($supervisor)->test('forms.page-control')
+        ->assertCount('answers.0.0.media', 2)
+        ->call('removeQueuedPhoto', 0, 0, 0)
+        ->assertCount('answers.0.0.media', 1)
+        ->set('answers.0.0.media', [['disk' => 'public', 'path' => 'controls/'.$control->id.'/foreign.jpg']])
+        ->call('saveDraft')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('replacement.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertCount('answers.0.0.media', 2)
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    Storage::disk('local')->assertMissing($draftMedia[0]['path']);
+    Storage::disk('local')->assertMissing($draftMedia[1]['path']);
+    $response = ControlResponse::query()->sole();
+    $savedMedia = $response->responses[0][0]['media'];
+    expect($savedMedia)->toHaveCount(2)
+        ->and(collect($savedMedia)->pluck('mime')->all())->toContain('video/mp4', 'image/jpeg')
+        ->and(collect($savedMedia)->pluck('path')->all())->not->toContain('controls/'.$control->id.'/foreign.jpg')
+        ->and($response->mediaItems())->toHaveCount(1)
+        ->and($response->score_percent)->toBe(100)
+        ->and(DB::table('control_response_drafts')->count())->toBe(0);
+    foreach ($savedMedia as $media) {
+        expect($media['disk'])->toBe('local');
+        Storage::disk('local')->assertExists($media['path']);
+    }
+
+    $resultUrl = route('page-checks.control.result-media', [$response, 0, 0, 0]);
+    $this->actingAs($supervisor)->get($resultUrl)->assertOk();
+    $this->actingAs($otherSupervisor)->get($resultUrl)->assertForbidden();
+    $this->actingAs($cleaner)->get($resultUrl)->assertOk();
+});
+
+it('keeps Focus separate from Classic and restores the same server draft', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+
+    expect(route('page-checks.control.focus'))->toContain('/checks/control/focus');
+
+    Livewire::test('forms.page-control-focus')
+        ->assertSet('stage', 'setup')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('start')
+        ->assertSet('stage', 'questions')
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('review')
+        ->assertSet('stage', 'review');
+
+    expect(DB::table('control_response_drafts')->where('control_id', $control->id)->count())->toBe(1);
+
+    Livewire::test('forms.page-control-focus')
+        ->assertSet('answers.0.0.selected', 'yes')
+        ->assertSet('cleaner_id', $cleaner->id)
+        ->assertSet('apartment_id', $apartment);
+
+    Livewire::test('forms.page-control')->assertSet('answers.0.0.selected', 'yes');
+});
+
+it('navigates Focus questions and preserves options text and both answers', function () {
+    [, , , $control] = mountControlWorkflow();
+    $control->update(['main' => [[
+        'title' => 'Комната A',
+        'items' => [
+            controlWorkflowSchema()[0]['items'][0],
+            ['question' => 'Комментарий', 'answer_type' => 'text'],
+        ],
+    ], [
+        'title' => 'Комната B',
+        'items' => [[
+            'question' => 'Состояние', 'answer_type' => 'both',
+            'custom_answer_label' => 'Подробности состояния',
+            'answer_options_scored' => [['value' => 'good', 'label' => 'Хорошо', 'points' => 1]],
+        ]],
+    ]]]);
+
+    Livewire::test('forms.page-control-focus')
+        ->call('start')
+        ->assertSet('questionPosition', 0)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('next')
+        ->set('answers.0.1.custom', 'Есть замечание')
+        ->call('goToRoom', 1)
+        ->assertSet('questionPosition', 2)
+        ->assertSee('Хорошо')
+        ->assertSee('Подробности состояния')
+        ->call('setAnswer', 1, 0, 'good')
+        ->set('answers.1.0.custom', 'Подробность')
+        ->call('goToQuestion', 0, 0)
+        ->assertSet('questionPosition', 0)
+        ->assertSet('answers.0.1.custom', 'Есть замечание')
+        ->assertSet('answers.1.0.selected', 'good')
+        ->assertSet('answers.1.0.custom', 'Подробность');
+});
+
+it('submits a negative Focus answer without corrective UI while preserving existing scoring once', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    $focus = Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('start')
+        ->call('setAnswer', 0, 0, 'no')
+        ->assertDontSee('Что исправить')
+        ->assertDontSee('К проверке ответов')
+        ->assertSee('Проверить контроль')
+        ->call('next')
+        ->assertSet('stage', 'review')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertSet('stage', 'done')
+        ->assertSet('submitted', true)
+        ->call('submit');
+
+    expect(DB::table('control_responses')->count())->toBe(1)
+        ->and(DB::table('control_response_drafts')->count())->toBe(0)
+        ->and(DB::table('control_responses')->value('penalty_points'))->toBe(1)
+        ->and(DB::table('control_responses')->value('result_zone'))->toBe('yellow');
+});
+
+it('keeps previously saved corrective data when Focus hides that UI', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'no')
+        ->set('answers.0.0.corrective.repeats', true)
+        ->set('answers.0.0.corrective.action', 'Проверить ключи')
+        ->set('answers.0.0.corrective.recheck', false);
+
+    Livewire::test('forms.page-control-focus')
+        ->assertSet('answers.0.0.corrective.action', 'Проверить ключи')
+        ->call('start')
+        ->assertDontSee('Что исправить')
+        ->call('next')
+        ->call('submit')
+        ->assertSet('submitted', true);
+
+    $saved = json_decode((string) DB::table('control_responses')->value('responses'), true);
+    expect($saved[0][0]['corrective'])->toMatchArray([
+        'repeats' => true, 'action' => 'Проверить ключи', 'recheck' => false,
+    ]);
+});
+
+it('attaches Focus photo and video to the exact question and restores media in its draft', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    Storage::fake('public');
+
+    $focus = Livewire::test('forms.page-control-focus')
+        ->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->image('room.jpg'))
+        ->call('attachMedia', 0, 0)
+        ->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->create('clip.mp4', 1024, 'video/mp4'))
+        ->call('attachMedia', 0, 0)
+        ->assertSet('pendingMediaCount', 0);
+
+    $media = json_decode((string) DB::table('control_response_drafts')->where('control_id', $control->id)->value('responses'), true)[0][0]['media'];
+    expect($media)->toHaveCount(2)
+        ->and($media[0]['mime'])->toBe('image/jpeg')
+        ->and($media[1]['mime'])->toBe('video/mp4');
+    Storage::disk('public')->assertExists($media[0]['path']);
+    Storage::disk('public')->assertExists($media[1]['path']);
+
+    Livewire::test('forms.page-control-focus')->assertCount('savedMedia.0.0', 2);
+    $focus->call('removeMedia', 0, 0, 0)->assertCount('savedMedia.0.0', 1);
+    Storage::disk('public')->assertMissing($media[0]['path']);
+
+    $focus->set('cleaner_id', $cleaner->id)->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')->call('review')->call('submit')->assertSet('submitted', true);
+    $saved = json_decode((string) DB::table('control_responses')->value('responses'), true);
+    expect($saved[0][0]['media'])->toHaveCount(1)
+        ->and($saved[0][0]['media'][0]['mime'])->toBe('video/mp4');
+    Storage::disk('public')->assertExists($saved[0][0]['media'][0]['path']);
+});
+
+it('shows a failed Focus draft save instead of claiming success', function () {
+    mountControlWorkflow();
+    $focus = Livewire::test('forms.page-control-focus');
+    Schema::dropIfExists('control_response_drafts');
+
+    $focus->call('setAnswer', 0, 0, 'yes')
+        ->assertSet('draftState', 'error')
+        ->assertSee('Не удалось сохранить черновик');
+});
+
+it('does not persist client-supplied media paths in Focus', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->set('answers.0.0.media', [['disk' => 'public', 'path' => 'other-file.jpg']])
+        ->call('review')
+        ->call('submit')
+        ->assertSet('submitted', true);
+
+    $responses = json_decode((string) DB::table('control_responses')->value('responses'), true);
+    expect($responses[0][0]['media'])->toBe([]);
+});
+
+it('handles a larger Focus schema without losing question position', function () {
+    [, , , $control] = mountControlWorkflow();
+    $room = controlWorkflowSchema()[0];
+    $room['items'] = array_fill(0, 25, $room['items'][0]);
+    $control->update(['main' => [$room]]);
+
+    Livewire::test('forms.page-control-focus')
+        ->assertCount('questions', 25)
+        ->call('start')
+        ->call('goToQuestion', 0, 24)
+        ->assertSet('questionPosition', 24)
+        ->call('setAnswer', 0, 24, 'yes')
+        ->call('previous')
+        ->assertSet('questionPosition', 23)
+        ->call('next')
+        ->assertSet('answers.0.24.selected', 'yes');
+});
+
+it('keeps a media upload attached to its original question after navigating away', function () {
+    [, , , $control] = mountControlWorkflow();
+    $room = controlWorkflowSchema()[0];
+    $room['items'][] = ['question' => 'Второй вопрос', 'answer_type' => 'text'];
+    $control->update(['main' => [$room]]);
+    Storage::fake('public');
+
+    Livewire::test('forms.page-control-focus')
+        ->call('start')
+        ->call('beginMediaUpload')
+        ->call('next')
+        ->assertSet('questionPosition', 1)
+        ->assertSet('pendingMediaCount', 1)
+        ->set('mediaUpload', UploadedFile::fake()->image('first.jpg'))
+        ->call('attachMedia', 0, 0)
+        ->assertCount('savedMedia.0.0', 1)
+        ->assertCount('savedMedia.0.1', 0)
+        ->assertSet('pendingMediaCount', 0)
+        ->call('previous')
+        ->assertSee('Фото и видео')
+        ->assertSee('Фото')
+        ->assertSee('Видео')
+        ->assertDontSee('Загрузка файлов');
+});
+
+it('shows missing required questions on Focus review and requires explicit confirmation', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $room = controlWorkflowSchema()[0];
+    $room['items'][] = ['question' => 'Дополнительный вопрос', 'answer_type' => 'text'];
+    $control->update(['main' => [$room]]);
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('submit')
+        ->assertSet('submitted', false)
+        ->call('start')
+        ->call('next')
+        ->call('next')
+        ->assertSet('stage', 'review')
+        ->assertSee('Дополнительный вопрос')
+        ->call('submit')
+        ->assertHasErrors('answers.0.1')
+        ->call('goToQuestion', 0, 1)
+        ->assertSet('stage', 'questions')
+        ->set('answers.0.1.custom', 'Ответ')
+        ->call('next')
+        ->call('submit')
+        ->assertSet('submitted', true);
+
+    expect(DB::table('control_responses')->count())->toBe(1);
+});
+
+it('blocks Focus submission while media is pending and rejects unsupported uploads', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('public');
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('beginMediaUpload')
+        ->call('review')
+        ->assertSee('Есть незавершённые загрузки')
+        ->call('submit')
+        ->assertHasErrors('mediaUpload')
+        ->assertSet('submitted', false)
+        ->call('failMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->create('document.pdf', 50, 'application/pdf'))
+        ->call('attachMedia', 0, 0)
+        ->assertHasErrors('mediaUpload')
+        ->assertSet('draftState', 'error')
+        ->assertCount('savedMedia.0.0', 0);
+
+    expect(DB::table('control_responses')->count())->toBe(0);
+});
+
+it('denies Focus to staff who cannot conduct control', function () {
+    mountControlWorkflow();
+    $cleaner = User::query()->where('role', 'cleaner')->firstOrFail();
+
+    Livewire::actingAs($cleaner)->test('forms.page-control-focus')->assertForbidden();
+});
+
+it('denies Classic to staff who cannot conduct control', function () {
+    mountControlWorkflow();
+    $cleaner = User::query()->where('role', 'cleaner')->firstOrFail();
+
+    Livewire::actingAs($cleaner)->test('forms.page-control')->assertForbidden();
+});
+
+it('restores and submits a large Classic draft across six rooms', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $rooms = [];
+    $answers = [];
+
+    for ($roomIndex = 0; $roomIndex < 6; $roomIndex++) {
+        $items = [];
+        for ($questionIndex = 0; $questionIndex < 14; $questionIndex++) {
+            $type = ['options', 'text', 'both'][$questionIndex % 3];
+            $items[] = [
+                'question' => str_repeat('Проверить состояние помещения и оборудования. ', 8).($questionIndex + 1),
+                'answer_type' => $type,
+                'answer_options_scored' => $type === 'text' ? [] : [
+                    ['value' => 'yes', 'label' => 'Да', 'points' => 1],
+                    ['value' => 'no', 'label' => 'Нет', 'points' => 0],
+                ],
+                'is_optional' => $questionIndex === 13,
+            ];
+            $answers[$roomIndex][$questionIndex] = [
+                'selected' => $type === 'text' ? '' : 'yes',
+                'custom' => $type === 'text' ? 'Проверено' : '',
+            ];
+        }
+        $rooms[] = ['title' => 'Комната '.($roomIndex + 1), 'items' => $items, 'is_optional' => $roomIndex === 5];
+    }
+    $control->update(['main' => $rooms]);
+
+    Livewire::test('forms.page-control')
+        ->assertCount('rooms', 6)
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers', $answers)
+        ->call('saveDraft')
+        ->assertSet('draftState', 'saved');
+
+    Livewire::test('forms.page-control')
+        ->assertSet('answers.4.12.selected', 'yes')
+        ->assertSet('answers.2.10.custom', 'Проверено')
+        ->call('openReview')
+        ->assertSet('reviewSheetOpen', true)
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    expect(DB::table('control_responses')->count())->toBe(1)
+        ->and(DB::table('control_response_drafts')->count())->toBe(0)
+        ->and(json_decode((string) DB::table('control_responses')->value('responses'), true))->toHaveCount(6);
 });
