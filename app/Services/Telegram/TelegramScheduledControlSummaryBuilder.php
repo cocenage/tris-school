@@ -2,6 +2,7 @@
 
 namespace App\Services\Telegram;
 
+use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramScheduledMessageResponse;
 use Carbon\CarbonImmutable;
@@ -92,7 +93,8 @@ class TelegramScheduledControlSummaryBuilder
                 'exceptions' => $exceptions, 'interpreted_responses' => $responses,
             ];
         })->all();
-        $totals = $this->aggregate($deliveries);
+        $missingDeliveries = $this->missingDeliveries($start, $end, $scheduledMessageId, $controlType, $chatId);
+        $totals = $this->aggregate($deliveries, count($missingDeliveries));
         $groups = collect($deliveries)->groupBy('scheduled_message_id')->map(fn ($group) => $this->aggregate($group->all()))->all();
 
         $controls = collect($deliveries)->groupBy('control_type')->map(function ($rows, string $type): array {
@@ -130,7 +132,7 @@ class TelegramScheduledControlSummaryBuilder
                 ->reject(fn (array $exception): bool => in_array((string) ($exception['source_message_id'] ?? ''), $districtResponseIds, true))
                 ->filter(fn (array $exception): bool => isset($exception['latest_problem']))
                 ->values()->all(),
-            'deliveries' => $deliveries];
+            'deliveries' => $deliveries, 'missing_deliveries' => $missingDeliveries];
     }
 
     private function mergeDistrictResults($responses): array
@@ -272,17 +274,68 @@ class TelegramScheduledControlSummaryBuilder
         return $day;
     }
 
-    private function aggregate(array $deliveries): array
+    private function missingDeliveries(CarbonImmutable $start, CarbonImmutable $end, ?int $scheduledMessageId, ?string $controlType, ?string $chatId): array
+    {
+        $timezone = config('app.timezone', 'Europe/Rome');
+        $existing = TelegramScheduledMessageDelivery::query()
+            ->where('scheduled_for', '>=', $start->setTimezone($timezone)->format('Y-m-d H:i:s'))
+            ->where('scheduled_for', '<', $end->setTimezone($timezone)->format('Y-m-d H:i:s'))
+            ->get(['scheduled_message_id', 'scheduled_for'])
+            ->mapWithKeys(fn (TelegramScheduledMessageDelivery $delivery): array => [
+                $delivery->scheduled_message_id.'|'.CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString() => true,
+            ]);
+        $messages = TelegramScheduledMessage::query()->enabled()
+            ->whereNotNull('control_type')->where('control_type', '!=', '')->where('control_type', '!=', 'control_question')
+            ->where('created_at', '<', $end->format('Y-m-d H:i:s'))
+            ->when($scheduledMessageId !== null, fn ($query) => $query->whereKey($scheduledMessageId))
+            ->when(filled($controlType), fn ($query) => $query->where('control_type', $controlType))
+            ->with('telegramChat')->get();
+        $missing = [];
+        $now = CarbonImmutable::now($timezone);
+
+        for ($day = $start; $day->lt($end); $day = $day->addDay()) {
+            $cutoff = $day->setTimeFromTimeString((string) config('services.telegram.scheduled_summary_cutoff', '22:00'));
+            $dueThrough = $now->lt($cutoff) ? $now : $cutoff;
+
+            foreach ($messages as $message) {
+                if (filled($chatId) && (string) $message->telegramChat?->telegram_chat_id !== $chatId) {
+                    continue;
+                }
+                if (! in_array($day->dayOfWeekIso, array_map('intval', $message->weekdays ?? []), true)) {
+                    continue;
+                }
+
+                $scheduledFor = $day->setTimeFromTimeString((string) $message->send_time);
+                if ($scheduledFor->gt($dueThrough) || $message->created_at?->greaterThan($scheduledFor)) {
+                    continue;
+                }
+                if ($existing->has($message->id.'|'.$day->toDateString())) {
+                    continue;
+                }
+
+                $missing[] = [
+                    'scheduled_message_id' => $message->id,
+                    'control_type' => $message->control_type,
+                    'name' => $message->name,
+                    'scheduled_for' => $scheduledFor->toIso8601String(),
+                ];
+            }
+        }
+
+        return $missing;
+    }
+
+    private function aggregate(array $deliveries, int $missingCount = 0): array
     {
         $rows = collect($deliveries);
         $sent = $rows->where('eligible_for_statistics', true);
         $responded = $sent->where('response_count', '>', 0);
         $totals = [
-            'controls' => count($deliveries), 'expected' => count($deliveries), 'sent' => $sent->count(), 'responded' => $responded->count(),
+            'controls' => count($deliveries), 'expected' => count($deliveries) + $missingCount, 'sent' => $sent->count(), 'responded' => $responded->count(),
             'response_rate_percent' => $sent->isEmpty() ? null : (int) round($responded->count() * 100 / $sent->count()),
             'no_response' => $sent->where('result', 'no_response')->count(),
             'pending' => $sent->where('result', 'pending')->count(),
-            'not_delivered' => $rows->count() - $sent->count(),
+            'not_delivered' => $rows->count() - $sent->count() + $missingCount,
             'response_messages' => $sent->sum('response_count'),
             'median_response_latency_seconds' => $this->statistics->median($responded->pluck('first_response_latency_seconds')->filter(fn ($value) => $value !== null)->all()),
         ];

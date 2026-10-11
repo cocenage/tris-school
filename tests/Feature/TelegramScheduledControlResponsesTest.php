@@ -732,6 +732,85 @@ it('does not call failed delivery an unanswered staff control', function () {
     expect($summary['totals']['not_delivered'])->toBe(1)->and($summary['totals']['no_response'])->toBe(0);
 });
 
+it('counts a due control with no delivery as expected and not delivered without changing human output', function () {
+    $this->travelTo(Carbon::parse('2026-10-01 08:00:00', 'Europe/Rome'));
+    $missing = controlDeliveryFixture();
+    $missing->delete();
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+
+    expect($summary['totals'])->toMatchArray([
+        'controls' => 0, 'expected' => 1, 'sent' => 0, 'responded' => 0,
+        'not_delivered' => 1, 'no_response' => 0, 'response_rate_percent' => null,
+    ])->and($summary['missing_deliveries'])->toHaveCount(1)
+        ->and($summary['missing_deliveries'][0]['scheduled_message_id'])->toBe($missing->scheduled_message_id)
+        ->and($summary['deliveries'])->toBe([])
+        ->and($text)->toContain('✅ Контрольных сообщений за день не было.')
+        ->not->toContain('Контролей:', 'Не доставлено');
+});
+
+it('does not duplicate an expected occurrence when its sent delivery exists', function () {
+    controlDeliveryFixture();
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+
+    expect($summary['totals'])->toMatchArray([
+        'controls' => 1, 'expected' => 1, 'sent' => 1, 'not_delivered' => 0,
+    ])->and($summary['missing_deliveries'])->toBe([]);
+});
+
+it('does not invent a missing occurrence when a filtered delivery already exists for that control and day', function () {
+    $this->travelTo(Carbon::parse('2026-10-01 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $delivery->scheduledMessage->update(['control_type' => 'couriers_completed']);
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01', controlType: 'couriers_completed');
+
+    expect($summary['totals'])->toMatchArray(['expected' => 0, 'not_delivered' => 0])
+        ->and($summary['missing_deliveries'])->toBe([]);
+});
+
+it('keeps response rate based on sent occurrences when another due control has no delivery', function () {
+    $this->travelTo(Carbon::parse('2026-10-01 08:00:00', 'Europe/Rome'));
+    $sent = controlDeliveryFixture();
+    $missing = controlDeliveryFixture(['control_type' => 'couriers_completed']);
+    $missing->delete();
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+    captureControlReply(controlReplyPayload($sent));
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+
+    expect($summary['totals'])->toMatchArray([
+        'controls' => 1, 'expected' => 2, 'sent' => 1, 'responded' => 1,
+        'response_rate_percent' => 100, 'not_delivered' => 1, 'no_response' => 0,
+    ])->and($summary['missing_deliveries'])->toHaveCount(1);
+});
+
+it('excludes disabled and non-recurring controls from missing delivery expectations', function () {
+    $this->travelTo(Carbon::parse('2026-10-01 08:00:00', 'Europe/Rome'));
+    $disabled = controlDeliveryFixture(['control_type' => 'schedule_checked']);
+    $disabled->scheduledMessage->update(['enabled' => false]);
+    $disabled->delete();
+
+    $wrongDay = controlDeliveryFixture(['control_type' => 'couriers_completed']);
+    $wrongDay->scheduledMessage->update(['weekdays' => [5]]);
+    $wrongDay->delete();
+
+    $later = controlDeliveryFixture(['control_type' => 'extra_payments_completed']);
+    $later->scheduledMessage->update(['send_time' => '17:00:00']);
+    $later->delete();
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+
+    expect($summary['totals'])->toMatchArray([
+        'expected' => 0, 'sent' => 0, 'not_delivered' => 0,
+    ])->and($summary['missing_deliveries'])->toBe([]);
+});
+
 it('builds daily totals and a human summary without a fabricated denominator', function () {
     $this->travelTo(Carbon::parse('2026-10-01 23:00:00', 'Europe/Rome'));
     captureControlReply(controlReplyPayload(controlDeliveryFixture(), 'Курьер не приехал'));
