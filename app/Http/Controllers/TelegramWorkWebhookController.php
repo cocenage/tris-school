@@ -367,7 +367,7 @@ class TelegramWorkWebhookController extends Controller
 
         if (blank($requestChatId)
             || $chatId !== $requestChatId
-            || (filled($requestThreadId) && (string) $callbackThreadId !== (string) $requestThreadId)) {
+            || (filled($requestThreadId) && filled($callbackThreadId) && (string) $callbackThreadId !== (string) $requestThreadId)) {
             $this->logCallbackEvent($data, null, null, false, 'dayoffday_wrong_destination');
             $this->answerCallback($callbackQuery, 'Кнопка не из чата заявок');
 

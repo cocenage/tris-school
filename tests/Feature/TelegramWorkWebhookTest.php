@@ -638,6 +638,45 @@ it('accepts a day-off callback from its configured request chat and topic', func
     );
 });
 
+it('accepts an authorized day-off callback when Telegram omits the optional topic field', function () {
+    Http::fake(fn () => Http::response(['ok' => true]));
+    Queue::fake();
+    config([
+        'services.telegram.chat_id_formweekend' => '-200',
+        'services.telegram.thread_id_formweekend' => '17',
+        'services.telegram.work_allowed_chat_ids' => ['-100'],
+    ]);
+
+    $reviewer = User::create([
+        'name' => 'Admin', 'telegram_id' => '123', 'status' => 'approved', 'role' => 'admin', 'is_active' => true,
+    ]);
+    $employee = User::create([
+        'name' => 'Cleaner', 'telegram_id' => '456', 'status' => 'approved', 'role' => 'cleaner', 'is_active' => true,
+    ]);
+    $request = DayOffRequest::create([
+        'user_id' => $employee->id, 'reason' => 'Нужен выходной', 'status' => 'pending',
+    ]);
+    $day = DayOffRequestDay::create([
+        'day_off_request_id' => $request->id, 'user_id' => $employee->id, 'date' => '2026-08-24', 'status' => 'pending',
+    ]);
+
+    $this->postJson('/api/telegram/work-webhook/test-secret', [
+        'callback_query' => [
+            'id' => 'callback-no-topic-field',
+            'data' => 'dayoffday:approve:'.$day->id,
+            'from' => ['id' => (int) $reviewer->telegram_id],
+            'message' => ['message_id' => 25, 'chat' => ['id' => -200, 'type' => 'supergroup']],
+        ],
+    ])->assertOk();
+
+    expect($day->refresh()->status)->toBe('approved')
+        ->and($request->refresh()->status)->toBe('approved');
+    Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/answerCallbackQuery')
+        && $httpRequest['callback_query_id'] === 'callback-no-topic-field'
+        && $httpRequest['text'] === 'Дата одобрена'
+    );
+});
+
 it('rejects day-off callbacks from another chat or topic without changing dates', function () {
     Http::fake(fn () => Http::response(['ok' => true]));
     config([
