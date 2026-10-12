@@ -15,8 +15,14 @@ it('keeps control navigation anchored to the internal scroll container', functio
         ->toContain('min-h-[56px] w-full')
         ->toContain('whitespace-normal break-words leading-[1.35]')
         ->toContain("@if(\$type === 'text' || \$type === 'both')")
-        ->toContain('correctiveOpen: false')
+        ->toContain("correctiveOpen: @js(\$errors->has('answers.'.\$roomIndex.'.'.\$questionIndex))")
+        ->toContain('x-on:control-scroll.window="if ($event.detail.type === \'question\'')
         ->toContain('x-show="correctiveOpen"')
+        ->toContain('min-h-[44px] rounded-full')
+        ->toContain('mediaUploads: {}')
+        ->toContain('startMediaUpload(key, input, room, question, files)')
+        ->toContain("mediaUploads['{{ \$roomIndex }}.{{ \$questionIndex }}'].files")
+        ->toContain('Дождитесь завершения загрузки файлов')
         ->toContain('wire:click="goToQuestion({{ $issue[\'room\'] }}, {{ $issue[\'question\'] }})"')
         ->toContain('Отправить контроль');
 
@@ -40,7 +46,7 @@ it('keeps control navigation anchored to the internal scroll container', functio
         ->toContain('array_replace_recursive($this->answers, $draft->responses)')
         ->toContain('getReviewProblemsProperty')
         ->toContain('scroll-padding-top: var(--control-sticky-offset)')
-        ->toContain('area.scrollTo({ top: Math.max(0, top), behavior: \'smooth\' })')
+        ->toContain("area.scrollTo({ top: Math.max(0, top), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })")
         ->not->toContain('scrollIntoView(');
 });
 

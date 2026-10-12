@@ -1509,10 +1509,6 @@ protected function getDraftPayload(?array $media = null): array
 </x-slot:header>
 
 <style>
-    html {
-        scroll-behavior: smooth;
-    }
-
     #control-scroll-area {
         --control-sticky-offset: 16px;
         scroll-padding-top: var(--control-sticky-offset);
@@ -1534,6 +1530,11 @@ protected function getDraftPayload(?array $media = null): array
         100% { box-shadow: 0 0 0 0 rgba(28, 125, 79, 0); }
     }
 
+    @media (prefers-reduced-motion: reduce) {
+        #control-scroll-area { scroll-behavior: auto; }
+        .control-scroll-highlight { animation: none; }
+    }
+
     [x-cloak] {
         display: none !important;
     }
@@ -1545,19 +1546,49 @@ protected function getDraftPayload(?array $media = null): array
         wire:submit.prevent="submit"
         x-data="{
             timer: null,
+            pendingUploads: 0,
+            mediaUploads: {},
             hasUnsavedChanges: @entangle('hasUnsavedChanges').live,
+
+            startMediaUpload(key, input, room, question, files) {
+                const selectedFiles = Array.from(files || []);
+                if (!selectedFiles.length || this.mediaUploads[key]?.state === 'uploading') return;
+
+                this.mediaUploads[key] = { state: 'uploading', progress: 0, files: selectedFiles };
+                this.pendingUploads++;
+
+                window.controlUploadCompressedPhotos(
+                    input,
+                    $wire,
+                    `photoUploads.${room}.${question}`,
+                    room,
+                    question,
+                    selectedFiles,
+                    progress => this.mediaUploads[key].progress = progress
+                ).then(() => {
+                    this.mediaUploads[key] = { state: 'idle', progress: 0, files: [] };
+                }).catch(() => {
+                    this.mediaUploads[key].state = 'error';
+                }).finally(() => {
+                    this.pendingUploads = Math.max(0, this.pendingUploads - 1);
+                });
+            },
 
             save() {
                 clearTimeout(this.timer);
 
                 this.timer = setTimeout(() => {
+                    if (this.pendingUploads > 0) {
+                        this.save();
+                        return;
+                    }
                     $wire.saveDraftAuto();
                 }, 2500);
             },
 
             init() {
                 window.addEventListener('beforeunload', (event) => {
-                    if (!this.hasUnsavedChanges) {
+                    if (!this.hasUnsavedChanges && this.pendingUploads === 0) {
                         return;
                     }
 
@@ -1572,7 +1603,7 @@ protected function getDraftPayload(?array $media = null): array
     >
         <div id="control-scroll-area" data-control-scroll-area class="flex-1 min-h-0 overflow-y-auto">
             <div class="min-h-full rounded-t-[34px] bg-white">
-                <div class=" pb-[120px]">
+                <div class="pb-[120px]">
 
                     <div class="mb-[16px] bg-white px-[16px] pb-[4px] pt-[8px]">
                         <div class="mb-[7px] flex items-center justify-between gap-[12px] text-[12px] font-medium text-[#64748B]">
@@ -1588,7 +1619,7 @@ protected function getDraftPayload(?array $media = null): array
                         </div>
                     </div>
 
-<div class="control-section mx-[16px] mb-[20px]" id="meta-block" data-control-anchor="meta">
+                    <div class="control-section mx-[16px] mb-[20px]" id="meta-block" data-control-anchor="meta">
 
 
                         <div class="bg-white p-0">
@@ -1786,8 +1817,8 @@ protected function getDraftPayload(?array $media = null): array
                                     @enderror
                                 </div>
 
-                                <div class="grid grid-cols-2 gap-[10px]">
-                                    <div id="field-cleaning_date">
+                                <div class="grid grid-cols-1 gap-[10px] min-[390px]:grid-cols-2">
+                                    <div id="field-cleaning_date" class="min-w-0">
                                         <div class="mb-[8px] px-[4px] text-[14px] font-semibold text-[#111827]">
                                             Дата уборки <span class="text-[#2D6494]">*</span>
                                         </div>
@@ -1805,7 +1836,7 @@ protected function getDraftPayload(?array $media = null): array
                                         @enderror
                                     </div>
 
-                                    <div id="field-inspection_date">
+                                    <div id="field-inspection_date" class="min-w-0">
                                         <div class="mb-[8px] px-[4px] text-[14px] font-semibold text-[#111827]">
                                             Дата проверки <span class="text-[#2D6494]">*</span>
                                         </div>
@@ -1859,7 +1890,7 @@ protected function getDraftPayload(?array $media = null): array
                     </div>
 
                     @if(count($rooms))
-                        <div class="px-[16px] space-y-[12px]">
+                        <div class="space-y-[12px] px-[16px]">
                             @foreach($rooms as $roomIndex => $room)
                                 @php
                                     $roomStatus = $this->getRoomStatus($roomIndex);
@@ -1956,6 +1987,7 @@ protected function getDraftPayload(?array $media = null): array
                                                     >
                                                         <div class="mb-[11px] flex items-start gap-[6px]">
                                                             <div class="min-w-0 flex-1 whitespace-normal break-words text-[16px] font-semibold leading-[1.4] tracking-[-0.01em] text-[#17201A]">
+                                                                <span class="mb-[3px] block truncate text-[11px] font-medium tracking-normal text-[#66736B]">{{ $room['title'] ?? ('Комната '.($roomIndex + 1)) }} · вопрос {{ $questionIndex + 1 }} из {{ count($room['items'] ?? []) }}</span>
                                                                 {{ $question['question'] ?? 'Вопрос' }}
 
                                                                 @if(!$optional)
@@ -2041,7 +2073,11 @@ protected function getDraftPayload(?array $media = null): array
                                                             @php
                                                                 $corrective = is_array($answer['corrective'] ?? null) ? $answer['corrective'] : [];
                                                             @endphp
-                                                            <div class="mt-[10px] rounded-[15px] bg-[#F8F6EE] p-[10px]" x-data="{ correctiveOpen: false }">
+                                                            <div
+                                                                class="mt-[10px] rounded-[15px] bg-[#F8F6EE] p-[10px]"
+                                                                x-data="{ correctiveOpen: @js($errors->has('answers.'.$roomIndex.'.'.$questionIndex)) }"
+                                                                x-on:control-scroll.window="if ($event.detail.type === 'question' && $event.detail.room === {{ $roomIndex }} && $event.detail.q === {{ $questionIndex }}) correctiveOpen = true"
+                                                            >
                                                                 <button
                                                                     type="button"
                                                                     class="flex min-h-[42px] w-full items-center justify-between gap-[10px] rounded-[11px] px-[2px] text-left"
@@ -2069,7 +2105,7 @@ protected function getDraftPayload(?array $media = null): array
                                                                                     type="button"
                                                                                     wire:click="setCorrectiveBoolean({{ $roomIndex }}, {{ $questionIndex }}, 'repeats', {{ $bool ? 'true' : 'false' }})"
                                                                                     @class([
-                                                                                        'min-h-[32px] rounded-full px-[10px] text-[12px] font-semibold transition',
+                                                                                        'min-h-[44px] rounded-full px-[10px] text-[13px] font-semibold transition',
                                                                                         'bg-[#F4D98F] text-[#6B4F12]' => (($corrective['repeats'] ?? null) === $bool),
                                                                                         'bg-white/80 text-[#6B7280] ring-1 ring-inset ring-[#EAD9A8]' => (($corrective['repeats'] ?? null) !== $bool),
                                                                                     ])
@@ -2102,7 +2138,7 @@ protected function getDraftPayload(?array $media = null): array
                                                                                     type="button"
                                                                                     wire:click="setCorrectiveBoolean({{ $roomIndex }}, {{ $questionIndex }}, 'recheck', {{ $bool ? 'true' : 'false' }})"
                                                                                     @class([
-                                                                                        'min-h-[32px] rounded-full px-[10px] text-[12px] font-semibold transition',
+                                                                                        'min-h-[44px] rounded-full px-[10px] text-[13px] font-semibold transition',
                                                                                         'bg-[#F4D98F] text-[#6B4F12]' => (($corrective['recheck'] ?? null) === $bool),
                                                                                         'bg-white/80 text-[#6B7280] ring-1 ring-inset ring-[#EAD9A8]' => (($corrective['recheck'] ?? null) !== $bool),
                                                                                     ])
@@ -2127,32 +2163,31 @@ protected function getDraftPayload(?array $media = null): array
                                                                     </div>
                                                                 </div>
 
-                                                                <label class="shrink-0 cursor-pointer rounded-full bg-white px-[13px] py-[9px] text-[12px] font-semibold text-[#236B49] ring-1 ring-inset ring-[#D4E3D9] active:bg-[#EFF7F1]">
-                                                                    Фото или видео
+                                                                <label class="shrink-0 cursor-pointer rounded-full bg-white px-[13px] py-[10px] text-[12px] font-semibold text-[#236B49] ring-1 ring-inset ring-[#D4E3D9] focus-within:ring-2 focus-within:ring-[#25845A] active:bg-[#EFF7F1]">
+                                                                    Добавить
 <input
+    x-ref="mediaInput_{{ $roomIndex }}_{{ $questionIndex }}"
     type="file"
     multiple
     accept="image/*,video/mp4,video/quicktime,video/webm"
-    x-on:change="
-        window.controlUploadCompressedPhotos(
-            $event,
-            @this,
-            'photoUploads.{{ $roomIndex }}.{{ $questionIndex }}',
-            {{ $roomIndex }},
-            {{ $questionIndex }}
-        )
-    "
-    class="hidden"
+    aria-label="Добавить фото или видео"
+    x-bind:disabled="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.state === 'uploading'"
+    x-on:change="startMediaUpload('{{ $roomIndex }}.{{ $questionIndex }}', $event.target, {{ $roomIndex }}, {{ $questionIndex }}, $event.target.files)"
+    class="sr-only"
 >
                                                                 </label>
                                                             </div>
 
-                                                            <div
-                                                                class="mt-[10px] text-[12px] font-semibold text-[#64748B]"
-                                                                wire:loading
-                                                                wire:target="photoUploads.{{ $roomIndex }}.{{ $questionIndex }}"
-                                                            >
-                                                                Загружаем файл...
+                                                            <div x-show="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.state === 'uploading'" x-cloak class="mt-[10px]" role="status" aria-live="polite">
+                                                                <div class="text-[12px] font-semibold text-[#526157]" x-text="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.progress > 0 ? `Загружаем: ${mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}'].progress}%` : 'Подготавливаем файл…'"></div>
+                                                                <div class="mt-[6px] h-[4px] overflow-hidden rounded-full bg-[#DDE8E0]">
+                                                                    <div class="h-full rounded-full bg-[#25845A] transition-[width] duration-150" x-bind:style="`width: ${mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.progress ?? 0}%`"></div>
+                                                                </div>
+                                                            </div>
+
+                                                            <div x-show="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.state === 'error'" x-cloak class="mt-[10px] flex items-center justify-between gap-[10px] rounded-[13px] bg-[#FEE4E2] px-[12px] py-[9px] text-[12px] font-semibold text-[#B42318]" role="alert">
+                                                                <span>Не удалось загрузить файл.</span>
+                                                                <button type="button" class="min-h-[40px] shrink-0 underline underline-offset-2" x-on:click="startMediaUpload('{{ $roomIndex }}.{{ $questionIndex }}', $refs.mediaInput_{{ $roomIndex }}_{{ $questionIndex }}, {{ $roomIndex }}, {{ $questionIndex }}, mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}'].files)">Повторить</button>
                                                             </div>
 
                                                             @error("queuedPhotos.$roomIndex.$questionIndex")
@@ -2175,7 +2210,7 @@ protected function getDraftPayload(?array $media = null): array
                                                                         @endphp
                                                                         <div class="relative overflow-hidden rounded-[16px] bg-white">
                                                                             @if(str_starts_with((string) ($photo['mime'] ?? ''), 'video/'))
-                                                                                <video src="{{ $mediaUrl }}" muted preload="metadata" class="h-[88px] w-full object-cover"></video>
+                                                                                <video src="{{ $mediaUrl }}" muted preload="metadata" aria-label="Видео контроля" class="h-[88px] w-full object-cover"></video>
                                                                             @else
                                                                                 <img src="{{ $mediaUrl }}" alt="Фото контроля" class="h-[88px] w-full object-cover">
                                                                             @endif
@@ -2185,7 +2220,10 @@ protected function getDraftPayload(?array $media = null): array
                                                                             <button
                                                                                 type="button"
                                                                                 wire:click="removeQueuedPhoto({{ $roomIndex }}, {{ $questionIndex }}, {{ $photoIndex }})"
-                                                                                class="absolute right-[6px] top-[6px] flex h-[26px] w-[26px] items-center justify-center rounded-full bg-black/65 text-[14px] font-semibold text-white"
+                                                                                wire:loading.attr="disabled"
+                                                                                wire:target="removeQueuedPhoto"
+                                                                                aria-label="Удалить вложение"
+                                                                                class="absolute right-[4px] top-[4px] flex h-[40px] w-[40px] items-center justify-center rounded-full bg-black/70 text-[20px] font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                                                                             >
                                                                                 ×
                                                                             </button>
@@ -2259,6 +2297,7 @@ protected function getDraftPayload(?array $media = null): array
                         wire:click="saveDraft"
                         wire:loading.attr="disabled"
                         wire:target="saveDraft,saveDraftAuto,continueForm,submit,photoUploads,finishPhotoUpload"
+                        x-bind:disabled="pendingUploads > 0"
                     >
                         <span wire:loading.remove wire:target="saveDraft,saveDraftAuto">
                             Сохранить
@@ -2282,7 +2321,7 @@ protected function getDraftPayload(?array $media = null): array
                         wire:click="continueForm"
                         wire:loading.attr="disabled"
                         wire:target="continueForm,openReview,confirmSubmit,submit,photoUploads,finishPhotoUpload"
-                      :disabled="$isSubmitting"
+                        x-bind:disabled="pendingUploads > 0 || @js($isSubmitting)"
                     >
                         <span wire:loading.remove wire:target="continueForm,openReview,confirmSubmit,submit,photoUploads,finishPhotoUpload">
                             {{ $this->formButtonText }}
@@ -2300,6 +2339,8 @@ protected function getDraftPayload(?array $media = null): array
             </div>
 
             <div class="mt-[8px] min-h-[17px] text-center text-[12px] font-medium text-[#738078]" role="status" aria-live="polite">
+                <span x-show="pendingUploads > 0" x-cloak>Дождитесь завершения загрузки файлов</span>
+                <span x-show="pendingUploads === 0">
                 @if($draftState === 'saving')
                     Сохраняем черновик...
                 @elseif($draftState === 'dirty')
@@ -2311,6 +2352,7 @@ protected function getDraftPayload(?array $media = null): array
                 @else
                     Черновик ещё не сохранялся
                 @endif
+                </span>
             </div>
         </div>
     </form>
@@ -2336,7 +2378,7 @@ protected function getDraftPayload(?array $media = null): array
                     <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Дата уборки</span><span class="font-semibold">{{ $summary['cleaning_date'] }}</span></div>
                     <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Дата проверки</span><span class="font-semibold">{{ $summary['inspection_date'] }}</span></div>
                     <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Обязательные</span><span class="font-semibold">{{ $summary['required_done'] }} / {{ $summary['required_total'] }}</span></div>
-                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Фото</span><span class="font-semibold">{{ $summary['photos_total'] }}</span></div>
+                    <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Фото и видео</span><span class="font-semibold">{{ $summary['photos_total'] }}</span></div>
                     <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Прогресс</span><span class="font-semibold">{{ $summary['progress'] }}%</span></div>
                 </div>
 
@@ -2424,7 +2466,7 @@ protected function getDraftPayload(?array $media = null): array
                     Фото или видео ещё загружается. Дождитесь завершения загрузки.
                 </div>
 
-                <div class="mt-[22px] grid grid-cols-2 gap-[10px]">
+                <div class="sticky bottom-0 z-10 -mx-[16px] mt-[18px] grid grid-cols-2 gap-[10px] border-t border-[#E7ECE8] bg-white px-[16px] pb-[calc(8px+env(safe-area-inset-bottom))] pt-[10px]">
                     <x-ui.button
                         type="button"
                         variant="secondary"
@@ -2574,32 +2616,32 @@ protected function getDraftPayload(?array $media = null): array
         }
     };
 
-    window.controlUploadCompressedPhotos = async function (event, livewire, property, roomIndex, questionIndex) {
-        const input = event.target;
-        const files = Array.from(input.files || []);
+    window.controlUploadCompressedPhotos = async function (input, livewire, property, roomIndex, questionIndex, files, onProgress) {
+        const selectedFiles = Array.from(files || []);
 
-        if (!files.length) {
+        if (!selectedFiles.length) {
             return;
         }
 
         const compressed = [];
 
-        for (const file of files) {
+        for (const file of selectedFiles) {
             compressed.push(await window.controlCompressPhoto(file));
         }
 
-        livewire.uploadMultiple(
-            property,
-            compressed,
-            () => {
-                livewire.call('finishPhotoUpload', roomIndex, questionIndex);
-                input.value = '';
-            },
-            () => {
-                alert('Не удалось загрузить файл');
-                input.value = '';
-            }
-        );
+        try {
+            await new Promise((resolve, reject) => {
+                livewire.uploadMultiple(
+                    property,
+                    compressed,
+                    () => livewire.call('finishPhotoUpload', roomIndex, questionIndex).then(resolve, reject),
+                    () => reject(new Error('Upload failed')),
+                    event => onProgress(event.detail?.progress ?? 0)
+                );
+            });
+        } finally {
+            input.value = '';
+        }
     };
 </script>
 <script>
@@ -2632,7 +2674,7 @@ protected function getDraftPayload(?array $media = null): array
             }
 
             if (payload?.type === 'top') {
-                area.scrollTo({ top: 0, behavior: 'smooth' });
+                area.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
                 return;
             }
 
@@ -2641,7 +2683,7 @@ protected function getDraftPayload(?array $media = null): array
             }
 
             if (target === area) {
-                area.scrollTo({ top: 0, behavior: 'smooth' });
+                area.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
                 return;
             }
 
@@ -2649,7 +2691,7 @@ protected function getDraftPayload(?array $media = null): array
             const targetRect = target.getBoundingClientRect();
             const top = area.scrollTop + (targetRect.top - areaRect.top) - 16;
 
-            area.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+            area.scrollTo({ top: Math.max(0, top), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
             target.classList.remove('control-scroll-highlight');
 
             requestAnimationFrame(() => {
