@@ -5,7 +5,7 @@ it('keeps control navigation anchored to the internal scroll container', functio
 
     expect($view)
         ->toContain('id="control-scroll-area" data-control-scroll-area')
-        ->toContain('wire:click="toggleRoom({{ $roomIndex }})"')
+        ->toContain('toggleRoomAfterSave({{ $roomIndex }})')
         ->toContain('aria-expanded="{{ $isOpen ? \'true\' : \'false\' }}"')
         ->toContain('data-control-room-section=')
         ->toContain('data-control-anchor="question-')
@@ -55,6 +55,18 @@ it('keeps control navigation anchored to the internal scroll container', functio
         ->not->toContain('class="sr-only"')
         ->not->toContain('pb-[120px]')
         ->not->toContain('wire:click="resetControl"')
+        ->toContain('saveRevision++')
+        ->toContain('scheduleAutosave(delay = 1500)')
+        ->toContain('if (this.saveRevision > this.attemptedSaveRevision) this.scheduleAutosave(0)')
+        ->toContain('this.saveRevision === revision')
+        ->toContain('this.persistedSaveRevision = Math.max(this.persistedSaveRevision, revision)')
+        ->toContain('result === \'saved\' || result === \'idle\'')
+        ->toContain('clientDraftState === \'error\'')
+        ->toContain('clientDraftState === \'saving\'')
+        ->toContain('clientDraftState === \'dirty\'')
+        ->toContain('await this.flushPendingChanges()')
+        ->not->toContain('wire:click="setAnswer(')
+        ->not->toContain('wire:target="setAnswer"')
         ->toContain("area.scrollTo({ top: Math.max(0, top), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })")
         ->not->toContain('scrollIntoView(');
 });
