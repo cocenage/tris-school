@@ -136,22 +136,100 @@ function mountControlWorkflow(): array
     return [$supervisor, $cleaner, $apartment, $control];
 }
 
-it('shows required corrective details in the final check and still blocks an incomplete submission', function () {
+it('hides corrective details and does not require them for a negative answer', function () {
     [, $cleaner, $apartment, $control] = mountControlWorkflow();
 
     Livewire::test('forms.page-control')
         ->set('cleaner_id', $cleaner->id)
         ->set('apartment_id', $apartment)
-        ->set('answers.0.0.selected', 'no')
+        ->call('setAnswer', 0, 0, 'no')
         ->call('openReview')
-        ->assertHasErrors('answers.0.0')
+        ->assertHasNoErrors()
         ->assertSet('reviewSheetOpen', true)
-        ->assertSee('Уточнить исправление')
-        ->assertSee('Пунктов для проверки: 1')
+        ->assertDontSee('Уточнить исправление')
+        ->assertDontSee('Что исправить')
         ->call('confirmSubmit')
-        ->assertHasErrors('answers.0.0')
+        ->assertHasNoErrors()
+        ->assertSet('reviewSheetOpen', false)
+        ->assertSet('successSheetOpen', true);
+});
+
+it('moves to the next unanswered required question and opens review only when required answers are complete', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $control->main = [
+        [
+            'title' => 'Вход',
+            'items' => [
+                ['question' => 'Первый вопрос?', 'answer_type' => 'options', 'answer_options_scored' => [['value' => 'yes', 'label' => 'Да', 'points' => 1]]],
+                ['question' => 'Второй вопрос?', 'answer_type' => 'options', 'answer_options_scored' => [['value' => 'yes', 'label' => 'Да', 'points' => 1]]],
+                ['question' => 'Необязательный вопрос?', 'is_optional' => true, 'answer_type' => 'options', 'answer_options_scored' => [['value' => 'yes', 'label' => 'Да', 'points' => 1]]],
+            ],
+        ],
+        [
+            'title' => 'Кухня',
+            'items' => [
+                ['question' => 'Третий вопрос?', 'answer_type' => 'options', 'answer_options_scored' => [['value' => 'yes', 'label' => 'Да', 'points' => 1]]],
+            ],
+        ],
+    ];
+    $control->save();
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->assertSet('incompleteQuestionsCount', 3)
+        ->assertSee('Дальше')
+        ->call('continueForm')
+        ->assertSet('openRoomIndex', 0)
+        ->assertSet('reviewSheetOpen', false)
+        ->assertSet('attemptedSubmit', false)
+        ->assertHasNoErrors()
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('continueForm')
+        ->assertSet('openRoomIndex', 0)
+        ->call('setAnswer', 0, 1, 'yes')
+        ->call('openRoom', 0)
+        ->call('continueForm')
+        ->assertSet('openRoomIndex', 1)
+        ->assertSet('reviewSheetOpen', false)
+        ->assertSet('attemptedSubmit', false)
+        ->call('setAnswer', 1, 0, 'yes')
+        ->assertSee('Проверить контроль')
+        ->call('continueForm')
         ->assertSet('reviewSheetOpen', true)
-        ->assertSet('successSheetOpen', false);
+        ->assertHasNoErrors();
+});
+
+it('resets the current control answers, draft, and related UI state', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'no')
+        ->set('comment', 'Черновой комментарий')
+        ->set('attemptedSubmit', true)
+        ->set('reviewSheetOpen', true)
+        ->set('successSheetOpen', true)
+        ->call('saveDraft');
+
+    expect(DB::table('control_response_drafts')->count())->toBe(1);
+
+    $component->call('resetControl')
+        ->assertSet('cleaner_id', null)
+        ->assertSet('apartment_id', null)
+        ->assertSet('comment', '')
+        ->assertSet('answers.0.0.selected', '')
+        ->assertSet('attemptedSubmit', false)
+        ->assertSet('reviewSheetOpen', false)
+        ->assertSet('successSheetOpen', false)
+        ->assertSet('successMessage', null)
+        ->assertSet('draftId', null)
+        ->assertSet('draftState', 'idle')
+        ->assertSet('hasUnsavedChanges', false)
+        ->assertHasNoErrors();
+
+    expect(DB::table('control_response_drafts')->count())->toBe(0);
 });
 
 it('lists unanswered required questions in the final check and opens their room', function () {
