@@ -141,7 +141,17 @@ new class extends Component {
 
     public function updated(string $name): void
     {
-      
+        if (preg_match('/^answers\.(\d+)\.(\d+)\.selected$/', $name, $matches)) {
+            $roomIndex = (int) $matches[1];
+            $questionIndex = (int) $matches[2];
+            $question = $this->rooms[$roomIndex]['items'][$questionIndex] ?? [];
+            $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
+
+            $this->resetErrorBag("answers.$roomIndex.$questionIndex");
+            if (! $this->answerIsNegative($question, $answer)) {
+                $this->answers[$roomIndex][$questionIndex]['corrective'] = $this->correctiveDefaults();
+            }
+        }
 
         if (! $this->autoSaveEnabled) {
             return;
@@ -337,14 +347,18 @@ protected function getDraftPayload(?array $media = null): array
         }
     }
 
-    public function saveDraft(): void
+    public function saveDraft(): string
     {
         $this->persistDraft(false);
+
+        return $this->draftState;
     }
 
-    public function saveDraftAuto(): void
+    public function saveDraftAuto(): string
     {
         $this->persistDraft(true);
+
+        return $this->draftState;
     }
 
     protected function restoreDraft(): void
@@ -678,13 +692,17 @@ protected function getDraftPayload(?array $media = null): array
         return 'empty';
     }
 
-    public function toggleRoom(int $roomIndex): void
+    public function toggleRoom(int $roomIndex): string
     {
         $this->ensureCanConductControl();
 
         $this->openRoomIndex = $this->openRoomIndex === $roomIndex
             ? null
             : $roomIndex;
+
+        $this->persistDraft(true);
+
+        return $this->draftState;
     }
 
     public function openRoom(int $roomIndex): void
@@ -1108,17 +1126,23 @@ protected function getDraftPayload(?array $media = null): array
         return array_values($issues);
     }
 
-    public function continueForm(): void
+    public function continueForm(): string
     {
         if ($this->incompleteQuestions !== []) {
             $nextQuestion = $this->incompleteQuestions[0];
 
             $this->goToQuestion($nextQuestion['room'], $nextQuestion['question']);
 
-            return;
+            $this->persistDraft(true);
+
+            return $this->draftState;
         }
 
         $this->openReview();
+
+        $this->persistDraft(true);
+
+        return $this->draftState;
     }
 
     protected function validateMeta(): void
@@ -1543,6 +1567,189 @@ protected function getDraftPayload(?array $media = null): array
             pendingUploads: 0,
             mediaUploads: {},
             hasUnsavedChanges: @entangle('hasUnsavedChanges').live,
+            clientDraftState: @js($draftState),
+            saveRevision: 0,
+            attemptedSaveRevision: 0,
+            persistedSaveRevision: 0,
+            saveInFlight: false,
+            savePromise: null,
+            manualSaveInFlight: false,
+            controlActionInFlight: false,
+            submissionInFlight: false,
+
+            notifySaveError() {
+                window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: 'Не удалось сохранить черновик. Повторите попытку.' } }));
+            },
+
+            scheduleAutosave(delay = 1500) {
+                clearTimeout(this.timer);
+                this.timer = setTimeout(() => this.flushAutosave(), delay);
+            },
+
+            applySaveResult(result, revision) {
+                const saved = result === 'saved' || result === 'idle';
+                if (saved) this.persistedSaveRevision = Math.max(this.persistedSaveRevision, revision);
+                this.clientDraftState = this.saveRevision === revision
+                    ? (saved ? result : 'error')
+                    : 'dirty';
+                return saved;
+            },
+
+            applyActionSaveResult(result, revision) {
+                this.attemptedSaveRevision = Math.max(this.attemptedSaveRevision, revision);
+                const saved = this.applySaveResult(result, revision);
+                if (this.saveRevision > this.attemptedSaveRevision) this.scheduleAutosave(0);
+                return saved;
+            },
+
+            async waitForActiveSave() {
+                clearTimeout(this.timer);
+                if (this.saveInFlight) await this.savePromise;
+                clearTimeout(this.timer);
+            },
+
+            async flushAutosave() {
+                clearTimeout(this.timer);
+                if (this.pendingUploads > 0) {
+                    this.scheduleAutosave(500);
+                    return false;
+                }
+                if (this.saveInFlight) return this.savePromise;
+                if (this.saveRevision <= this.attemptedSaveRevision) {
+                    return this.persistedSaveRevision >= this.saveRevision;
+                }
+
+                const revision = this.saveRevision;
+                this.attemptedSaveRevision = revision;
+                this.saveInFlight = true;
+                this.clientDraftState = 'saving';
+                this.savePromise = (async () => {
+                    let saved = false;
+                    try {
+                        const result = await $wire.saveDraftAuto();
+                        saved = this.applySaveResult(result, revision);
+                    } catch (error) {
+                        this.clientDraftState = this.saveRevision === revision ? 'error' : 'dirty';
+                    } finally {
+                        this.saveInFlight = false;
+                        this.savePromise = null;
+                        if (this.saveRevision > this.attemptedSaveRevision) this.scheduleAutosave(0);
+                    }
+                    return saved;
+                })();
+
+                return this.savePromise;
+            },
+
+            async flushPendingChanges() {
+                clearTimeout(this.timer);
+                if (this.pendingUploads > 0) return false;
+
+                let attempts = 0;
+                while (attempts++ < 20) {
+                    if (this.saveInFlight) {
+                        await this.savePromise;
+                        continue;
+                    }
+
+                    if (this.saveRevision > this.attemptedSaveRevision || this.clientDraftState === 'error') {
+                        if (this.clientDraftState === 'error') {
+                            this.attemptedSaveRevision = Math.min(this.attemptedSaveRevision, this.saveRevision - 1);
+                        }
+                        if (! await this.flushAutosave()) return false;
+                        continue;
+                    }
+
+                    return this.saveRevision === 0 || this.persistedSaveRevision >= this.saveRevision;
+                }
+
+                return false;
+            },
+
+            async saveDraftManually() {
+                if (this.manualSaveInFlight) return;
+                this.manualSaveInFlight = true;
+                try {
+                    if (this.pendingUploads > 0 || ! await this.flushPendingChanges()) {
+                        this.notifySaveError();
+                        return;
+                    }
+
+                    const revision = this.saveRevision;
+                    this.clientDraftState = 'saving';
+                    if (! this.applySaveResult(await $wire.saveDraft(), revision)) this.notifySaveError();
+                } catch (error) {
+                    this.clientDraftState = 'error';
+                    this.notifySaveError();
+                } finally {
+                    this.manualSaveInFlight = false;
+                }
+            },
+
+            async toggleRoomAfterSave(roomIndex) {
+                if (this.controlActionInFlight) return;
+                this.controlActionInFlight = true;
+                try {
+                    await this.waitForActiveSave();
+                    const revision = this.saveRevision;
+                    this.clientDraftState = 'saving';
+                    const result = await $wire.toggleRoom(roomIndex);
+                    if (! this.applyActionSaveResult(result, revision)) this.notifySaveError();
+                } catch (error) {
+                    this.attemptedSaveRevision = this.saveRevision;
+                    this.clientDraftState = 'error';
+                    this.notifySaveError();
+                } finally {
+                    this.controlActionInFlight = false;
+                }
+            },
+
+            async continueAfterSave() {
+                if (this.controlActionInFlight) return;
+                this.controlActionInFlight = true;
+                try {
+                    await this.waitForActiveSave();
+                    const revision = this.saveRevision;
+                    this.clientDraftState = 'saving';
+                    const result = await $wire.continueForm();
+                    if (! this.applyActionSaveResult(result, revision)) this.notifySaveError();
+                } catch (error) {
+                    this.attemptedSaveRevision = this.saveRevision;
+                    this.clientDraftState = 'error';
+                    this.notifySaveError();
+                } finally {
+                    this.controlActionInFlight = false;
+                }
+            },
+
+            async confirmSubmitAfterSave() {
+                if (this.controlActionInFlight) return;
+                this.controlActionInFlight = true;
+                this.submissionInFlight = true;
+                try {
+                    await this.waitForActiveSave();
+                    const revision = this.saveRevision;
+                    await $wire.confirmSubmit();
+                    if ($wire.successSheetOpen) {
+                        this.attemptedSaveRevision = Math.max(this.attemptedSaveRevision, revision);
+                        this.persistedSaveRevision = Math.max(this.persistedSaveRevision, revision);
+                        this.clientDraftState = 'submitted';
+                    } else if (this.saveRevision > this.persistedSaveRevision) {
+                        this.submissionInFlight = false;
+                        this.clientDraftState = 'dirty';
+                        this.scheduleAutosave(0);
+                    } else {
+                        this.submissionInFlight = false;
+                    }
+                } catch (error) {
+                    this.attemptedSaveRevision = this.saveRevision;
+                    this.clientDraftState = 'error';
+                    this.submissionInFlight = false;
+                    this.notifySaveError();
+                } finally {
+                    this.controlActionInFlight = false;
+                }
+            },
 
             resetFormFromMenu() {
                 if (this.pendingUploads > 0) {
@@ -1550,10 +1757,20 @@ protected function getDraftPayload(?array $media = null): array
                     return;
                 }
 
-                clearTimeout(this.timer);
-                $wire.resetControl().then(() => {
+                this.flushPendingChanges().then(async saved => {
+                    if (!saved) {
+                        this.notifySaveError();
+                        return;
+                    }
+                    clearTimeout(this.timer);
+                    await $wire.resetControl();
                     this.mediaUploads = {};
                     this.pendingUploads = 0;
+                    this.saveRevision = 0;
+                    this.attemptedSaveRevision = 0;
+                    this.persistedSaveRevision = 0;
+                    this.clientDraftState = 'idle';
+                    this.submissionInFlight = false;
                     window.dispatchEvent(new CustomEvent('control-form-reset'));
                 }).catch(() => {
                     window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: 'Не удалось сбросить контроль. Попробуйте ещё раз.' } }));
@@ -1585,20 +1802,19 @@ protected function getDraftPayload(?array $media = null): array
             },
 
             save() {
-                clearTimeout(this.timer);
-
-                this.timer = setTimeout(() => {
-                    if (this.pendingUploads > 0) {
-                        this.save();
-                        return;
-                    }
-                    $wire.saveDraftAuto();
-                }, 2500);
+                this.saveRevision++;
+                this.clientDraftState = 'dirty';
+                this.scheduleAutosave();
             },
 
             init() {
                 window.addEventListener('beforeunload', (event) => {
-                    if (!this.hasUnsavedChanges && this.pendingUploads === 0) {
+                    const unsaved = this.saveRevision > this.persistedSaveRevision
+                        || this.saveInFlight
+                        || (this.submissionInFlight && this.clientDraftState !== 'submitted')
+                        || this.clientDraftState === 'error'
+                        || this.hasUnsavedChanges;
+                    if (!unsaved && this.pendingUploads === 0) {
                         return;
                     }
 
@@ -1931,7 +2147,7 @@ protected function getDraftPayload(?array $media = null): array
                                 >
                                     <button
                                         type="button"
-                                        wire:click="toggleRoom({{ $roomIndex }})"
+                                        x-on:click="toggleRoomAfterSave({{ $roomIndex }})"
                                         aria-expanded="{{ $isOpen ? 'true' : 'false' }}"
                                         @class([
                                             'flex min-h-[58px] w-full items-center justify-between gap-[12px] px-[14px] py-[12px] text-left transition active:bg-[#F6F8F6]',
@@ -2046,6 +2262,7 @@ protected function getDraftPayload(?array $media = null): array
             },
 
             choose() {
+                if (this.submissionInFlight) return;
                 this.selected = this.value;
             }
         }"
@@ -2053,9 +2270,7 @@ protected function getDraftPayload(?array $media = null): array
         <button
             type="button"
             @click="choose(); save()"
-            wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
-            wire:loading.attr="disabled"
-            wire:target="setAnswer"
+            :disabled="submissionInFlight"
             :aria-pressed="active.toString()"
             :class="active
                 ? 'bg-[#EAF6EE] text-[#176B43] ring-1 ring-inset ring-[#B8DEC5]'
@@ -2309,10 +2524,8 @@ protected function getDraftPayload(?array $media = null): array
                     <x-ui.button
                         type="button"
                         variant="secondary"
-                        wire:click="saveDraft"
-                        wire:loading.attr="disabled"
-                        wire:target="saveDraft,saveDraftAuto,continueForm,submit,photoUploads,finishPhotoUpload"
-                        x-bind:disabled="pendingUploads > 0"
+                        x-on:click="saveDraftManually()"
+                        x-bind:disabled="pendingUploads > 0 || manualSaveInFlight"
                     >
                         <span wire:loading.remove wire:target="saveDraft,saveDraftAuto">
                             Сохранить
@@ -2333,10 +2546,10 @@ protected function getDraftPayload(?array $media = null): array
                         type="button"
                         variant="primary"
                         :progress="$this->formProgress"
-                        wire:click="continueForm"
+                        x-on:click="continueAfterSave()"
                         wire:loading.attr="disabled"
                         wire:target="continueForm,openReview,confirmSubmit,submit,photoUploads,finishPhotoUpload"
-                        x-bind:disabled="pendingUploads > 0 || @js($isSubmitting)"
+                        x-bind:disabled="pendingUploads > 0 || @js($isSubmitting) || controlActionInFlight"
                     >
                         <span wire:loading.remove wire:target="continueForm,openReview,confirmSubmit,submit,photoUploads,finishPhotoUpload">
                             {{ $this->formButtonText }}
@@ -2356,17 +2569,12 @@ protected function getDraftPayload(?array $media = null): array
             <div class="mt-[8px] min-h-[17px] text-center text-[12px] font-medium text-[#738078]" role="status" aria-live="polite">
                 <span x-show="pendingUploads > 0" x-cloak>Дождитесь завершения загрузки файлов</span>
                 <span x-show="pendingUploads === 0">
-                @if($draftState === 'saving')
-                    Сохраняем черновик...
-                @elseif($draftState === 'dirty')
-                    Есть несохранённые изменения
-                @elseif($draftState === 'saved' && $draftSavedAt)
-                    Черновик сохранён в {{ $draftSavedAt }}
-                @elseif($draftState === 'error')
-                    Не удалось сохранить черновик
-                @else
-                    Черновик ещё не сохранялся
-                @endif
+                    <span x-show="clientDraftState === 'saving'" x-cloak>Сохраняем черновик...</span>
+                    <span x-show="clientDraftState === 'dirty'" x-cloak>Есть несохранённые изменения</span>
+                    <span x-show="clientDraftState === 'saved'" x-cloak>Черновик сохранён@if($draftSavedAt) в {{ $draftSavedAt }}@endif</span>
+                    <span x-show="clientDraftState === 'error'" x-cloak>Не удалось сохранить черновик</span>
+                    <span x-show="clientDraftState === 'idle'" x-cloak>Черновик ещё не сохранялся</span>
+                    <span x-show="clientDraftState === 'submitted'" x-cloak>Контроль отправлен</span>
                 </span>
             </div>
         </div>
@@ -2493,7 +2701,7 @@ protected function getDraftPayload(?array $media = null): array
                     <x-ui.button
                         type="button"
                         variant="primary"
-                        wire:click="confirmSubmit"
+                        x-on:click="confirmSubmitAfterSave()"
                         wire:loading.attr="disabled"
                         wire:target="confirmSubmit,submit,photoUploads,finishPhotoUpload"
                         :disabled="$isSubmitting || count($this->reviewIssues) > 0"

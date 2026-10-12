@@ -715,3 +715,68 @@ it('restores and submits a large Classic draft across six rooms', function () {
         ->and(DB::table('control_response_drafts')->count())->toBe(0)
         ->and(json_decode((string) DB::table('control_responses')->value('responses'), true))->toHaveCount(6);
 });
+
+it('persists the latest rapid answer edits together and restores them after reload', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $rooms = [];
+
+    for ($roomIndex = 0; $roomIndex < 2; $roomIndex++) {
+        $items = [];
+        for ($questionIndex = 0; $questionIndex < 5; $questionIndex++) {
+            $items[] = [
+                'question' => "Комната {$roomIndex}, вопрос {$questionIndex}?",
+                'answer_type' => 'options',
+                'answer_options_scored' => [
+                    ['value' => 'yes', 'label' => 'Да', 'points' => 1],
+                    ['value' => 'no', 'label' => 'Нет', 'points' => 0],
+                ],
+            ];
+        }
+        $rooms[] = ['title' => 'Комната '.($roomIndex + 1), 'items' => $items];
+    }
+    $control->update(['main' => $rooms]);
+
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment);
+
+    foreach (range(0, 4) as $questionIndex) {
+        $component->set("answers.0.{$questionIndex}.selected", 'yes');
+    }
+    foreach (range(0, 4) as $questionIndex) {
+        $component->set("answers.1.{$questionIndex}.selected", 'no');
+    }
+
+    $component
+        ->set('answers.0.0.selected', 'no')
+        ->set('answers.0.0.selected', 'yes')
+        ->call('saveDraftAuto')
+        ->assertReturned('saved')
+        ->assertSet('draftState', 'saved');
+
+    $stored = json_decode((string) DB::table('control_response_drafts')->value('responses'), true);
+
+    expect($stored[0][0]['selected'])->toBe('yes')
+        ->and($stored[0][4]['selected'])->toBe('yes')
+        ->and($stored[1][0]['selected'])->toBe('no')
+        ->and($stored[1][4]['selected'])->toBe('no');
+
+    $component
+        ->set('answers.0.0.selected', 'no')
+        ->call('toggleRoom', 1)
+        ->assertReturned('saved')
+        ->assertSet('openRoomIndex', 1);
+
+    $stored = json_decode((string) DB::table('control_response_drafts')->value('responses'), true);
+
+    expect($stored[0][0]['selected'])->toBe('no')
+        ->and($stored[0][4]['selected'])->toBe('yes')
+        ->and($stored[1][0]['selected'])->toBe('no')
+        ->and($stored[1][4]['selected'])->toBe('no');
+
+    Livewire::test('forms.page-control')
+        ->assertSet('answers.0.0.selected', 'no')
+        ->assertSet('answers.0.4.selected', 'yes')
+        ->assertSet('answers.1.0.selected', 'no')
+        ->assertSet('answers.1.4.selected', 'no');
+});
