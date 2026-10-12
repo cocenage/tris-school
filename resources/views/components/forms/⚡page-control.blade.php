@@ -1560,7 +1560,7 @@ protected function getDraftPayload(?array $media = null): array
 </style>
 
 <div class="flex h-full min-h-0 flex-col bg-[#F7F8F7]">
-    <form
+    <form x-on:control-confirm-submit.window="confirmSubmitAfterSave()"
         wire:submit.prevent="submit"
         x-data="{
             timer: null,
@@ -1727,7 +1727,11 @@ protected function getDraftPayload(?array $media = null): array
                 this.controlActionInFlight = true;
                 this.submissionInFlight = true;
                 try {
-                    await this.waitForActiveSave();
+                    if (!await this.flushPendingChanges()) {
+    this.submissionInFlight = false;
+    this.notifySaveError();
+    return;
+}
                     const revision = this.saveRevision;
                     await $wire.confirmSubmit();
                     if ($wire.successSheetOpen) {
@@ -2701,7 +2705,7 @@ protected function getDraftPayload(?array $media = null): array
                     <x-ui.button
                         type="button"
                         variant="primary"
-                        x-on:click="confirmSubmitAfterSave()"
+                        x-on:click="$dispatch('control-confirm-submit')"
                         wire:loading.attr="disabled"
                         wire:target="confirmSubmit,submit,photoUploads,finishPhotoUpload"
                         :disabled="$isSubmitting || count($this->reviewIssues) > 0"
