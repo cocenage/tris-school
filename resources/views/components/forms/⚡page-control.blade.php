@@ -431,6 +431,8 @@ protected function getDraftPayload(?array $media = null): array
         $this->attemptedSubmit = false;
         $this->reviewSheetOpen = false;
         $this->isSubmitting = false;
+        $this->successSheetOpen = false;
+        $this->successMessage = null;
 
         $this->buildEmptyAnswers();
         $this->photoUploads = [];
@@ -563,7 +565,7 @@ protected function getDraftPayload(?array $media = null): array
 
     public function getFormButtonTextProperty(): string
     {
-        return 'Проверить контроль';
+        return $this->incompleteQuestionsCount > 0 ? 'Дальше' : 'Проверить контроль';
     }
 
     public function getIncompleteQuestionsProperty(): array
@@ -1108,6 +1110,14 @@ protected function getDraftPayload(?array $media = null): array
 
     public function continueForm(): void
     {
+        if ($this->incompleteQuestions !== []) {
+            $nextQuestion = $this->incompleteQuestions[0];
+
+            $this->goToQuestion($nextQuestion['room'], $nextQuestion['question']);
+
+            return;
+        }
+
         $this->openReview();
     }
 
@@ -1162,21 +1172,7 @@ protected function getDraftPayload(?array $media = null): array
                     $this->addError("answers.$roomIndex.$questionIndex", "Текстовый ответ: максимум {$this->answerTextLimit} символов");
                 }
 
-                if ($this->answerIsNegative($question, $answer)) {
-                    $corrective = is_array($answer['corrective'] ?? null) ? $answer['corrective'] : [];
-
-                    if (! array_key_exists('repeats', $corrective) || ! is_bool($corrective['repeats'])) {
-                        $this->addError("answers.$roomIndex.$questionIndex", 'Укажите, повторяется ли ошибка');
-                    }
-
-                    if (trim((string) ($corrective['action'] ?? '')) === '') {
-                        $this->addError("answers.$roomIndex.$questionIndex", 'Укажите, что должен сделать сотрудник');
-                    }
-
-                    if (! array_key_exists('recheck', $corrective) || ! is_bool($corrective['recheck'])) {
-                        $this->addError("answers.$roomIndex.$questionIndex", 'Укажите, нужен ли повторный контроль');
-                    }
-                }
+                // TODO: Restore corrective-detail validation together with its hidden UI.
             }
         }
     }
@@ -1496,9 +1492,7 @@ protected function getDraftPayload(?array $media = null): array
                     <button
                         type="button"
                         class="min-h-[44px] rounded-full bg-[#B42318] px-[14px] text-[14px] font-semibold text-white"
-                        wire:click="resetControl"
-                        wire:loading.attr="disabled"
-                        x-on:click="resetOpen = false"
+                        x-on:click="resetOpen = false; window.dispatchEvent(new CustomEvent('control-reset-request'))"
                     >
                         Сбросить
                     </button>
@@ -1512,7 +1506,7 @@ protected function getDraftPayload(?array $media = null): array
     #control-scroll-area {
         --control-sticky-offset: 16px;
         scroll-padding-top: var(--control-sticky-offset);
-        scroll-padding-bottom: 136px;
+        scroll-padding-bottom: 16px;
         scroll-behavior: smooth;
         overscroll-behavior-y: contain;
     }
@@ -1549,6 +1543,22 @@ protected function getDraftPayload(?array $media = null): array
             pendingUploads: 0,
             mediaUploads: {},
             hasUnsavedChanges: @entangle('hasUnsavedChanges').live,
+
+            resetFormFromMenu() {
+                if (this.pendingUploads > 0) {
+                    window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: 'Дождитесь завершения загрузки файлов' } }));
+                    return;
+                }
+
+                clearTimeout(this.timer);
+                $wire.resetControl().then(() => {
+                    this.mediaUploads = {};
+                    this.pendingUploads = 0;
+                    window.dispatchEvent(new CustomEvent('control-form-reset'));
+                }).catch(() => {
+                    window.dispatchEvent(new CustomEvent('toast', { detail: { type: 'error', message: 'Не удалось сбросить контроль. Попробуйте ещё раз.' } }));
+                });
+            },
 
             startMediaUpload(key, input, room, question, files) {
                 const selectedFiles = Array.from(files || []);
@@ -1597,13 +1607,14 @@ protected function getDraftPayload(?array $media = null): array
                 });
             }
         }"
+        x-on:control-reset-request.window="resetFormFromMenu()"
         x-on:input="save()"
         x-on:change="save()"
         class="flex h-full min-h-0 flex-col"
     >
         <div id="control-scroll-area" data-control-scroll-area class="flex-1 min-h-0 overflow-y-auto">
             <div class="min-h-full rounded-t-[34px] bg-white">
-                <div class="pb-[120px]">
+                <div class="pb-[16px]">
 
                     <div class="mb-[16px] bg-white px-[16px] pb-[4px] pt-[8px]">
                         <div class="mb-[7px] flex items-center justify-between gap-[12px] text-[12px] font-medium text-[#64748B]">
@@ -1651,6 +1662,7 @@ protected function getDraftPayload(?array $media = null): array
                                         }"
                                         x-on:click.outside="open = false"
                                         x-on:keydown.escape.window="open = false"
+                                        x-on:control-form-reset.window="open = false; query = ''"
                                     >
                                         <button
                                             type="button"
@@ -1747,6 +1759,7 @@ protected function getDraftPayload(?array $media = null): array
                                         }"
                                         x-on:click.outside="open = false"
                                         x-on:keydown.escape.window="open = false"
+                                        x-on:control-form-reset.window="open = false; query = ''"
                                     >
                                         <button
                                             type="button"
@@ -2069,7 +2082,8 @@ protected function getDraftPayload(?array $media = null): array
                                                             ></textarea>
                                                         @endif
 
-                                                        @if($this->answerIsNegative($question, $answer))
+                                                        {{-- TODO: Keep corrective details available for a future UI; hidden in the current Classic form. --}}
+                                                        @if(false && $this->answerIsNegative($question, $answer))
                                                             @php
                                                                 $corrective = is_array($answer['corrective'] ?? null) ? $answer['corrective'] : [];
                                                             @endphp
@@ -2163,7 +2177,7 @@ protected function getDraftPayload(?array $media = null): array
                                                                     </div>
                                                                 </div>
 
-                                                                <label class="shrink-0 cursor-pointer rounded-full bg-white px-[13px] py-[10px] text-[12px] font-semibold text-[#236B49] ring-1 ring-inset ring-[#D4E3D9] focus-within:ring-2 focus-within:ring-[#25845A] active:bg-[#EFF7F1]">
+                                                                <label class="relative inline-flex min-h-[44px] shrink-0 cursor-pointer items-center overflow-hidden rounded-full bg-white px-[13px] py-[10px] text-[12px] font-semibold text-[#236B49] ring-1 ring-inset ring-[#D4E3D9] focus-within:ring-2 focus-within:ring-[#25845A] active:bg-[#EFF7F1]">
                                                                     Добавить
 <input
     x-ref="mediaInput_{{ $roomIndex }}_{{ $questionIndex }}"
@@ -2173,7 +2187,7 @@ protected function getDraftPayload(?array $media = null): array
     aria-label="Добавить фото или видео"
     x-bind:disabled="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.state === 'uploading'"
     x-on:change="startMediaUpload('{{ $roomIndex }}.{{ $questionIndex }}', $event.target, {{ $roomIndex }}, {{ $questionIndex }}, $event.target.files)"
-    class="sr-only"
+    class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
 >
                                                                 </label>
                                                             </div>
@@ -2248,6 +2262,7 @@ protected function getDraftPayload(?array $media = null): array
                         data-control-anchor="comment"
                         x-data="{ commentOpen: @js(filled(trim($comment))) }"
                         x-on:control-open-comment.window="commentOpen = true"
+                        x-on:control-form-reset.window="commentOpen = false"
                     >
                         <div class="mb-[12px] flex items-center justify-between">
                             <div>
