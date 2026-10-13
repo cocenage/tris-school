@@ -148,6 +148,7 @@ it('hides corrective details and does not require them for a negative answer', f
         ->assertSet('reviewSheetOpen', true)
         ->assertDontSee('Уточнить исправление')
         ->assertDontSee('Что исправить')
+        ->assertSee('Ответ: Нет')
         ->call('confirmSubmit')
         ->assertHasNoErrors()
         ->assertSet('reviewSheetOpen', false)
