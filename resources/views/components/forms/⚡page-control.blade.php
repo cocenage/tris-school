@@ -1560,7 +1560,7 @@ protected function getDraftPayload(?array $media = null): array
 </style>
 
 <div class="flex h-full min-h-0 flex-col bg-[#F7F8F7]">
-    <form
+    <form x-on:control-confirm-submit.window="confirmSubmitAfterSave()"
         wire:submit.prevent="submit"
         x-data="{
             timer: null,
@@ -1727,13 +1727,18 @@ protected function getDraftPayload(?array $media = null): array
                 this.controlActionInFlight = true;
                 this.submissionInFlight = true;
                 try {
-                    await this.waitForActiveSave();
+                    if (! await this.flushPendingChanges()) {
+                        this.submissionInFlight = false;
+                        this.notifySaveError();
+                        return;
+                    }
                     const revision = this.saveRevision;
                     await $wire.confirmSubmit();
                     if ($wire.successSheetOpen) {
                         this.attemptedSaveRevision = Math.max(this.attemptedSaveRevision, revision);
                         this.persistedSaveRevision = Math.max(this.persistedSaveRevision, revision);
                         this.clientDraftState = 'submitted';
+                        this.submissionInFlight = false;
                     } else if (this.saveRevision > this.persistedSaveRevision) {
                         this.submissionInFlight = false;
                         this.clientDraftState = 'dirty';
@@ -2549,7 +2554,7 @@ protected function getDraftPayload(?array $media = null): array
                         x-on:click="continueAfterSave()"
                         wire:loading.attr="disabled"
                         wire:target="continueForm,openReview,confirmSubmit,submit,photoUploads,finishPhotoUpload"
-                        x-bind:disabled="pendingUploads > 0 || @js($isSubmitting) || controlActionInFlight"
+                        x-bind:disabled="pendingUploads > 0 || submissionInFlight || controlActionInFlight"
                     >
                         <span wire:loading.remove wire:target="continueForm,openReview,confirmSubmit,submit,photoUploads,finishPhotoUpload">
                             {{ $this->formButtonText }}
@@ -2615,7 +2620,7 @@ protected function getDraftPayload(?array $media = null): array
                             <div class="rounded-[18px] border border-[#F6D28A] bg-[#FFFAEB] p-[12px] text-[13px] text-[#111827]">
                                 <div class="font-semibold">{{ $problem['room_title'] ?? 'Комната' }}</div>
                                 <div class="mt-[3px]">{{ $problem['question'] ?? 'Вопрос' }}</div>
-                                <div class="mt-[6px] text-[#64748B]">Ответ: {{ $problem['answer'] ?? '—' }}</div>
+                                <div class="mt-[6px] text-[#64748B]">Ответ: {{ $problem['selected_label'] ?? '—' }}</div>
                                 @if(filled($corrective['action'] ?? null))
                                     <div class="mt-[6px]"><span class="font-semibold">Что сделать:</span> {{ $corrective['action'] }}</div>
                                 @endif
@@ -2701,7 +2706,7 @@ protected function getDraftPayload(?array $media = null): array
                     <x-ui.button
                         type="button"
                         variant="primary"
-                        x-on:click="confirmSubmitAfterSave()"
+                        x-on:click="$dispatch('control-confirm-submit')"
                         wire:loading.attr="disabled"
                         wire:target="confirmSubmit,submit,photoUploads,finishPhotoUpload"
                         :disabled="$isSubmitting || count($this->reviewIssues) > 0"
