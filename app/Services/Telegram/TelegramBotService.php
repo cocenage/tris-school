@@ -37,7 +37,7 @@ class TelegramBotService
         );
     }
 
-    public function sendScheduledMessage(string $chatId, string $text, ?string $threadId = null): ?int
+    public function sendScheduledMessage(string $chatId, string $text, ?string $threadId = null, ?array $replyMarkup = null): ?int
     {
         $token = config('services.telegram.scheduled_bot_token');
 
@@ -47,7 +47,46 @@ class TelegramBotService
             return null;
         }
 
-        return $this->sendMessageUsingToken($token, $chatId, $text, $threadId, throwOnHttpFailure: true);
+        return $this->sendMessageUsingToken($token, $chatId, $text, $threadId, replyMarkup: $replyMarkup, throwOnHttpFailure: true);
+    }
+
+    public function answerScheduledCallback(string $callbackQueryId, string $text): bool
+    {
+        $token = config('services.telegram.scheduled_bot_token');
+        if (! filled($token)) {
+            return false;
+        }
+
+        try {
+            return $this->postTelegramApi($token, 'answerCallbackQuery', [
+                'callback_query_id' => $callbackQueryId,
+                'text' => $text,
+            ], 3, 1)->successful();
+        } catch (\Throwable $exception) {
+            Log::warning('Scheduled Telegram callback answer failed.', ['exception' => class_basename($exception)]);
+
+            return false;
+        }
+    }
+
+    public function clearScheduledMessageButtons(string $chatId, int|string $messageId): bool
+    {
+        $token = config('services.telegram.scheduled_bot_token');
+        if (! filled($token)) {
+            return false;
+        }
+
+        try {
+            return $this->postTelegramApi($token, 'editMessageReplyMarkup', [
+                'chat_id' => $chatId,
+                'message_id' => (int) $messageId,
+                'reply_markup' => ['inline_keyboard' => []],
+            ], 3, 1)->successful();
+        } catch (\Throwable $exception) {
+            Log::warning('Scheduled Telegram control buttons could not be cleared.', ['exception' => class_basename($exception)]);
+
+            return false;
+        }
     }
 
     private function sendMessageUsingToken(

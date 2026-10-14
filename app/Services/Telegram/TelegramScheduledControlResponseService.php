@@ -7,6 +7,7 @@ use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramScheduledMessageResponse;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class TelegramScheduledControlResponseService
@@ -128,6 +129,12 @@ class TelegramScheduledControlResponseService
         $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
         $text = (string) ($message['text'] ?? $message['caption'] ?? '');
         $result = $this->classify($text);
+        if ($delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
+            $finalResponse = $delivery->responses()->first();
+            if ($finalResponse !== null) {
+                return $finalResponse;
+            }
+        }
         $timezone = config('app.timezone', 'Europe/Rome');
         $respondedAt = isset($message['date']) ? CarbonImmutable::createFromTimestamp((int) $message['date'], $timezone) : CarbonImmutable::parse($stored->getRawOriginal('sent_at'), $timezone);
         $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone);
@@ -163,6 +170,125 @@ class TelegramScheduledControlResponseService
         Log::info('scheduled_control_response_linked', ['response_id' => $response->id, 'delivery_id' => $delivery->id]);
 
         return $response;
+    }
+
+    /** @return array{status: 'saved'|'already_answered'|'unmatched'|'invalid', delivery: ?TelegramScheduledMessageDelivery, response: ?TelegramScheduledMessageResponse, action: ?string} */
+    public function captureCallback(array $callbackQuery): array
+    {
+        $callbackId = $callbackQuery['id'] ?? null;
+        $data = $callbackQuery['data'] ?? null;
+        $message = $callbackQuery['message'] ?? [];
+        $chatId = data_get($message, 'chat.id');
+        $messageId = data_get($message, 'message_id');
+        $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
+        $telegramUserId = data_get($callbackQuery, 'from.id');
+
+        if (! is_string($callbackId) || $callbackId === '' || ! is_string($data)
+            || preg_match('/^sc:(\d+):(yes|no)$/', $data, $parts) !== 1
+            || ! is_numeric($chatId) || ! is_numeric($messageId) || ! is_numeric($telegramUserId)
+            || data_get($callbackQuery, 'from.is_bot', false)
+            || ! in_array(data_get($message, 'chat.type'), ['group', 'supergroup'], true)) {
+            return ['status' => 'invalid', 'delivery' => null, 'response' => null, 'action' => null];
+        }
+
+        $action = $parts[2];
+        $deliveryQuery = TelegramScheduledMessageDelivery::query()
+            ->whereKey((int) $parts[1])
+            ->where('status', 'sent')
+            ->where('chat_id', (string) $chatId)
+            ->where('telegram_message_id', (string) $messageId);
+        if (array_key_exists('message_thread_id', $message)) {
+            $deliveryQuery->where('message_thread_id', $threadId);
+        }
+        $delivery = $deliveryQuery->first();
+
+        if ($delivery === null || ! ScheduledControlTypes::supportsInlineAnswer($delivery->control_type)) {
+            return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
+        }
+
+        $text = $action === 'yes' ? 'Да' : 'Нет';
+        $classification = $this->classify($text);
+        $respondedAt = CarbonImmutable::now(config('app.timezone', 'Europe/Rome'));
+        $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), config('app.timezone', 'Europe/Rome'));
+        $user = User::query()->where('telegram_id', (string) $telegramUserId)->first();
+        $authorName = trim((string) data_get($callbackQuery, 'from.first_name').' '.(string) data_get($callbackQuery, 'from.last_name'));
+
+        $username = data_get($callbackQuery, 'from.username');
+
+        $result = DB::transaction(function () use ($delivery, $callbackId, $telegramUserId, $user, $authorName, $username, $text, $classification, $respondedAt, $sentAt, $action): array {
+            TelegramScheduledMessageDelivery::query()->whereKey($delivery->getKey())->lockForUpdate()->first();
+            $responses = $delivery->responses()
+                ->where('telegram_user_id', (string) $telegramUserId)
+                ->orderByDesc('responded_at')
+                ->orderByDesc('id')
+                ->lockForUpdate()
+                ->get();
+            $existing = $responses->first();
+
+            if ($existing?->telegram_callback_query_id === $callbackId) {
+                return ['status' => 'already_answered', 'response' => $existing];
+            }
+
+            if ($delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS
+                && $delivery->responses()->lockForUpdate()->exists()) {
+                return ['status' => 'already_answered', 'response' => $delivery->responses()->latest('id')->first()];
+            }
+
+            if ($delivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+                && $existing !== null
+                && $existing->classification === 'confirmed') {
+                return ['status' => 'already_answered', 'response' => $existing];
+            }
+
+            if ($delivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+                && $existing !== null
+                && $action === 'no'
+                && $existing->classification === 'problem') {
+                return ['status' => 'already_answered', 'response' => $existing];
+            }
+
+            $values = [
+                'delivery_id' => $delivery->id,
+                'telegram_message_record_id' => null,
+                'telegram_message_id' => null,
+                'telegram_callback_query_id' => $callbackId,
+                'chat_id' => (string) $delivery->chat_id,
+                'message_thread_id' => $delivery->message_thread_id,
+                'reply_to_message_id' => (string) $delivery->telegram_message_id,
+                'telegram_user_id' => (string) $telegramUserId,
+                'user_id' => $user?->id,
+                'author_name' => $authorName !== '' ? $authorName : null,
+                'username' => $username,
+                'text' => $text,
+                'responded_at' => $respondedAt,
+                'response_latency_seconds' => $respondedAt->lt($sentAt) ? null : (int) $sentAt->diffInSeconds($respondedAt),
+                'classification' => $classification['classification'],
+                'classification_reason' => 'inline_button_'.$classification['reason'],
+            ];
+
+            if ($existing !== null) {
+                // A cleaner's earlier negative answer remains editable to a positive answer.
+                // Keep its original Telegram message linkage when it came from a text reply.
+                $existing->fill(array_merge($values, [
+                    'telegram_message_record_id' => $existing->telegram_message_record_id,
+                    'telegram_message_id' => $existing->telegram_message_id,
+                ]))->save();
+
+                return ['status' => 'saved', 'response' => $existing->fresh()];
+            }
+
+            return [
+                'status' => 'saved',
+                'response' => TelegramScheduledMessageResponse::query()->create($values),
+            ];
+        });
+
+        return [
+            'status' => $result['status'],
+            'delivery' => $delivery,
+            'response' => $result['response'],
+            'action' => $action,
+        ];
     }
 
     private function classify(string $text): array

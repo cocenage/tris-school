@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\TelegramScheduledMessageDelivery;
+use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
@@ -73,6 +74,12 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
                 (string) $delivery->chat_id,
                 htmlspecialchars((string) $message->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
                 $delivery->message_thread_id === null ? null : (string) $delivery->message_thread_id,
+                ScheduledControlTypes::supportsInlineAnswer($delivery->control_type) ? [
+                    'inline_keyboard' => [[
+                        ['text' => '✅ Да', 'callback_data' => 'sc:'.$delivery->id.':yes'],
+                        ['text' => '❌ Нет', 'callback_data' => 'sc:'.$delivery->id.':no'],
+                    ]],
+                ] : null,
             );
         } catch (ConnectionException $exception) {
             $this->markRetrying($delivery, 'connection_exception');

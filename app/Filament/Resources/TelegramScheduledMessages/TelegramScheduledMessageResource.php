@@ -6,6 +6,7 @@ use App\Filament\Resources\TelegramScheduledMessages\Pages\CreateTelegramSchedul
 use App\Filament\Resources\TelegramScheduledMessages\Pages\EditTelegramScheduledMessage;
 use App\Filament\Resources\TelegramScheduledMessages\Pages\ListTelegramScheduledMessages;
 use App\Models\TelegramScheduledMessage;
+use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramDestinationCatalog;
 use BackedEnum;
 use Filament\Actions\DeleteAction;
@@ -90,6 +91,11 @@ class TelegramScheduledMessageResource extends Resource
             TimePicker::make('send_time')
                 ->label('Время отправки')
                 ->seconds(false)
+                ->helperText(fn (Get $get): ?string => match ($get('control_type')) {
+                    ScheduledControlTypes::CLOSING_CLEANINGS => 'Этот вопрос отправляется в 19:00 по Europe/Rome.',
+                    ScheduledControlTypes::CLOSING_PAYMENTS => 'Отправляется один раз после подтверждения завершения уборок.',
+                    default => null,
+                })
                 ->required(),
 
             Select::make('weekdays')
@@ -142,7 +148,11 @@ class TelegramScheduledMessageResource extends Resource
 
                 TextColumn::make('send_time')
                     ->label('Время')
-                    ->formatStateUsing(fn (?string $state): string => substr((string) $state, 0, 5))
+                    ->formatStateUsing(function (?string $state, TelegramScheduledMessage $record): string {
+                        $effectiveTime = ScheduledControlTypes::scheduledTime($record->control_type, (string) $state);
+
+                        return $effectiveTime === null ? 'После подтверждения' : substr($effectiveTime, 0, 5);
+                    })
                     ->sortable(),
 
                 TextColumn::make('weekdays')

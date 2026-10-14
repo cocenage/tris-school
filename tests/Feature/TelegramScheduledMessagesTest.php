@@ -7,6 +7,7 @@ use App\Models\TelegramChat;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramTopic;
+use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDestinationCatalog;
 use Carbon\Carbon;
@@ -140,6 +141,64 @@ it('respects configured weekdays when the message is due at the current minute',
 
     expect(TelegramScheduledMessageDelivery::query()->sole()->status)->toBe('pending');
     Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('moves the closing cleanings question to 19:00 and never sends the payment question on its own', function (): void {
+    makeScheduledTelegramMessage([
+        'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
+        'name' => 'All cleanings finished', 'send_time' => '17:30:00', 'weekdays' => [1],
+    ]);
+    makeScheduledTelegramMessage([
+        'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS,
+        'name' => 'All extra payments completed', 'send_time' => '18:00:00', 'weekdays' => [1],
+    ]);
+    Queue::fake();
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 17:30:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+    Carbon::setTestNow(Carbon::parse('2026-09-28 18:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 19:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    expect(TelegramScheduledMessageDelivery::query()->sole()->control_type)->toBe(ScheduledControlTypes::CLOSING_CLEANINGS);
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('adds yes and no buttons only to the two end-of-day control messages', function (): void {
+    makeScheduledTelegramMessage([
+        'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
+        'message' => 'All cleanings finished?', 'send_time' => '11:00:00', 'weekdays' => [1],
+    ]);
+    makeScheduledTelegramMessage([
+        'control_type' => 'first_cleanings_started',
+        'send_time' => '19:00:00', 'weekdays' => [1],
+    ]);
+    Carbon::setTestNow(Carbon::parse('2026-09-28 19:00:20', 'Europe/Rome'));
+    Queue::fake();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 5690]], 200)]);
+
+    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    foreach (Queue::pushed(DeliverScheduledTelegramMessage::class) as $job) {
+        $job->handle(app(TelegramBotService::class));
+    }
+
+    $requests = Http::recorded()->pluck(0)->values();
+    $closingRequest = $requests->first(fn ($request): bool => data_get($request->data(), 'reply_markup.inline_keyboard.0.0.text') === '✅ Да');
+    $ordinaryRequest = $requests->first(fn ($request): bool => data_get($request->data(), 'text') === '🔴 Проверка уборок');
+
+    expect($closingRequest)->not->toBeNull()
+        ->and(data_get($closingRequest->data(), 'reply_markup.inline_keyboard.0.1.text'))->toBe('❌ Нет')
+        ->and(data_get($closingRequest->data(), 'reply_markup.inline_keyboard.0.0.callback_data'))->toBe('sc:'.TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_CLEANINGS)->value('id').':yes')
+        ->and(data_get($ordinaryRequest?->data() ?? [], 'reply_markup'))->toBeNull();
 });
 
 it('does not attempt the same scheduled occurrence twice', function (): void {
