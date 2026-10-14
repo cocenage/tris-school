@@ -51,7 +51,9 @@ return [
         // Disabled by default until Rich Message delivery is proven reliable in production.
         'rich_messages_enabled' => env('TELEGRAM_RICH_MESSAGES_ENABLED', false),
         'bot_username' => env('TELEGRAM_BOT_USERNAME'),
-        'ip_resolve' => env('TELEGRAM_IP_RESOLVE'),
+        'ip_resolve' => in_array(env('TELEGRAM_IP_RESOLVE'), ['v4', 'v6'], true)
+            ? env('TELEGRAM_IP_RESOLVE')
+            : 'v6',
         'admin_chat_id' => env('TELEGRAM_ADMIN_CHAT_ID'),
         'admin_thread_id' => env('TELEGRAM_ADMIN_THREAD_ID'),
 

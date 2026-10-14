@@ -712,7 +712,9 @@ class TelegramWorkWebhookController extends Controller
         }
 
         try {
-            $response = Http::timeout(2)
+            $response = Http::withOptions([
+                'force_ip_resolve' => config('services.telegram.ip_resolve', 'v6'),
+            ])->timeout(2)
                 ->connectTimeout(1)
                 ->post($this->telegramApiUrl('answerCallbackQuery'), [
                     'callback_query_id' => $callbackQueryId,
@@ -764,7 +766,9 @@ class TelegramWorkWebhookController extends Controller
         }
 
         try {
-            $response = Http::timeout(3)
+            $response = Http::withOptions([
+                'force_ip_resolve' => config('services.telegram.ip_resolve', 'v6'),
+            ])->timeout(3)
                 ->connectTimeout(1)
                 ->post($this->telegramApiUrl('sendMessage'), [
                     'chat_id' => $chatId,
