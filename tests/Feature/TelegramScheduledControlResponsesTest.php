@@ -1,6 +1,7 @@
 <?php
 
 use App\Jobs\DeliverScheduledControlSummary;
+use App\Jobs\DeliverScheduledTelegramMessage;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
@@ -42,6 +43,7 @@ beforeEach(function () {
     foreach (['2026_09_27_000000_create_telegram_scheduled_messages_tables.php', '2026_10_01_020000_create_scheduled_control_response_tables.php', '2026_10_03_000000_allow_replyless_scheduled_control_responses.php'] as $file) {
         (require database_path('migrations/'.$file))->up();
     }
+    (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
     config([
         'services.telegram.main_bot_auto_replies_enabled' => false,
         'services.telegram.work_webhook_secret' => 'work-test',
@@ -112,6 +114,38 @@ function captureControlReply(array $payload): ?TelegramScheduledMessageResponse
     return app(TelegramScheduledControlResponseService::class)->capture($stored, $payload['message']);
 }
 
+function scheduledControlCallback(TelegramScheduledMessageDelivery $delivery, string $queryId, string $answer, int $userId = 701): array
+{
+    return ['id' => $queryId, 'from' => ['id' => $userId, 'first_name' => 'Duty', 'username' => 'duty', 'is_bot' => false],
+        'message' => [
+            'message_id' => $delivery->telegram_message_id,
+            'message_thread_id' => $delivery->message_thread_id === null ? null : (int) $delivery->message_thread_id,
+            'chat' => ['id' => (int) $delivery->chat_id, 'type' => 'supergroup'],
+        ],
+        'data' => 'sc:'.$delivery->id.':'.$answer,
+    ];
+}
+
+function closingPaymentTemplateFor(TelegramScheduledMessageDelivery $cleanings): TelegramScheduledMessage
+{
+    $topic = TelegramTopic::firstOrCreate(
+        [
+            'telegram_chat_id' => $cleanings->scheduledMessage->telegram_chat_record_id,
+            'telegram_thread_id' => (string) $cleanings->message_thread_id,
+        ],
+        ['title' => 'Closing controls', 'is_enabled' => true],
+    );
+    $cleanings->scheduledMessage->update(['telegram_topic_record_id' => $topic->id]);
+
+    return TelegramScheduledMessage::create([
+        'name' => 'Closing payments', 'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS,
+        'telegram_chat_record_id' => $cleanings->scheduledMessage->telegram_chat_record_id,
+        'telegram_topic_record_id' => $topic->id,
+        'message' => 'Все доплаты за день произведены?', 'send_time' => '18:00:00',
+        'weekdays' => [4], 'enabled' => true,
+    ]);
+}
+
 function storeBackfillReply(TelegramScheduledMessageDelivery $delivery, int $id, array $overrides = []): void
 {
     $payload = controlReplyPayload($delivery, 'Все готово', $id);
@@ -143,6 +177,121 @@ it('links an exact scheduled delivery reply and measures from actual send', func
     expect($response->delivery_id)->toBe($delivery->id)
         ->and($response->response_latency_seconds)->toBe(360)
         ->and($response->classification)->toBe('confirmed');
+});
+
+it('lets a cleaner change a saved negative closing answer to yes and queues the payment question once', function () {
+    Bus::fake();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    $cleanings = controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
+        'scheduled_for' => '2026-10-01 19:00:00', 'sent_at' => '2026-10-01 19:00:00', 'telegram_message_id' => 9901,
+    ]);
+    closingPaymentTemplateFor($cleanings);
+
+    $processor = app(TelegramScheduledInboundProcessor::class);
+    $noButton = scheduledControlCallback($cleanings, 'callback-no', 'no');
+    unset($noButton['message']['message_thread_id']);
+    $processor->process(['callback_query' => $noButton]);
+
+    $answer = TelegramScheduledMessageResponse::query()->sole();
+    expect($answer->text)->toBe('Нет')
+        ->and($answer->classification)->toBe('problem')
+        ->and($answer->telegram_message_record_id)->toBeNull()
+        ->and($answer->telegram_callback_query_id)->toBe('callback-no')
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
+
+    $processor->process(['callback_query' => scheduledControlCallback($cleanings, 'callback-yes', 'yes')]);
+    $answer->refresh();
+    $processor->process(['callback_query' => scheduledControlCallback($cleanings, 'callback-yes-retry', 'yes')]);
+
+    expect(TelegramScheduledMessageResponse::query()->count())->toBe(1)
+        ->and($answer->text)->toBe('Да')
+        ->and($answer->classification)->toBe('confirmed')
+        ->and($answer->telegram_callback_query_id)->toBe('callback-yes')
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->sole()->status)->toBe('pending');
+
+    Bus::assertDispatchedTimes(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('stores the closing payment button answer as final and ignores later edits', function () {
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    $delivery = controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS,
+        'scheduled_for' => '2026-10-01 19:00:00', 'sent_at' => '2026-10-01 19:05:00', 'telegram_message_id' => 9902,
+    ]);
+    $processor = app(TelegramScheduledInboundProcessor::class);
+
+    $processor->process(['callback_query' => scheduledControlCallback($delivery, 'payment-no', 'no')]);
+    $processor->process(['callback_query' => scheduledControlCallback($delivery, 'payment-yes', 'yes')]);
+
+    $response = TelegramScheduledMessageResponse::query()->sole();
+    expect($response->text)->toBe('Нет')
+        ->and($response->classification)->toBe('problem')
+        ->and($response->telegram_callback_query_id)->toBe('payment-no');
+});
+
+it('rejects closing control buttons from another chat or topic', function () {
+    $delivery = controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
+        'telegram_message_id' => 9903,
+    ]);
+    $processor = app(TelegramScheduledInboundProcessor::class);
+    $wrongChat = scheduledControlCallback($delivery, 'wrong-chat', 'no');
+    $wrongChat['message']['chat']['id'] = -1999;
+    $wrongTopic = scheduledControlCallback($delivery, 'wrong-topic', 'no');
+    $wrongTopic['message']['message_thread_id'] = 99;
+
+    expect($processor->process(['callback_query' => $wrongChat])['callback_status'])->toBe('unmatched')
+        ->and($processor->process(['callback_query' => $wrongTopic])['callback_status'])->toBe('unmatched')
+        ->and(TelegramScheduledMessageResponse::query()->count())->toBe(0);
+
+    config(['services.telegram.scheduled_webhook_allowed_chat_ids' => ['-1002']]);
+    expect($processor->process(['callback_query' => scheduledControlCallback($delivery, 'disallowed-chat', 'no')]))
+        ->toMatchArray(['ok' => true, 'skipped' => 'chat_not_allowed'])
+        ->and(TelegramScheduledMessageResponse::query()->count())->toBe(0);
+});
+
+it('starts the closing payment question after an existing text yes answer', function () {
+    Bus::fake();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    $cleanings = controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
+        'scheduled_for' => '2026-10-01 19:00:00', 'sent_at' => '2026-10-01 19:00:00', 'telegram_message_id' => 9904,
+    ]);
+    closingPaymentTemplateFor($cleanings);
+    $payload = controlReplyPayload($cleanings, 'Да', 9905, 701, '2026-10-01 19:10:00');
+
+    app(TelegramScheduledInboundProcessor::class)->process($payload);
+
+    expect(TelegramScheduledMessageResponse::query()->sole()->text)->toBe('Да')
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->sole()->status)->toBe('pending');
+    Bus::assertDispatchedTimes(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('lets the same duty user change a text no answer to yes from the original message buttons', function () {
+    Bus::fake();
+    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    $cleanings = controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
+        'scheduled_for' => '2026-10-01 19:00:00', 'sent_at' => '2026-10-01 19:00:00', 'telegram_message_id' => 9906,
+    ]);
+    closingPaymentTemplateFor($cleanings);
+    $processor = app(TelegramScheduledInboundProcessor::class);
+    $processor->process(controlReplyPayload($cleanings, 'Нет', 9907, 701, '2026-10-01 19:05:00'));
+    $response = TelegramScheduledMessageResponse::query()->sole();
+    $originalResponseId = $response->id;
+    $originalMessageRecordId = $response->telegram_message_record_id;
+
+    $processor->process(['callback_query' => scheduledControlCallback($cleanings, 'text-no-to-button-yes', 'yes')]);
+    $response->refresh();
+
+    expect(TelegramScheduledMessageResponse::query()->count())->toBe(1)
+        ->and($response->id)->toBe($originalResponseId)
+        ->and($response->telegram_message_record_id)->toBe($originalMessageRecordId)
+        ->and($response->text)->toBe('Да')
+        ->and($response->classification)->toBe('confirmed')
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(1);
+    Bus::assertDispatchedTimes(DeliverScheduledTelegramMessage::class, 1);
 });
 
 it('captures explicit replies for future control types and keeps occurrences distinct', function () {
@@ -761,6 +910,30 @@ it('does not duplicate an expected occurrence when its sent delivery exists', fu
     ])->and($summary['missing_deliveries'])->toBe([]);
 });
 
+it('expects the closing cleanings question at 19:00 and excludes the follow-up from standalone expectations', function () {
+    $this->travelTo(Carbon::parse('2026-10-01 08:00:00', 'Europe/Rome'));
+    $chat = TelegramChat::firstOrCreate(
+        ['telegram_chat_id' => '-1001'],
+        ['title' => 'Test control chat', 'type' => 'supergroup', 'is_enabled' => true],
+    );
+    foreach ([
+        [ScheduledControlTypes::CLOSING_CLEANINGS, '17:30:00'],
+        [ScheduledControlTypes::CLOSING_PAYMENTS, '18:00:00'],
+    ] as [$type, $time]) {
+        TelegramScheduledMessage::create([
+            'name' => $type, 'control_type' => $type, 'telegram_chat_record_id' => $chat->id,
+            'message' => 'Control?', 'send_time' => $time, 'weekdays' => [4], 'enabled' => true,
+        ]);
+    }
+    $this->travelTo(Carbon::parse('2026-10-01 22:30:00', 'Europe/Rome'));
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+
+    expect($summary['missing_deliveries'])->toHaveCount(1)
+        ->and($summary['missing_deliveries'][0]['control_type'])->toBe(ScheduledControlTypes::CLOSING_CLEANINGS)
+        ->and($summary['missing_deliveries'][0]['scheduled_for'])->toContain('T19:00:00');
+});
+
 it('does not invent a missing occurrence when a filtered delivery already exists for that control and day', function () {
     $this->travelTo(Carbon::parse('2026-10-01 08:00:00', 'Europe/Rome'));
     $delivery = controlDeliveryFixture(['control_type' => 'schedule_checked']);
@@ -1054,7 +1227,7 @@ it('polls scheduled updates in order through the shared inbound path and confirm
 
     $requests = Http::recorded()->pluck(0)->values();
     expect($requests)->toHaveCount(2)
-        ->and($requests[0]['allowed_updates'])->toBe(['message', 'edited_message'])
+        ->and($requests[0]['allowed_updates'])->toBe(['message', 'edited_message', 'callback_query'])
         ->and($requests[0]['limit'])->toBe(50)
         ->and($requests[0]->data())->not->toHaveKey('offset')
         ->and($requests[1]['offset'])->toBe(503);
@@ -1130,7 +1303,7 @@ it('does not acknowledge a batch when its middle update fails and retries failed
         ->and($requests[2]['offset'])->toBe(13);
 });
 
-it('skips irrelevant pending update types and continues to scheduled messages', function () {
+it('ignores malformed scheduled callback updates without losing a valid message update', function () {
     config(['services.telegram.scheduled_bot_token' => 'scheduled-poll-token']);
     $payload = controlReplyPayload(controlDeliveryFixture(['control_type' => 'schedule_checked']), 'Да, проверено', 255);
     $payload['update_id'] = 505;
@@ -1138,6 +1311,7 @@ it('skips irrelevant pending update types and continues to scheduled messages', 
 
     fakeScheduledPollResponses()
         ->push(['ok' => true, 'result' => [$payload, $irrelevant]])
+        ->push(['ok' => true, 'result' => true])
         ->push(['ok' => true, 'result' => []]);
 
     expect(Artisan::call('telegram:scheduled-poll'))->toBe(0)
@@ -1145,10 +1319,10 @@ it('skips irrelevant pending update types and continues to scheduled messages', 
         ->and(TelegramScheduledMessageResponse::count())->toBe(1);
 
     $requests = Http::recorded()->pluck(0)->values();
-    expect($requests)->toHaveCount(2)
-        ->and($requests[0]['allowed_updates'])->toBe(['message', 'edited_message'])
-        ->and($requests[1]['allowed_updates'])->toBe(['message', 'edited_message'])
-        ->and($requests[1]['offset'])->toBe(506);
+    expect($requests)->toHaveCount(3)
+        ->and($requests[0]['allowed_updates'])->toBe(['message', 'edited_message', 'callback_query'])
+        ->and($requests[2]['allowed_updates'])->toBe(['message', 'edited_message', 'callback_query'])
+        ->and($requests[2]['offset'])->toBe(506);
 });
 
 it('returns cleanly for an empty poll without issuing a confirmation request', function () {

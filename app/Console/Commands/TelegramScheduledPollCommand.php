@@ -36,7 +36,7 @@ class TelegramScheduledPollCommand extends Command
         try {
             $result = $poller->poll(
                 $token,
-                ['message', 'edited_message'],
+                ['message', 'edited_message', 'callback_query'],
                 $limit,
                 fn (array $update) => $processor->process($update),
             );

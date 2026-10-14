@@ -298,6 +298,11 @@ class TelegramScheduledControlSummaryBuilder
             $dueThrough = $now->lt($cutoff) ? $now : $cutoff;
 
             foreach ($messages as $message) {
+                $scheduledTime = ScheduledControlTypes::scheduledTime((string) $message->control_type, (string) $message->send_time);
+                if ($scheduledTime === null) {
+                    continue;
+                }
+
                 if (filled($chatId) && (string) $message->telegramChat?->telegram_chat_id !== $chatId) {
                     continue;
                 }
@@ -305,7 +310,7 @@ class TelegramScheduledControlSummaryBuilder
                     continue;
                 }
 
-                $scheduledFor = $day->setTimeFromTimeString((string) $message->send_time);
+                $scheduledFor = $day->setTimeFromTimeString($scheduledTime);
                 if ($scheduledFor->gt($dueThrough) || $message->created_at?->greaterThan($scheduledFor)) {
                     continue;
                 }
