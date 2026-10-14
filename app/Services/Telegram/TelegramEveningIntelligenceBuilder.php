@@ -2,6 +2,7 @@
 
 namespace App\Services\Telegram;
 
+use App\Models\TelegramMessage;
 use App\Models\TelegramOperationalEvent;
 use App\Models\TelegramOperationalEventEvidence;
 use App\Models\User;
@@ -17,6 +18,7 @@ class TelegramEveningIntelligenceBuilder
         private readonly TelegramTopicPresenter $topicPresenter,
         private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
         private readonly TelegramEveningHumanComposer $humanComposer,
+        private readonly TelegramDistrictRouteRegistry $districtRoutes,
     ) {}
 
     private const REASON_TYPES = [
@@ -169,6 +171,7 @@ class TelegramEveningIntelligenceBuilder
             ->all();
         $included = count($dailyProblems);
         $recurrences = $this->recurrences($recurrenceStart, $cutoff, $district);
+        $dataQuality = $this->inputDataQuality($start, $cutoff, $district);
 
         return [
             'date' => $day->toDateString(),
@@ -193,14 +196,51 @@ class TelegramEveningIntelligenceBuilder
             'carry_over_events_included' => 0,
             'events_omitted' => max(0, $events->count() - $included),
             'no_material_events' => $included === 0,
-            'data_quality' => [
-                'ledger' => 'available',
-            ],
+            'data_quality' => ['ledger' => 'available'] + $dataQuality,
             'mode' => [
                 'read_only' => true,
                 'telegram_actions' => 0,
                 'mutations' => 0,
             ],
+        ];
+    }
+
+    /**
+     * A zero-event summary is only conclusive when the district's dated source
+     * messages for the requested day have all completed OI evaluation.
+     */
+    private function inputDataQuality(Carbon $start, Carbon $cutoff, ?array $district): array
+    {
+        $chatIds = filled($district['chat_id'] ?? null)
+            ? [(string) $district['chat_id']]
+            : $this->districtRoutes->operationalChatIds();
+
+        if ($chatIds === []) {
+            return [
+                'source_status' => 'unavailable',
+                'source_messages' => 0,
+                'observed_messages' => 0,
+            ];
+        }
+
+        $messages = TelegramMessage::query()
+            ->whereNotNull('sent_at')
+            ->whereBetween('sent_at', [$start, $cutoff])
+            ->whereHas('chat', fn ($query) => $query->whereIn('telegram_chat_id', $chatIds));
+        $sourceMessages = (clone $messages)->count();
+        $observedMessages = (clone $messages)
+            ->whereHas('operationalObservations', fn ($query) => $query
+                ->where('evaluation_kind', 'message')
+                ->where('is_current_revision', true)
+                ->where('state', 'completed'))
+            ->count();
+
+        return [
+            'source_status' => $sourceMessages === 0
+                ? 'unavailable'
+                : ($observedMessages < $sourceMessages ? 'incomplete' : 'available'),
+            'source_messages' => $sourceMessages,
+            'observed_messages' => $observedMessages,
         ];
     }
 
