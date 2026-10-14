@@ -242,7 +242,11 @@ class TelegramDigestFormatter
         $lines[] = '';
         $lines[] = 'За сегодня:';
         if ($problems->isEmpty()) {
-            $lines[] = '✅ Новых значимых событий не зафиксировано.';
+            $lines[] = match ($preview['data_quality']['source_status'] ?? null) {
+                'unavailable' => '⚠️ Нет входящих данных за этот день. Отсутствие данных не подтверждает отсутствие проблем.',
+                'incomplete' => '⚠️ Входящие сообщения обработаны не полностью. Сводка может быть неполной.',
+                default => '✅ Новых значимых событий не зафиксировано.',
+            };
 
             return implode("\n", $lines);
         }
@@ -268,6 +272,11 @@ class TelegramDigestFormatter
             if (filled($problem['source_url'] ?? null)) {
                 $lines[] = '  🔗 '.$problem['source_url'];
             }
+        }
+
+        if (($preview['data_quality']['source_status'] ?? null) === 'incomplete') {
+            $lines[] = '';
+            $lines[] = '⚠️ Входящие сообщения обработаны не полностью. Сводка может быть неполной.';
         }
 
         return implode("\n", $lines);
