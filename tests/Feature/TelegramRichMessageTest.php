@@ -1,11 +1,13 @@
 <?php
 
-use App\Services\Telegram\TelegramBotService;
-use App\Services\Telegram\TelegramRichMessageBuilder;
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\User;
 use App\Services\Forms\DayOffRequestTelegramService;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramRichMessageBuilder;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Factory as HttpClientFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 
@@ -31,13 +33,82 @@ it('uses only the legacy HTML transport when Rich Messages are disabled', functi
 
     expect($messageId)->toBe(504);
     Http::assertSentCount(1);
-    Http::assertSent(fn (Request $request): bool =>
-        str_ends_with($request->url(), '/sendMessage')
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/sendMessage')
         && $request['text'] === '<b>Legacy</b>'
     );
-    Http::assertNotSent(fn (Request $request): bool =>
-        str_ends_with($request->url(), '/sendRichMessage')
+    Http::assertNotSent(fn (Request $request): bool => str_ends_with($request->url(), '/sendRichMessage')
     );
+});
+
+it('forces only Telegram API requests to the configured address family', function (): void {
+    $optionsByHost = [];
+    Http::fake(function (Request $request, array $options) use (&$optionsByHost) {
+        $optionsByHost[$request->toPsrRequest()->getUri()->getHost()] = $options;
+
+        return Http::response(['ok' => true, 'result' => ['message_id' => 99]]);
+    });
+
+    expect(app(TelegramBotService::class)->sendMessage('-100123', 'Тест'))
+        ->toBe(99);
+
+    Http::post('https://weather.example.test/forecast', []);
+
+    expect($optionsByHost['api.telegram.org']['force_ip_resolve'])->toBe('v6')
+        ->and($optionsByHost['weather.example.test'])->not->toHaveKey('force_ip_resolve');
+});
+
+it('normalizes a numeric Telegram address-family setting to IPv6', function (): void {
+    $previousEnvironment = getenv('TELEGRAM_IP_RESOLVE');
+    $hadServerValue = array_key_exists('TELEGRAM_IP_RESOLVE', $_SERVER);
+    $hadEnvValue = array_key_exists('TELEGRAM_IP_RESOLVE', $_ENV);
+    $previousServerValue = $_SERVER['TELEGRAM_IP_RESOLVE'] ?? null;
+    $previousEnvValue = $_ENV['TELEGRAM_IP_RESOLVE'] ?? null;
+
+    putenv('TELEGRAM_IP_RESOLVE=6');
+    $_SERVER['TELEGRAM_IP_RESOLVE'] = '6';
+    $_ENV['TELEGRAM_IP_RESOLVE'] = '6';
+
+    try {
+        $telegramConfig = require config_path('services.php');
+    } finally {
+        $previousEnvironment === false
+            ? putenv('TELEGRAM_IP_RESOLVE')
+            : putenv('TELEGRAM_IP_RESOLVE='.$previousEnvironment);
+
+        if ($hadServerValue) {
+            $_SERVER['TELEGRAM_IP_RESOLVE'] = $previousServerValue;
+        } else {
+            unset($_SERVER['TELEGRAM_IP_RESOLVE']);
+        }
+
+        if ($hadEnvValue) {
+            $_ENV['TELEGRAM_IP_RESOLVE'] = $previousEnvValue;
+        } else {
+            unset($_ENV['TELEGRAM_IP_RESOLVE']);
+        }
+    }
+
+    expect($telegramConfig['telegram']['ip_resolve'])->toBe('v6');
+});
+
+it('does not expose the bot token in connection exceptions', function (): void {
+    $token = 'local-test-token-must-not-leak';
+    config(['services.telegram.scheduled_bot_token' => $token]);
+    Http::fake(HttpClientFactory::failedConnection(
+        "cURL connection timeout for https://api.telegram.org/bot{$token}/sendMessage",
+    ));
+
+    $exception = null;
+
+    try {
+        app(TelegramBotService::class)->sendScheduledMessage('-100123', 'Тест');
+    } catch (ConnectionException $caught) {
+        $exception = $caught;
+    }
+
+    expect($exception)->toBeInstanceOf(ConnectionException::class)
+        ->and($exception->getMessage())->not->toContain($token)
+        ->and($exception->getPrevious())->toBeNull();
 });
 
 it('uses only legacy HTML editing when Rich Messages are disabled', function (): void {
@@ -53,13 +124,11 @@ it('uses only legacy HTML editing when Rich Messages are disabled', function ():
     ))->toBeTrue();
 
     Http::assertSentCount(1);
-    Http::assertSent(fn (Request $request): bool =>
-        str_ends_with($request->url(), '/editMessageText')
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/editMessageText')
         && $request['text'] === '<b>Legacy edit</b>'
         && ($request['reply_markup']['inline_keyboard'] ?? null) === []
     );
-    Http::assertNotSent(fn (Request $request): bool =>
-        isset($request['rich_message'])
+    Http::assertNotSent(fn (Request $request): bool => isset($request['rich_message'])
     );
 });
 
@@ -140,8 +209,7 @@ it('falls back to the existing HTML message when rich sending is rejected', func
     expect($messageId)->toBe(502)
         ->and(Http::recorded())->toHaveCount(2);
 
-    Http::assertSent(fn (Request $request): bool =>
-        str_ends_with($request->url(), '/sendMessage')
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/sendMessage')
         && $request['text'] === '<b>Заявка</b>'
         && $request['parse_mode'] === 'HTML'
     );
@@ -180,8 +248,7 @@ it('falls back to HTML when rich editing is rejected', function (): void {
     );
 
     expect($updated)->toBeTrue();
-    Http::assertSent(fn (Request $request): bool =>
-        str_ends_with($request->url(), '/editMessageText')
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/editMessageText')
         && ($request['text'] ?? null) === '<b>Отклонено</b>'
         && ($request['reply_markup']['inline_keyboard'] ?? null) === []
     );

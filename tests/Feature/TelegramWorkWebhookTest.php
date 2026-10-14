@@ -332,6 +332,21 @@ it('answers private messages without ingesting or invoking the assistant', funct
     });
 });
 
+it('uses the IPv6 Telegram API path for direct work-webhook replies', function (): void {
+    $telegramOptions = null;
+    Http::fake(function (ClientRequest $request, array $options) use (&$telegramOptions) {
+        if ($request->toPsrRequest()->getUri()->getHost() === 'api.telegram.org') {
+            $telegramOptions = $options;
+        }
+
+        return Http::response(['ok' => true, 'result' => ['message_id' => 904]]);
+    });
+
+    $this->postJson('/telegram/work-webhook/test-secret', privateWebhookPayload(44))->assertOk();
+
+    expect($telegramOptions['force_ip_resolve'] ?? null)->toBe('v6');
+});
+
 it('does not send a duplicate fallback for a repeated private webhook update', function () {
     Http::fake(fn () => Http::response(['ok' => true, 'result' => ['message_id' => 902]]));
 

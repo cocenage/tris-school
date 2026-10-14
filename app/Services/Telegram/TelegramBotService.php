@@ -2,6 +2,9 @@
 
 namespace App\Services\Telegram;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -82,9 +85,7 @@ class TelegramBotService
             $payload['reply_markup'] = $replyMarkup;
         }
 
-        $response = Http::timeout(5)
-            ->connectTimeout(3)
-            ->post("https://api.telegram.org/bot{$token}/sendMessage", $payload);
+        $response = $this->postTelegramApi($token, 'sendMessage', $payload, 5, 3);
 
         // Never log the outbound payload or Telegram response body: they may
         // contain chat identifiers, message text, callback data, or API
@@ -142,9 +143,7 @@ class TelegramBotService
         $this->addMessageOptions($payload, $threadId, $replyToMessageId, $replyMarkup);
 
         try {
-            $response = Http::timeout(10)
-                ->connectTimeout(3)
-                ->post("https://api.telegram.org/bot{$token}/sendRichMessage", $payload);
+            $response = $this->postTelegramApi($token, 'sendRichMessage', $payload, 10, 3);
 
             if ($response->successful() && data_get($response->json(), 'ok', true)) {
                 return data_get($response->json(), 'result.message_id');
@@ -168,9 +167,7 @@ class TelegramBotService
 
         $this->addMessageOptions($fallbackPayload, $threadId, $replyToMessageId, $replyMarkup);
 
-        $fallbackResponse = Http::timeout(10)
-            ->connectTimeout(3)
-            ->post("https://api.telegram.org/bot{$token}/sendMessage", $fallbackPayload);
+        $fallbackResponse = $this->postTelegramApi($token, 'sendMessage', $fallbackPayload, 10, 3);
 
         return $fallbackResponse->successful()
             ? data_get($fallbackResponse->json(), 'result.message_id')
@@ -215,9 +212,7 @@ class TelegramBotService
         }
 
         try {
-            $response = Http::timeout(10)
-                ->connectTimeout(3)
-                ->post("https://api.telegram.org/bot{$token}/editMessageText", $richPayload);
+            $response = $this->postTelegramApi($token, 'editMessageText', $richPayload, 10, 3);
 
             if ($response->successful() && data_get($response->json(), 'ok', true)) {
                 return true;
@@ -240,9 +235,7 @@ class TelegramBotService
             $fallbackPayload['reply_markup'] = $replyMarkup;
         }
 
-        $fallbackResponse = Http::timeout(10)
-            ->connectTimeout(3)
-            ->post("https://api.telegram.org/bot{$token}/editMessageText", $fallbackPayload);
+        $fallbackResponse = $this->postTelegramApi($token, 'editMessageText', $fallbackPayload, 10, 3);
 
         return $fallbackResponse->successful();
     }
@@ -266,10 +259,34 @@ class TelegramBotService
             $payload['reply_markup'] = $replyMarkup;
         }
 
-        return Http::timeout(10)
-            ->connectTimeout(3)
-            ->post("https://api.telegram.org/bot{$token}/editMessageText", $payload)
+        return $this->postTelegramApi($token, 'editMessageText', $payload, 10, 3)
             ->successful();
+    }
+
+    private function postTelegramApi(
+        string $token,
+        string $method,
+        array $payload,
+        int $timeout,
+        int $connectTimeout,
+    ): Response {
+        try {
+            return $this->telegramApiRequest($timeout, $connectTimeout)
+                ->post("https://api.telegram.org/bot{$token}/{$method}", $payload);
+        } catch (ConnectionException) {
+            // Telegram's Bot API embeds the bot token in the request path.
+            // Do not let Guzzle's original URL-bearing exception escape.
+            throw new ConnectionException("Telegram API connection failed for {$method}.");
+        }
+    }
+
+    private function telegramApiRequest(int $timeout, int $connectTimeout): PendingRequest
+    {
+        return Http::withOptions([
+            'force_ip_resolve' => config('services.telegram.ip_resolve', 'v6'),
+        ])
+            ->timeout($timeout)
+            ->connectTimeout($connectTimeout);
     }
 
     private function addMessageOptions(
