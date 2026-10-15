@@ -244,6 +244,17 @@ class TelegramEveningIntelligenceBuilder
         ];
     }
 
+    public function sourceDataQuality(Carbon|string $date, ?array $district = null): array
+    {
+        $timezone = config('app.timezone', 'Europe/Rome');
+        $day = $date instanceof Carbon
+            ? $date->copy()->setTimezone($timezone)->startOfDay()
+            : Carbon::parse($date, $timezone)->startOfDay();
+        $cutoff = $day->isSameDay(now($timezone)) ? now($timezone) : $day->copy()->endOfDay();
+
+        return $this->inputDataQuality($day, $cutoff, $district);
+    }
+
     /**
      * Find repeated durable problems from distinct ledger occurrence transitions.
      * Evidence updates and resolutions are intentionally not counted as occurrences.

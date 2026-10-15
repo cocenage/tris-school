@@ -32,6 +32,11 @@ Schedule::command('telegram:evening-intelligence-send')
     ->timezone('Europe/Rome')
     ->withoutOverlapping();
 
+Schedule::command('telegram:linen-defects-report')
+    ->dailyAt('20:35')
+    ->timezone('Europe/Rome')
+    ->withoutOverlapping();
+
 Schedule::command('tris-mare:sync')
     ->dailyAt('20:15')
     ->timezone('Europe/Rome');

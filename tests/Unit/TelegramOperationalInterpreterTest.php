@@ -71,6 +71,14 @@ it('preserves existing completed-replacement interpretation', function () {
     ]);
 });
 
+it('recognizes concrete holes and tears in linen as quality issues', function (string $text) {
+    expect(operationalInterpreter()->interpret($text))->toMatchArray([
+        'meaningful' => true,
+        'primary_type' => 'quality_issue',
+        'role' => 'report',
+    ]);
+})->with(['Простыня с дырой.', 'Наволочка порвана.', 'Пододеяльник разорван.', 'Полотенце сильно изношено.']);
+
 function operationalInterpreter(): TelegramOperationalInterpreter
 {
     return new TelegramOperationalInterpreter(new TelegramAssistantClassifier);
