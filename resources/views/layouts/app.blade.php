@@ -10,9 +10,61 @@
 
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     @livewireStyles
+
+    @if (request()->query('loader_preview') === '1')
+        <style>
+            #loader-preview-overlay {
+                position: fixed;
+                inset: 0;
+                z-index: 2147483647;
+                display: grid;
+                place-items: center;
+                padding: max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right)) max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left));
+                background: transparent;
+                opacity: 0;
+                visibility: hidden;
+                pointer-events: none;
+                transition: opacity 250ms ease, visibility 0s linear 250ms;
+            }
+
+            #loader-preview-overlay.is-active {
+                opacity: 1;
+                visibility: visible;
+                pointer-events: auto;
+                transition: opacity 250ms ease;
+            }
+
+            #loader-preview-overlay.is-dismissing {
+                opacity: 0;
+                visibility: hidden;
+                pointer-events: none;
+                transition: opacity 250ms ease, visibility 0s linear 250ms;
+            }
+
+            #loader-preview-overlay img {
+                display: block;
+                width: min(128px, 40vw);
+                height: auto;
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                #loader-preview-overlay,
+                #loader-preview-overlay.is-active,
+                #loader-preview-overlay.is-dismissing {
+                    transition: none;
+                }
+            }
+        </style>
+    @endif
 </head>
 
 <body class="bg-[#FAFAFA] text-[#111]">
+    @if (request()->query('loader_preview') === '1')
+        <div id="loader-preview-overlay" aria-hidden="true">
+            <img src="{{ asset('assets/loaders/tris_academy_canvas_preview.gif') }}" alt="" width="128" height="128" fetchpriority="high">
+        </div>
+    @endif
+
     <div class="mx-auto flex h-[100dvh] w-full max-w-[768px] flex-col overflow-hidden bg-[#FAFAFA]">
 
         <header class="shrink-0">
@@ -38,5 +90,72 @@
 
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
     @livewireScripts
+
+    @if (request()->query('loader_preview') === '1')
+        <script>
+            (() => {
+                const overlay = document.getElementById('loader-preview-overlay');
+                const image = overlay?.querySelector('img');
+
+                if (!overlay || !image || window.__trisLoaderPreviewStarted) {
+                    return;
+                }
+
+                window.__trisLoaderPreviewStarted = true;
+
+                let dismissed = false;
+                let cycleStarted = false;
+                let cycleTimer;
+                let safetyTimer;
+
+                const dismiss = () => {
+                    if (dismissed) {
+                        return;
+                    }
+
+                    dismissed = true;
+                    window.clearTimeout(safetyTimer);
+                    window.clearTimeout(cycleTimer);
+                    overlay.classList.remove('is-active');
+                    overlay.classList.add('is-dismissing');
+                    overlay.setAttribute('aria-hidden', 'true');
+                    window.setTimeout(() => overlay.remove(), 250);
+                };
+
+                safetyTimer = window.setTimeout(dismiss, 8000);
+                const startCycle = () => {
+                    if (cycleStarted || dismissed) {
+                        return;
+                    }
+
+                    cycleStarted = true;
+                    overlay.classList.add('is-active');
+                    cycleTimer = window.setTimeout(() => {
+                        window.clearTimeout(safetyTimer);
+                        dismiss();
+                    }, 3300);
+                };
+
+                if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                    dismiss();
+                    return;
+                }
+
+                image.addEventListener('error', dismiss, { once: true });
+
+                if (image.complete) {
+                    if (image.naturalWidth > 0) {
+                        startCycle();
+                    } else {
+                        dismiss();
+                    }
+
+                    return;
+                }
+
+                image.addEventListener('load', startCycle, { once: true });
+            })();
+        </script>
+    @endif
 </body>
 </html>

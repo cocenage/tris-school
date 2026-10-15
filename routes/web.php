@@ -16,8 +16,12 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
+    $previewParameters = request()->query('loader_preview') === '1'
+        ? ['loader_preview' => '1']
+        : [];
+
     if (! auth()->check()) {
-        return redirect()->route('landing.page');
+        return redirect()->route('landing.page', $previewParameters);
     }
 
     return redirect()->route(match (auth()->user()->status) {
@@ -25,7 +29,7 @@ Route::get('/', function () {
         'pending' => 'access.pending',
         'rejected' => 'access.rejected',
         default => 'landing.page',
-    });
+    }, $previewParameters);
 })->name('landing');
 
 Route::livewire('/login', 'landing')->name('landing.page');

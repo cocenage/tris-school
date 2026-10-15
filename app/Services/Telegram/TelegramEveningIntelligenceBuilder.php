@@ -83,14 +83,11 @@ class TelegramEveningIntelligenceBuilder
             throw new RuntimeException('Analytics apartment-context schema is unavailable.');
         }
 
-        $timezone = config('app.timezone', 'Europe/Rome');
-        $day = $date instanceof Carbon
-            ? $date->copy()->setTimezone($timezone)->startOfDay()
-            : Carbon::parse($date, $timezone)->startOfDay();
+        $timezone = 'Europe/Rome';
+        $window = $this->reportingWindow($date);
+        $day = Carbon::parse($window['start'])->setTimezone($timezone);
         $start = $day->copy()->startOfDay();
-        $end = $day->copy()->endOfDay();
-        $now = now($timezone);
-        $cutoff = $day->isSameDay($now) ? $now : $end;
+        $cutoff = Carbon::parse($window['evaluated_until'])->setTimezone($timezone);
         $recurrenceStart = $start->copy()->subDays(6);
 
         $district = is_array($options['district'] ?? null) ? $options['district'] : null;
@@ -100,7 +97,7 @@ class TelegramEveningIntelligenceBuilder
                     ->where('telegram_chat_id', (string) $district['chat_id'])))
             ->whereHas('evidence', fn ($query) => $query
                 ->where('is_current_revision', true)
-                ->where('occurred_at', '<=', $cutoff))
+                ->where('occurred_at', '<', $cutoff))
             ->with([
                 'chat:id,telegram_chat_id,title',
                 'topic:id,telegram_chat_id,telegram_thread_id,title,purpose',
@@ -108,7 +105,7 @@ class TelegramEveningIntelligenceBuilder
                 'apartment:id,name',
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
-                    ->where('occurred_at', '<=', $cutoff)
+                    ->where('occurred_at', '<', $cutoff)
                     ->with('observation.message.telegramUser')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
@@ -176,6 +173,7 @@ class TelegramEveningIntelligenceBuilder
         return [
             'date' => $day->toDateString(),
             'timezone' => $timezone,
+            'reporting_window' => $window,
             'district' => $district === null ? null : [
                 'key' => $district['key'] ?? null,
                 'label' => $district['label'] ?? null,
@@ -225,7 +223,8 @@ class TelegramEveningIntelligenceBuilder
 
         $messages = TelegramMessage::query()
             ->whereNotNull('sent_at')
-            ->whereBetween('sent_at', [$start, $cutoff])
+            ->where('sent_at', '>=', $start)
+            ->where('sent_at', '<', $cutoff)
             ->whereHas('chat', fn ($query) => $query->whereIn('telegram_chat_id', $chatIds));
         $sourceMessages = (clone $messages)->count();
         $observedMessages = (clone $messages)
@@ -244,13 +243,30 @@ class TelegramEveningIntelligenceBuilder
         ];
     }
 
-    public function sourceDataQuality(Carbon|string $date, ?array $district = null): array
+    /** One captured Rome calendar window, shared with the textile report. */
+    public function reportingWindow(Carbon|string $date): array
     {
-        $timezone = config('app.timezone', 'Europe/Rome');
+        $timezone = 'Europe/Rome';
         $day = $date instanceof Carbon
             ? $date->copy()->setTimezone($timezone)->startOfDay()
             : Carbon::parse($date, $timezone)->startOfDay();
-        $cutoff = $day->isSameDay(now($timezone)) ? now($timezone) : $day->copy()->endOfDay();
+        // Set local wall time rather than adding elapsed hours across a DST change.
+        $end = $day->copy()->setTime(20, 30);
+        $now = now($timezone);
+
+        return [
+            'start' => $day->toIso8601String(),
+            'end' => $end->toIso8601String(),
+            'evaluated_until' => ($now->lt($end) ? $now : $end)->toIso8601String(),
+            'preliminary' => $now->lt($end),
+        ];
+    }
+
+    public function sourceDataQuality(Carbon|string $date, ?array $district = null, ?Carbon $cutoff = null): array
+    {
+        $window = $this->reportingWindow($date);
+        $day = Carbon::parse($window['start'])->setTimezone('Europe/Rome');
+        $cutoff ??= Carbon::parse($window['evaluated_until'])->setTimezone('Europe/Rome');
 
         return $this->inputDataQuality($day, $cutoff, $district);
     }
@@ -272,7 +288,8 @@ class TelegramEveningIntelligenceBuilder
                     ->where('telegram_chat_id', (string) $district['chat_id'])))
             ->whereHas('evidence', fn ($query) => $query
                 ->where('is_current_revision', true)
-                ->whereBetween('occurred_at', [$start, $cutoff])
+                ->where('occurred_at', '>=', $start)
+                ->where('occurred_at', '<', $cutoff)
                 ->where(function ($occurrences): void {
                     $occurrences->where(function ($created): void {
                         $created->where('transition', 'created')
@@ -294,7 +311,8 @@ class TelegramEveningIntelligenceBuilder
                         'status_after', 'confidence', 'uncertainty', 'occurred_at', 'is_current_revision',
                     ])
                     ->where('is_current_revision', true)
-                    ->whereBetween('occurred_at', [$start, $cutoff])
+                    ->where('occurred_at', '>=', $start)
+                    ->where('occurred_at', '<', $cutoff)
                     ->with('observation.message')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
@@ -411,7 +429,7 @@ class TelegramEveningIntelligenceBuilder
 
         $hasActivityOnDay = $evidence->contains(
             fn (TelegramOperationalEventEvidence $item): bool => $item->occurred_at !== null
-                && $item->occurred_at->betweenIncluded($start, $cutoff)
+                && $item->occurred_at->gte($start) && $item->occurred_at->lt($cutoff)
         );
         $types = collect([$event->primary_type])
             ->merge($event->types ?? [])
@@ -550,7 +568,7 @@ class TelegramEveningIntelligenceBuilder
 
             $occurredAt = Carbon::parse($evidence['occurred_at'])->setTimezone($start->getTimezone());
 
-            return $occurredAt->betweenIncluded($start, $cutoff);
+            return $occurredAt->gte($start) && $occurredAt->lt($cutoff);
         });
         $resolvedToday = ($item['status'] ?? null) === 'resolved'
             && collect($item['evidence'] ?? [])->contains(function (array $evidence) use ($start, $cutoff): bool {
@@ -558,7 +576,9 @@ class TelegramEveningIntelligenceBuilder
                     return false;
                 }
 
-                return Carbon::parse($evidence['occurred_at'])->setTimezone($start->getTimezone())->betweenIncluded($start, $cutoff);
+                $occurredAt = Carbon::parse($evidence['occurred_at'])->setTimezone($start->getTimezone());
+
+                return $occurredAt->gte($start) && $occurredAt->lt($cutoff);
             });
 
         try {

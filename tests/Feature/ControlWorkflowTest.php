@@ -3,6 +3,7 @@
 use App\Models\Control;
 use App\Models\ControlResponse;
 use App\Models\User;
+use App\Services\UserApplicationBadgeService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -153,6 +154,33 @@ it('hides corrective details and does not require them for a negative answer', f
         ->assertHasNoErrors()
         ->assertSet('reviewSheetOpen', false)
         ->assertSet('successSheetOpen', true);
+});
+
+it('renders the loader preview only when explicitly requested', function () {
+    [$supervisor] = mountControlWorkflow();
+
+    auth()->logout();
+
+    $this->get('/?loader_preview=1')
+        ->assertRedirect(route('landing.page', ['loader_preview' => '1']));
+
+    $this->actingAs($supervisor)
+        ->get('/?loader_preview=1')
+        ->assertRedirect(route('page-home', ['loader_preview' => '1']));
+
+    $badge = Mockery::mock(UserApplicationBadgeService::class);
+    $badge->shouldReceive('label')->twice()->andReturnNull();
+    app()->instance(UserApplicationBadgeService::class, $badge);
+
+    $this->actingAs($supervisor)
+        ->get('/checks/control?loader_preview=1')
+        ->assertOk()
+        ->assertSee('loader-preview-overlay')
+        ->assertSee('background: transparent;', false);
+
+    $this->get('/checks/control')
+        ->assertOk()
+        ->assertDontSee('loader-preview-overlay');
 });
 
 it('moves to the next unanswered required question and opens review only when required answers are complete', function () {
