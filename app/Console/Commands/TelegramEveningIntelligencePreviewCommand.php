@@ -57,6 +57,10 @@ class TelegramEveningIntelligencePreviewCommand extends Command
             return self::SUCCESS;
         }
 
+        if ($preview['reporting_window']['preliminary'] ?? false) {
+            $this->line('Предварительный просмотр: окно дня ещё не завершено (до 20:30 Europe/Rome).');
+        }
+
         foreach (explode("\n", $formatter->eveningIntelligence($preview)) as $line) {
             $this->line($line);
         }

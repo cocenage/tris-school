@@ -16,18 +16,17 @@ class TelegramLinenDefectReportBuilder
 
     public function build(Carbon|string $date): array
     {
-        $timezone = config('app.timezone', 'Europe/Rome');
-        $day = $date instanceof Carbon
-            ? $date->copy()->setTimezone($timezone)->startOfDay()
-            : Carbon::parse($date, $timezone)->startOfDay();
-        $cutoff = $day->isSameDay(now($timezone)) ? now($timezone) : $day->copy()->endOfDay();
+        $timezone = 'Europe/Rome';
+        $window = $this->evening->reportingWindow($date);
+        $day = Carbon::parse($window['start'])->setTimezone($timezone);
+        $cutoff = Carbon::parse($window['evaluated_until'])->setTimezone($timezone);
         $routes = $this->districts->sourceRoutes();
         $districts = [];
         $cases = [];
 
         foreach ($routes as $route) {
             // Use the same source/observer completeness contract as Evening Intelligence.
-            $quality = $this->evening->sourceDataQuality($day, $route);
+            $quality = $this->evening->sourceDataQuality($day, $route, $cutoff);
             $districts[$route['key']] = [
                 'label' => $route['label'],
                 'source_status' => $quality['source_status'],
@@ -41,12 +40,14 @@ class TelegramLinenDefectReportBuilder
                 ->whereHas('chat', fn ($query) => $query->where('telegram_chat_id', (string) $route['chat_id']))
                 ->whereHas('evidence', fn ($query) => $query
                     ->where('is_current_revision', true)
-                    ->whereBetween('occurred_at', [$day, $cutoff]))
+                    ->where('occurred_at', '>=', $day)
+                    ->where('occurred_at', '<', $cutoff))
                 ->with([
                     'chat', 'topic.chat', 'apartment',
                     'evidence' => fn ($query) => $query
                         ->where('is_current_revision', true)
-                        ->whereBetween('occurred_at', [$day, $cutoff])
+                        ->where('occurred_at', '>=', $day)
+                        ->where('occurred_at', '<', $cutoff)
                         ->with('observation.message')
                         ->orderBy('occurred_at')
                         ->orderBy('id'),
@@ -91,6 +92,7 @@ class TelegramLinenDefectReportBuilder
         return [
             'date' => $day->toDateString(),
             'timezone' => $timezone,
+            'reporting_window' => $window,
             'districts' => $districts,
             'cases' => $cases,
             'known_units' => array_sum(array_column($districts, 'known_units')),
