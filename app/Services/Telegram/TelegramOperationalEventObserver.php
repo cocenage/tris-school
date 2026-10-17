@@ -18,6 +18,17 @@ class TelegramOperationalEventObserver
         protected TelegramDistrictRouteRegistry $districts,
     ) {}
 
+    public function hasCompletedCurrentRevision(TelegramMessage $message): bool
+    {
+        return TelegramOperationalObservation::query()
+            ->where('telegram_message_id', $message->id)
+            ->where('source_revision_hash', $this->revisionHash($message, $this->normalizedRaw($message->raw)))
+            ->where('evaluation_kind', 'message')
+            ->where('is_current_revision', true)
+            ->where('state', 'completed')
+            ->exists();
+    }
+
     public function observe(
         TelegramMessage $message,
         string $evaluationKind = 'message',

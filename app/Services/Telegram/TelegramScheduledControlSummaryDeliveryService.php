@@ -94,6 +94,7 @@ class TelegramScheduledControlSummaryDeliveryService
     {
         $queued = 0;
         TelegramScheduledControlSummaryDelivery::query()->whereNull('sent_at')
+            ->whereIn('status', ['queued', 'retrying'])
             ->where(fn ($query) => $query->whereNull('queued_at')->orWhere('queued_at', '<=', now()->subHour()))
             ->each(function ($delivery) use (&$queued): void {
                 $queued += DB::transaction(fn () => $this->enqueue(TelegramScheduledControlSummaryDelivery::query()->lockForUpdate()->findOrFail($delivery->id)));
@@ -104,7 +105,9 @@ class TelegramScheduledControlSummaryDeliveryService
 
     private function enqueue(TelegramScheduledControlSummaryDelivery $delivery): int
     {
-        if ($delivery->sent_at || ($delivery->queued_at && $delivery->queued_at->gt(now()->subHour()))) {
+        if ($delivery->sent_at
+            || in_array($delivery->status, ['sending', 'uncertain', 'failed'], true)
+            || ($delivery->queued_at && $delivery->queued_at->gt(now()->subHour()))) {
             return 0;
         }
         $delivery->update(['queued_at' => now(), 'status' => 'queued']);

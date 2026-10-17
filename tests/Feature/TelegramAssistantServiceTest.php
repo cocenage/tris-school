@@ -151,6 +151,37 @@ it('stores an activated Telegram request and does not duplicate retries', functi
         ->and(Http::recorded())->toHaveCount(2);
 });
 
+it('does not repeat a follow-up answer or staff notification when the same message is retried', function () {
+    Http::fake(fn () => Http::response(['ok' => true, 'result' => ['message_id' => 900]]));
+    $data = assistantTestMessage('Завтра не смогу выйти на смену');
+    $service = app(TelegramAssistantService::class);
+    $request = $service->handle($data['model'], $data['payload']);
+    $request->forceFill(['status' => 'awaiting_clarification', 'last_bot_message_id' => '900'])->save();
+
+    $followUp = TelegramMessage::create([
+        'telegram_chat_id' => $data['model']->telegram_chat_id,
+        'telegram_user_id' => $data['model']->telegram_user_id,
+        'message_id' => '11',
+        'message_type' => 'text',
+        'text' => 'Уточняю детали',
+        'sent_at' => now(),
+    ])->fresh(['chat', 'topic', 'telegramUser']);
+    $payload = [
+        'message_id' => 11,
+        'chat' => ['id' => -100123, 'type' => 'supergroup'],
+        'from' => ['id' => 777, 'is_bot' => false],
+        'text' => 'Уточняю детали',
+        'reply_to_message' => ['message_id' => 900],
+    ];
+
+    $service->handle($followUp, $payload);
+    $service->handle($followUp, $payload);
+
+    expect($request->fresh()->metadata['follow_up_count'])->toBe(1)
+        ->and(DB::connection('analytics')->table('telegram_assistant_request_messages')->count())->toBe(2)
+        ->and(Http::recorded())->toHaveCount(4);
+});
+
 it('keeps assistant persistence and staff routing while suppressing user replies', function () {
     config(['services.telegram.main_bot_auto_replies_enabled' => false]);
     Http::fake(fn () => Http::response(['ok' => true, 'result' => ['message_id' => 900]]));

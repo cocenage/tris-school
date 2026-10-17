@@ -4,7 +4,8 @@ use App\Models\Instruction;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Component;
 
-new class extends Component {
+new class extends Component
+{
     public Instruction $instruction;
 
     public function mount(Instruction $instruction): void
@@ -31,7 +32,7 @@ new class extends Component {
                 }
 
                 return [
-                    'id' => 'section-' . $index,
+                    'id' => 'section-'.$index,
                     'title' => $title,
                 ];
             })
@@ -88,9 +89,9 @@ new class extends Component {
 <x-ui.protected-content>
 <section
     x-data="{ imageOpen: false, imageSrc: '', imageAlt: '' }"
-    class="min-h-screen bg-white px-[17px] py-[22px]"
+    class="instruction-reader bg-white px-4 py-5 sm:px-5"
 >
-    <article class="mx-auto max-w-[768px] pb-[120px]">
+    <article class="mx-auto w-full max-w-[768px] pb-8">
         <header>
             <div class="mb-[18px] text-[15px] leading-none text-[#4B5563]">
                 Обновлено {{ $instruction->updated_at->translatedFormat('j F, Y') }}
@@ -167,7 +168,7 @@ new class extends Component {
                         @endif
 
                         @if (!empty($data['content']))
-                            <div class="{{ $title ? '' : 'article-no-title' }}">
+                            <div class="article-content {{ $title ? '' : 'article-no-title' }}">
                                 {!! $data['content'] !!}
                             </div>
                         @endif
@@ -376,26 +377,27 @@ new class extends Component {
     }
 
     .article-title {
-        color: #061126;
-        font-size: 31px;
-        line-height: 1.08;
-        font-weight: 800;
-        letter-spacing: -0.055em;
+        color: #111827;
+        font-size: 26px;
+        line-height: 1.25;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+        overflow-wrap: anywhere;
     }
 
     .article-lead {
-        margin-top: 22px;
-        color: #061126;
-        font-size: 18px;
-        line-height: 1.45;
-        letter-spacing: -0.015em;
+        margin-top: 12px;
+        color: #4b5563;
+        font-size: 16px;
+        line-height: 1.6;
+        letter-spacing: 0;
+        overflow-wrap: anywhere;
     }
 
     .article-cover {
-        margin-top: 24px;
+        margin-top: 22px;
         overflow: hidden;
-        border-radius: 21px;
-        background: #eef3f7;
+        border-radius: 10px;
     }
 
     .article-cover-button {
@@ -412,76 +414,102 @@ new class extends Component {
         width: 100%;
         height: auto;
         max-height: 480px;
-        object-fit: cover;
+        object-fit: contain;
     }
 
     .article-toc-mobile {
-        margin-top: 48px;
-        padding: 20px 18px 22px;
-        border-radius: 18px;
-        background: #f1f1f1;
-        color: #061126;
+        margin-top: 28px;
+        color: #374151;
     }
 
     .article-toc-title {
-        margin-bottom: 16px;
-        color: #061126;
-        font-size: 21px;
-        line-height: 1.15;
-        font-weight: 800;
-        letter-spacing: -0.035em;
+        margin-bottom: 10px;
+        color: #111827;
+        font-size: 16px;
+        line-height: 1.4;
+        font-weight: 600;
     }
 
     .article-toc-mobile nav {
         display: grid;
-        gap: 14px;
+        gap: 8px;
     }
 
     .article-toc-mobile a {
-        color: #061126;
-        font-size: 16px;
-        line-height: 1.35;
-        text-decoration: none;
+        color: #374151;
+        font-size: 15px;
+        line-height: 1.5;
+        text-decoration: underline;
+        text-decoration-color: #d1d5db;
+        text-underline-offset: 3px;
+        overflow-wrap: anywhere;
     }
 
-    .article-body {
-        margin-top: 44px;
-        color: #061126;
+    .article-body,
+    .article-content {
+        color: #1f2937;
         font-size: 16px;
-        line-height: 1.45;
-        letter-spacing: -0.02em;
+        line-height: 1.6;
+        letter-spacing: 0;
+        overflow-wrap: anywhere;
+        word-break: normal;
     }
 
     .article-section {
-        margin-bottom: 34px;
-        scroll-margin-top: 28px;
+        margin-bottom: 30px;
+        scroll-margin-top: 20px;
     }
 
     .article-section:has(.article-no-title) {
         margin-top: 0;
     }
 
-    .article-body h2 {
-        margin: 0 0 18px;
-        color: #061126;
-        font-size: 29px;
-        line-height: 1.08;
-        font-weight: 800;
-        letter-spacing: -0.055em;
+    .article-body h1,
+    .article-content h1 {
+        margin: 24px 0 12px;
+        color: #111827;
+        font-size: 26px;
+        line-height: 1.3;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        overflow-wrap: anywhere;
     }
 
-    .article-body h3 {
-        margin: 28px 0 10px;
-        color: #061126;
-        font-size: 22px;
-        line-height: 1.15;
-        font-weight: 800;
-        letter-spacing: -0.04em;
+    .article-body h2,
+    .article-content h2 {
+        margin: 0 0 12px;
+        color: #111827;
+        font-size: 21px;
+        line-height: 1.35;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        overflow-wrap: anywhere;
     }
 
-    .article-body p {
-        margin: 0 0 18px;
-        color: #061126;
+    .article-body h3,
+    .article-content h3 {
+        margin: 22px 0 8px;
+        color: #111827;
+        font-size: 18px;
+        line-height: 1.4;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        overflow-wrap: anywhere;
+    }
+
+    .article-body h4,
+    .article-content h4 {
+        margin: 18px 0 8px;
+        color: #111827;
+        font-size: 16px;
+        line-height: 1.5;
+        font-weight: 600;
+    }
+
+    .article-body p,
+    .article-content p {
+        margin: 0 0 14px;
+        color: inherit;
     }
 
     .article-no-title,
@@ -492,40 +520,49 @@ new class extends Component {
     }
 
     .article-body ul,
-    .article-body ol {
-        margin: 16px 0 24px;
-        padding-left: 24px;
-        color: #061126;
+    .article-body ol,
+    .article-content ul,
+    .article-content ol {
+        margin: 12px 0 18px;
+        padding-left: 25px;
+        color: inherit;
     }
 
-    .article-body li {
-        margin: 8px 0;
+    .article-body li,
+    .article-content li {
+        margin: 6px 0;
     }
 
-    .article-body a {
-        color: #2f80ff;
-        text-decoration: none;
+    .article-body a,
+    .article-content a {
+        color: #2563eb;
+        text-decoration: underline;
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+        overflow-wrap: anywhere;
     }
 
     .article-intro p {
-        font-size: 18px;
-        line-height: 1.45;
+        font-size: 16px;
+        line-height: 1.6;
     }
 
     .article-note {
-        margin: 34px 0 42px;
-        padding: 22px 24px;
-        border-radius: 22px;
-        font-size: 18px;
-        line-height: 1.45;
+        margin: 24px 0 30px;
+        padding: 2px 0 2px 15px;
+        border-left: 2px solid #9ca3af;
+        font-size: 16px;
+        line-height: 1.6;
+        color: #374151;
     }
 
     .article-note strong {
         display: block;
-        margin-bottom: 8px;
-        font-size: 18px;
-        line-height: 1.35;
-        font-weight: 700;
+        margin-bottom: 4px;
+        color: #111827;
+        font-size: 16px;
+        line-height: 1.5;
+        font-weight: 600;
     }
 
     .article-note p {
@@ -538,32 +575,12 @@ new class extends Component {
         padding-left: 20px;
     }
 
-    .article-note-warning {
-        background: #fff3bf;
-        color: #061126;
-    }
-
-    .article-note-info {
-        background: #c9efff;
-        color: #061126;
-    }
-
-    .article-note-success {
-        background: #eaf8ef;
-        color: #061126;
-    }
-
-    .article-note-danger {
-        background: #fff0f0;
-        color: #061126;
-    }
-
     .article-steps {
         margin-top: 0;
     }
 
     .article-step {
-        margin-bottom: 28px;
+        margin-bottom: 22px;
     }
 
     .article-step h3:first-child {
@@ -577,64 +594,62 @@ new class extends Component {
     }
 
     .article-image-block {
-        margin: 34px 0 38px;
+        margin: 24px 0 28px;
     }
 
     .article-image-frame {
         position: relative;
         display: flex;
         width: 100%;
-        min-height: 190px;
         align-items: center;
         justify-content: center;
         overflow: hidden;
-        padding: 18px;
+        padding: 0;
         border: 0;
-        border-radius: 24px;
-        background: #d9d9d9;
+        border-radius: 8px;
+        background: transparent;
         cursor: pointer;
     }
 
     .article-image-frame img {
         display: block;
-        width: auto;
+        width: 100%;
         max-width: 100%;
         max-height: 620px;
         height: auto;
-        border-radius: 12px;
+        object-fit: contain;
+        border-radius: 8px;
     }
 
     .article-image-open {
         position: absolute;
-        left: 18px;
-        bottom: 18px;
+        left: 8px;
+        bottom: 8px;
         display: flex;
         width: 32px;
         height: 32px;
         align-items: center;
         justify-content: center;
-        border-radius: 6px;
+        border-radius: 5px;
         background: rgba(17, 24, 39, 0.28);
         color: white;
         font-size: 18px;
     }
 
     .article-image-block figcaption {
-        margin-top: 12px;
-        color: #061126;
-        font-size: 15px;
-        line-height: 1.4;
+        margin-top: 8px;
+        color: #6b7280;
+        font-size: 14px;
+        line-height: 1.5;
     }
 
     .article-faq {
-        overflow: hidden;
-        border-radius: 18px;
-        background: #f1f1f1;
+        border-top: 1px solid #e5e7eb;
     }
 
     .article-faq details {
-        padding: 18px 20px;
-        border-bottom: 1px solid rgba(6, 17, 38, 0.08);
+        padding: 13px 0;
+        border-bottom: 1px solid #e5e7eb;
     }
 
     .article-faq details:last-child {
@@ -644,9 +659,11 @@ new class extends Component {
     .article-faq summary {
         cursor: pointer;
         list-style: none;
-        color: #061126;
-        font-size: 17px;
-        font-weight: 700;
+        color: #111827;
+        font-size: 16px;
+        line-height: 1.5;
+        font-weight: 600;
+        overflow-wrap: anywhere;
     }
 
     .article-faq summary::-webkit-details-marker {
@@ -654,35 +671,84 @@ new class extends Component {
     }
 
     .article-faq p {
-        margin: 12px 0 0;
+        margin: 10px 0 0;
         font-size: 16px;
+        line-height: 1.6;
     }
 
     .article-links {
         display: grid;
-        gap: 10px;
+        gap: 8px;
     }
 
     .article-links a {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
-        padding: 17px 18px;
-        border-radius: 16px;
-        background: #f1f1f1;
-        color: #061126;
+        gap: 16px;
+        padding: 6px 0;
+        color: #2563eb;
         font-size: 16px;
-        font-weight: 600;
+        line-height: 1.5;
+        font-weight: 400;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        overflow-wrap: anywhere;
     }
 
     .article-button {
         display: inline-flex;
-        margin-top: 6px;
-        padding: 13px 18px;
-        border-radius: 999px;
-        background: #061126;
-        color: white !important;
-        font-size: 15px;
-        font-weight: 700;
+        margin-top: 4px;
+        color: #2563eb !important;
+        font-size: 16px;
+        line-height: 1.5;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+    }
+
+    .article-body blockquote,
+    .article-content blockquote {
+        margin: 20px 0;
+        padding-left: 16px;
+        border-left: 2px solid #d1d5db;
+        color: #4b5563;
+    }
+
+    .article-body hr,
+    .article-content hr {
+        margin: 28px 0;
+        border: 0;
+        border-top: 1px solid #e5e7eb;
+    }
+
+    .article-body img,
+    .article-body video,
+    .article-body iframe,
+    .article-content img,
+    .article-content video,
+    .article-content iframe {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        margin-inline: auto;
+    }
+
+    .article-body table,
+    .article-content table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        border-collapse: collapse;
+    }
+
+    @media (max-width: 380px) {
+        .article-title {
+            font-size: 25px;
+        }
+
+        .article-body,
+        .article-content {
+            font-size: 16px;
+        }
     }
 </style>

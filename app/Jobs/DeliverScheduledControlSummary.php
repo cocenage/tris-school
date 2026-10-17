@@ -6,9 +6,7 @@ use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Services\Telegram\TelegramBotService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use RuntimeException;
 use Throwable;
 
 class DeliverScheduledControlSummary implements ShouldQueue
@@ -19,7 +17,9 @@ class DeliverScheduledControlSummary implements ShouldQueue
 
     public int $timeout = 30;
 
-    public function __construct(public int $deliveryId) {}
+    public function __construct(
+        public int $deliveryId,
+    ) {}
 
     public function backoff(): array
     {
@@ -28,35 +28,107 @@ class DeliverScheduledControlSummary implements ShouldQueue
 
     public function handle(TelegramBotService $telegram): void
     {
-        try {
-            DB::transaction(function () use ($telegram): void {
-                $delivery = TelegramScheduledControlSummaryDelivery::query()->lockForUpdate()->find($this->deliveryId);
-                if (! $delivery || $delivery->sent_at) {
-                    return;
-                }
-                try {
-                    $messageId = $telegram->sendAnalyticsMessage($delivery->chat_id, $delivery->text, $delivery->message_thread_id ?? '');
-                } catch (Throwable) {
-                    // Transport exception URLs can contain the bot token.
-                    throw new RuntimeException('Scheduled control summary transport failed.');
-                }
-                if (! $messageId) {
-                    throw new RuntimeException('Scheduled control summary has no confirmed Telegram receipt.');
-                }
-                $delivery->update(['status' => 'sent', 'sent_at' => now(), 'telegram_message_id' => $messageId]);
-                DB::afterCommit(fn () => Log::info('scheduled_control_summary_sent', ['summary_delivery_id' => $delivery->id]));
-            });
-        } catch (Throwable $error) {
-            TelegramScheduledControlSummaryDelivery::query()->whereKey($this->deliveryId)->whereNull('sent_at')->update(['status' => 'retrying']);
-            Log::warning('scheduled_control_summary_failed', ['summary_delivery_id' => $this->deliveryId, 'exception' => class_basename($error)]);
+        $claimed = TelegramScheduledControlSummaryDelivery::query()
+            ->whereKey($this->deliveryId)
+            ->whereNull('sent_at')
+            ->whereIn('status', ['queued', 'retrying'])
+            ->update(['status' => 'sending', 'updated_at' => now()]);
 
-            throw $error;
+        if (! $claimed) {
+            return;
         }
+
+        $delivery = TelegramScheduledControlSummaryDelivery::query()->find($this->deliveryId);
+
+        if (! $delivery) {
+            return;
+        }
+
+        try {
+            $messageId = $telegram->sendAnalyticsMessage(
+                $delivery->chat_id,
+                $delivery->text,
+                $delivery->message_thread_id ?? '',
+            );
+        } catch (Throwable $error) {
+            $this->markUncertain();
+            Log::warning('scheduled_control_summary_outcome_uncertain', [
+                'summary_delivery_id' => $delivery->id,
+                'failure_mode' => 'transport_exception',
+                'exception' => class_basename($error),
+            ]);
+
+            return;
+        }
+
+        if (! $messageId) {
+            $this->markUncertain();
+            Log::warning('scheduled_control_summary_outcome_uncertain', [
+                'summary_delivery_id' => $delivery->id,
+                'failure_mode' => 'no_confirmed_receipt',
+            ]);
+
+            return;
+        }
+
+        $updated = TelegramScheduledControlSummaryDelivery::query()
+            ->whereKey($delivery->id)
+            ->whereNull('sent_at')
+            ->whereIn('status', ['sending', 'uncertain'])
+            ->update([
+                'status' => 'sent',
+                'sent_at' => now(),
+                'telegram_message_id' => $messageId,
+                'updated_at' => now(),
+            ]);
+
+        if ($updated) {
+            Log::info('scheduled_control_summary_sent', ['summary_delivery_id' => $delivery->id]);
+
+            return;
+        }
+
+        Log::warning('scheduled_control_summary_receipt_not_persisted', [
+            'summary_delivery_id' => $delivery->id,
+        ]);
     }
 
     public function failed(Throwable $error): void
     {
-        TelegramScheduledControlSummaryDelivery::query()->whereKey($this->deliveryId)->whereNull('sent_at')->update(['status' => 'failed']);
-        Log::warning('scheduled_control_summary_failed', ['summary_delivery_id' => $this->deliveryId, 'exhausted' => true]);
+        $delivery = TelegramScheduledControlSummaryDelivery::query()
+            ->whereKey($this->deliveryId)
+            ->whereNull('sent_at')
+            ->first();
+
+        if (! $delivery) {
+            return;
+        }
+
+        $status = $delivery->status === 'sending' ? 'uncertain' : 'retrying';
+        $updated = TelegramScheduledControlSummaryDelivery::query()
+            ->whereKey($delivery->id)
+            ->whereNull('sent_at')
+            ->where('status', $delivery->status)
+            ->update(['status' => $status, 'updated_at' => now()]);
+
+        if (! $updated) {
+            return;
+        }
+
+        Log::warning('scheduled_control_summary_failed', [
+            'summary_delivery_id' => $delivery->id,
+            'outcome' => $status,
+            'exception' => class_basename($error),
+            'exhausted' => true,
+        ]);
+    }
+
+    private function markUncertain(): void
+    {
+        TelegramScheduledControlSummaryDelivery::query()
+            ->whereKey($this->deliveryId)
+            ->whereNull('sent_at')
+            ->where('status', 'sending')
+            ->update(['status' => 'uncertain', 'updated_at' => now()]);
     }
 }

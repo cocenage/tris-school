@@ -38,7 +38,9 @@ return [
             'database' => env('DB_DATABASE', database_path('database.sqlite')),
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
-            'busy_timeout' => null,
+            // SQLite allows only one writer at a time. Wait briefly for an
+            // active queue or application write instead of failing at once.
+            'busy_timeout' => (int) env('DB_BUSY_TIMEOUT', 5000),
             'journal_mode' => null,
             'synchronous' => null,
             'transaction_mode' => 'DEFERRED',
@@ -129,6 +131,7 @@ return [
             ),
             'prefix' => '',
             'foreign_key_constraints' => false,
+            'busy_timeout' => (int) env('DB_ANALYTICS_BUSY_TIMEOUT', env('DB_BUSY_TIMEOUT', 5000)),
         ],
     ],
 

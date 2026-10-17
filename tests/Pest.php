@@ -1,5 +1,23 @@
 <?php
 
+use Tests\Support\TestDatabaseSafety;
+use Tests\TestCase;
+
+$testEnvironment = static function (string $name): string {
+    $value = $_SERVER[$name] ?? $_ENV[$name] ?? getenv($name);
+
+    return is_string($value) ? $value : '';
+};
+
+TestDatabaseSafety::assertIsolated(
+    $testEnvironment('APP_ENV'),
+    $testEnvironment('DB_CONNECTION'),
+    $testEnvironment('DB_DATABASE'),
+    $testEnvironment('DB_URL'),
+    $testEnvironment('DB_ANALYTICS_DATABASE'),
+    $testEnvironment('DB_OLD_DATABASE'),
+);
+
 /*
 |--------------------------------------------------------------------------
 | Test Case
@@ -11,7 +29,7 @@
 |
 */
 
-pest()->extend(Tests\TestCase::class)
+pest()->extend(TestCase::class)
  // ->use(Illuminate\Foundation\Testing\RefreshDatabase::class)
     ->in('Feature');
 
