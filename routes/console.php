@@ -56,8 +56,9 @@ if ((bool) config('services.telegram.analytics_polling_enabled', false)) {
 }
 
 if ((bool) config('services.telegram.work_polling_enabled', false)) {
-    Schedule::command('telegram:work-poll')
+    Schedule::command('telegram:work-poll --listen-seconds=50')
         ->everyMinute()
+        ->runInBackground()
         ->withoutOverlapping();
 }
 

@@ -4,6 +4,7 @@ namespace App\Services\Telegram;
 
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use RuntimeException;
 use Throwable;
 
 class TelegramUpdatePoller
@@ -11,17 +12,23 @@ class TelegramUpdatePoller
     /**
      * @param  list<string>  $allowedUpdates
      * @param  callable(array<string, mixed>): void  $processor
-     * @return array{processed: int}
+     * @return array{processed: int, last_update_id?: int}
      *
      * @throws TelegramPollingFailure
      */
-    public function poll(string $token, array $allowedUpdates, int $limit, callable $processor): array
+    public function poll(string $token, array $allowedUpdates, int $limit, callable $processor, ?int $offset = null, int $waitSeconds = 0): array
     {
-        $updates = $this->fetch($token, $allowedUpdates, ['limit' => $limit], 'fetch');
+        $parameters = ['limit' => $limit];
+        if ($offset !== null) {
+            $parameters['offset'] = $offset;
+        }
+        $updates = $this->fetch($token, $allowedUpdates, $parameters, 'fetch', $waitSeconds);
         $processed = $this->processUpdates($updates, $processor);
 
         if ($processed['last_update_id'] === null) {
-            return ['processed' => 0];
+            return $waitSeconds > 0 && $offset !== null
+                ? ['processed' => 0, 'last_update_id' => $offset - 1]
+                : ['processed' => 0];
         }
 
         // Supplying the next offset acknowledges the completed batch. Telegram
@@ -32,7 +39,13 @@ class TelegramUpdatePoller
         ], 'acknowledge');
         $next = $this->processUpdates($nextUpdates, $processor);
 
-        return ['processed' => $processed['count'] + $next['count']];
+        $result = ['processed' => $processed['count'] + $next['count']];
+
+        if ($waitSeconds > 0) {
+            $result['last_update_id'] = $next['last_update_id'] ?? $processed['last_update_id'];
+        }
+
+        return $result;
     }
 
     /**
@@ -42,14 +55,16 @@ class TelegramUpdatePoller
      *
      * @throws TelegramPollingFailure
      */
-    private function fetch(string $token, array $allowedUpdates, array $parameters, string $stage): array
+    private function fetch(string $token, array $allowedUpdates, array $parameters, string $stage, int $waitSeconds = 0): array
     {
         try {
-            $response = Http::timeout(10)
+            $response = Http::withOptions([
+                'force_ip_resolve' => config('services.telegram.ip_resolve', 'v6'),
+            ])->timeout(max(10, $waitSeconds + 5))
                 ->connectTimeout(3)
                 ->post('https://api.telegram.org/bot'.$token.'/getUpdates', [
                     ...$parameters,
-                    'timeout' => 0,
+                    'timeout' => $waitSeconds,
                     'allowed_updates' => $allowedUpdates,
                 ]);
 

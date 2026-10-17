@@ -127,19 +127,27 @@ class TelegramBotService
         $response = $this->postTelegramApi($token, 'sendMessage', $payload, 5, 3);
 
         // Never log the outbound payload or Telegram response body: they may
-        // contain chat identifiers, message text, callback data, or API
-        // details. Keep only transport metadata useful for diagnostics.
+        // contain chat identifiers, message text, callback data, or sensitive
+        // API details. Keep only status and numeric response metadata.
+        $telegramResult = $response->json();
+        $messageId = data_get($telegramResult, 'result.message_id');
+        $apiOk = data_get($telegramResult, 'ok');
+        $apiErrorCode = data_get($telegramResult, 'error_code');
+
         Log::info('Telegram sendMessage response', [
             'status' => $response->status(),
             'successful' => $response->successful(),
+            'api_ok' => is_bool($apiOk) ? $apiOk : null,
+            'api_error_code' => is_numeric($apiErrorCode) ? (int) $apiErrorCode : null,
+            'receipt_present' => is_numeric($messageId),
         ]);
 
         if ($throwOnHttpFailure) {
             $response->throw();
         }
 
-        return $response->successful()
-            ? data_get($response->json(), 'result.message_id')
+        return $response->successful() && $apiOk === true && is_numeric($messageId)
+            ? (int) $messageId
             : null;
     }
 

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\ProcessTelegramAssistantMessage;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
@@ -9,9 +10,11 @@ use App\Models\User;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
+use App\Services\Telegram\TelegramOperationalEventObserver;
 use App\Services\Telegram\TelegramRichMessageBuilder;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramUpdateIngestService;
+use App\Services\Telegram\TelegramWorkActionFreshness;
 use App\Services\TelegramUserNotificationService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -51,7 +54,9 @@ class TelegramWorkWebhookController extends Controller
         TelegramAssistantService $assistantService,
         TelegramScheduledControlResponseService $responses,
         TelegramDistrictRouteRegistry $districts,
+        bool $dispatchAssistantAfterResponse = true,
     ) {
+        $actionFreshness = app(TelegramWorkActionFreshness::class);
         $updateType = match (true) {
             isset($update['callback_query']) => 'callback_query',
             isset($update['message']) => 'message',
@@ -67,6 +72,12 @@ class TelegramWorkWebhookController extends Controller
         ]);
 
         if (isset($update['callback_query'])) {
+            if ($actionFreshness->callbackRequiresReconciliation()) {
+                $actionFreshness->recordManualReconciliation($update, 'callback_backlog_guard');
+
+                return response()->json(['ok' => true, 'skipped' => 'manual_reconciliation_required']);
+            }
+
             return $this->handleCallbackQuery($update['callback_query']);
         }
 
@@ -81,6 +92,13 @@ class TelegramWorkWebhookController extends Controller
 
         if (($message['chat']['type'] ?? null) === 'private') {
             try {
+                if (! $actionFreshness->messageIsCurrent($message)) {
+                    $ingestService->ingest($update);
+                    $actionFreshness->recordManualReconciliation($update, 'stale_private_message');
+
+                    return response()->json(['ok' => true, 'skipped' => 'manual_reconciliation_required']);
+                }
+
                 $this->sendPrivateFallbackMessageStrict($message);
 
                 return response()->json([
@@ -113,8 +131,13 @@ class TelegramWorkWebhookController extends Controller
         }
 
         try {
+            $currentForActions = $actionFreshness->messageIsCurrent($message);
             $activated = $isWorkAllowed && $assistantService->isActivated($message);
-            $savedMessage = $ingestService->ingest($update, $activated && $this->isInstructionCommand($message));
+            $savedMessage = $ingestService->ingest($update, $currentForActions && $activated && $this->isInstructionCommand($message));
+
+            if ($savedMessage && ! $currentForActions && $activated) {
+                $actionFreshness->recordManualReconciliation($update, 'stale_assistant_message');
+            }
 
             if ($savedMessage) {
                 if ($isControlDestination || $isWorkAllowed) {
@@ -122,18 +145,28 @@ class TelegramWorkWebhookController extends Controller
                 }
             }
 
-            if ($savedMessage && ($isOperationalChat || $isWorkAllowed) && config('services.telegram.operational_observer_enabled', false)) {
+            if ($savedMessage && ($isOperationalChat || $isWorkAllowed) && config('services.telegram.operational_observer_enabled', false)
+                && ($savedMessage->raw === null
+                    || ! app(TelegramOperationalEventObserver::class)->hasCompletedCurrentRevision($savedMessage))) {
                 ProcessTelegramOperationalMessage::dispatch($savedMessage->id);
             }
 
-            if ($savedMessage && $isWorkAllowed && $activated) {
+            if ($savedMessage && $isWorkAllowed && $activated && $currentForActions) {
                 try {
-                    $assistantService->handle($savedMessage, $message);
+                    if ($dispatchAssistantAfterResponse) {
+                        ProcessTelegramAssistantMessage::dispatchAfterResponse($savedMessage->id);
+                    } else {
+                        ProcessTelegramAssistantMessage::dispatch($savedMessage->id);
+                    }
                 } catch (\Throwable $e) {
-                    Log::error('Telegram assistant processing failed after ingest', [
+                    Log::error('Telegram assistant processing could not be scheduled after ingest', [
                         'message_id' => $savedMessage->id,
                         'exception' => class_basename($e),
                     ]);
+
+                    if (! $dispatchAssistantAfterResponse) {
+                        throw $e;
+                    }
                 }
             }
 

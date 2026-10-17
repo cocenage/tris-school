@@ -10,6 +10,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpClientFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 beforeEach(function (): void {
     config([
@@ -55,6 +56,32 @@ it('forces only Telegram API requests to the configured address family', functio
 
     expect($optionsByHost['api.telegram.org']['force_ip_resolve'])->toBe('v6')
         ->and($optionsByHost['weather.example.test'])->not->toHaveKey('force_ip_resolve');
+});
+
+it('logs safe Bot API failure metadata without message text or destination details', function (): void {
+    config(['services.telegram.analytics_bot_token' => 'diagnostic-secret-token']);
+    Log::spy();
+    Http::fake(fn () => Http::response([
+        'ok' => false,
+        'error_code' => 400,
+        'description' => 'Bad Request: chat not found',
+    ], 200));
+
+    expect(app(TelegramBotService::class)->sendAnalyticsMessage('-100123456789', 'private message text', '456'))
+        ->toBeNull();
+
+    Log::shouldHaveReceived('info')->once()->with('Telegram sendMessage response', Mockery::on(
+        fn (array $context): bool => $context['status'] === 200
+            && $context['successful'] === true
+            && $context['api_ok'] === false
+            && $context['api_error_code'] === 400
+            && $context['receipt_present'] === false
+            && ! array_key_exists('chat_id', $context)
+            && ! array_key_exists('text', $context)
+            && ! str_contains(json_encode($context), 'diagnostic-secret-token')
+            && ! str_contains(json_encode($context), 'private message text')
+            && ! str_contains(json_encode($context), '-100123456789')
+    ));
 });
 
 it('normalizes a numeric Telegram address-family setting to IPv6', function (): void {

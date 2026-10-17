@@ -14,7 +14,22 @@ class QueueConnectionProbeJob implements ShouldQueue
 
 afterEach(function (): void {
     DB::purge('queue_test');
+    DB::purge('analytics');
     DB::purge('sqlite');
+});
+
+it('configures a bounded busy timeout for the SQLite application and analytics connections', function () {
+    config(['database.connections.analytics.database' => ':memory:']);
+    DB::purge('analytics');
+    DB::purge('sqlite');
+
+    $sqliteTimeout = (int) DB::connection('sqlite')->getPdo()->query('PRAGMA busy_timeout')->fetchColumn();
+    $analyticsTimeout = (int) DB::connection('analytics')->getPdo()->query('PRAGMA busy_timeout')->fetchColumn();
+
+    expect($sqliteTimeout)->toBe((int) config('database.connections.sqlite.busy_timeout'))
+        ->toBeGreaterThan(0)
+        ->and($analyticsTimeout)->toBe((int) config('database.connections.analytics.busy_timeout'))
+        ->toBeGreaterThan(0);
 });
 
 it('stores queued and failed jobs on the configured queue database without changing the application database', function () {

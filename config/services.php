@@ -71,6 +71,8 @@ return [
 
         'work_webhook_secret' => env('TELEGRAM_WORK_WEBHOOK_SECRET'),
         'work_polling_enabled' => env('TELEGRAM_WORK_POLLING_ENABLED', false),
+        'work_action_max_age_minutes' => env('TELEGRAM_WORK_ACTION_MAX_AGE_MINUTES', 30),
+        'work_backlog_callback_guard_enabled' => env('TELEGRAM_WORK_BACKLOG_CALLBACK_GUARD_ENABLED', false),
 
         'work_allowed_chat_ids' => array_filter(array_map(
             'trim',

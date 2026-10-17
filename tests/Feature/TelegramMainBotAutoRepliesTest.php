@@ -1,16 +1,18 @@
 <?php
 
+use App\Jobs\ProcessTelegramAssistantMessage;
 use App\Jobs\ProcessTelegramInstructionAutoReply;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\Instruction;
 use App\Models\TelegramMessage;
 use App\Services\Telegram\Knowledge\InstructionTelegramSearchService;
+use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramInstructionAutoReplyService;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Queue;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function (): void {
@@ -36,7 +38,7 @@ afterEach(function (): void {
 
 it('gates keyword replies at execution while preserving enabled behavior', function (bool $enabled): void {
     config(['services.telegram.main_bot_auto_replies_enabled' => $enabled]);
-    $message = TelegramOperationalTestDatabase::message('/help полотенце');
+    $message = TelegramOperationalTestDatabase::message('/help полотенце', sentAt: now('Europe/Rome')->toDateTimeString());
     $instruction = new Instruction(['title' => 'Test instruction', 'slug' => 'test-instruction']);
     $instruction->id = 123;
     $search = Mockery::mock(InstructionTelegramSearchService::class);
@@ -56,10 +58,10 @@ it('persists incoming keyword messages and dispatches observation with replies d
         'services.telegram.assistant_enabled' => true,
         'services.telegram.work_allowed_chat_ids' => $workAllowed ? ['-1001'] : [],
     ]);
-    Queue::fake();
-    $this->mock(\App\Services\Telegram\TelegramAssistantService::class, function ($mock) use ($workAllowed): void {
+    Bus::fake();
+    $this->mock(TelegramAssistantService::class, function ($mock) use ($workAllowed): void {
         $mock->shouldReceive('isActivated')->times($workAllowed ? 1 : 0)->andReturnTrue();
-        $mock->shouldReceive('handle')->times($workAllowed ? 1 : 0);
+        $mock->shouldNotReceive('handle');
     });
     $this->postJson('/telegram/work-webhook/test-secret', [
         'message' => [
@@ -73,12 +75,14 @@ it('persists incoming keyword messages and dispatches observation with replies d
 
     $message = TelegramMessage::query()->sole();
     expect($message->text)->toBe('/help полотенце');
-    Queue::assertPushed(ProcessTelegramOperationalMessage::class, fn ($job): bool => $job->telegramMessageId === $message->id);
-    Queue::assertPushed(ProcessTelegramOperationalMessage::class, 1);
+    Bus::assertDispatched(ProcessTelegramOperationalMessage::class, fn ($job): bool => $job->telegramMessageId === $message->id);
+    Bus::assertDispatched(ProcessTelegramOperationalMessage::class, 1);
     if ($workAllowed) {
-        Queue::assertPushed(ProcessTelegramInstructionAutoReply::class, fn ($job): bool => $job->telegramMessageId === $message->id);
+        Bus::assertDispatched(ProcessTelegramInstructionAutoReply::class, fn ($job): bool => $job->telegramMessageId === $message->id);
+        Bus::assertDispatchedAfterResponse(ProcessTelegramAssistantMessage::class, fn ($job): bool => $job->telegramMessageId === $message->id);
     } else {
-        Queue::assertNotPushed(ProcessTelegramInstructionAutoReply::class);
+        Bus::assertNotDispatched(ProcessTelegramInstructionAutoReply::class);
+        Bus::assertNotDispatchedAfterResponse(ProcessTelegramAssistantMessage::class);
     }
     Http::assertNothingSent();
 })->with(['work source' => [true], 'OI-only source' => [false]]);

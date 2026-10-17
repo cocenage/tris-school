@@ -95,6 +95,13 @@ function controlDeliveryFixture(array $overrides = []): TelegramScheduledMessage
     ], $overrides));
 }
 
+function stubControlSummaryFormatter(): void
+{
+    $formatter = Mockery::mock(TelegramScheduledControlSummaryFormatter::class);
+    $formatter->shouldReceive('format')->andReturn('Test control summary');
+    app()->instance(TelegramScheduledControlSummaryFormatter::class, $formatter);
+}
+
 function controlReplyPayload(TelegramScheduledMessageDelivery $delivery, string $text = 'Да, все начали', int $id = 100, int $author = 101, string $at = '2026-10-01 09:41:00'): array
 {
     return ['update_id' => 1000 + $id, 'message' => [
@@ -1120,6 +1127,7 @@ it('exposes JSON preview and send dry run without jobs or transport', function (
 });
 
 it('reserves only one summary per date and destination even after responses change', function () {
+    stubControlSummaryFormatter();
     $delivery = controlDeliveryFixture();
     $sender = app(TelegramScheduledControlSummaryDeliveryService::class);
     expect($sender->queue('2026-10-01')['queued'])->toBe(1);
@@ -1371,24 +1379,77 @@ it('retries an already processed batch if its offset acknowledgement request fai
         ->and($requests[3]['offset'])->toBe(507);
 });
 
-it('does not mark failed summary delivery sent and allows queue retry', function () {
+it('does not automatically retry a summary whose Telegram receipt is uncertain', function () {
+    stubControlSummaryFormatter();
     controlDeliveryFixture();
     app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01');
     $receipt = TelegramScheduledControlSummaryDelivery::sole();
     $job = new DeliverScheduledControlSummary($receipt->id);
     $bot = Mockery::mock(TelegramBotService::class);
     $bot->shouldReceive('sendAnalyticsMessage')->once()->andReturnNull();
-    expect(fn () => $job->handle($bot))->toThrow(RuntimeException::class);
-    expect($receipt->fresh()->sent_at)->toBeNull()->and($receipt->fresh()->status)->toBe('retrying');
-    $bot = Mockery::mock(TelegramBotService::class);
-    $bot->shouldReceive('sendAnalyticsMessage')->once()->andReturn(444);
     $job->handle($bot);
     $job->handle($bot);
-    expect($receipt->fresh()->telegram_message_id)->toBe(444)->and($receipt->fresh()->status)->toBe('sent');
+
+    expect($receipt->fresh()->sent_at)->toBeNull()
+        ->and($receipt->fresh()->status)->toBe('uncertain')
+        ->and($receipt->fresh()->telegram_message_id)->toBeNull();
     expect($job->tries)->toBe(8)->and($job->backoff())->toBe([30, 60, 120, 300, 600, 600, 600]);
 });
 
+it('sends a scheduled summary outside a database transaction and records a confirmed receipt', function () {
+    stubControlSummaryFormatter();
+    controlDeliveryFixture();
+    app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01');
+    $receipt = TelegramScheduledControlSummaryDelivery::sole();
+    $transactionLevelDuringSend = null;
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldReceive('sendAnalyticsMessage')->once()->andReturnUsing(function () use (&$transactionLevelDuringSend): int {
+        $transactionLevelDuringSend = DB::transactionLevel();
+
+        return 444;
+    });
+
+    (new DeliverScheduledControlSummary($receipt->id))->handle($bot);
+
+    expect($transactionLevelDuringSend)->toBe(0)
+        ->and($receipt->fresh()->telegram_message_id)->toBe(444)
+        ->and($receipt->fresh()->status)->toBe('sent')
+        ->and($receipt->fresh()->sent_at)->not->toBeNull();
+});
+
+it('does not recover uncertain or in-flight scheduled summary deliveries', function () {
+    stubControlSummaryFormatter();
+    controlDeliveryFixture();
+    app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01');
+    $receipt = TelegramScheduledControlSummaryDelivery::sole();
+    Bus::assertDispatchedTimes(DeliverScheduledControlSummary::class, 1);
+    $receipt->update(['status' => 'uncertain', 'queued_at' => now()->subHours(2)]);
+
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->recoverPending())->toBe(0);
+    Bus::assertDispatchedTimes(DeliverScheduledControlSummary::class, 1);
+
+    $receipt->update(['status' => 'sending']);
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->recoverPending())->toBe(0);
+    Bus::assertDispatchedTimes(DeliverScheduledControlSummary::class, 1);
+});
+
+it('marks an exhausted in-flight summary uncertain instead of making it eligible for resend', function () {
+    stubControlSummaryFormatter();
+    controlDeliveryFixture();
+    app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01');
+    $receipt = TelegramScheduledControlSummaryDelivery::sole();
+    Bus::assertDispatchedTimes(DeliverScheduledControlSummary::class, 1);
+    $receipt->update(['status' => 'sending']);
+
+    (new DeliverScheduledControlSummary($receipt->id))->failed(new RuntimeException('transport failed'));
+
+    expect($receipt->fresh()->status)->toBe('uncertain')
+        ->and(app(TelegramScheduledControlSummaryDeliveryService::class)->recoverPending())->toBe(0);
+    Bus::assertDispatchedTimes(DeliverScheduledControlSummary::class, 1);
+});
+
 it('queues a control summary after commit when the database queue uses a separate connection', function () {
+    stubControlSummaryFormatter();
     config(['queue.connections.database.connection' => 'mysql']);
     controlDeliveryFixture();
 
