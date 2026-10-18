@@ -252,6 +252,24 @@ it('does not merge unrelated events through generic fallback or broad cleaning c
         ->toBe([1, 1, 1, 1]);
 });
 
+it('does not attach an explicit reply about apartment cleanliness to a linen defect', function () {
+    $observer = app(TelegramOperationalEventObserver::class);
+    $linen = TelegramOperationalTestDatabase::message('Брак полотенца.', '2026-06-17 09:00:00', '505');
+    $cleaning = TelegramOperationalTestDatabase::message(
+        'В квартире грязно, мусор, грязная посуда и запах канализации.',
+        '2026-06-17 09:10:00',
+        '506',
+        ['message' => ['reply_to_message' => ['message_id' => 505]]],
+    );
+
+    $observer->observe($linen);
+    $observer->observe($cleaning);
+
+    expect(TelegramOperationalEvent::query()->count())->toBe(2)
+        ->and(TelegramOperationalEvent::query()->withCount('evidence')->orderBy('id')->get()->pluck('evidence_count')->all())
+        ->toBe([1, 1]);
+});
+
 it('treats short factual direct replies as answers without requiring an event classification', function (string $answer) {
     $observer = app(TelegramOperationalEventObserver::class);
     $question = TelegramOperationalTestDatabase::message('Во сколько заезд в квартиру?', '2026-06-17 08:00:00', '601');

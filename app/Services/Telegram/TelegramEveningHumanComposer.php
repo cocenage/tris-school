@@ -9,6 +9,7 @@ class TelegramEveningHumanComposer
 {
     public function __construct(
         private readonly TelegramOperationalEventLifecyclePolicy $lifecyclePolicy,
+        private readonly TelegramOperationalInterpreter $interpreter,
     ) {}
 
     public function isDailyProblem(array $item, array $human): bool
@@ -38,7 +39,10 @@ class TelegramEveningHumanComposer
         if (! in_array($source['role'] ?? null, ['report', 'recurrence'], true)
             || str_contains($text, '?')
             || preg_match('/^(?:кто|где|когда|почему|как|можно\s+ли|есть\s+ли)\b/iu', $text) === 1
-            || $this->isInstructionOrRoutine($text)) {
+            || $this->isInstructionOrRoutine($text)
+            || $this->interpreter->isHypotheticalDamageConcern($text)
+            || $this->hasCompletedCourierPickup(collect([$text]))
+            || (($source['role'] ?? null) !== 'recurrence' && $this->describesLongstandingIssue($text))) {
             return false;
         }
 
@@ -84,6 +88,37 @@ class TelegramEveningHumanComposer
         }
 
         return mb_ucfirst(trim($this->clean($quote), " .!?\t\n\r")).'.';
+    }
+
+    public function isTechnicalFaultEvidence(array $source, array $types, array $human): bool
+    {
+        $text = trim((string) ($source['text'] ?? ''));
+        $summary = trim((string) ($human['summary'] ?? ''));
+        $included = ($human['include'] ?? false) === true
+            || in_array($human['state'] ?? null, ['active', 'informational', 'completed'], true);
+
+        if (($source['role'] ?? null) !== 'report'
+            || ! $included
+            || $summary === ''
+            || ($human['completed'] ?? false) === true
+            || $this->isLinenDefect($text)
+            || $this->isLinenDefect($summary)
+            || $this->isLinenCourierIssue($text)
+            || $this->interpreter->isHypotheticalDamageConcern($text)
+            || collect($types)->intersect(['problem', 'quality_issue', 'risk'])->isEmpty()) {
+            return false;
+        }
+
+        return $this->hasConcreteOperationalObjectAndFact($text)
+            && preg_match('/(?:не\s+работа\S*|не\s+включа\S*|слом\S*|неисправ|поломк|поврежд|протеч|подт[её]к|тресн|отвал)/iu', $text) === 1;
+    }
+
+    public function hasCompatibleEvidence(array $source, array $candidate): bool
+    {
+        return $this->interpreter->subjectsAreCompatible(
+            $this->interpreter->interpret((string) ($source['text'] ?? ''))['subject_key'],
+            $this->interpreter->interpret((string) ($candidate['text'] ?? ''))['subject_key'],
+        );
     }
 
     /** @return array{include: bool, handled: bool, decision: 'omit'|'composed'|'raw_safe'|'technical_failure', summary: ?string, follow_up: ?string, resolution?: ?string, show_in_day?: bool, completed?: bool} */
@@ -590,8 +625,8 @@ class TelegramEveningHumanComposer
     {
         return $evidence->contains(fn (string $text): bool => preg_match('/курьер/iu', $text) === 1
             && preg_match('/(?:забрал|ув[её]з|забрали|увезли)/iu', $text) === 1
-            && preg_match('/грязн\S*.{0,50}(?:бель|постель)|(?:бель|постель).{0,50}грязн/iu', $text) === 1
-            && preg_match('/не\s+(?:забрал|забрали|ув[её]з)|не\s+вс[её]|(?:только\s+)?\d+\s+из\s+\d+/iu', $text) !== 1);
+            && preg_match('/грязн|бель|постель/iu', $text) === 1
+            && preg_match('/не\s+(?:забрал|забрали|ув[её]з)|не\s+вс[её]|(?:только\s+)?\d+\s+из\s+\d+|грязн\S*.{0,40}остал|остал\S*.{0,40}грязн/iu', $text) !== 1);
     }
 
     private function hasCompletedLinenReplacement(string $text): bool
@@ -647,6 +682,20 @@ class TelegramEveningHumanComposer
             ->take(8)
             ->values();
 
+        $summaryText = trim((string) ($item['summary'] ?? ''));
+        if ($this->interpreter->interpret($summaryText)['subject_key'] !== null
+            && ! empty($item['_citation_candidates'])) {
+            $compatibleIds = collect($item['_citation_candidates'] ?? [])
+                ->filter(fn (array $candidate): bool => $this->hasCompatibleEvidence(
+                    ['text' => $summaryText],
+                    $candidate,
+                ))
+                ->pluck('message_id')
+                ->map(fn (mixed $id): string => (string) $id);
+
+            $ids = $ids->filter(fn (mixed $id): bool => $compatibleIds->contains((string) $id))->values();
+        }
+
         if ($ids->isEmpty()) {
             return collect();
         }
@@ -678,7 +727,7 @@ class TelegramEveningHumanComposer
     private function isAccessIssue(string $text): bool
     {
         return preg_match('/(?:двер|доступ|консьерж|открыть\s+удал[её]нно)/iu', $text) === 1
-            && preg_match('/(?:не\s+открыва|не\s+открывают|закрыт|консьерж|доступ|открыть\s+удал[её]нно)/iu', $text) === 1;
+            && preg_match('/(?:не\s+открыва|не\s+впуска|не\s+могу\s+войти|не\s+попасть|доступ\s+(?:закрыт|заблокирован)|открыть\s+удал[её]нно)/iu', $text) === 1;
     }
 
     private function isLinenCourierIssue(string $text): bool
@@ -699,10 +748,16 @@ class TelegramEveningHumanComposer
             && preg_match('/гряз|пыл/iu', $text) === 1;
     }
 
-    private function isLinenDefect(string $text): bool
+    public function isLinenDefect(string $text): bool
     {
         return preg_match('/(?:брак|слом|поврежд)/iu', $text) === 1
             && preg_match('/полотен|пододеяльник|пододеял|наволоч|простын/iu', $text) === 1;
+    }
+
+    private function describesLongstandingIssue(string $text): bool
+    {
+        return preg_match('/\b(?:давно|уже\s+долгое\s+время|не\s+первый\s+день|с\s+прошл(?:ой|ого)\s+(?:недел|месяц|год))\b/iu', $text) === 1
+            && preg_match('/\b(?:снова|опять|повторно|возобновил)\b/iu', $text) !== 1;
     }
 
     private function isApartmentQualityReview(string $text): bool

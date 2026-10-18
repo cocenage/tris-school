@@ -553,6 +553,24 @@ it('applies an access rejection callback for an approved moderator', function ()
     expect($employee->refresh()->status)->toBe('rejected');
 });
 
+it('resynchronizes a previously reviewed access request without applying another decision', function () {
+    Http::fake(fn () => Http::response(['ok' => true, 'result' => true]));
+    $reviewer = User::create(['name' => 'Supervisor', 'telegram_id' => '321', 'status' => 'approved', 'role' => 'supervisor', 'is_active' => true]);
+    $employee = User::create(['name' => 'Cleaner', 'telegram_id' => '654', 'status' => 'rejected', 'role' => 'cleaner', 'is_active' => true, 'approved_by' => $reviewer->id]);
+    $decisionTime = $employee->updated_at->copy();
+
+    $this->postJson('/telegram/work-webhook/test-secret', ['callback_query' => [
+        'id' => 'access-repeat', 'data' => 'access:approve:'.$employee->id,
+        'from' => ['id' => 321], 'message' => ['message_id' => 20, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+    ]])->assertOk()->assertJson(['skipped' => 'access_already_reviewed']);
+
+    expect($employee->fresh()->status)->toBe('rejected')
+        ->and($employee->fresh()->updated_at->equalTo($decisionTime))->toBeTrue();
+    Http::assertSent(fn (ClientRequest $request): bool => str_ends_with($request->url(), '/editMessageText')
+        && str_contains((string) $request['text'], 'Доступ отклонён')
+        && str_contains((string) $request['text'], 'Supervisor'));
+});
+
 it('accepts callback updates through the web webhook alias', function () {
     Http::fake(fn () => Http::response(['ok' => true]));
 
@@ -628,6 +646,8 @@ it('applies a day-off callback once and ignores a repeated click', function () {
     Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/editMessageText')
         && (string) $httpRequest['chat_id'] === '-100'
         && $httpRequest['message_id'] === 12
+        && str_contains($httpRequest['text'], 'Статус заявки:</b> одобрена')
+        && str_contains($httpRequest['text'], 'одобрено — Supervisor')
         && ($httpRequest['reply_markup']['inline_keyboard'] ?? null) === []
     );
 });
@@ -663,6 +683,11 @@ it('applies a day-off rejection callback and updates the aggregate request', fun
     Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/answerCallbackQuery')
         && $httpRequest['callback_query_id'] === 'callback-dayoff-reject'
         && $httpRequest['text'] === 'Дата отклонена'
+    );
+    Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/editMessageText')
+        && str_contains($httpRequest['text'], 'Статус заявки:</b> отклонена')
+        && str_contains($httpRequest['text'], 'отклонено — Supervisor')
+        && ($httpRequest['reply_markup']['inline_keyboard'] ?? null) === []
     );
 });
 
@@ -705,6 +730,10 @@ it('keeps only approved dates when Telegram callbacks partially approve a reques
         ->and($request->refresh()->status)->toBe('partially_approved')
         ->and($request->approvedDays()->get()->map(fn (DayOffRequestDay $day): string => $day->date->toDateString())->all())
         ->toBe(['2026-08-24']);
+    Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/editMessageText')
+        && str_contains($httpRequest['text'], 'Статус заявки:</b> смешанный результат')
+        && ($httpRequest['reply_markup']['inline_keyboard'] ?? null) === []
+    );
 });
 
 it('accepts a day-off callback from its configured request chat and topic', function () {
@@ -963,6 +992,80 @@ it('keeps a committed day-off decision when Telegram cannot edit the original me
         ->and($request->refresh()->status)->toBe('approved');
 });
 
+it('renders each day-off decision with its reviewer and Rome time while retaining only pending buttons', function () {
+    Queue::fake();
+    Http::fake(fn () => Http::response(['ok' => true, 'result' => ['message_id' => 44]]));
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-18 10:30:00', 'UTC'));
+
+    $firstReviewer = User::create(['name' => 'First Supervisor', 'telegram_id' => '123', 'status' => 'approved', 'role' => 'supervisor', 'is_active' => true]);
+    $secondReviewer = User::create(['name' => 'Second Supervisor', 'telegram_id' => '124', 'status' => 'approved', 'role' => 'supervisor', 'is_active' => true]);
+    $employee = User::create(['name' => 'Cleaner', 'telegram_id' => '456', 'status' => 'approved', 'role' => 'cleaner', 'is_active' => true]);
+    $request = DayOffRequest::create(['user_id' => $employee->id, 'status' => 'pending']);
+    $days = collect(['2026-10-20', '2026-10-21', '2026-10-22'])->map(fn (string $date) => DayOffRequestDay::create([
+        'day_off_request_id' => $request->id, 'user_id' => $employee->id, 'date' => $date, 'status' => 'pending',
+    ]));
+
+    foreach ([
+        ['day' => $days[0], 'action' => 'approve', 'reviewer' => $firstReviewer],
+        ['day' => $days[1], 'action' => 'reject', 'reviewer' => $secondReviewer],
+    ] as $index => $decision) {
+        $this->postJson('/telegram/work-webhook/test-secret', ['callback_query' => [
+            'id' => 'decision-'.$index,
+            'data' => 'dayoffday:'.$decision['action'].':'.$decision['day']->id,
+            'from' => ['id' => (int) $decision['reviewer']->telegram_id],
+            'message' => ['message_id' => 44, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+        ]])->assertOk();
+    }
+
+    expect($days[0]->refresh()->reviewed_by)->toBe($firstReviewer->id)
+        ->and($days[1]->refresh()->reviewed_by)->toBe($secondReviewer->id)
+        ->and($days[2]->refresh()->status)->toBe('pending');
+
+    Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/editMessageText')
+        && str_contains($httpRequest['text'], 'частично рассмотрена')
+        && str_contains($httpRequest['text'], '20.10.2026')
+        && str_contains($httpRequest['text'], 'одобрено — First Supervisor, 18.10.2026 12:30')
+        && str_contains($httpRequest['text'], 'отклонено — Second Supervisor, 18.10.2026 12:30')
+        && str_contains($httpRequest['text'], 'ожидает')
+        && count($httpRequest['reply_markup']['inline_keyboard'] ?? []) === 1
+        && ($httpRequest['reply_markup']['inline_keyboard'][0][0]['callback_data'] ?? null) === 'dayoffday:approve:'.$days[2]->id
+    );
+    CarbonImmutable::setTestNow();
+});
+
+it('resynchronizes a day-off message after a failed edit without applying a stale decision again', function () {
+    Queue::fake();
+    $edits = 0;
+    Http::fake(function (ClientRequest $httpRequest) use (&$edits) {
+        if (str_ends_with($httpRequest->url(), '/editMessageText')) {
+            $edits++;
+
+            return Http::response(['ok' => $edits > 1, 'description' => 'simulated'], 200);
+        }
+
+        return Http::response(['ok' => true]);
+    });
+
+    $reviewer = User::create(['name' => 'Supervisor', 'telegram_id' => '123', 'status' => 'approved', 'role' => 'supervisor', 'is_active' => true]);
+    $employee = User::create(['name' => 'Cleaner', 'telegram_id' => '456', 'status' => 'approved', 'role' => 'cleaner', 'is_active' => true]);
+    $request = DayOffRequest::create(['user_id' => $employee->id, 'status' => 'pending']);
+    $day = DayOffRequestDay::create(['day_off_request_id' => $request->id, 'user_id' => $employee->id, 'date' => '2026-10-20', 'status' => 'pending']);
+    $payload = ['callback_query' => [
+        'id' => 'decision-once', 'data' => 'dayoffday:approve:'.$day->id,
+        'from' => ['id' => (int) $reviewer->telegram_id],
+        'message' => ['message_id' => 44, 'chat' => ['id' => -100, 'type' => 'supergroup']],
+    ]];
+
+    $this->postJson('/telegram/work-webhook/test-secret', $payload)->assertOk();
+    $reviewedAt = $day->refresh()->reviewed_at;
+    $this->postJson('/telegram/work-webhook/test-secret', $payload)
+        ->assertOk()->assertJson(['skipped' => 'dayoffday_already_reviewed']);
+
+    expect($edits)->toBe(2)
+        ->and($day->refresh()->reviewed_at)->toEqual($reviewedAt)
+        ->and($request->refresh()->status)->toBe('approved');
+});
+
 it('polls an allowed work message through the existing ingest path', function () {
     TelegramOperationalTestDatabase::refresh();
     config(['services.telegram.work_allowed_chat_ids' => ['-100']]);
@@ -1093,14 +1196,14 @@ it('handles and acknowledges new day-off callbacks after the backlog guard is di
         ->and($day->reviewed_at)->not->toBeNull();
 
     $requests = Http::recorded()->pluck(0)->values();
-    expect($requests->filter(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/editMessageText')))->toHaveCount(1)
+    expect($requests->filter(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/editMessageText')))->toHaveCount(2)
         ->and($requests->filter(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/answerCallbackQuery')))->toHaveCount(2);
     Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/answerCallbackQuery')
         && $httpRequest['callback_query_id'] === 'fresh-click'
         && $httpRequest['text'] === 'Дата одобрена');
     Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/answerCallbackQuery')
         && $httpRequest['callback_query_id'] === 'repeated-click'
-        && $httpRequest['text'] === 'По этой дате уже принято решение');
+        && $httpRequest['text'] === 'Дата уже одобрена');
     Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/getUpdates')
         && ($httpRequest->data()['offset'] ?? null) === 304
         && $httpRequest['allowed_updates'] === ['message', 'edited_message', 'channel_post', 'callback_query']);

@@ -91,6 +91,14 @@ it('ignores empty and ordinary conversation', function () {
         ->and($interpreter->interpret('Всем привет, хорошего дня')['reason_code'])->toBe('ordinary_conversation');
 });
 
+it('does not classify fear of breaking an object as an existing malfunction', function () {
+    expect(operationalInterpreter()->interpret('Она пластиковая, боюсь сломать'))->toMatchArray([
+        'meaningful' => false,
+        'primary_type' => null,
+        'reason_code' => 'hypothetical_concern_without_incident',
+    ]);
+});
+
 it('classifies every operational event type conservatively', function (string $text, string $type) {
     $decision = operationalInterpreter()->interpret($text);
 

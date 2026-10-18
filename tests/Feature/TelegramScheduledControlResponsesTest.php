@@ -21,6 +21,7 @@ use App\Services\Telegram\TelegramScheduledControlSummaryBuilder;
 use App\Services\Telegram\TelegramScheduledControlSummaryDeliveryService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
 use App\Services\Telegram\TelegramScheduledInboundProcessor;
+use App\Services\Telegram\TelegramScheduledMessageDeliveryService;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
@@ -37,13 +38,14 @@ use Illuminate\Support\Facades\Schema;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function () {
-    config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => ':memory:', 'queue.connections.database.connection' => null]);
+    config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => ':memory:', 'queue.default' => 'database', 'queue.connections.database.connection' => null]);
     DB::purge('sqlite');
     TelegramOperationalTestDatabase::refresh();
     foreach (['2026_09_27_000000_create_telegram_scheduled_messages_tables.php', '2026_10_01_020000_create_scheduled_control_response_tables.php', '2026_10_03_000000_allow_replyless_scheduled_control_responses.php'] as $file) {
         (require database_path('migrations/'.$file))->up();
     }
     (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
+    (require database_path('migrations/2026_10_18_000000_add_district_answers_to_scheduled_controls.php'))->up();
     config([
         'services.telegram.main_bot_auto_replies_enabled' => false,
         'services.telegram.work_webhook_secret' => 'work-test',
@@ -132,6 +134,241 @@ function scheduledControlCallback(TelegramScheduledMessageDelivery $delivery, st
         'data' => 'sc:'.$delivery->id.':'.$answer,
     ];
 }
+
+it('keeps independent district answers and every change by one supervisor', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    $service = app(TelegramScheduledControlResponseService::class);
+    $answer = function (string $id, string $district, string $choice, int $userId) use ($delivery, $service): array {
+        $callback = scheduledControlCallback($delivery, $id, $choice, $userId);
+        $callback['data'] = 'sc:'.$delivery->id.':'.$district.':'.$choice;
+
+        return $service->captureCallback($callback);
+    };
+
+    expect($answer('district-1', 'lambrate', 'yes', 701)['status'])->toBe('saved')
+        ->and($answer('district-2', 'lambrate', 'no', 702)['status'])->toBe('saved')
+        ->and($answer('district-3', 'lambrate', 'no', 701)['status'])->toBe('saved')
+        ->and($answer('district-3', 'lambrate', 'no', 701)['status'])->toBe('already_answered');
+
+    $answers = $delivery->responses()->orderBy('id')->get();
+    expect($answers)->toHaveCount(3)
+        ->and($answers->pluck('district_key')->all())->toBe(['lambrate', 'lambrate', 'lambrate'])
+        ->and($answers->pluck('telegram_user_id')->all())->toBe(['701', '702', '701'])
+        ->and($answers->pluck('text')->all())->toBe(['Да', 'Нет', 'Нет']);
+});
+
+it('keeps an explicit courier question as a linked comment with Como and no invented yes or no', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    $payload = controlReplyPayload($delivery, 'Курьеров на Комо не было, закрывать уборки или еще будут они?', 321);
+
+    $response = captureControlReply($payload);
+
+    expect($response)->not->toBeNull()
+        ->and($response->delivery_id)->toBe($delivery->id)
+        ->and($response->district_key)->toBe('como')
+        ->and($response->response_kind)->toBe('comment')
+        ->and($response->classification)->toBe('unclear')
+        ->and($response->text)->toBe($payload['message']['text'])
+        ->and($response->telegram_message_id)->toBe('321');
+});
+
+it('reserves new canonical controls for the Work bot and leaves informational messages on Scheduled bot', function () {
+    $chat = TelegramChat::create(['telegram_chat_id' => '-1001', 'title' => 'Controls', 'type' => 'supergroup', 'is_enabled' => true]);
+    $control = TelegramScheduledMessage::create([
+        'name' => 'Control', 'control_type' => 'couriers_completed', 'telegram_chat_record_id' => $chat->id,
+        'message' => 'Курьеры завершили доставки?', 'send_time' => '12:00:00', 'weekdays' => [4], 'enabled' => true,
+    ]);
+    $notice = TelegramScheduledMessage::create([
+        'name' => 'Notice', 'control_type' => 'control_question', 'telegram_chat_record_id' => $chat->id,
+        'message' => 'Информация', 'send_time' => '12:00:00', 'weekdays' => [4], 'enabled' => true,
+    ]);
+    config(['queue.default' => 'database']);
+    Bus::fake();
+
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+
+    expect(TelegramScheduledMessageDelivery::where('scheduled_message_id', $control->id)->value('bot_type'))->toBe('work')
+        ->and(TelegramScheduledMessageDelivery::where('scheduled_message_id', $notice->id)->value('bot_type'))->toBe('scheduled');
+});
+
+it('sends a new control through Work bot with five district answer rows', function () {
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.scheduled_bot_token' => null]);
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work', 'status' => 'pending', 'telegram_message_id' => null]);
+    Http::swap(new HttpFactory);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 991]], 200)]);
+
+    (new DeliverScheduledTelegramMessage($delivery->id, CarbonImmutable::now()->addHour()))->handle(app(TelegramBotService::class));
+
+    expect($delivery->fresh()->failure_reason)->toBeNull()
+        ->and($delivery->fresh()->status)->toBe('sent')
+        ->and($delivery->fresh()->telegram_message_id)->toBe(991);
+    Http::assertSent(function ($request) use ($delivery): bool {
+        $keyboard = $request['reply_markup']['inline_keyboard'] ?? [];
+
+        return str_contains($request->url(), '/botwork-test-token/sendMessage')
+            && count($keyboard) === 5
+            && $keyboard[0][0]['callback_data'] === 'sc:'.$delivery->id.':lambrate:yes'
+            && $keyboard[4][1]['callback_data'] === 'sc:'.$delivery->id.':como:no';
+    });
+});
+
+it('renders conflicting current district answers and linked comments without losing answer history', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    $service = app(TelegramScheduledControlResponseService::class);
+    foreach ([['one', 'yes', 701], ['two', 'no', 702], ['three', 'yes', 701]] as [$id, $choice, $user]) {
+        $callback = scheduledControlCallback($delivery, $id, $choice, $user);
+        $callback['data'] = 'sc:'.$delivery->id.':como:'.$choice;
+        $service->captureCallback($callback);
+    }
+    captureControlReply(controlReplyPayload($delivery, 'Курьеров на Комо не было, закрывать уборки?', 321));
+
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery->fresh());
+
+    expect($text)->toContain('Como', 'расхождение', 'Курьеров на Комо не было', 't.me/c/')
+        ->not->toContain('701', '702');
+    expect($delivery->responses()->count())->toBe(4);
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $districts = collect($summary['controls'])->firstWhere('control_type', 'couriers_completed')['district_results'];
+    expect(collect($districts)->firstWhere('district', 'Como')['status'])->toBe('conflict');
+});
+
+it('routes a Work bot district callback through polling and updates its original message', function () {
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.work_backlog_callback_guard_enabled' => false]);
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    Http::swap(new HttpFactory);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true], 200)]);
+    $callback = scheduledControlCallback($delivery, 'work-district-answer', 'yes');
+    $callback['data'] = 'sc:'.$delivery->id.':lodi:yes';
+
+    $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+
+    expect($delivery->responses()->count())->toBe(1)
+        ->and($delivery->responses()->first()->district_key)->toBe('lodi');
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), '/botwork-test-token/answerCallbackQuery')
+        && $request['callback_query_id'] === 'work-district-answer');
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), '/botwork-test-token/editMessageText')
+        && (int) $request['message_id'] === (int) $delivery->telegram_message_id);
+});
+
+it('rejects stale and wrong-topic Work control buttons without creating answers', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    $callback = scheduledControlCallback($delivery, 'wrong-topic', 'yes');
+    $callback['data'] = 'sc:'.$delivery->id.':lodi:yes';
+    $callback['message']['message_thread_id'] = 999;
+    expect(app(TelegramScheduledControlResponseService::class)->captureCallback($callback)['status'])->toBe('unmatched');
+
+    $callback['message']['message_thread_id'] = 11;
+    $this->travelTo(Carbon::parse('2026-10-02 12:00:00', 'Europe/Rome'));
+    expect(app(TelegramScheduledControlResponseService::class)->captureCallback($callback)['status'])->toBe('unmatched')
+        ->and($delivery->responses()->count())->toBe(0);
+});
+
+it('keeps a Work bot reply-to question as a comment in the exact control occurrence', function () {
+    config(['services.telegram.bot_token' => 'work-test-token']);
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    Http::swap(new HttpFactory);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true], 200)]);
+
+    $this->postJson('/telegram/work-webhook/work-test', controlReplyPayload(
+        $delivery, 'Курьеров на Комо не было ни в одной квартире, закрывать уборки?', 322,
+    ))->assertOk();
+
+    $response = $delivery->responses()->sole();
+    expect($response->district_key)->toBe('como')
+        ->and($response->response_kind)->toBe('comment')
+        ->and($response->classification)->toBe('unclear')
+        ->and($response->telegram_message_id)->toBe('322');
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), '/botwork-test-token/editMessageText')
+        && str_contains((string) $request['text'], 'Курьеров на Комо не было'));
+});
+
+it('retries source message synchronization without reapplying a Work control answer', function () {
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.work_backlog_callback_guard_enabled' => false]);
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    $edits = 0;
+    Http::swap(new HttpFactory);
+    Http::fake(function ($request) use (&$edits) {
+        if (str_ends_with($request->url(), '/editMessageText')) {
+            $edits++;
+
+            return Http::response(['ok' => $edits > 1, 'result' => $edits > 1], $edits > 1 ? 200 : 500);
+        }
+
+        return Http::response(['ok' => true, 'result' => true], 200);
+    });
+    $callback = scheduledControlCallback($delivery, 'retry-sync', 'no');
+    $callback['data'] = 'sc:'.$delivery->id.':como:no';
+
+    $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+    $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+
+    expect($delivery->responses()->count())->toBe(1)
+        ->and($edits)->toBe(2);
+});
+
+it('treats an unchanged Telegram edit on a duplicate click as already synchronized', function () {
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.work_backlog_callback_guard_enabled' => false]);
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    $edits = 0;
+    Http::swap(new HttpFactory);
+    Http::fake(function ($request) use (&$edits) {
+        if (str_ends_with($request->url(), '/editMessageText')) {
+            $edits++;
+
+            return $edits === 1 ? Http::response(['ok' => true, 'result' => true], 200)
+                : Http::response(['ok' => false, 'error_code' => 400, 'description' => 'Bad Request: message is not modified'], 400);
+        }
+
+        return Http::response(['ok' => true, 'result' => true], 200);
+    });
+    $callback = scheduledControlCallback($delivery, 'duplicate-click', 'yes');
+    $callback['data'] = 'sc:'.$delivery->id.':como:yes';
+    $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+    $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+
+    $answers = Http::recorded()->pluck(0)->filter(fn ($request): bool => str_ends_with($request->url(), '/answerCallbackQuery'))
+        ->map(fn ($request): string => $request['text'])->values()->all();
+    expect($delivery->responses()->count())->toBe(1)
+        ->and($answers)->toBe(['Ответ сохранён.', 'Ответ сохранён.']);
+});
+
+it('keeps the previous text when a Work bot reply is edited', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    $original = controlReplyPayload($delivery, 'Como — нет', 323);
+    captureControlReply($original);
+    $edited = $original;
+    $edited['edited_message'] = $edited['message'];
+    unset($edited['message']);
+    $edited['edited_message']['text'] = 'Como — да';
+    $edited['edited_message']['edit_date'] = $edited['edited_message']['date'] + 30;
+    $stored = app(TelegramUpdateIngestService::class)->ingest($edited);
+    app(TelegramScheduledControlResponseService::class)->capture($stored, $edited['edited_message']);
+
+    $response = $delivery->responses()->sole();
+    expect($response->text)->toBe('Como — да')
+        ->and($response->response_history)->toHaveCount(1)
+        ->and($response->response_history[0]['text'])->toBe('Como — нет');
+});
+
+it('queues the existing payment follow-up once all five district cleanings are confirmed', function () {
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.work_backlog_callback_guard_enabled' => false]);
+    $cleanings = controlDeliveryFixture(['control_type' => ScheduledControlTypes::CLOSING_CLEANINGS, 'bot_type' => 'work']);
+    closingPaymentTemplateFor($cleanings);
+    Http::swap(new HttpFactory);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true], 200)]);
+    Bus::fake();
+
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $index => $district) {
+        $callback = scheduledControlCallback($cleanings, 'all-districts-'.$district, 'yes');
+        $callback['data'] = 'sc:'.$cleanings->id.':'.$district.':yes';
+        $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+        expect(TelegramScheduledMessageDelivery::where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())
+            ->toBe($index === 4 ? 1 : 0);
+    }
+
+    expect(TelegramScheduledMessageDelivery::where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->sole()->bot_type)->toBe('work');
+    Bus::assertDispatchedTimes(DeliverScheduledTelegramMessage::class, 1);
+});
 
 function closingPaymentTemplateFor(TelegramScheduledMessageDelivery $cleanings): TelegramScheduledMessage
 {
@@ -616,7 +853,7 @@ it('aggregates all five district confirmations into one compact control line', f
 });
 
 it('merges district evidence from multiple supervisors and preserves no-payment details', function () {
-    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed']);
+    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed', 'bot_type' => 'work']);
     captureControlReply(controlReplyPayload(
         $delivery,
         "🟢Lambrate да\nMonte Lungo за ожидание выезда гостей\n🟢Lodi не было\n🟢Como не было",

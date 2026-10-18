@@ -39,6 +39,8 @@ beforeEach(function (): void {
 
     $migration = require base_path('database/migrations/2026_09_27_000000_create_telegram_scheduled_messages_tables.php');
     $migration->up();
+    (require base_path('database/migrations/2026_10_01_020000_create_scheduled_control_response_tables.php'))->up();
+    (require base_path('database/migrations/2026_10_18_000000_add_district_answers_to_scheduled_controls.php'))->up();
     $queueMigration = require base_path('database/migrations/0001_01_01_000002_create_jobs_table.php');
     $queueMigration->up();
 
@@ -172,18 +174,18 @@ it('moves the closing cleanings question to 19:00 and never sends the payment qu
     Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
 });
 
-it('adds yes and no buttons only to the two end-of-day control messages', function (): void {
+it('adds five district answer rows to a control and no buttons to an informational message', function (): void {
     makeScheduledTelegramMessage([
         'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
         'message' => 'All cleanings finished?', 'send_time' => '11:00:00', 'weekdays' => [1],
     ]);
     makeScheduledTelegramMessage([
-        'control_type' => 'first_cleanings_started',
+        'control_type' => 'reminder',
         'send_time' => '19:00:00', 'weekdays' => [1],
     ]);
     Carbon::setTestNow(Carbon::parse('2026-09-28 19:00:20', 'Europe/Rome'));
     Queue::fake();
-    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
     Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 5690]], 200)]);
 
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
@@ -192,20 +194,21 @@ it('adds yes and no buttons only to the two end-of-day control messages', functi
     }
 
     $requests = Http::recorded()->pluck(0)->values();
-    $closingRequest = $requests->first(fn ($request): bool => data_get($request->data(), 'reply_markup.inline_keyboard.0.0.text') === '✅ Да');
+    $closingRequest = $requests->first(fn ($request): bool => data_get($request->data(), 'reply_markup.inline_keyboard.0.0.text') === 'Lambrate · ✅ Да');
     $ordinaryRequest = $requests->first(fn ($request): bool => data_get($request->data(), 'text') === '🔴 Проверка уборок');
 
     expect($closingRequest)->not->toBeNull()
-        ->and(data_get($closingRequest->data(), 'reply_markup.inline_keyboard.0.1.text'))->toBe('❌ Нет')
-        ->and(data_get($closingRequest->data(), 'reply_markup.inline_keyboard.0.0.callback_data'))->toBe('sc:'.TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_CLEANINGS)->value('id').':yes')
+        ->and(data_get($closingRequest->data(), 'reply_markup.inline_keyboard.0.1.text'))->toBe('Lambrate · ❌ Нет')
+        ->and(data_get($closingRequest->data(), 'reply_markup.inline_keyboard.0.0.callback_data'))->toBe('sc:'.TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_CLEANINGS)->value('id').':lambrate:yes')
+        ->and(count(data_get($closingRequest->data(), 'reply_markup.inline_keyboard')))->toBe(5)
         ->and(data_get($ordinaryRequest?->data() ?? [], 'reply_markup'))->toBeNull();
 });
 
 it('does not attempt the same scheduled occurrence twice', function (): void {
     makeScheduledTelegramMessage(['send_time' => '10:59:00']);
     Queue::fake();
-    config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
-    Http::fake(['*' => Http::response(['result' => ['message_id' => 5680]], 200)]);
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 5680]], 200)]);
 
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
     $job = Queue::pushed(DeliverScheduledTelegramMessage::class)->sole();
@@ -387,7 +390,7 @@ it('uses the dedicated scheduled bot token while Academy messages keep their exi
         'services.telegram.bot_token' => 'academy-test-token',
         'services.telegram.scheduled_bot_token' => 'scheduled-test-token',
     ]);
-    Http::fake(['*' => Http::response(['result' => ['message_id' => 901]], 200)]);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 901]], 200)]);
 
     $bot = app(TelegramBotService::class);
     expect($bot->sendScheduledMessage('-100000000001', 'Scheduled check', '42'))->toBe(901)
@@ -401,7 +404,7 @@ it('uses the dedicated scheduled bot token while Academy messages keep their exi
 });
 
 it('fails safely and records a clear warning when the scheduled bot token is missing', function (): void {
-    makeScheduledTelegramMessage();
+    makeScheduledTelegramMessage(['control_type' => 'control_question']);
     Queue::fake();
     config([
         'services.telegram.bot_token' => 'academy-test-token',

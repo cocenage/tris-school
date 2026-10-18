@@ -4,6 +4,14 @@ namespace App\Services\Telegram;
 
 class ScheduledControlTypes
 {
+    public const DISTRICTS = [
+        'lambrate' => 'Lambrate',
+        'lodi' => 'Lodi',
+        'certosa' => 'Certosa',
+        'navigli' => 'Navigli',
+        'como' => 'Como',
+    ];
+
     public const CLOSING_CLEANINGS = 'second_cleanings_finishing';
 
     public const CLOSING_PAYMENTS = 'extra_payments_completed';
@@ -34,5 +42,13 @@ class ScheduledControlTypes
     public static function supportsInlineAnswer(string $controlType): bool
     {
         return in_array($controlType, [self::CLOSING_CLEANINGS, self::CLOSING_PAYMENTS], true);
+    }
+
+    public static function districtKeyboard(int $deliveryId): array
+    {
+        return ['inline_keyboard' => collect(self::DISTRICTS)->map(fn (string $label, string $key): array => [
+            ['text' => $label.' · ✅ Да', 'callback_data' => "sc:$deliveryId:$key:yes"],
+            ['text' => $label.' · ❌ Нет', 'callback_data' => "sc:$deliveryId:$key:no"],
+        ])->values()->all()];
     }
 }

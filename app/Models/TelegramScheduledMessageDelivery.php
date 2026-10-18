@@ -11,6 +11,7 @@ class TelegramScheduledMessageDelivery extends Model
     protected $fillable = [
         'scheduled_message_id',
         'control_type',
+        'bot_type',
         'chat_id',
         'message_thread_id',
         'scheduled_for',

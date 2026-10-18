@@ -403,9 +403,16 @@ class TelegramOperationalEventObserver
             if ($rootSpecific !== [] && $decisionSpecific !== []) {
                 return array_intersect($rootSpecific, $decisionSpecific) !== [];
             }
+
+            if ($rootParts !== []) {
+                $eventParts = $rootParts;
+            }
         }
 
-        return true;
+        return $this->interpreter->subjectsAreCompatible(
+            implode('|', $eventParts),
+            implode('|', $decisionParts),
+        );
     }
 
     private function delayContinuationDecision(TelegramMessage $message, string $text): ?array

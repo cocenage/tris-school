@@ -9,6 +9,65 @@ use Illuminate\Support\Facades\Log;
 
 class InventoryRequestTelegramService
 {
+    public function syncSourceMessage(InventoryRequest $request): bool
+    {
+        if (! $request->telegram_source_chat_id || ! $request->telegram_source_message_id) {
+            return false;
+        }
+
+        $request->load(['user', 'lines.processor']);
+        $status = match ($request->status) {
+            'issued' => 'выдана', 'partially_issued' => 'частично выдана', 'cancelled' => 'отклонена',
+            default => 'ожидает обработки',
+        };
+        $lines = [
+            '📦 <b>Заявка на инвентарь #'.$request->id.'</b>',
+            '👤 <b>Сотрудник:</b> '.e((string) ($request->user?->name ?: '—')),
+            '<b>Статус:</b> '.$status,
+            '',
+            '📋 <b>Позиции:</b>',
+        ];
+        foreach ($request->lines->sortBy('id') as $item) {
+            $label = match ($item->status) {
+                'issued' => '✅ выдано', 'partially_issued' => '🟡 частично выдано',
+                'cancelled' => '❌ отклонено', default => '⏳ ожидает',
+            };
+            $name = e((string) $item->item_name).(filled($item->variant_label) ? ' · '.e((string) $item->variant_label) : '');
+            $line = '• '.$name.' — '.$label.' ('.(int) $item->issued_qty.'/'.(int) $item->requested_qty.')';
+            if ($item->status !== 'pending') {
+                $line .= ' · '.e((string) ($item->processor?->name ?: 'руководитель не указан'));
+                if ($item->processed_at) {
+                    $line .= ' · '.$item->processed_at->timezone('Europe/Rome')->format('d.m.Y H:i');
+                }
+            }
+            $lines[] = $line;
+        }
+        if (filled($request->comment)) {
+            $lines[] = '';
+            $lines[] = '💬 <b>Комментарий сотрудника:</b> '.e((string) $request->comment);
+        }
+        if (filled($request->admin_comment)) {
+            $lines[] = '💬 <b>Комментарий руководителя:</b> '.e((string) $request->admin_comment);
+        }
+
+        try {
+            $edited = app(TelegramBotService::class)->editMessage(
+                (string) $request->telegram_source_chat_id, (int) $request->telegram_source_message_id, [],
+                implode("\n", $lines), forceLegacy: true,
+            );
+        } catch (\Throwable $exception) {
+            Log::warning('Inventory source message sync failed.', ['request_id' => $request->id, 'exception' => class_basename($exception)]);
+
+            return false;
+        }
+
+        if (! $edited) {
+            Log::warning('Inventory source message edit was rejected.', ['request_id' => $request->id]);
+        }
+
+        return $edited;
+    }
+
     public function sendNewRequest(InventoryRequest $request): void
     {
         $request->loadMissing(['user', 'lines']);
@@ -38,8 +97,8 @@ class InventoryRequestTelegramService
         $message = [];
         $message[] = '📦 <b>Новая заявка на инвентарь</b>';
         $message[] = '';
-        $message[] = '👤 <b>Сотрудник:</b> ' . e($request->user?->name ?? '—');
-        $message[] = '🆔 <b>Заявка:</b> #' . $request->id;
+        $message[] = '👤 <b>Сотрудник:</b> '.e($request->user?->name ?? '—');
+        $message[] = '🆔 <b>Заявка:</b> #'.$request->id;
         $message[] = '';
         $message[] = '📋 <b>Позиции:</b>';
 
@@ -47,7 +106,7 @@ class InventoryRequestTelegramService
             $name = e($line->item_name);
 
             if ($line->variant_label) {
-                $name .= ' <i>(' . e($line->variant_label) . ')</i>';
+                $name .= ' <i>('.e($line->variant_label).')</i>';
             }
 
             $message[] = "— {$name}: {$line->requested_qty}";
@@ -65,8 +124,8 @@ class InventoryRequestTelegramService
                 status: 'Ожидает обработки',
                 fields: [
                     'Сотрудник' => (string) ($request->user?->name ?? '—'),
-                    'Заявка' => '#' . $request->id,
-                    'Позиции' => $request->lines->sortBy('id')->map(fn ($line) => $line->item_name . ': ' . $line->requested_qty)->implode('; '),
+                    'Заявка' => '#'.$request->id,
+                    'Позиции' => $request->lines->sortBy('id')->map(fn ($line) => $line->item_name.': '.$line->requested_qty)->implode('; '),
                 ],
                 body: $request->comment,
             );
@@ -81,6 +140,10 @@ class InventoryRequestTelegramService
             if (! $messageId) {
                 throw new \RuntimeException('Telegram rejected inventory notification.');
             }
+            $request->forceFill([
+                'telegram_source_chat_id' => (string) $forumChatId,
+                'telegram_source_message_id' => (int) $messageId,
+            ])->saveQuietly();
         } catch (\Throwable $e) {
             Log::error('Inventory new request telegram exception', [
                 'request_id' => $request->id,
@@ -141,7 +204,7 @@ class InventoryRequestTelegramService
             $name = e($line->item_name);
 
             if ($line->variant_label) {
-                $name .= ' <i>(' . e($line->variant_label) . ')</i>';
+                $name .= ' <i>('.e($line->variant_label).')</i>';
             }
 
             $lineStatus = match ($line->status) {
@@ -155,7 +218,7 @@ class InventoryRequestTelegramService
             $message[] = "— Запрошено: {$line->requested_qty}, выдано: {$line->issued_qty}";
 
             if ($line->admin_comment) {
-                $message[] = '— <i>' . e($line->admin_comment) . '</i>';
+                $message[] = '— <i>'.e($line->admin_comment).'</i>';
             }
         }
 
@@ -209,7 +272,7 @@ class InventoryRequestTelegramService
                     default => 'Статус обновлён',
                 },
                 fields: [
-                    'Позиции' => $request->lines->sortBy('id')->map(fn ($line) => $line->item_name . ': ' . $line->requested_qty . ' → ' . $line->issued_qty)->implode('; '),
+                    'Позиции' => $request->lines->sortBy('id')->map(fn ($line) => $line->item_name.': '.$line->requested_qty.' → '.$line->issued_qty)->implode('; '),
                 ],
                 body: $request->admin_comment,
             );

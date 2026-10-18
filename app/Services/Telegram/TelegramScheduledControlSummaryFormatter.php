@@ -2,10 +2,59 @@
 
 namespace App\Services\Telegram;
 
+use App\Models\TelegramScheduledMessageDelivery;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Str;
 
 class TelegramScheduledControlSummaryFormatter
 {
+    public function formatInteractive(TelegramScheduledMessageDelivery $delivery): string
+    {
+        $lines = [htmlspecialchars((string) $delivery->scheduledMessage?->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), ''];
+        $latest = $delivery->responses()->whereIn('response_kind', ['button', 'text_answer'])->whereNotNull('district_key')->orderBy('id')->get()
+            ->groupBy(fn ($response): string => $response->district_key.'|'.$response->telegram_user_id)
+            ->map(fn ($answers) => $answers->last())
+            ->groupBy('district_key');
+
+        foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+            $answers = $latest->get($key, collect());
+            if ($answers->isEmpty()) {
+                $lines[] = '▫️ '.$label.' — нет ответа';
+
+                continue;
+            }
+
+            $parts = $answers->map(function ($response): string {
+                $name = htmlspecialchars((string) ($response->author_name ?: 'Сотрудник'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+                $icon = match ($response->classification) {
+                    'confirmed' => '✅ ', 'problem' => '❌ ', 'partial' => '🟡 ', default => '❔ ',
+                };
+
+                return $icon.$name;
+            })->values()->all();
+            $conflict = $answers->pluck('classification')->unique()->count() > 1;
+            $lines[] = ($conflict ? '⚠️ ' : '').$label.($conflict ? ' — расхождение: ' : ' — ').implode(', ', $parts);
+        }
+
+        $comments = $delivery->responses()->whereIn('response_kind', ['comment', 'text_answer'])->orderByDesc('id')->limit(3)->get()->reverse();
+        if ($comments->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = '💬 Ответы и вопросы:';
+            foreach ($comments as $comment) {
+                $district = ScheduledControlTypes::DISTRICTS[$comment->district_key] ?? 'Район не указан';
+                $name = htmlspecialchars((string) ($comment->author_name ?: 'Сотрудник'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                $message = htmlspecialchars(Str::limit(trim((string) $comment->text), 160), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                $chat = (string) $delivery->chat_id;
+                $link = str_starts_with($chat, '-100') && is_numeric($comment->telegram_message_id)
+                    ? ' <a href="https://t.me/c/'.substr($chat, 4).'/'.$comment->telegram_message_id.'">↗</a>' : '';
+                $lines[] = '• '.$district.' · '.$name.': '.$message.$link;
+            }
+        }
+
+        return implode("\n", $lines);
+    }
+
     public function format(array $summary): string
     {
         $text = '🧹 TRIS — Контроль уборок · '.CarbonImmutable::parse($summary['date'])->format('d.m.Y')."\n";
@@ -22,7 +71,7 @@ class TelegramScheduledControlSummaryFormatter
             $text .= "\nℹ️ Ответы на контрольные сообщения за этот день не зафиксированы.\n";
         }
 
-        return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UvTF-8');
+        return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
     private function controlLine(array $control): string

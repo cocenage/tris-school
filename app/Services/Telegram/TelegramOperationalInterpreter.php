@@ -25,6 +25,10 @@ class TelegramOperationalInterpreter
         $isQuestion = str_contains($text, '?')
             || preg_match('/^(кто|что|где|когда|как|почему|можно\s+ли|есть\s+ли)\b/ui', $normalized) === 1;
 
+        if ($this->isHypotheticalDamageConcern($normalized)) {
+            return $this->noEvent('hypothetical_concern_without_incident', $assistant['category'], $isQuestion);
+        }
+
         if ($this->isConnectivitySendingExplanation($normalized)) {
             return $this->noEvent('communication_connectivity_chatter', $assistant['category'], $isQuestion);
         }
@@ -350,6 +354,30 @@ class TelegramOperationalInterpreter
     private function isGenericReassurance(string $text): bool
     {
         return preg_match('/^(?:да[, ]+)?(?:думаю|наверное|скорее всего)\s*,?\s*(?:не\s+проблема(?:\s+будет)?|проблем\S*\s+не\s+будет|всё\s+будет\s+хорошо)[.!\s\p{So}\p{Sk}\x{FE0F}]*$/ui', $text) === 1;
+    }
+
+    public function isHypotheticalDamageConcern(string $text): bool
+    {
+        if (preg_match('/\b(?:боюсь|опасаюсь)\b[^.!?;]{0,80}\b(?:сломать|повредить|разбить|испачкать|испортить)\b/iu', $text) !== 1) {
+            return false;
+        }
+
+        $otherClauses = preg_split('/[.!?;]+|\bно\b/iu', $text) ?: [];
+
+        return ! collect($otherClauses)->contains(fn (string $clause): bool => preg_match(
+            '/(?:не\s+работ|слом(?!ать|аться)\S*|неисправ|дефект|брак|протеч|подт[её]к|треснул|отвалил)/iu',
+            trim($clause),
+        ) === 1);
+    }
+
+    public function subjectsAreCompatible(?string $first, ?string $second): bool
+    {
+        $contextOnly = ['apartment'];
+        $firstSubjects = array_values(array_diff(array_filter(explode('|', (string) $first)), $contextOnly));
+        $secondSubjects = array_values(array_diff(array_filter(explode('|', (string) $second)), $contextOnly));
+
+        return $firstSubjects === [] || $secondSubjects === []
+            || array_intersect($firstSubjects, $secondSubjects) !== [];
     }
 
     private function assertedSignalText(string $text): string

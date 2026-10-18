@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -54,9 +55,10 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             return;
         }
 
-        if (! filled(config('services.telegram.scheduled_bot_token'))) {
-            $this->failDelivery($delivery, 'scheduled_bot_token_missing');
-            Log::warning('Scheduled Telegram bot token is not configured.', [
+        $isWorkControl = $delivery->bot_type === 'work' && array_key_exists((string) $delivery->control_type, ScheduledControlTypes::LABELS);
+        if (! filled(config($isWorkControl ? 'services.telegram.bot_token' : 'services.telegram.scheduled_bot_token'))) {
+            $this->failDelivery($delivery, $isWorkControl ? 'work_bot_token_missing' : 'scheduled_bot_token_missing');
+            Log::warning($isWorkControl ? 'Work Telegram bot token is not configured for a scheduled control.' : 'Scheduled Telegram bot token is not configured.', [
                 'delivery_id' => $delivery->getKey(),
             ]);
 
@@ -70,16 +72,20 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         }
 
         try {
-            $messageId = $telegram->sendScheduledMessage(
+            $send = $isWorkControl ? 'sendWorkControlMessage' : 'sendScheduledMessage';
+            $text = $isWorkControl
+                ? app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery)
+                : htmlspecialchars((string) $message->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $messageId = $telegram->{$send}(
                 (string) $delivery->chat_id,
-                htmlspecialchars((string) $message->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
+                $text,
                 $delivery->message_thread_id === null ? null : (string) $delivery->message_thread_id,
-                ScheduledControlTypes::supportsInlineAnswer($delivery->control_type) ? [
+                $isWorkControl ? ScheduledControlTypes::districtKeyboard($delivery->id) : (ScheduledControlTypes::supportsInlineAnswer($delivery->control_type) ? [
                     'inline_keyboard' => [[
                         ['text' => '✅ Да', 'callback_data' => 'sc:'.$delivery->id.':yes'],
                         ['text' => '❌ Нет', 'callback_data' => 'sc:'.$delivery->id.':no'],
                     ]],
-                ] : null,
+                ] : null),
             );
         } catch (ConnectionException $exception) {
             $this->markRetrying($delivery, 'connection_exception');
