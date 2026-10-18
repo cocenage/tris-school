@@ -9,7 +9,7 @@ class TelegramScheduledMessageResponse extends Model
 {
     protected $guarded = ['id'];
 
-    protected $casts = ['responded_at' => 'datetime', 'response_latency_seconds' => 'integer'];
+    protected $casts = ['responded_at' => 'datetime', 'response_latency_seconds' => 'integer', 'response_history' => 'array'];
 
     public function delivery(): BelongsTo
     {

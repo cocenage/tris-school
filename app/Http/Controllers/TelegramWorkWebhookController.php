@@ -6,13 +6,17 @@ use App\Jobs\ProcessTelegramAssistantMessage;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
+use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\User;
+use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramOperationalEventObserver;
 use App\Services\Telegram\TelegramRichMessageBuilder;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
+use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
+use App\Services\Telegram\TelegramScheduledMessageDeliveryService;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use App\Services\Telegram\TelegramWorkActionFreshness;
 use App\Services\TelegramUserNotificationService;
@@ -141,7 +145,10 @@ class TelegramWorkWebhookController extends Controller
 
             if ($savedMessage) {
                 if ($isControlDestination || $isWorkAllowed) {
-                    $responses->capture($savedMessage, $message);
+                    $controlResponse = $responses->capture($savedMessage, $message);
+                    if ($controlResponse?->delivery?->bot_type === 'work') {
+                        $this->syncWorkControlMessage($controlResponse->delivery);
+                    }
                 }
             }
 
@@ -211,6 +218,10 @@ class TelegramWorkWebhookController extends Controller
             if (str_starts_with($data, 'dayoffday:')) {
                 return $this->handleDayOffDayCallback($callbackQuery);
             }
+
+            if (str_starts_with($data, 'sc:')) {
+                return $this->handleScheduledControlCallback($callbackQuery);
+            }
         } catch (\Throwable $e) {
             $this->answerCallback($callbackQuery, 'Не удалось обработать действие. Попробуйте ещё раз.');
             Log::error('Telegram callback handler failed', [
@@ -238,6 +249,64 @@ class TelegramWorkWebhookController extends Controller
             'ok' => true,
             'skipped' => 'unknown_callback',
         ]);
+    }
+
+    private function handleScheduledControlCallback(array $callbackQuery)
+    {
+        $data = (string) ($callbackQuery['data'] ?? '');
+        if (preg_match('/^sc:(\d+):(?:lambrate|lodi|certosa|navigli|como):(yes|no)$/', $data, $matches) !== 1
+            || ! TelegramScheduledMessageDelivery::query()->whereKey((int) $matches[1])->where('bot_type', 'work')->exists()) {
+            $this->answerCallback($callbackQuery, 'Эта кнопка больше не действует.');
+
+            return response()->json(['ok' => true, 'skipped' => 'unknown_control_callback']);
+        }
+
+        $result = app(TelegramScheduledControlResponseService::class)->captureCallback($callbackQuery);
+        $delivery = $result['delivery'];
+        if ($delivery === null || $result['response'] === null) {
+            $this->answerCallback($callbackQuery, 'Эта кнопка больше не действует.');
+
+            return response()->json(['ok' => true, 'callback_status' => $result['status']]);
+        }
+
+        if ($delivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+            && app(TelegramScheduledControlResponseService::class)->allDistrictsConfirmed($delivery)
+            && ! app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($delivery)) {
+            Log::warning('Scheduled control payment follow-up could not be queued.', ['delivery_id' => $delivery->id]);
+        }
+
+        $synced = $this->syncWorkControlMessage($delivery);
+        $this->answerCallback($callbackQuery, $synced ? 'Ответ сохранён.' : 'Ответ сохранён; сообщение пока не обновилось.');
+
+        return response()->json(['ok' => true, 'callback_status' => $result['status']]);
+    }
+
+    private function syncWorkControlMessage(TelegramScheduledMessageDelivery $delivery): bool
+    {
+        if ($delivery->bot_type !== 'work' || $delivery->status !== 'sent' || ! $delivery->telegram_message_id) {
+            return false;
+        }
+
+        try {
+            $edited = Cache::lock('telegram_work_control_sync:'.$delivery->id, 10)->block(3, function () use ($delivery): bool {
+                $text = app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery);
+
+                return app(TelegramBotService::class)->editMessage(
+                    (string) $delivery->chat_id, (int) $delivery->telegram_message_id, [], $text,
+                    ScheduledControlTypes::districtKeyboard($delivery->id), true,
+                );
+            });
+        } catch (\Throwable $exception) {
+            Log::warning('Work control message sync failed.', ['delivery_id' => $delivery->id, 'exception' => class_basename($exception)]);
+
+            return false;
+        }
+
+        if (! $edited) {
+            Log::warning('Work control message edit was rejected.', ['delivery_id' => $delivery->id]);
+        }
+
+        return $edited;
     }
 
     private function handleAccessCallback(array $callbackQuery)
@@ -293,6 +362,7 @@ class TelegramWorkWebhookController extends Controller
         if ($user->status !== 'pending') {
             $this->logCallbackEvent($data, true, true, true, 'access_already_reviewed');
             $this->answerCallback($callbackQuery, 'По пользователю уже принято решение');
+            $this->syncExistingAccessMessage($callbackQuery, $user);
 
             return response()->json(['ok' => true, 'skipped' => 'access_already_reviewed']);
         }
@@ -336,6 +406,7 @@ class TelegramWorkWebhookController extends Controller
         if (! $decisionApplied) {
             $this->logCallbackEvent($data, true, true, true, 'access_already_reviewed');
             $this->answerCallback($callbackQuery, 'Решение уже принято');
+            $this->syncExistingAccessMessage($callbackQuery, $user->fresh());
 
             return response()->json(['ok' => true, 'skipped' => 'access_already_reviewed']);
         }
@@ -377,6 +448,20 @@ class TelegramWorkWebhookController extends Controller
         $this->logCallbackEvent($data, $moderator !== null, true, true, $handlerResult);
 
         return response()->json(['ok' => true]);
+    }
+
+    private function syncExistingAccessMessage(array $callbackQuery, User $user): void
+    {
+        $reviewer = $user->approved_by ? User::find($user->approved_by) : null;
+        $status = $user->status === 'approved' ? '✅ <b>Доступ одобрен</b>' : '❌ <b>Доступ отклонён</b>';
+
+        try {
+            if (! $this->editAccessMessage($callbackQuery, $user, $status, $reviewer?->name ?: 'не указан')) {
+                Log::warning('Telegram access message reconciliation was rejected.', ['user_id' => $user->id]);
+            }
+        } catch (\Throwable $exception) {
+            Log::warning('Telegram access message reconciliation failed.', ['user_id' => $user->id, 'exception' => class_basename($exception)]);
+        }
     }
 
     private function handleDayOffDayCallback(array $callbackQuery)
@@ -450,7 +535,10 @@ class TelegramWorkWebhookController extends Controller
 
         if ($day->status !== 'pending') {
             $this->logCallbackEvent($data, true, true, true, 'dayoffday_already_reviewed');
-            $this->answerCallback($callbackQuery, 'По этой дате уже принято решение');
+            $this->answerCallback($callbackQuery, $day->status === 'approved' ? 'Дата уже одобрена' : 'Дата уже отклонена');
+
+            $dayOffRequest->load(['user', 'days.reviewer']);
+            $this->syncDayOffRequestMessage($callbackQuery, $dayOffRequest, $action);
 
             return response()->json(['ok' => true, 'skipped' => 'dayoffday_already_reviewed']);
         }
@@ -472,7 +560,7 @@ class TelegramWorkWebhookController extends Controller
                 return;
             }
 
-            $reviewedAt = now();
+            $reviewedAt = now('UTC');
 
             $lockedDay->forceFill([
                 'status' => $status,
@@ -495,6 +583,10 @@ class TelegramWorkWebhookController extends Controller
             $this->logCallbackEvent($data, true, true, true, 'dayoffday_already_reviewed');
             $this->answerCallback($callbackQuery, 'Решение уже принято');
 
+            $dayOffRequest->refresh();
+            $dayOffRequest->load(['user', 'days.reviewer']);
+            $this->syncDayOffRequestMessage($callbackQuery, $dayOffRequest, $action);
+
             return response()->json(['ok' => true, 'skipped' => 'dayoffday_already_reviewed']);
         }
 
@@ -504,30 +596,40 @@ class TelegramWorkWebhookController extends Controller
         );
 
         $dayOffRequest->refresh();
-        $dayOffRequest->load(['user', 'days']);
+        $dayOffRequest->load(['user', 'days.reviewer']);
 
-        $moderatorText = $this->telegramUserText($callbackQuery['from'] ?? []);
-
-        try {
-            $handlerResult = $this->editDayOffRequestMessage(
-                callbackQuery: $callbackQuery,
-                dayOffRequest: $dayOffRequest,
-                moderatorText: $moderatorText,
-            ) ? 'handled' : 'decision_saved_edit_failed';
-        } catch (\Throwable $e) {
-            Log::warning('Telegram day-off callback message edit failed after decision', [
-                'callback_received' => true,
-                'callback_type' => 'dayoffday',
-                'callback_action' => $action,
-                'handler_result' => 'decision_saved_edit_failed',
-                'exception' => class_basename($e),
-            ]);
-            $handlerResult = 'decision_saved_edit_failed';
-        }
+        $handlerResult = $this->syncDayOffRequestMessage($callbackQuery, $dayOffRequest, $action)
+            ? 'handled' : 'decision_saved_edit_failed';
 
         $this->logCallbackEvent($data, $reviewer !== null, true, true, $handlerResult);
 
         return response()->json(['ok' => true]);
+    }
+
+    private function syncDayOffRequestMessage(array $callbackQuery, DayOffRequest $dayOffRequest, string $action): bool
+    {
+        try {
+            $edited = $this->editDayOffRequestMessage($callbackQuery, $dayOffRequest);
+
+            if ($edited) {
+                return true;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Telegram day-off message edit failed', [
+                'request_id' => $dayOffRequest->id,
+                'callback_action' => $action,
+                'exception' => class_basename($e),
+            ]);
+
+            return false;
+        }
+
+        Log::warning('Telegram day-off message edit was rejected', [
+            'request_id' => $dayOffRequest->id,
+            'callback_action' => $action,
+        ]);
+
+        return false;
     }
 
     private function canReviewRequests(?User $user): bool
@@ -582,7 +684,7 @@ class TelegramWorkWebhookController extends Controller
             '',
             $statusText,
             '<b>Решение принял:</b> '.e($moderatorText),
-            '<b>Время:</b> '.now()->format('d.m.Y H:i'),
+            '<b>Время:</b> '.($user->approved_at ?? $user->updated_at)->timezone('Europe/Rome')->format('d.m.Y H:i'),
         ]);
 
         return app(TelegramBotService::class)->editMessage(
@@ -606,7 +708,6 @@ class TelegramWorkWebhookController extends Controller
     private function editDayOffRequestMessage(
         array $callbackQuery,
         DayOffRequest $dayOffRequest,
-        string $moderatorText
     ): bool {
         $chatId = data_get($callbackQuery, 'message.chat.id');
         $messageId = data_get($callbackQuery, 'message.message_id');
@@ -630,6 +731,18 @@ class TelegramWorkWebhookController extends Controller
             : '—';
 
         $sortedDays = $dayOffRequest->days->sortBy('date');
+        $statuses = $sortedDays->pluck('status');
+        $hasPending = $statuses->contains('pending');
+        $hasApproved = $statuses->contains('approved');
+        $hasRejected = $statuses->contains('rejected');
+        $overallStatus = match (true) {
+            $hasPending && ($hasApproved || $hasRejected) => 'частично рассмотрена',
+            $hasPending => 'ожидает',
+            $hasApproved && $hasRejected => 'смешанный результат',
+            $hasApproved => 'одобрена',
+            $hasRejected => 'отклонена',
+            default => 'ожидает',
+        };
 
         $message = [];
         $message[] = '📌 <b>Запрос на выходной</b>';
@@ -648,18 +761,31 @@ class TelegramWorkWebhookController extends Controller
 
             $date = Carbon::parse($day->date)->translatedFormat('d.m.Y (l)');
 
-            $message[] = "{$icon} <b>{$date}</b>";
+            $decision = match ($day->status) {
+                'approved' => 'одобрено',
+                'rejected' => 'отклонено',
+                default => 'ожидает',
+            };
+            if ($day->status !== 'pending') {
+                $reviewer = $day->reviewer?->name ?: 'руководитель не указан';
+                $decision .= ' — '.$reviewer;
+
+                if ($day->reviewed_at) {
+                    $decision .= ', '.$day->reviewed_at->copy()->setTimezone('Europe/Rome')->format('d.m.Y H:i');
+                }
+            }
+
+            $message[] = "{$icon} <b>{$date}</b> — ".e($decision);
         }
+
+        $message[] = '';
+        $message[] = '<b>Статус заявки:</b> '.e($overallStatus);
 
         if (filled($dayOffRequest->reason)) {
             $message[] = '';
             $message[] = '💬 <b>Причина:</b>';
             $message[] = '<blockquote>'.e(trim((string) $dayOffRequest->reason)).'</blockquote>';
         }
-
-        $message[] = '';
-        $message[] = '<b>Последнее решение:</b> '.e($moderatorText);
-        $message[] = '<b>Время:</b> '.now()->format('d.m.Y H:i');
 
         $keyboard = [];
 
@@ -700,20 +826,13 @@ class TelegramWorkWebhookController extends Controller
             ];
         }
 
-        $status = match ($dayOffRequest->status) {
-            'approved' => 'Одобрено',
-            'rejected' => 'Отклонено',
-            'partially_approved' => 'Частично одобрено',
-            default => 'Статус обновлён',
-        };
-
         return app(TelegramBotService::class)->editMessage(
             chatId: (string) $chatId,
             messageId: (int) $messageId,
             forceLegacy: true,
             richMessage: app(TelegramRichMessageBuilder::class)->build(
                 title: 'Заявка на выходной',
-                status: $status,
+                status: $overallStatus,
                 fields: [
                     'Сотрудник' => $name,
                     'Dip' => $dipText,
@@ -729,7 +848,7 @@ class TelegramWorkWebhookController extends Controller
 
                     return Carbon::parse($day->date)->translatedFormat('d F').' — '.$status;
                 })->all(),
-                notice: 'Последнее решение: '.$moderatorText,
+                notice: 'Статус заявки: '.$overallStatus,
             ),
             fallbackHtml: $payload['text'],
             replyMarkup: $payload['reply_markup'],

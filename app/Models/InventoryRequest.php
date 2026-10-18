@@ -2,10 +2,12 @@
 
 namespace App\Models;
 
+use App\Jobs\SendRequestResultNotificationJob;
 use App\Services\Forms\InventoryRequestTelegramService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class InventoryRequest extends Model
@@ -62,6 +64,8 @@ class InventoryRequest extends Model
                 'processed_by' => null,
             ]);
 
+            $this->syncSourceAfterCommit();
+
             return;
         }
 
@@ -86,6 +90,18 @@ class InventoryRequest extends Model
             'processed_at' => $isFinal ? now() : null,
             'processed_by' => $isFinal ? auth()->id() : null,
         ]);
+        $this->syncSourceAfterCommit();
+    }
+
+    private function syncSourceAfterCommit(): void
+    {
+        if (! $this->telegram_source_chat_id || ! $this->telegram_source_message_id) {
+            return;
+        }
+
+        DB::afterCommit(function (): void {
+            app(InventoryRequestTelegramService::class)->syncSourceMessage($this->fresh());
+        });
     }
 
     public function allLinesProcessed(): bool
@@ -144,7 +160,7 @@ class InventoryRequest extends Model
             'request_id' => $this->id,
         ]);
 
-        \App\Jobs\SendRequestResultNotificationJob::dispatch(
+        SendRequestResultNotificationJob::dispatch(
             InventoryRequestTelegramService::class,
             self::class,
             $this->id,

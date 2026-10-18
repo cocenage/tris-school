@@ -50,6 +50,14 @@ class TelegramBotService
         return $this->sendMessageUsingToken($token, $chatId, $text, $threadId, replyMarkup: $replyMarkup, throwOnHttpFailure: true);
     }
 
+    public function sendWorkControlMessage(string $chatId, string $text, ?string $threadId = null, ?array $replyMarkup = null): ?int
+    {
+        return $this->sendMessageUsingToken(
+            config('services.telegram.bot_token'), $chatId, $text, $threadId,
+            replyMarkup: $replyMarkup, throwOnHttpFailure: true,
+        );
+    }
+
     public function answerScheduledCallback(string $callbackQueryId, string $text): bool
     {
         $token = config('services.telegram.scheduled_bot_token');
@@ -306,8 +314,11 @@ class TelegramBotService
             $payload['reply_markup'] = $replyMarkup;
         }
 
-        return $this->postTelegramApi($token, 'editMessageText', $payload, 10, 3)
-            ->successful();
+        $response = $this->postTelegramApi($token, 'editMessageText', $payload, 10, 3);
+
+        return ($response->successful() && data_get($response->json(), 'ok', true))
+            || ($response->status() === 400
+                && str_contains(mb_strtolower((string) data_get($response->json(), 'description')), 'message is not modified'));
     }
 
     private function postTelegramApi(

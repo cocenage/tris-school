@@ -2,9 +2,12 @@
 
 namespace App\Models;
 
+use App\Jobs\SendRequestResultNotificationJob;
+use App\Services\Forms\VacationRequestTelegramService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 
 class VacationRequest extends Model
 {
@@ -51,65 +54,80 @@ class VacationRequest extends Model
     }
 
     public function recalculateStatus(): void
-{
-    $statuses = $this->days()
-        ->pluck('status')
-        ->values();
+    {
+        $statuses = $this->days()
+            ->pluck('status')
+            ->values();
 
-    if ($statuses->isEmpty()) {
+        if ($statuses->isEmpty()) {
+            $this->update([
+                'status' => 'pending',
+            ]);
+            $this->syncSourceAfterCommit();
+
+            return;
+        }
+
+        $approvedCount = $statuses->filter(fn ($status) => $status === 'approved')->count();
+        $rejectedCount = $statuses->filter(fn ($status) => $status === 'rejected')->count();
+        $pendingCount = $statuses->filter(fn ($status) => $status === 'pending')->count();
+
+        $totalCount = $statuses->count();
+
+        $status = match (true) {
+            $approvedCount === $totalCount => 'approved',
+            $rejectedCount === $totalCount => 'rejected',
+            $pendingCount === $totalCount => 'pending',
+            default => 'partially_approved',
+        };
+
         $this->update([
-            'status' => 'pending',
+            'status' => $status,
         ]);
-
-        return;
+        $this->syncSourceAfterCommit();
     }
 
-    $approvedCount = $statuses->filter(fn ($status) => $status === 'approved')->count();
-    $rejectedCount = $statuses->filter(fn ($status) => $status === 'rejected')->count();
-    $pendingCount = $statuses->filter(fn ($status) => $status === 'pending')->count();
+    public function syncStatusAndNotify(): void
+    {
+        $this->load(['days', 'user']);
 
-    $totalCount = $statuses->count();
+        $statuses = $this->days->pluck('status')->unique();
 
-    $status = match (true) {
-        $approvedCount === $totalCount => 'approved',
-        $rejectedCount === $totalCount => 'rejected',
-        $pendingCount === $totalCount => 'pending',
-        default => 'partially_approved',
-    };
+        $status = match (true) {
+            $statuses->count() === 1 && $statuses->first() === 'approved' => 'approved',
+            $statuses->count() === 1 && $statuses->first() === 'rejected' => 'rejected',
+            $statuses->contains('approved') && $statuses->contains('rejected') => 'partially_approved',
+            default => 'pending',
+        };
 
-    $this->update([
-        'status' => $status,
-    ]);
-}
+        $this->forceFill([
+            'status' => $status,
+        ])->save();
 
-public function syncStatusAndNotify(): void
-{
-    $this->loadMissing(['days', 'user']);
+        $this->syncSourceAfterCommit();
 
-    $statuses = $this->days->pluck('status')->unique();
+        SendRequestResultNotificationJob::dispatch(
+            VacationRequestTelegramService::class,
+            self::class,
+            $this->id,
+        )->afterCommit();
+    }
 
-    $status = match (true) {
-        $statuses->count() === 1 && $statuses->first() === 'approved' => 'approved',
-        $statuses->count() === 1 && $statuses->first() === 'rejected' => 'rejected',
-        $statuses->contains('approved') && $statuses->contains('rejected') => 'partially_approved',
-        default => 'pending',
-    };
+    private function syncSourceAfterCommit(): void
+    {
+        if (! $this->telegram_source_chat_id || ! $this->telegram_source_message_id) {
+            return;
+        }
 
-    $this->forceFill([
-        'status' => $status,
-    ])->save();
+        DB::afterCommit(function (): void {
+            app(VacationRequestTelegramService::class)->syncSourceMessage($this->fresh());
+        });
+    }
 
-    \App\Jobs\SendRequestResultNotificationJob::dispatch(
-        \App\Services\Forms\VacationRequestTelegramService::class,
-        self::class,
-        $this->id,
-    )->afterCommit();
-}
-
-public function approvedDays(): HasMany
-{
-    return $this->hasMany(VacationRequestDay::class)
-        ->where('status', 'approved')
-        ->orderBy('date');
-}
+    public function approvedDays(): HasMany
+    {
+        return $this->hasMany(VacationRequestDay::class)
+            ->where('status', 'approved')
+            ->orderBy('date');
+    }
 }

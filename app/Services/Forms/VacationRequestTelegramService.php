@@ -10,6 +10,73 @@ use Illuminate\Support\Facades\Log;
 
 class VacationRequestTelegramService
 {
+    public function syncSourceMessage(VacationRequest $request): bool
+    {
+        if (! $request->telegram_source_chat_id || ! $request->telegram_source_message_id) {
+            return false;
+        }
+
+        $request->load(['user', 'days.reviewer']);
+        $statuses = $request->days->pluck('status');
+        $pending = $statuses->contains('pending');
+        $approved = $statuses->contains('approved');
+        $rejected = $statuses->contains('rejected');
+        $overall = match (true) {
+            $pending && ($approved || $rejected) => 'частично рассмотрена',
+            $pending => 'ожидает',
+            $approved && $rejected => 'смешанный результат',
+            $approved => 'одобрена',
+            $rejected => 'отклонена',
+            default => 'ожидает',
+        };
+        $lines = [
+            '🏖 <b>Заявка на отпуск</b>',
+            '👤 <b>Сотрудник:</b> '.e((string) ($request->user?->name ?: '—')),
+            '<b>Статус:</b> '.$overall,
+            '',
+            '📅 <b>Даты:</b>',
+        ];
+        foreach ($request->days->sortBy('date') as $day) {
+            $label = match ($day->status) {
+                'approved' => '✅ одобрено', 'rejected' => '❌ отклонено', default => '⏳ ожидает',
+            };
+            $line = '• '.Carbon::parse($day->date)->format('d.m.Y').' — '.$label;
+            if ($day->status !== 'pending') {
+                $line .= ' · '.e((string) ($day->reviewer?->name ?: 'руководитель не указан'));
+                if ($day->reviewed_at) {
+                    $line .= ' · '.$day->reviewed_at->timezone('Europe/Rome')->format('d.m.Y H:i');
+                }
+            }
+            $lines[] = $line;
+        }
+        if (filled($request->reason)) {
+            $lines[] = '';
+            $lines[] = '💬 <b>Комментарий сотрудника:</b> '.e((string) $request->reason);
+        }
+        if (filled($request->admin_comment)) {
+            $lines[] = '💬 <b>Комментарий руководителя:</b> '.e((string) $request->admin_comment);
+        }
+        $lines[] = '';
+        $lines[] = '<a href="'.e(url('/admin/vacation-requests/'.$request->id.'/edit')).'">Открыть в админке</a>';
+
+        try {
+            $edited = app(TelegramBotService::class)->editMessage(
+                (string) $request->telegram_source_chat_id, (int) $request->telegram_source_message_id, [],
+                implode("\n", $lines), forceLegacy: true,
+            );
+        } catch (\Throwable $exception) {
+            Log::warning('Vacation source message sync failed.', ['request_id' => $request->id, 'exception' => class_basename($exception)]);
+
+            return false;
+        }
+
+        if (! $edited) {
+            Log::warning('Vacation source message edit was rejected.', ['request_id' => $request->id]);
+        }
+
+        return $edited;
+    }
+
     public function sendResult(VacationRequest $request): void
     {
         $request->loadMissing(['user', 'days']);
@@ -62,7 +129,7 @@ class VacationRequestTelegramService
             $message[] = "{$dayStatus} <b>{$date}</b>";
 
             if ($day->admin_comment) {
-                $message[] = '— <i>' . e($day->admin_comment) . '</i>';
+                $message[] = '— <i>'.e($day->admin_comment).'</i>';
             }
         }
 
@@ -108,7 +175,7 @@ class VacationRequestTelegramService
                     default => 'ожидает решения',
                 };
 
-                return Carbon::parse($day->date)->translatedFormat('d F') . ' — ' . $status;
+                return Carbon::parse($day->date)->translatedFormat('d F').' — '.$status;
             })->all(),
         );
 
@@ -129,77 +196,81 @@ class VacationRequestTelegramService
     }
 
     public function sendCreated(VacationRequest $request): void
-{
-    $request->loadMissing(['user', 'days']);
+    {
+        $request->loadMissing(['user', 'days']);
 
-    $token = config('services.telegram.bot_token');
-    $chatId = config('services.telegram.chat_id_vacation');
-    $threadId = config('services.telegram.thread_id_vacation');
+        $token = config('services.telegram.bot_token');
+        $chatId = config('services.telegram.chat_id_vacation');
+        $threadId = config('services.telegram.thread_id_vacation');
 
-    if (blank($token) || blank($chatId)) {
-        Log::warning('Vacation created telegram skipped: missing credentials', [
-            'request_id' => $request->id,
-            'token_exists' => filled($token),
+        if (blank($token) || blank($chatId)) {
+            Log::warning('Vacation created telegram skipped: missing credentials', [
+                'request_id' => $request->id,
+                'token_exists' => filled($token),
+                'chat_id' => $chatId,
+                'thread_id' => $threadId,
+            ]);
+
+            return;
+        }
+
+        Carbon::setLocale('ru');
+
+        $dates = $request->days
+            ->sortBy('date')
+            ->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))
+            ->implode("\n• ");
+
+        $user = $request->user;
+        $name = $user?->name ?: 'Неизвестный пользователь';
+
+        $adminUrl = url('/admin/vacation-requests/'.$request->id.'/edit');
+
+        $text = "🏖 <b>Новая заявка на отпуск</b>\n\n";
+        $text .= '👤 <b>Сотрудник:</b> '.e($name)."\n";
+        $text .= "📅 <b>Даты:</b>\n• {$dates}\n\n";
+        $text .= "💬 <b>Комментарий:</b>\n<blockquote>".e((string) $request->reason)."</blockquote>\n\n";
+        $text .= "⛓️ <a href='{$adminUrl}'><b>Открыть в админке</b></a>";
+
+        $payload = [
             'chat_id' => $chatId,
-            'thread_id' => $threadId,
-        ]);
+            'text' => $text,
+            'parse_mode' => 'HTML',
+            'disable_web_page_preview' => true,
+        ];
 
-        return;
+        if (filled($threadId)) {
+            $payload['message_thread_id'] = (int) $threadId;
+        }
+
+        $rich = app(TelegramRichMessageBuilder::class)->build(
+            title: 'Новая заявка на отпуск',
+            status: 'Ожидает решения',
+            fields: [
+                'Сотрудник' => $name,
+                'Даты' => $request->days->sortBy('date')->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))->implode(', '),
+            ],
+            body: (string) $request->reason,
+            notice: 'Заявка ожидает решения администратора или супервайзера.',
+        );
+
+        $messageId = app(TelegramBotService::class)->sendRichMessage(
+            chatId: (string) $chatId,
+            richMessage: $rich,
+            fallbackHtml: $text,
+            threadId: filled($threadId) ? (string) $threadId : null,
+        );
+
+        if (! $messageId) {
+            Log::error('Vacation created telegram send failed', [
+                'request_id' => $request->id,
+            ]);
+
+            throw new \RuntimeException('Telegram rejected vacation notification.');
+        }
+        $request->forceFill([
+            'telegram_source_chat_id' => (string) $chatId,
+            'telegram_source_message_id' => (int) $messageId,
+        ])->saveQuietly();
     }
-
-    Carbon::setLocale('ru');
-
-    $dates = $request->days
-        ->sortBy('date')
-        ->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))
-        ->implode("\n• ");
-
-    $user = $request->user;
-    $name = $user?->name ?: 'Неизвестный пользователь';
-
-    $adminUrl = url('/admin/vacation-requests/' . $request->id . '/edit');
-
-    $text = "🏖 <b>Новая заявка на отпуск</b>\n\n";
-    $text .= "👤 <b>Сотрудник:</b> " . e($name) . "\n";
-    $text .= "📅 <b>Даты:</b>\n• {$dates}\n\n";
-    $text .= "💬 <b>Комментарий:</b>\n<blockquote>" . e((string) $request->reason) . "</blockquote>\n\n";
-    $text .= "⛓️ <a href='{$adminUrl}'><b>Открыть в админке</b></a>";
-
-    $payload = [
-        'chat_id' => $chatId,
-        'text' => $text,
-        'parse_mode' => 'HTML',
-        'disable_web_page_preview' => true,
-    ];
-
-    if (filled($threadId)) {
-        $payload['message_thread_id'] = (int) $threadId;
-    }
-
-    $rich = app(TelegramRichMessageBuilder::class)->build(
-        title: 'Новая заявка на отпуск',
-        status: 'Ожидает решения',
-        fields: [
-            'Сотрудник' => $name,
-            'Даты' => $request->days->sortBy('date')->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))->implode(', '),
-        ],
-        body: (string) $request->reason,
-        notice: 'Заявка ожидает решения администратора или супервайзера.',
-    );
-
-    $messageId = app(TelegramBotService::class)->sendRichMessage(
-        chatId: (string) $chatId,
-        richMessage: $rich,
-        fallbackHtml: $text,
-        threadId: filled($threadId) ? (string) $threadId : null,
-    );
-
-    if (! $messageId) {
-        Log::error('Vacation created telegram send failed', [
-            'request_id' => $request->id,
-        ]);
-
-        throw new \RuntimeException('Telegram rejected vacation notification.');
-    }
-}
 }

@@ -216,8 +216,24 @@ class TelegramEveningIntelligenceBuilder
         ];
 
         foreach ($items as $item) {
-            $source = collect($item['_citation_candidates'] ?? [])->first(fn (array $candidate): bool => in_array($candidate['role'] ?? null, ['report', 'question', 'positive'], true)
-                && filled($candidate['source_url'] ?? null) && filled($candidate['source_time'] ?? null));
+            $editorial = $item['editorial'] ?? [];
+            $candidates = collect($item['_citation_candidates'] ?? [])
+                ->filter(fn (array $candidate): bool => filled($candidate['source_url'] ?? null)
+                    && filled($candidate['source_time'] ?? null));
+            $instructionCandidate = $candidates->first(fn (array $candidate): bool => ($candidate['role'] ?? null) === 'question'
+                && preg_match('/\b(?:как|где|какой\s+порядок|что\s+делать|инструкц)\b/iu', (string) ($candidate['text'] ?? '')) === 1
+                && ! in_array('problem', $item['types'] ?? [], true));
+
+            if (! ($editorial['relevant_today'] ?? false)
+                || ((($editorial['state'] ?? 'omit') === 'omit' || blank($editorial['summary'] ?? null))
+                    && $instructionCandidate === null)) {
+                continue;
+            }
+
+            $source = $candidates->first(fn (array $candidate): bool => in_array($candidate['role'] ?? null, ['report', 'recurrence'], true)
+                && $this->humanComposer->isProblemEvidence($candidate, $item['types'] ?? []))
+                ?? $candidates->first(fn (array $candidate): bool => ($candidate['role'] ?? null) === 'positive')
+                ?? $instructionCandidate;
             $sourceTime = $source === null ? null : Carbon::parse($source['source_time']);
             if ($sourceTime === null || $sourceTime->lt($start) || $sourceTime->gte($cutoff)) {
                 continue;
@@ -237,6 +253,7 @@ class TelegramEveningIntelligenceBuilder
                     ->filter(fn (array $candidate): bool => ($candidate['message_id'] ?? null) !== ($source['message_id'] ?? null)
                         && filled($candidate['text'] ?? null) && filled($candidate['source_url'] ?? null)
                         && filled($candidate['source_time'] ?? null)
+                        && $this->humanComposer->hasCompatibleEvidence($source, $candidate)
                         && Carbon::parse($candidate['source_time'])->lt($cutoff))
                     ->map(fn (array $candidate): array => [
                         'text' => html_entity_decode(trim((string) $candidate['text']), ENT_QUOTES | ENT_HTML5, 'UTF-8'),
@@ -263,14 +280,11 @@ class TelegramEveningIntelligenceBuilder
                 continue;
             }
 
-            $isTextile = preg_match('/(?:простын|наволоч|полотен|пододеял|бель[еёя]).{0,70}(?:брак|дефект|дыр|пятн|разрыв)|(?:брак|дефект|дыр|пятн|разрыв).{0,70}(?:простын|наволоч|полотен|пододеял|бель[еёя])/iu', $text) === 1;
-            if (! $isTextile
-                && preg_match('/(?:не\s+работает|слом|неисправ|поломк|поврежд|протеч|подт[её]к|не\s+включается)/iu', $text) === 1
-                && collect($item['types'] ?? [])->intersect(['problem', 'quality_issue', 'risk'])->isNotEmpty()) {
+            if ($this->humanComposer->isTechnicalFaultEvidence($source, $item['types'] ?? [], $editorial)) {
                 $sections['technical_faults'][] = $line;
             }
 
-            if (($item['editorial']['daily_problem'] ?? false)
+            if (($editorial['daily_problem'] ?? false)
                 && in_array($item['status'], ['open', 'reopened'], true)) {
                 $sections['unresolved_problems'][] = $line;
             }

@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\InventoryRequests\Pages;
 
 use App\Filament\Resources\InventoryRequests\InventoryRequestResource;
+use App\Services\Forms\InventoryRequestTelegramService;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\ViewAction;
@@ -12,7 +13,12 @@ class EditInventoryRequest extends EditRecord
 {
     protected static string $resource = InventoryRequestResource::class;
 
-  protected function getFormActions(): array
+    protected function afterSave(): void
+    {
+        app(InventoryRequestTelegramService::class)->syncSourceMessage($this->record);
+    }
+
+    protected function getFormActions(): array
     {
         return [
             ...parent::getFormActions(),
@@ -26,7 +32,7 @@ class EditInventoryRequest extends EditRecord
         ];
     }
 
-        protected function getHeaderActions(): array
+    protected function getHeaderActions(): array
     {
         return [
             ViewAction::make(),
@@ -44,10 +50,11 @@ class EditInventoryRequest extends EditRecord
         ) {
             $data['processed_at'] = now();
         }
-        
-$data['answered_at'] = now();
-$data['answer_seen_at'] = null;
+
+        $data['answered_at'] = now();
+        $data['answer_seen_at'] = null;
+
         return $data;
-        
+
     }
 }

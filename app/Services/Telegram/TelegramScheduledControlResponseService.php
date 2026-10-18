@@ -128,8 +128,11 @@ class TelegramScheduledControlResponseService
         $messageId = $message['message_id'];
         $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
         $text = (string) ($message['text'] ?? $message['caption'] ?? '');
-        $result = $this->classify($text);
-        if ($delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
+        $result = str_contains($text, '?')
+            ? ['classification' => 'unclear', 'reason' => 'question_not_confirmation']
+            : $this->classify($text);
+        $districtKey = $this->districtFromText($text);
+        if ($delivery->bot_type !== 'work' && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
             $finalResponse = $delivery->responses()->first();
             if ($finalResponse !== null) {
                 return $finalResponse;
@@ -164,11 +167,20 @@ class TelegramScheduledControlResponseService
             'responded_at' => $respondedAt,
             'response_latency_seconds' => $respondedAt->lt($sentAt) ? null : (int) $sentAt->diffInSeconds($respondedAt),
             'classification' => $result['classification'], 'classification_reason' => $result['reason'],
+            'district_key' => $districtKey,
+            'response_kind' => $result['classification'] === 'unclear' ? 'comment' : 'text_answer',
         ];
         $response = $existing ?: TelegramScheduledMessageResponse::firstOrCreate([
             'chat_id' => (string) $chatId, 'telegram_message_id' => (string) $messageId,
         ], $values);
         if ($existing) {
+            if ($existing->text !== $text) {
+                $values['response_history'] = [...($existing->response_history ?? []), [
+                    'text' => $existing->text,
+                    'classification' => $existing->classification,
+                    'responded_at' => $existing->responded_at?->toIso8601String(),
+                ]];
+            }
             $response->update($values);
         }
         Log::info('scheduled_control_response_linked', ['response_id' => $response->id, 'delivery_id' => $delivery->id]);
@@ -187,12 +199,17 @@ class TelegramScheduledControlResponseService
         $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
         $telegramUserId = data_get($callbackQuery, 'from.id');
 
-        if (! is_string($callbackId) || $callbackId === '' || ! is_string($data)
-            || preg_match('/^sc:(\d+):(yes|no)$/', $data, $parts) !== 1
+        $districtAnswer = is_string($data) && preg_match('/^sc:(\d+):([a-z]+):(yes|no)$/', $data, $districtParts) === 1;
+        $legacyAnswer = is_string($data) && preg_match('/^sc:(\d+):(yes|no)$/', $data, $parts) === 1;
+        if (! is_string($callbackId) || $callbackId === '' || (! $districtAnswer && ! $legacyAnswer)
             || ! is_numeric($chatId) || ! is_numeric($messageId) || ! is_numeric($telegramUserId)
             || data_get($callbackQuery, 'from.is_bot', false)
             || ! in_array(data_get($message, 'chat.type'), ['group', 'supergroup'], true)) {
             return ['status' => 'invalid', 'delivery' => null, 'response' => null, 'action' => null];
+        }
+
+        if ($districtAnswer) {
+            return $this->captureDistrictCallback($callbackQuery, $districtParts);
         }
 
         $action = $parts[2];
@@ -293,6 +310,105 @@ class TelegramScheduledControlResponseService
             'response' => $result['response'],
             'action' => $action,
         ];
+    }
+
+    /** @param array<int, string> $parts */
+    private function captureDistrictCallback(array $callbackQuery, array $parts): array
+    {
+        $delivery = TelegramScheduledMessageDelivery::query()
+            ->whereKey((int) $parts[1])
+            ->where('status', 'sent')
+            ->where('bot_type', 'work')
+            ->where('chat_id', (string) data_get($callbackQuery, 'message.chat.id'))
+            ->where('telegram_message_id', (string) data_get($callbackQuery, 'message.message_id'))
+            ->when(array_key_exists('message_thread_id', $callbackQuery['message'] ?? []), fn ($query) => $query->where('message_thread_id', (string) data_get($callbackQuery, 'message.message_thread_id')))
+            ->first();
+        $districtKey = $parts[2];
+        $action = $parts[3];
+
+        if ($delivery === null || ! array_key_exists($districtKey, ScheduledControlTypes::DISTRICTS)
+            || ! array_key_exists((string) $delivery->control_type, ScheduledControlTypes::LABELS)) {
+            return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
+        }
+
+        $timezone = config('app.timezone', 'Europe/Rome');
+        $scheduledDay = CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString();
+        if ($scheduledDay !== CarbonImmutable::now($timezone)->toDateString()) {
+            return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
+        }
+
+        $telegramUserId = (string) data_get($callbackQuery, 'from.id');
+        $callbackId = (string) $callbackQuery['id'];
+        $user = User::query()->where('telegram_id', $telegramUserId)->first();
+        $authorName = trim((string) data_get($callbackQuery, 'from.first_name').' '.(string) data_get($callbackQuery, 'from.last_name'));
+        $respondedAt = CarbonImmutable::now(config('app.timezone', 'Europe/Rome'));
+        $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), config('app.timezone', 'Europe/Rome'));
+
+        $response = DB::transaction(function () use ($delivery, $callbackId, $telegramUserId, $user, $authorName, $respondedAt, $sentAt, $districtKey, $action, $callbackQuery): TelegramScheduledMessageResponse {
+            TelegramScheduledMessageDelivery::query()->whereKey($delivery->id)->lockForUpdate()->first();
+
+            return TelegramScheduledMessageResponse::query()->firstOrCreate(
+                ['telegram_callback_query_id' => $callbackId],
+                [
+                    'delivery_id' => $delivery->id,
+                    'telegram_message_record_id' => null,
+                    'telegram_message_id' => null,
+                    'chat_id' => (string) $delivery->chat_id,
+                    'message_thread_id' => $delivery->message_thread_id,
+                    'reply_to_message_id' => (string) $delivery->telegram_message_id,
+                    'telegram_user_id' => $telegramUserId,
+                    'user_id' => $user?->id,
+                    'author_name' => $authorName !== '' ? $authorName : null,
+                    'username' => data_get($callbackQuery, 'from.username'),
+                    'text' => $action === 'yes' ? 'Да' : 'Нет',
+                    'responded_at' => $respondedAt,
+                    'response_latency_seconds' => $respondedAt->lt($sentAt) ? null : (int) $sentAt->diffInSeconds($respondedAt),
+                    'classification' => $action === 'yes' ? 'confirmed' : 'problem',
+                    'classification_reason' => 'district_button',
+                    'district_key' => $districtKey,
+                    'response_kind' => 'button',
+                ],
+            );
+        });
+
+        return [
+            'status' => $response->wasRecentlyCreated ? 'saved' : 'already_answered',
+            'delivery' => $delivery,
+            'response' => $response,
+            'action' => $action,
+        ];
+    }
+
+    private function districtFromText(string $text): ?string
+    {
+        $matches = [];
+        foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+            $aliases = $key === 'como' ? [$label, 'Комо'] : [$label];
+            foreach ($aliases as $alias) {
+                if (preg_match('/(?<!\p{L})'.preg_quote($alias, '/').'(?!\p{L})/iu', $text) === 1) {
+                    $matches[$key] = true;
+                }
+            }
+        }
+
+        return count($matches) === 1 ? array_key_first($matches) : null;
+    }
+
+    public function allDistrictsConfirmed(TelegramScheduledMessageDelivery $delivery): bool
+    {
+        $latest = $delivery->responses()->whereIn('response_kind', ['button', 'text_answer'])->whereNotNull('district_key')->orderBy('id')->get()
+            ->groupBy(fn (TelegramScheduledMessageResponse $response): string => $response->district_key.'|'.$response->telegram_user_id)
+            ->map(fn ($answers) => $answers->last())
+            ->groupBy('district_key');
+
+        foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+            $answers = $latest->get($district, collect());
+            if ($answers->isEmpty() || $answers->contains(fn (TelegramScheduledMessageResponse $answer): bool => $answer->classification !== 'confirmed')) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function classify(string $text): array

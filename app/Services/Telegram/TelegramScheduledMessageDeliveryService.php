@@ -155,6 +155,7 @@ class TelegramScheduledMessageDeliveryService
             $delivery->update([
                 'scheduled_for' => $scheduledFor,
                 'status' => 'pending',
+                'bot_type' => $cleaningsDelivery->bot_type,
                 'failure_reason' => null,
             ]);
         } else {
@@ -219,6 +220,7 @@ class TelegramScheduledMessageDeliveryService
             return TelegramScheduledMessageDelivery::query()->create([
                 'scheduled_message_id' => $message->getKey(),
                 'control_type' => $message->control_type,
+                'bot_type' => array_key_exists((string) $message->control_type, ScheduledControlTypes::LABELS) ? 'work' : 'scheduled',
                 'scheduled_for' => $scheduledFor,
                 'status' => 'pending',
             ]);

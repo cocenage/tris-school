@@ -44,16 +44,37 @@ class TelegramScheduledControlSummaryBuilder
                 && $response->responded_at->lessThanOrEqualTo($cutoff)
             )->values());
             $stats = $this->statistics->delivery($delivery, $cutoff);
-            $exceptions = $delivery->responses->whereIn('classification', ['problem', 'partial'])->take(3)->map(fn ($response) => [
+            $displayResponses = $delivery->responses;
+            if ($delivery->bot_type === 'work') {
+                $latestAnswerIds = $displayResponses->filter(fn (TelegramScheduledMessageResponse $response): bool => in_array($response->response_kind, ['button', 'text_answer'], true) && $response->district_key !== null)
+                    ->groupBy(fn (TelegramScheduledMessageResponse $response): string => $response->district_key.'|'.$response->telegram_user_id)
+                    ->map(fn ($answers) => $answers->sortBy('id')->last()->id)->values()->all();
+                $displayResponses = $displayResponses->filter(fn (TelegramScheduledMessageResponse $response): bool => ! in_array($response->response_kind, ['button', 'text_answer'], true)
+                    || $response->district_key === null || in_array($response->id, $latestAnswerIds, true));
+            }
+            $exceptions = $displayResponses->whereIn('classification', ['problem', 'partial'])->take(3)->map(fn ($response) => [
                 'classification' => $response->classification,
                 'author_name' => $response->author_name,
                 'text' => Str::limit((string) preg_replace('/\s+/u', ' ', $response->text), 180),
             ])->values()->all();
 
-            $responses = $delivery->responses->map(function (TelegramScheduledMessageResponse $response) use ($delivery): array {
+            $responses = $displayResponses->map(function (TelegramScheduledMessageResponse $response) use ($delivery): array {
                 $telegramMessage = $response->telegramMessage;
                 $topic = $telegramMessage?->topic;
                 $interpretation = $this->interpreter->interpret((string) $response->text, $delivery->control_type);
+                if ($delivery->bot_type === 'work' && isset(ScheduledControlTypes::DISTRICTS[$response->district_key])) {
+                    $status = match ($response->response_kind === 'comment' ? 'unclear' : $response->classification) {
+                        'confirmed' => 'ok', 'problem' => 'problem', 'partial' => 'partial', default => 'unknown',
+                    };
+                    $interpretation['status'] = $status;
+                    $interpretation['issue'] = in_array($status, ['problem', 'partial'], true) ? trim((string) $response->text) : null;
+                    $interpretation['districts'] = $response->response_kind === 'comment' ? [] : [[
+                        'district' => ScheduledControlTypes::DISTRICTS[$response->district_key],
+                        'status' => $status, 'reason' => $interpretation['reason'],
+                        'details' => $response->response_kind === 'button' ? [] : [Str::limit((string) $response->text, 180)],
+                        'no_payment' => false,
+                    ]];
+                }
                 $interpretation['apartment_id'] = $topic?->apartment_id;
                 $interpretation['apartment'] = $topic?->apartment?->name;
 

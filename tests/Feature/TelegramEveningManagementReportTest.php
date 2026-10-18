@@ -2,6 +2,7 @@
 
 use App\Models\TelegramOperationalEvent;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
@@ -105,6 +106,31 @@ it('keeps a partial dirty-linen pickup unresolved', function () {
         '--date' => '2026-10-15', '--district' => 'navigli', '--dry-run' => true,
     ]))->toBe(0);
     expect(Artisan::output())->toContain('Значимые нерешённые проблемы', '2 из 5', 'решение не подтверждено');
+});
+
+it('keeps only supported physical faults and actionable problems in management sections', function () {
+    managementMessage('В выходные консьерж не работает.', '701', '2026-10-15 08:00:00');
+    managementMessage('Полотенце сломано.', '702', '2026-10-15 09:00:00');
+    managementMessage('Она пластиковая, боюсь сломать.', '703', '2026-10-15 10:00:00');
+    managementMessage('Курьер забрал грязное.', '704', '2026-10-15 11:00:00');
+    managementMessage('Сломано.', '705', '2026-10-15 12:00:00');
+    managementMessage('Сломана, уже довольно давно.', '706', '2026-10-15 13:00:00');
+    managementMessage('Не работает чайник.', '707', '2026-10-15 14:00:00');
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-10-15', [
+        'district' => ['key' => 'navigli', 'label' => 'Navigli', 'chat_id' => '-1001'],
+    ]);
+    $sections = $preview['management_sections'];
+    $faultSummaries = collect($sections['technical_faults'])->pluck('summary');
+    $problemSummaries = collect($sections['unresolved_problems'])->pluck('summary');
+
+    expect($faultSummaries)->toContain('Не работает чайник.')
+        ->and($faultSummaries)->toHaveCount(1)
+        ->and($problemSummaries)->toContain('Не работает чайник.')
+        ->and(collect($sections['technical_faults'])->pluck('location')->unique()->all())->toBe(['Via Test 8'])
+        ->and(collect($sections['technical_faults'])->pluck('source_url')->every(fn ($url) => filled($url)))->toBeTrue()
+        ->and(collect($sections['unresolved_problems'])->pluck('summary'))
+        ->not->toContain('Курьер забрал грязное.', 'Сломано.', 'Сломана, уже довольно давно.');
 });
 
 it('does not present a broken appliance question as an instruction gap', function () {
