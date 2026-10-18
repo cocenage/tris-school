@@ -88,6 +88,7 @@ class TelegramEveningIntelligenceBuilder
         $day = Carbon::parse($window['start'])->setTimezone($timezone);
         $start = $day->copy()->startOfDay();
         $cutoff = Carbon::parse($window['evaluated_until'])->setTimezone($timezone);
+        $cutoffUtc = $cutoff->copy()->setTimezone('UTC');
         $recurrenceStart = $start->copy()->subDays(6);
 
         $district = is_array($options['district'] ?? null) ? $options['district'] : null;
@@ -97,7 +98,7 @@ class TelegramEveningIntelligenceBuilder
                     ->where('telegram_chat_id', (string) $district['chat_id'])))
             ->whereHas('evidence', fn ($query) => $query
                 ->where('is_current_revision', true)
-                ->where('occurred_at', '<', $cutoff))
+                ->where('occurred_at', '<', $cutoffUtc))
             ->with([
                 'chat:id,telegram_chat_id,title',
                 'topic:id,telegram_chat_id,telegram_thread_id,title,purpose',
@@ -105,7 +106,7 @@ class TelegramEveningIntelligenceBuilder
                 'apartment:id,name',
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
-                    ->where('occurred_at', '<', $cutoff)
+                    ->where('occurred_at', '<', $cutoffUtc)
                     ->with('observation.message.telegramUser')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
@@ -209,6 +210,8 @@ class TelegramEveningIntelligenceBuilder
      */
     private function inputDataQuality(Carbon $start, Carbon $cutoff, ?array $district): array
     {
+        $startUtc = $start->copy()->setTimezone('UTC');
+        $cutoffUtc = $cutoff->copy()->setTimezone('UTC');
         $chatIds = filled($district['chat_id'] ?? null)
             ? [(string) $district['chat_id']]
             : $this->districtRoutes->operationalChatIds();
@@ -223,8 +226,8 @@ class TelegramEveningIntelligenceBuilder
 
         $messages = TelegramMessage::query()
             ->whereNotNull('sent_at')
-            ->where('sent_at', '>=', $start)
-            ->where('sent_at', '<', $cutoff)
+            ->where('sent_at', '>=', $startUtc)
+            ->where('sent_at', '<', $cutoffUtc)
             ->whereHas('chat', fn ($query) => $query->whereIn('telegram_chat_id', $chatIds));
         $sourceMessages = (clone $messages)->count();
         $observedMessages = (clone $messages)
@@ -277,6 +280,8 @@ class TelegramEveningIntelligenceBuilder
      */
     private function recurrences(Carbon $start, Carbon $cutoff, ?array $district): array
     {
+        $startUtc = $start->copy()->setTimezone('UTC');
+        $cutoffUtc = $cutoff->copy()->setTimezone('UTC');
         $events = TelegramOperationalEvent::query()
             ->select([
                 'id', 'event_key', 'telegram_chat_id', 'telegram_topic_id', 'apartment_id',
@@ -288,8 +293,8 @@ class TelegramEveningIntelligenceBuilder
                     ->where('telegram_chat_id', (string) $district['chat_id'])))
             ->whereHas('evidence', fn ($query) => $query
                 ->where('is_current_revision', true)
-                ->where('occurred_at', '>=', $start)
-                ->where('occurred_at', '<', $cutoff)
+                ->where('occurred_at', '>=', $startUtc)
+                ->where('occurred_at', '<', $cutoffUtc)
                 ->where(function ($occurrences): void {
                     $occurrences->where(function ($created): void {
                         $created->where('transition', 'created')
@@ -311,8 +316,8 @@ class TelegramEveningIntelligenceBuilder
                         'status_after', 'confidence', 'uncertainty', 'occurred_at', 'is_current_revision',
                     ])
                     ->where('is_current_revision', true)
-                    ->where('occurred_at', '>=', $start)
-                    ->where('occurred_at', '<', $cutoff)
+                    ->where('occurred_at', '>=', $startUtc)
+                    ->where('occurred_at', '<', $cutoffUtc)
                     ->with('observation.message')
                     ->orderBy('occurred_at')
                     ->orderBy('id'),

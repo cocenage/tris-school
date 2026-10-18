@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\TelegramUtcDateTime;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -26,7 +27,7 @@ class TelegramOperationalObservation extends Model
     ];
 
     protected $casts = [
-        'unanswered_due_at' => 'datetime',
+        'unanswered_due_at' => TelegramUtcDateTime::class,
         'is_current_revision' => 'boolean',
         'processed_at' => 'datetime',
     ];

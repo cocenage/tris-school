@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\TelegramUtcDateTime;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -25,7 +26,7 @@ class TelegramOperationalEventEvidence extends Model
     ];
 
     protected $casts = [
-        'occurred_at' => 'datetime',
+        'occurred_at' => TelegramUtcDateTime::class,
         'is_current_revision' => 'boolean',
     ];
 

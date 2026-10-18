@@ -8,8 +8,8 @@ use App\Models\TelegramOperationalEventEvidence;
 use App\Models\User;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
-use App\Services\Telegram\TelegramTopicPresenter;
 use App\Services\Telegram\TelegramOiCurrentInterpretationAudit;
+use App\Services\Telegram\TelegramTopicPresenter;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Console\Command;
@@ -80,17 +80,17 @@ class TelegramOiLogicAuditCommand extends Command
             // This is the same projection used by the existing evening preview.
             $preview = $builder->build($date, ['district' => $district]);
             $audit = $this->audit($preview, $date, $topics);
-} catch (Throwable $e) {
-    report($e);
+        } catch (Throwable $e) {
+            report($e);
 
-    $this->error('Operational Intelligence audit could not read the ledger and Telegram context.');
+            $this->error('Operational Intelligence audit could not read the ledger and Telegram context.');
 
-    if ($this->getOutput()->isVerbose()) {
-        $this->line($e::class.': '.$e->getMessage());
-    }
+            if ($this->getOutput()->isVerbose()) {
+                $this->line($e::class.': '.$e->getMessage());
+            }
 
-    return self::FAILURE;
-}
+            return self::FAILURE;
+        }
 
         if ($this->option('json')) {
             $this->line(json_encode(
@@ -113,6 +113,8 @@ class TelegramOiLogicAuditCommand extends Command
         $start = $date->copy()->startOfDay();
         $now = now($preview['timezone'] ?? config('app.timezone', 'Europe/Rome'));
         $cutoff = $date->isSameDay($now) ? $now : $date->copy()->endOfDay();
+        $startUtc = $start->copy()->setTimezone('UTC');
+        $cutoffUtc = $cutoff->copy()->setTimezone('UTC');
         $eventQuery = TelegramOperationalEvent::query()
             ->with([
                 'chat:id,telegram_chat_id,title',
@@ -121,18 +123,18 @@ class TelegramOiLogicAuditCommand extends Command
                 'apartment:id,name',
                 'evidence' => fn ($query) => $query
                     ->where('is_current_revision', true)
-                    ->where('occurred_at', '<=', $cutoff)
+                    ->where('occurred_at', '<=', $cutoffUtc)
                     ->with(['observation.message.telegramUser', 'observation.message.attachments'])
                     ->orderBy('occurred_at')
                     ->orderBy('id'),
             ]);
 
-        $eventQuery->where(function ($query) use ($items, $start, $cutoff): void {
+        $eventQuery->where(function ($query) use ($items, $startUtc, $cutoffUtc): void {
             $query->whereIn('event_key', $items->pluck('event_key')->filter()->all())
-                ->orWhereBetween('first_observed_at', [$start, $cutoff])
+                ->orWhereBetween('first_observed_at', [$startUtc, $cutoffUtc])
                 ->orWhereHas('evidence', fn ($evidence) => $evidence
                     ->where('is_current_revision', true)
-                    ->whereBetween('occurred_at', [$start, $cutoff]));
+                    ->whereBetween('occurred_at', [$startUtc, $cutoffUtc]));
         });
 
         $district = $preview['district']['source_chat_id'] ?? null;
@@ -200,7 +202,7 @@ class TelegramOiLogicAuditCommand extends Command
             ->groupBy('event_key');
         $linkedNames = $this->linkedUserNames($events->values());
 
-$audited = $items->map(function (array $item) use ($events, $sectionItems, $linkedNames, $topics): array {
+        $audited = $items->map(function (array $item) use ($events, $sectionItems, $linkedNames, $topics): array {
             /** @var TelegramOperationalEvent|null $event */
             $event = $events->get($item['event_key'] ?? '');
 
@@ -385,7 +387,10 @@ $audited = $items->map(function (array $item) use ($events, $sectionItems, $link
             ->where('telegram_topic_id', $topicId);
         $query->where(function ($query) use ($windows): void {
             foreach ($windows as [$from, $to]) {
-                $query->orWhereBetween('sent_at', [$from, $to]);
+                $query->orWhereBetween('sent_at', [
+                    $from->copy()->setTimezone('UTC'),
+                    $to->copy()->setTimezone('UTC'),
+                ]);
             }
         });
 

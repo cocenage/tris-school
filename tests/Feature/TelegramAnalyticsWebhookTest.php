@@ -8,6 +8,7 @@ use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramScheduledMessageResponse;
 use App\Models\TelegramTopic;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ResponseSequence;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
@@ -70,6 +71,64 @@ it('dispatches the reusable observer job after analytics persistence and attachm
     Queue::assertPushed(ProcessTelegramOperationalMessage::class, fn ($job) => $job->mode === 'message'
     );
     expect(TelegramMessage::count())->toBe(1)->and(Http::recorded())->toHaveCount(0);
+});
+
+it('preserves Telegram Unix timestamps as absolute UTC instants when Eloquent reads them in Rome', function () {
+    $sentAt = CarbonImmutable::parse('2026-07-15 06:00:00', 'UTC');
+    $editedAt = CarbonImmutable::parse('2026-07-15 06:15:00', 'UTC');
+    $payload = analyticsWebhookPayload('699');
+    $payload['message']['date'] = $sentAt->timestamp;
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+
+    $editedPayload = $payload;
+    $editedPayload['update_id']++;
+    $editedPayload['edited_message'] = $editedPayload['message'];
+    $editedPayload['edited_message']['edit_date'] = $editedAt->timestamp;
+    $editedPayload['edited_message']['text'] = 'Updated text';
+    unset($editedPayload['message']);
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $editedPayload)->assertOk();
+
+    $stored = TelegramMessage::query()->where('message_id', '699')->sole();
+
+    $serializedSentAt = $stored->sent_at->toISOString();
+    $serializedEditedAt = $stored->edited_at->toISOString();
+    $stored->sent_at = $stored->sent_at;
+    $stored->edited_at = $stored->edited_at;
+    $stored->save();
+    $stored->refresh();
+
+    expect($stored->getRawOriginal('sent_at'))->toBe('2026-07-15 06:00:00')
+        ->and($stored->getRawOriginal('edited_at'))->toBe('2026-07-15 06:15:00')
+        ->and($stored->sent_at->timestamp)->toBe($sentAt->timestamp)
+        ->and($stored->edited_at->timestamp)->toBe($editedAt->timestamp)
+        ->and($stored->sent_at->toISOString())->toBe($serializedSentAt)
+        ->and($stored->edited_at->toISOString())->toBe($serializedEditedAt)
+        ->and($stored->sent_at->timezoneName)->toBe('Europe/Rome')
+        ->and($stored->sent_at->format('Y-m-d H:i:s'))->toBe('2026-07-15 08:00:00');
+});
+
+it('keeps repeated local clock times distinct across the Rome autumn DST transition', function () {
+    $first = CarbonImmutable::parse('2026-10-25 00:30:00', 'UTC');
+    $second = CarbonImmutable::parse('2026-10-25 01:30:00', 'UTC');
+
+    foreach ([['701', $first], ['702', $second]] as [$messageId, $timestamp]) {
+        $payload = analyticsWebhookPayload($messageId);
+        $payload['message']['date'] = $timestamp->timestamp;
+        $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+    }
+
+    $messages = TelegramMessage::query()->whereIn('message_id', ['701', '702'])->orderBy('message_id')->get();
+
+    expect($messages)->toHaveCount(2)
+        ->and($messages[0]->getRawOriginal('sent_at'))->toBe('2026-10-25 00:30:00')
+        ->and($messages[1]->getRawOriginal('sent_at'))->toBe('2026-10-25 01:30:00')
+        ->and($messages[0]->sent_at->timestamp)->toBe($first->timestamp)
+        ->and($messages[1]->sent_at->timestamp)->toBe($second->timestamp)
+        ->and($messages[0]->sent_at->format('Y-m-d H:i:s'))->toBe('2026-10-25 02:30:00')
+        ->and($messages[1]->sent_at->format('Y-m-d H:i:s'))->toBe('2026-10-25 02:30:00')
+        ->and($messages[0]->sent_at->offset)->not->toBe($messages[1]->sent_at->offset);
 });
 
 it('keeps duplicate analytics webhook delivery safe by dispatching the same stored message', function () {
@@ -149,6 +208,8 @@ it('persists topic create and edit titles without ordinary messages overwriting 
 it('polls analytics messages in update order and acknowledges the completed batch', function () {
     $first = analyticsWebhookPayload('620');
     $first['update_id'] = 100;
+    $instant = CarbonImmutable::parse('2026-07-15 06:00:00', 'UTC');
+    $first['message']['date'] = $instant->timestamp;
     $second = analyticsWebhookPayload('621');
     $second['update_id'] = 101;
 
@@ -158,6 +219,11 @@ it('polls analytics messages in update order and acknowledges the completed batc
 
     expect(Artisan::call('telegram:analytics-poll'))->toBe(0)
         ->and(TelegramMessage::query()->orderBy('id')->pluck('message_id')->all())->toBe(['620', '621']);
+
+    $stored = TelegramMessage::query()->where('message_id', '620')->sole();
+    expect($stored->getRawOriginal('sent_at'))->toBe('2026-07-15 06:00:00')
+        ->and($stored->sent_at->timestamp)->toBe($instant->timestamp)
+        ->and($stored->sent_at->format('Y-m-d H:i:s'))->toBe('2026-07-15 08:00:00');
 
     $requests = Http::recorded()->pluck(0)->values();
     expect($requests)->toHaveCount(2)

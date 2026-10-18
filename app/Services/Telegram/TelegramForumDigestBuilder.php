@@ -62,7 +62,7 @@ class TelegramForumDigestBuilder
                 ->orderBy('m.id')
                 ->get();
 
-            $deduplicated = $rows->unique(fn ($row) => (string) $row->chat_pk . '|' . (string) $row->message_id)->values();
+            $deduplicated = $rows->unique(fn ($row) => (string) $row->chat_pk.'|'.(string) $row->message_id)->values();
             $duplicateKeys = max(0, $rows->count() - $deduplicated->count());
 
             $attachmentCounts = $this->attachmentCounts($analytics, $day, $options);
@@ -147,7 +147,10 @@ class TelegramForumDigestBuilder
             ->join('telegram_topics as t', 't.id', '=', 'm.telegram_topic_id')
             ->where('c.type', 'supergroup')
             ->whereNotNull('t.telegram_thread_id')
-            ->whereBetween('m.sent_at', [$day->copy()->startOfDay(), $day->copy()->endOfDay()]);
+            ->whereBetween('m.sent_at', [
+                $day->copy()->startOfDay()->setTimezone('UTC'),
+                $day->copy()->endOfDay()->setTimezone('UTC'),
+            ]);
 
         if (filled($options['source_chat'] ?? null)) {
             $query->where('c.telegram_chat_id', (string) $options['source_chat']);
@@ -164,11 +167,11 @@ class TelegramForumDigestBuilder
     {
         $query = $this->baseQuery($analytics->table('telegram_messages as m'), $day, $options)
             ->join('telegram_attachments as a', 'a.telegram_message_id', '=', 'm.id')
-            ->selectRaw("c.telegram_chat_id as chat_id, t.telegram_thread_id as message_thread_id, COUNT(DISTINCT a.id) as attachment_count")
+            ->selectRaw('c.telegram_chat_id as chat_id, t.telegram_thread_id as message_thread_id, COUNT(DISTINCT a.id) as attachment_count')
             ->groupBy('c.telegram_chat_id', 't.telegram_thread_id');
 
         return $query->get()->mapWithKeys(fn ($row) => [
-            (string) $row->chat_id . '|' . (string) $row->message_thread_id => (int) $row->attachment_count,
+            (string) $row->chat_id.'|'.(string) $row->message_thread_id => (int) $row->attachment_count,
         ])->all();
     }
 
@@ -177,7 +180,7 @@ class TelegramForumDigestBuilder
         $topics = [];
 
         foreach ($rows as $row) {
-            $topicKey = (string) $row->chat_id . '|' . (string) $row->message_thread_id;
+            $topicKey = (string) $row->chat_id.'|'.(string) $row->message_thread_id;
             $text = trim((string) ($row->text ?: $row->caption ?: ''));
             $isProblem = $this->containsAny($text, self::PROBLEM_TERMS);
             $isPositive = $this->containsAny($text, self::POSITIVE_TERMS);
@@ -200,7 +203,7 @@ class TelegramForumDigestBuilder
                 '_signals' => [],
             ];
 
-            $topic =& $topics[$topicKey];
+            $topic = &$topics[$topicKey];
             $topic['message_count']++;
             if ($row->author_id !== null) {
                 $topic['authors'][(string) $row->author_id] = true;

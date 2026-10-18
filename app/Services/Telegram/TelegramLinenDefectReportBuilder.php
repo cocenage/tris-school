@@ -20,6 +20,8 @@ class TelegramLinenDefectReportBuilder
         $window = $this->evening->reportingWindow($date);
         $day = Carbon::parse($window['start'])->setTimezone($timezone);
         $cutoff = Carbon::parse($window['evaluated_until'])->setTimezone($timezone);
+        $startUtc = $day->copy()->setTimezone('UTC');
+        $cutoffUtc = $cutoff->copy()->setTimezone('UTC');
         $routes = $this->districts->sourceRoutes();
         $districts = [];
         $cases = [];
@@ -40,14 +42,14 @@ class TelegramLinenDefectReportBuilder
                 ->whereHas('chat', fn ($query) => $query->where('telegram_chat_id', (string) $route['chat_id']))
                 ->whereHas('evidence', fn ($query) => $query
                     ->where('is_current_revision', true)
-                    ->where('occurred_at', '>=', $day)
-                    ->where('occurred_at', '<', $cutoff))
+                    ->where('occurred_at', '>=', $startUtc)
+                    ->where('occurred_at', '<', $cutoffUtc))
                 ->with([
                     'chat', 'topic.chat', 'apartment',
                     'evidence' => fn ($query) => $query
                         ->where('is_current_revision', true)
-                        ->where('occurred_at', '>=', $day)
-                        ->where('occurred_at', '<', $cutoff)
+                        ->where('occurred_at', '>=', $startUtc)
+                        ->where('occurred_at', '<', $cutoffUtc)
                         ->with('observation.message')
                         ->orderBy('occurred_at')
                         ->orderBy('id'),

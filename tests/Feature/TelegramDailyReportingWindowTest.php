@@ -3,6 +3,7 @@
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramLinenDefectReportBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
+use App\Services\Telegram\TelegramUpdateIngestService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Tests\Support\TelegramOperationalTestDatabase;
@@ -52,6 +53,92 @@ it('uses the same half-open Rome window for problems textile and input completen
     'spring DST' => ['2026-03-29', '2026-03-29T00:00:00+01:00', '2026-03-29T20:30:00+02:00'],
     'autumn DST' => ['2026-10-25', '2026-10-25T00:00:00+02:00', '2026-10-25T20:30:00+01:00'],
 ]);
+
+it('filters ingested Telegram messages and OI evidence by the UTC instants of the Rome reporting window', function (string $date, string $startUtc, string $cutoffUtc) {
+    $start = Carbon::parse($startUtc, 'UTC');
+    $cutoff = Carbon::parse($cutoffUtc, 'UTC');
+    $instants = [
+        $start->copy()->subSecond(),
+        $start,
+        $cutoff->copy()->subSecond(),
+        $cutoff,
+        $cutoff->copy()->addSecond(),
+    ];
+
+    foreach ($instants as $index => $instant) {
+        $messageId = 700 + $index;
+        $message = app(TelegramUpdateIngestService::class)->ingest([
+            'update_id' => 9000 + $index,
+            'message' => [
+                'message_id' => $messageId,
+                'date' => $instant->timestamp,
+                'message_thread_id' => $messageId,
+                'chat' => ['id' => -1001, 'type' => 'supergroup', 'title' => 'Navigli'],
+                'from' => ['id' => 101, 'first_name' => 'Worker'],
+                'text' => 'Брак 1 полотенце с дыркой.',
+            ],
+        ]);
+
+        $message->topic?->update(['title' => 'Via Test '.$messageId]);
+        app(TelegramOperationalEventObserver::class)->observe($message);
+    }
+
+    $district = ['key' => 'navigli', 'label' => 'Navigli', 'chat_id' => '-1001'];
+    $evening = app(TelegramEveningIntelligenceBuilder::class)->build($date, ['district' => $district]);
+    $linen = app(TelegramLinenDefectReportBuilder::class)->build($date);
+    $expectedSourceTimes = collect([
+        $start->copy()->setTimezone('Europe/Rome')->toIso8601String(),
+        $cutoff->copy()->subSecond()->setTimezone('Europe/Rome')->toIso8601String(),
+    ])->sort()->values()->all();
+    $reportedSourceTimes = collect($evening['daily_problems'])
+        ->pluck('source_time')
+        ->sort()
+        ->values()
+        ->all();
+
+    expect($evening['data_quality'])->toMatchArray([
+        'source_messages' => 2,
+        'observed_messages' => 2,
+        'source_status' => 'available',
+    ])->and($evening['daily_problems'])->toHaveCount(2)
+        ->and($reportedSourceTimes)->toBe($expectedSourceTimes)
+        ->and($linen['districts']['navigli'])->toMatchArray([
+            'source_messages' => 2,
+            'observed_messages' => 2,
+            'source_status' => 'available',
+            'known_units' => 2,
+        ])->and($linen['cases'])->toHaveCount(2)
+        ->and($linen['known_units'])->toBe(2);
+})->with([
+    'winter day' => ['2026-01-15', '2026-01-14 23:00:00', '2026-01-15 19:30:00'],
+    'summer day' => ['2026-07-15', '2026-07-14 22:00:00', '2026-07-15 18:30:00'],
+    'spring DST change' => ['2026-03-29', '2026-03-28 23:00:00', '2026-03-29 18:30:00'],
+    'autumn DST change' => ['2026-10-25', '2026-10-24 22:00:00', '2026-10-25 19:30:00'],
+]);
+
+it('includes both absolute instants that share the repeated Rome clock time in autumn', function () {
+    foreach (['2026-10-25 00:30:00', '2026-10-25 01:30:00'] as $index => $utcTime) {
+        $instant = Carbon::parse($utcTime, 'UTC');
+        app(TelegramUpdateIngestService::class)->ingest([
+            'update_id' => 9500 + $index,
+            'message' => [
+                'message_id' => 9500 + $index,
+                'date' => $instant->timestamp,
+                'chat' => ['id' => -1001, 'type' => 'supergroup', 'title' => 'Navigli'],
+                'from' => ['id' => 101, 'first_name' => 'Worker'],
+                'text' => 'Работа выполнена.',
+            ],
+        ]);
+    }
+
+    expect(app(TelegramEveningIntelligenceBuilder::class)->sourceDataQuality(
+        '2026-10-25', ['label' => 'Navigli', 'chat_id' => '-1001'],
+    ))->toMatchArray([
+        'source_messages' => 2,
+        'observed_messages' => 0,
+        'source_status' => 'incomplete',
+    ]);
+});
 
 it('does not use a resolution at or after the reporting cutoff', function (string $resolutionTime, string $status) {
     $source = TelegramOperationalTestDatabase::message('Не работает замок в квартире.', '2026-10-15 10:00:00', '200');

@@ -43,6 +43,14 @@ The existing flow is reused end to end:
 
 `TelegramForumDigestBuilder` is an older read-only forum-level aggregate. It is not a replacement for the operational event ledger.
 
+### Telegram time contract
+
+- Telegram `date` and `edit_date` values are Unix timestamps and are treated as absolute UTC instants at ingestion.
+- Analytics `telegram_messages.sent_at` / `edited_at`, OI occurrence fields (`first_observed_at`, `last_observed_at`, `resolved_at`, and evidence `occurred_at`), and OI `unanswered_due_at` are stored in SQLite as timezone-naive UTC values. `TelegramUtcDateTime` converts these values to the configured application timezone when Eloquent reads them and converts assigned date-times back to UTC before storage.
+- Rome reporting windows are constructed from local calendar boundaries in `Europe/Rome`, then those instants are converted to UTC for SQL comparisons. The daily Evening/Linen window is half-open: `[00:00, 20:30)` Rome time; its elapsed duration naturally changes at daylight-saving transitions.
+- Laravel audit timestamps such as `created_at` and `updated_at`, and OI processing metadata such as `processed_at`, retain their existing application-timezone behavior. They are not source occurrence timestamps.
+- This contract does not rewrite existing rows. Historical Telegram/OI source timestamps written by the current Unix-timestamp ingestion path are already UTC wall values; manually entered or older imported values require provenance checks before any separate data correction.
+
 ## Operational context
 
 `OperationalContextBuilder` is a read-only aggregator over existing staff, calendar, request, task, control, TRIS Mare, mobility, and Telegram sources. `operational:preview` exposes it without AI or Telegram delivery. Source failures are represented as data-quality entries rather than silently converted into writes.

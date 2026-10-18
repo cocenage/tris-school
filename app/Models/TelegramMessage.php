@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\TelegramUtcDateTime;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -10,7 +11,7 @@ use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 class TelegramMessage extends Model
 {
     protected $connection = 'analytics';
-    
+
     protected $fillable = [
         'telegram_chat_id',
         'telegram_topic_id',
@@ -25,8 +26,8 @@ class TelegramMessage extends Model
     ];
 
     protected $casts = [
-        'sent_at' => 'datetime',
-        'edited_at' => 'datetime',
+        'sent_at' => TelegramUtcDateTime::class,
+        'edited_at' => TelegramUtcDateTime::class,
         'raw' => 'array',
     ];
 

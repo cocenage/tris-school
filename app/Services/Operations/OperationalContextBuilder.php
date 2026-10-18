@@ -87,7 +87,7 @@ class OperationalContextBuilder
         } catch (Throwable $exception) {
             $quality[$name] = [
                 'status' => 'unavailable',
-                'reason' => 'Источник недоступен: ' . class_basename($exception),
+                'reason' => 'Источник недоступен: '.class_basename($exception),
             ];
 
             return [
@@ -352,7 +352,7 @@ class OperationalContextBuilder
         }
 
         $risk = $alert->risk;
-        $lower = mb_strtolower($title . ' ' . $description);
+        $lower = mb_strtolower($title.' '.$description);
 
         if (str_contains($lower, 'regolare') || str_contains($lower, 'servizio normale')) {
             $risk = 'low';
@@ -389,7 +389,7 @@ class OperationalContextBuilder
         string $risk,
         ?string $district,
     ): array {
-        $lower = mb_strtolower($title . ' ' . $description);
+        $lower = mb_strtolower($title.' '.$description);
         $line = preg_match('/\b(M[1-5])\b/i', $lower, $lineMatch)
             ? mb_strtoupper($lineMatch[1])
             : null;
@@ -420,18 +420,18 @@ class OperationalContextBuilder
 
     protected function mobilitySummary(?string $line, string $type, string $lower, string $fallback): string
     {
-        $prefix = $line ? $line . ' — ' : '';
+        $prefix = $line ? $line.' — ' : '';
 
         if ($type === 'partial_closure') {
             if ($line === 'M2' && str_contains($lower, 'crescenzago')) {
                 return 'M2 — частично ограничено движение между Gobba и Cologno Nord, работают автобусы BM2.';
             }
 
-            return $prefix . 'частично ограничено движение.';
+            return $prefix.'частично ограничено движение.';
         }
 
         if ($type === 'closure') {
-            return $prefix . 'линия закрыта.';
+            return $prefix.'линия закрыта.';
         }
 
         return $fallback;
@@ -456,7 +456,10 @@ class OperationalContextBuilder
 
         $messages = $analytics->table('telegram_messages')
             ->whereIn('telegram_chat_id', $workChatIds)
-            ->whereBetween('sent_at', [$day->copy()->startOfDay(), $day->copy()->endOfDay()]);
+            ->whereBetween('sent_at', [
+                $day->copy()->startOfDay()->setTimezone('UTC'),
+                $day->copy()->endOfDay()->setTimezone('UTC'),
+            ]);
 
         $signals = [
             'potential_problems' => [
@@ -476,8 +479,8 @@ class OperationalContextBuilder
                 ->where(function ($query) use ($signal) {
                     foreach ($this->telegramKeywords($signal['pattern']) as $keyword) {
                         $query
-                            ->orWhere('text', 'like', '%' . $keyword . '%')
-                            ->orWhere('caption', 'like', '%' . $keyword . '%');
+                            ->orWhere('text', 'like', '%'.$keyword.'%')
+                            ->orWhere('caption', 'like', '%'.$keyword.'%');
                     }
                 });
 
@@ -521,7 +524,7 @@ class OperationalContextBuilder
 
         foreach ($context['calendar']['events'] ?? [] as $event) {
             if (($event['type'] ?? null) === CalendarEvent::TYPE_PEAK) {
-                $risks[] = ['level' => 'warning', 'code' => 'peak_day', 'message' => 'В календаре отмечен пик нагрузки: ' . $event['title'], 'source' => 'calendar'];
+                $risks[] = ['level' => 'warning', 'code' => 'peak_day', 'message' => 'В календаре отмечен пик нагрузки: '.$event['title'], 'source' => 'calendar'];
             }
         }
 

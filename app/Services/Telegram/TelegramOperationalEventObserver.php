@@ -324,8 +324,8 @@ class TelegramOperationalEventObserver
             ->where('telegram_chat_id', $message->telegram_chat_id)
             ->where('status', '!=', 'dismissed')
             ->whereBetween('last_observed_at', [
-                $this->messageTime($message)->subDays(7),
-                $this->messageTime($message),
+                $this->messageTime($message)->subDays(7)->setTimezone('UTC'),
+                $this->messageTime($message)->setTimezone('UTC'),
             ])
             ->where(function ($query) use ($message) {
                 $message->telegram_topic_id === null
@@ -454,8 +454,8 @@ class TelegramOperationalEventObserver
             ->where('primary_type', 'delay')
             ->whereIn('status', ['open', 'reopened'])
             ->whereBetween('last_observed_at', [
-                $this->messageTime($message)->subMinutes(45),
-                $this->messageTime($message),
+                $this->messageTime($message)->subMinutes(45)->setTimezone('UTC'),
+                $this->messageTime($message)->setTimezone('UTC'),
             ])
             ->where(function ($query) use ($message): void {
                 $message->telegram_topic_id === null
@@ -581,8 +581,8 @@ class TelegramOperationalEventObserver
         $query = TelegramMessage::query()
             ->where('telegram_chat_id', $question->telegram_chat_id)
             ->where('id', '!=', $question->id)
-            ->where('sent_at', '>=', $this->messageTime($question))
-            ->where('sent_at', '<=', $clock)
+            ->where('sent_at', '>=', $this->messageTime($question)->setTimezone('UTC'))
+            ->where('sent_at', '<=', $clock->copy()->setTimezone('UTC'))
             ->orderBy('sent_at')
             ->orderBy('id');
 
