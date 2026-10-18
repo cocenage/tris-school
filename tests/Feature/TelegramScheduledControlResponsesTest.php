@@ -37,7 +37,12 @@ use Illuminate\Support\Facades\Schema;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function () {
-    config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => ':memory:', 'queue.connections.database.connection' => null]);
+    config([
+        'database.default' => 'sqlite',
+        'database.connections.sqlite.database' => ':memory:',
+        'queue.connections.database.connection' => null,
+        'queue.default' => 'database',
+    ]);
     DB::purge('sqlite');
     TelegramOperationalTestDatabase::refresh();
     foreach (['2026_09_27_000000_create_telegram_scheduled_messages_tables.php', '2026_10_01_020000_create_scheduled_control_response_tables.php', '2026_10_03_000000_allow_replyless_scheduled_control_responses.php'] as $file) {
@@ -615,7 +620,7 @@ it('aggregates all five district confirmations into one compact control line', f
         ->and(mb_strlen($rendered))->toBeLessThan(800);
 });
 
-it('merges district evidence from multiple supervisors and preserves no-payment details', function () {
+it('keeps the first closing payment answer final instead of merging a later supervisor reply', function () {
     $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed']);
     captureControlReply(controlReplyPayload(
         $delivery,
@@ -634,14 +639,14 @@ it('merges district evidence from multiple supervisors and preserves no-payment 
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
     $control = collect($summary['controls'])->firstWhere('control_type', 'extra_payments_completed');
     $rendered = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
-
-    expect($control['district_results'])->toHaveCount(4)
+    expect(TelegramScheduledMessageResponse::query()->pluck('telegram_user_id')->all())->toBe(['101'])
+        ->and($control['district_results'])->toHaveCount(3)
         ->and(collect($control['district_results'])->firstWhere('district', 'Lambrate')['details'])
         ->toContain('Monte Lungo за ожидание выезда гостей')
         ->and(collect($control['district_results'])->firstWhere('district', 'Lodi')['status'])->toBe('no_data')
         ->and($rendered)->toContain('💶 Доплаты: Lambrate — Monte Lungo за ожидание выезда гостей')
         ->toContain('доплат не было: Lodi и Como')
-        ->not->toContain('⚠️ Доплаты');
+        ->not->toContain('⚠️ Доплаты', 'Certosa');
 });
 
 it('keeps partial district coverage explicit and does not guess from unassigned details', function () {
@@ -718,6 +723,22 @@ it('renders only the six canonical control types and describes zero captured dat
     expect($text)->not->toContain('control_question');
     expect($text)->not->toContain('подтверждений нет');
     expect($text)->not->toContain('Список ожидаемых участников не настроен');
+});
+
+it('formats human summaries using a supported UTF-8 charset', function () {
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->format([
+        'date' => '2026-10-01',
+        'controls' => [[
+            'control_type' => 'custom_control',
+            'label' => 'График & заметки',
+            'district_results' => [],
+            'responses' => [],
+            'status' => 'unknown',
+        ]],
+        'totals' => ['response_messages' => 1],
+    ]);
+
+    expect($text)->toContain('График &amp; заметки: ответы неоднозначны');
 });
 
 it('keeps an explicit reply attached to its delivery even after a newer control starts', function () {
