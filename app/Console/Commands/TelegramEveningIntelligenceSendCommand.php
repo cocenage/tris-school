@@ -6,6 +6,7 @@ use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
+use App\Services\Telegram\TelegramLinenDefectReportBuilder;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
@@ -15,6 +16,8 @@ use Throwable;
 class TelegramEveningIntelligenceSendCommand extends Command
 {
     private const DELIVERY_GUARD_DAYS = 30;
+
+    private const REPORT_DISTRICTS = ['navigli', 'lodi', 'lambrate', 'como', 'certosa'];
 
     protected $signature = 'telegram:evening-intelligence-send
         {--date= : Calendar date in the application timezone; defaults to today}
@@ -27,6 +30,7 @@ class TelegramEveningIntelligenceSendCommand extends Command
     public function handle(
         TelegramDistrictRouteRegistry $districts,
         TelegramEveningIntelligenceBuilder $builder,
+        TelegramLinenDefectReportBuilder $linen,
         TelegramDigestFormatter $formatter,
         TelegramBotService $bot,
     ): int {
@@ -44,7 +48,8 @@ class TelegramEveningIntelligenceSendCommand extends Command
             return self::FAILURE;
         }
 
-        $sourceRoutes = $deliveryMode === 'centralized' ? $districts->sourceRoutes() : $districts->routes();
+        $sourceRoutes = ($deliveryMode === 'centralized' ? $districts->sourceRoutes() : $districts->routes())
+            ->whereIn('key', self::REPORT_DISTRICTS)->values();
         $routes = filled($this->option('district'))
             ? $sourceRoutes->filter(fn (array $route): bool => $route['key'] === mb_strtolower(trim((string) $this->option('district'))))
             : $sourceRoutes;
@@ -79,6 +84,25 @@ class TelegramEveningIntelligenceSendCommand extends Command
         }
 
         $results = [];
+        if (! filled($this->option('district'))) {
+            $configuredRoutes = $districts->diagnostics()->whereIn('key', self::REPORT_DISTRICTS)->keyBy('key');
+            foreach (self::REPORT_DISTRICTS as $key) {
+                if (! $configuredRoutes->has($key)) {
+                    $results[] = $this->result(['key' => $key, 'label' => ucfirst($key)], $date,
+                        'failed', 0, 0, 'source_route_incomplete');
+                }
+            }
+            foreach ($configuredRoutes as $configured) {
+                if (! $routes->contains('key', $configured['key'])) {
+                    $results[] = $this->result($configured, $date, 'failed', 0, 0, 'source_route_incomplete');
+                }
+            }
+        }
+        try {
+            $linenReport = $linen->build($date);
+        } catch (Throwable) {
+            $linenReport = ['cases' => [], 'incomplete' => true];
+        }
 
         foreach ($routes as $route) {
             try {
@@ -88,6 +112,8 @@ class TelegramEveningIntelligenceSendCommand extends Command
 
                 continue;
             }
+
+            $preview['linen_report'] = $linenReport;
 
             $text = $formatter->eveningIntelligence($preview);
             $materialEvents = (int) $preview['events_included'];

@@ -99,8 +99,8 @@ it('sends the zero-state for an empty district using the requested historical da
         'material_events' => 0,
         'telegram_actions' => 1,
     ])->and($sentText)
-        ->toContain('🌙 Navigli — проблемы за день · 17.06.2026')
-        ->toContain('✅ Новых значимых событий не зафиксировано.');
+        ->toContain('🌙 Navigli — оперативные итоги дня · 17.06.2026')
+        ->toContain('⚠️ Нет входящих данных за этот день.');
 });
 
 it('sends an empty zero-state to every configured district', function () {
@@ -141,8 +141,8 @@ it('sends an empty zero-state to every configured district', function () {
 
     foreach (['Navigli', 'Lodi', 'Como', 'Certosa', 'Lambrate'] as $index => $label) {
         expect($sent[$index]['text'])
-            ->toContain('🌙 '.$label.' — проблемы за день · 17.06.2026')
-            ->toContain('✅ Новых значимых событий не зафиксировано.');
+            ->toContain('🌙 '.$label.' — оперативные итоги дня · 17.06.2026')
+            ->toContain('⚠️ Нет входящих данных за этот день.');
     }
 });
 
@@ -176,8 +176,8 @@ it('previews an empty district without making a telegram action', function () {
         '--date' => '2026-06-17', '--district' => 'navigli', '--dry-run' => true,
     ]))->toBe(0)
         ->and(Artisan::output())
-        ->toContain('🌙 Navigli — проблемы за день · 17.06.2026')
-        ->toContain('✅ Новых значимых событий не зафиксировано.')
+        ->toContain('🌙 Navigli — оперативные итоги дня · 17.06.2026')
+        ->toContain('⚠️ Нет входящих данных за этот день.')
         ->toContain('Предпросмотр: отправка в Telegram отключена.');
 });
 
@@ -310,7 +310,7 @@ it('routes five independently filtered district summaries to one central duty to
         ->and(collect($sent)->pluck('threadId')->unique()->all())->toBe(['99']);
 
     foreach (['Navigli', 'Lodi', 'Como', 'Certosa', 'Lambrate'] as $index => $label) {
-        expect($sent[$index]['text'])->toContain('🌙 '.$label.' — проблемы за день · 17.06.2026')
+        expect($sent[$index]['text'])->toContain('🌙 '.$label.' — оперативные итоги дня · 17.06.2026')
             ->toContain('Не работает замок в '.$label)
             ->not->toContain('Осталось сделать:', 'Решено сегодня:', 'Осталось с прошлых дней:');
         foreach (array_diff(['Navigli', 'Lodi', 'Como', 'Certosa', 'Lambrate'], [$label]) as $otherDistrict) {
@@ -373,7 +373,7 @@ it('uses the Academy bot token for centralized operational evening transport', f
         'services.telegram.bot_token' => 'main-test-token',
         'services.telegram.analytics_bot_token' => 'analytics-test-token',
     ]);
-    Http::fake(['*' => Http::response(['result' => ['message_id' => 123]], 200)]);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 123]], 200)]);
 
     expect(app(TelegramBotService::class)->sendMessage('-9000', 'Test summary', '99'))->toBe(123);
 

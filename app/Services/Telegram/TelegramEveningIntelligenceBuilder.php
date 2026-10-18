@@ -167,6 +167,7 @@ class TelegramEveningIntelligenceBuilder
             ->map(fn (array $item): array => $this->editorialLine($item, $item['editorial']['summary'], 'problem'))
             ->values()
             ->all();
+        $managementSections = $this->managementSections($editorialItems, $start, $cutoff);
         $included = count($dailyProblems);
         $recurrences = $this->recurrences($recurrenceStart, $cutoff, $district);
         $dataQuality = $this->inputDataQuality($start, $cutoff, $district);
@@ -188,6 +189,7 @@ class TelegramEveningIntelligenceBuilder
             'sections' => $sections,
             'editorial_sections' => $editorialSections,
             'daily_problems' => $dailyProblems,
+            'management_sections' => $managementSections,
             'recurrences' => $recurrences,
             'events_considered' => $events->count(),
             'events_included' => $included,
@@ -202,6 +204,80 @@ class TelegramEveningIntelligenceBuilder
                 'mutations' => 0,
             ],
         ];
+    }
+
+    private function managementSections(Collection $items, Carbon $start, Carbon $cutoff): array
+    {
+        $sections = [
+            'technical_faults' => [],
+            'unresolved_problems' => [],
+            'instruction_gaps' => [],
+            'praise' => [],
+        ];
+
+        foreach ($items as $item) {
+            $source = collect($item['_citation_candidates'] ?? [])->first(fn (array $candidate): bool => in_array($candidate['role'] ?? null, ['report', 'question', 'positive'], true)
+                && filled($candidate['source_url'] ?? null) && filled($candidate['source_time'] ?? null));
+            $sourceTime = $source === null ? null : Carbon::parse($source['source_time']);
+            if ($sourceTime === null || $sourceTime->lt($start) || $sourceTime->gte($cutoff)) {
+                continue;
+            }
+
+            $text = html_entity_decode(trim((string) ($source['text'] ?? '')), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $line = [
+                'event_key' => $item['event_key'],
+                'location' => $item['context_label'],
+                'summary' => $item['editorial']['summary'] ?: $text,
+                'author' => $source['author_name'],
+                'reported_at' => $source['source_time'],
+                'source_url' => $source['source_url'],
+                'status' => $item['status'],
+                'next_action' => $item['editorial']['next_action'],
+                'follow_ups' => collect($item['_citation_candidates'] ?? [])
+                    ->filter(fn (array $candidate): bool => ($candidate['message_id'] ?? null) !== ($source['message_id'] ?? null)
+                        && filled($candidate['text'] ?? null) && filled($candidate['source_url'] ?? null)
+                        && filled($candidate['source_time'] ?? null)
+                        && Carbon::parse($candidate['source_time'])->lt($cutoff))
+                    ->map(fn (array $candidate): array => [
+                        'text' => html_entity_decode(trim((string) $candidate['text']), ENT_QUOTES | ENT_HTML5, 'UTF-8'),
+                        'source_url' => $candidate['source_url'],
+                    ])->unique('source_url')->values()->all(),
+            ];
+
+            if (($source['role'] ?? null) === 'question'
+                && preg_match('/\b(?:как|где|какой\s+порядок|что\s+делать|инструкц)\b/iu', $text) === 1
+                && ! in_array('problem', $item['types'] ?? [], true)) {
+                $sections['instruction_gaps'][] = $line + [
+                    'recommendation' => 'Проверить доступность инструкции и добавить ответ на вопрос: '.$text,
+                ];
+            }
+
+            if (in_array('positive_contribution', $item['types'] ?? [], true)
+                && ($source['role'] ?? null) === 'positive'
+                && preg_match('/^я\s+/iu', $text) === 1
+                && filled($source['author_name'] ?? null)) {
+                $sections['praise'][] = $line;
+            }
+
+            if (($source['role'] ?? null) !== 'report' || blank($item['context_label'] ?? null)) {
+                continue;
+            }
+
+            $isTextile = preg_match('/(?:простын|наволоч|полотен|пододеял|бель[еёя]).{0,70}(?:брак|дефект|дыр|пятн|разрыв)|(?:брак|дефект|дыр|пятн|разрыв).{0,70}(?:простын|наволоч|полотен|пододеял|бель[еёя])/iu', $text) === 1;
+            if (! $isTextile
+                && preg_match('/(?:не\s+работает|слом|неисправ|поломк|поврежд|протеч|подт[её]к|не\s+включается)/iu', $text) === 1
+                && collect($item['types'] ?? [])->intersect(['problem', 'quality_issue', 'risk'])->isNotEmpty()) {
+                $sections['technical_faults'][] = $line;
+            }
+
+            if (($item['editorial']['daily_problem'] ?? false)
+                && in_array($item['status'], ['open', 'reopened'], true)) {
+                $sections['unresolved_problems'][] = $line;
+            }
+        }
+
+        return collect($sections)->map(fn (array $lines): array => collect($lines)
+            ->unique('event_key')->values()->all())->all();
     }
 
     /**

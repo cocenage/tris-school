@@ -180,3 +180,15 @@ it('escapes source text for the existing HTML Telegram transport', function () {
     expect($text)->toContain('свет &amp; вытяжка', 'Test &amp; Worker', "Курьер ждёт кур'ера")
         ->not->toContain('&#039;');
 });
+
+it('does not claim a complete empty report when the linen source failed', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-10-15', 'timezone' => 'Europe/Rome',
+        'district' => ['key' => 'navigli', 'label' => 'Navigli'],
+        'management_sections' => [], 'data_quality' => ['source_status' => 'available'],
+        'linen_report' => ['cases' => [], 'incomplete' => true],
+    ]);
+
+    expect($text)->toContain('Данные о браке белья неполные')
+        ->not->toContain('значимых выводов не выявлено');
+});

@@ -94,6 +94,16 @@ class TelegramOperationalInterpreter
 
     private function detectSignal(string $text, string $assistantCategory, bool $isQuestion): ?array
     {
+        if (! $isQuestion
+            && preg_match('/кур[ьй’\']?[еэ]р/iu', $text) === 1
+            && preg_match('/(?:грязн\S*\s+бель|бель\S*\s+грязн|грязн\S*\s+комплект)/iu', $text) === 1
+            && preg_match('/(?:только\s+\d+\s+из\s+\d+|\d+\s+из\s+\d+|не\s+вс[её]|остал\S*\s+\d+)/iu', $text) === 1) {
+            return [
+                'type' => 'quality_issue', 'role' => 'report', 'transition' => 'created',
+                'reason_code' => 'quality_issue', 'confidence' => 'high',
+            ];
+        }
+
         if (! $isQuestion && $this->isConcretePositiveContribution($text)) {
             return [
                 'type' => 'positive_contribution',

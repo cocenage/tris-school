@@ -25,6 +25,7 @@ class TelegramLinenDefectReportBuilder
         $routes = $this->districts->sourceRoutes();
         $districts = [];
         $cases = [];
+        $seenSourceMessages = [];
 
         foreach ($routes as $route) {
             // Use the same source/observer completeness contract as Evening Intelligence.
@@ -69,11 +70,13 @@ class TelegramLinenDefectReportBuilder
                 if ($source === null) {
                     continue;
                 }
+                if (isset($seenSourceMessages[$source->id])) {
+                    continue;
+                }
+                $seenSourceMessages[$source->id] = true;
 
                 $text = html_entity_decode((string) ($source->text ?: $source->caption), ENT_QUOTES | ENT_HTML5, 'UTF-8');
                 $details = $this->details($text);
-                $known = array_sum(array_column($details, 'quantity'));
-                $districts[$route['key']]['known_units'] += $known;
                 $location = trim((string) $event->apartment?->name);
                 if ($location === '' && $event->topic !== null && ! $this->topics->isServiceTopic($event->topic)
                     && $this->topics->hasHumanTitle($event->topic)) {
@@ -85,9 +88,31 @@ class TelegramLinenDefectReportBuilder
                     'district_label' => $route['label'],
                     'location' => $location !== '' && preg_match('/^\d+$/u', $location) !== 1 ? $location : null,
                     'details' => $details,
+                    'quantity_confidence' => 'confirmed',
                     'defect' => $this->defectLabel($text),
                     'source_url' => $this->topics->messageUrl((string) $event->chat?->telegram_chat_id, (string) $source->message_id),
                 ];
+            }
+        }
+
+        $groups = collect($cases)->groupBy(fn (array $case): string => hash('sha256', implode('|', [
+            $case['district'], mb_strtolower((string) $case['location']),
+            $case['defect'], json_encode($case['details']),
+        ])));
+        foreach ($groups as $indices) {
+            if ($indices->count() < 2) {
+                continue;
+            }
+            foreach ($cases as &$case) {
+                if ($indices->contains(fn (array $member): bool => $member['event_key'] === $case['event_key'])) {
+                    $case['quantity_confidence'] = 'uncertain_duplicate';
+                }
+            }
+            unset($case);
+        }
+        foreach ($cases as $case) {
+            if ($case['quantity_confidence'] === 'confirmed') {
+                $districts[$case['district']]['known_units'] += array_sum(array_column($case['details'], 'quantity'));
             }
         }
 
@@ -98,6 +123,7 @@ class TelegramLinenDefectReportBuilder
             'districts' => $districts,
             'cases' => $cases,
             'known_units' => array_sum(array_column($districts, 'known_units')),
+            'disputed_cases' => collect($cases)->where('quantity_confidence', 'uncertain_duplicate')->count(),
             'unknown_cases' => collect($cases)->sum(fn (array $case): int => count(array_filter(
                 $case['details'], fn (array $detail): bool => $detail['quantity'] === null,
             ))),
@@ -136,20 +162,27 @@ class TelegramLinenDefectReportBuilder
             'пододеяльник' => 'пододеял\p{L}*',
         ];
         $details = [];
-        foreach ($types as $label => $pattern) {
-            if (preg_match('/(?:(\d{1,3}|один|одна|одно|одну|два|две|три|четыре|пять)\s+)?('.$pattern.')/iu', $text, $match) !== 1) {
+        foreach (preg_split('/[,.;]\s*(?:но\s+|а\s+)?|\s+но\s+/iu', $text) ?: [$text] as $clause) {
+            if (preg_match('/(?:брак|дефект|пятн|дыр|порван|разорван|разрыв|поврежд|изнош|износ|прот[её]р)/iu', $clause) !== 1) {
                 continue;
             }
-            $quantity = match (mb_strtolower($match[1] ?? '')) {
-                'одна', 'одно', 'одну', 'один' => 1,
-                'два', 'две' => 2,
-                'три' => 3,
-                'четыре' => 4,
-                'пять' => 5,
-                '' => null,
-                default => (int) $match[1],
-            };
-            $details[] = ['item' => $label, 'quantity' => $quantity !== null && $quantity > 0 ? $quantity : null];
+            foreach ($types as $label => $pattern) {
+                if (preg_match_all('/(?:(\d{1,3}|один|одна|одно|одну|два|две|три|четыре|пять)\s+)?('.$pattern.')/iu', $clause, $matches, PREG_SET_ORDER) < 1) {
+                    continue;
+                }
+                foreach ($matches as $match) {
+                    $quantity = match (mb_strtolower($match[1] ?? '')) {
+                        'одна', 'одно', 'одну', 'один' => 1,
+                        'два', 'две' => 2,
+                        'три' => 3,
+                        'четыре' => 4,
+                        'пять' => 5,
+                        '' => null,
+                        default => (int) $match[1],
+                    };
+                    $details[] = ['item' => $label, 'quantity' => $quantity !== null && $quantity > 0 ? $quantity : null];
+                }
+            }
         }
 
         return $details !== [] ? $details : [['item' => 'бельё', 'quantity' => null]];

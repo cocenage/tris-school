@@ -47,7 +47,8 @@ class TelegramEveningHumanComposer
         }
 
         if ($this->isLinenCourierIssue($text)
-            && preg_match('/(?:не\s+забрал|забрал\s+не\s+вс[её]).{0,60}(?:гряз|бель)|(?:гряз|бель).{0,60}(?:не\s+забрал|забрал\s+не\s+вс[её])/iu', $text) === 1) {
+            && (preg_match('/(?:не\s+забрал|забрал\s+не\s+вс[её]).{0,60}(?:гряз|бель)|(?:гряз|бель).{0,60}(?:не\s+забрал|забрал\s+не\s+вс[её])/iu', $text) === 1
+                || preg_match('/(?:только\s+)?\d+\s+из\s+\d+/iu', $text) === 1)) {
             return true;
         }
 
@@ -182,7 +183,8 @@ class TelegramEveningHumanComposer
             }
 
             $broughtClean = preg_match('/(?:прив[её]з|прин[её]с).{0,50}(?:чист|бель)|(?:чист|бель).{0,50}(?:прив[её]з|прин[её]с)/iu', $context) === 1;
-            $didNotTakeDirty = preg_match('/(?:не\s+забрал|забрал\s+не\s+вс[её]).{0,60}(?:гряз|бель)|(?:гряз|бель).{0,60}(?:не\s+забрал|забрал\s+не\s+вс[её])/iu', $context) === 1;
+            $didNotTakeDirty = preg_match('/(?:не\s+забрал|забрал\s+не\s+вс[её]).{0,60}(?:гряз|бель)|(?:гряз|бель).{0,60}(?:не\s+забрал|забрал\s+не\s+вс[её])/iu', $context) === 1
+                || preg_match('/(?:только\s+)?\d+\s+из\s+\d+/iu', $context) === 1;
             $mentionsDirty = preg_match('/гряз/iu', $context) === 1;
 
             if ($broughtClean && $didNotTakeDirty) {
@@ -193,6 +195,13 @@ class TelegramEveningHumanComposer
             }
 
             if ($didNotTakeDirty) {
+                if (preg_match('/(?:только\s+)?(\d+)\s+из\s+(\d+)/iu', $context, $amounts) === 1) {
+                    return $this->result(
+                        'Курьер забрал '.$amounts[1].' из '.$amounts[2].' комплектов грязного белья.',
+                        $isOpen ? 'Уточнить вывоз оставшегося грязного белья.' : null,
+                    );
+                }
+
                 return $this->result(
                     $mentionsDirty ? 'Курьер забрал не всё грязное бельё.' : 'Курьер забрал не всё бельё.',
                     $isOpen
@@ -582,7 +591,7 @@ class TelegramEveningHumanComposer
         return $evidence->contains(fn (string $text): bool => preg_match('/курьер/iu', $text) === 1
             && preg_match('/(?:забрал|ув[её]з|забрали|увезли)/iu', $text) === 1
             && preg_match('/грязн\S*.{0,50}(?:бель|постель)|(?:бель|постель).{0,50}грязн/iu', $text) === 1
-            && preg_match('/не\s+(?:забрал|забрали|ув[её]з)|не\s+вс[её]/iu', $text) !== 1);
+            && preg_match('/не\s+(?:забрал|забрали|ув[её]з)|не\s+вс[её]|(?:только\s+)?\d+\s+из\s+\d+/iu', $text) !== 1);
     }
 
     private function hasCompletedLinenReplacement(string $text): bool

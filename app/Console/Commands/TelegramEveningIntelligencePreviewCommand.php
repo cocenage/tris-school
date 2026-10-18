@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
+use App\Services\Telegram\TelegramLinenDefectReportBuilder;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Throwable;
@@ -20,6 +21,7 @@ class TelegramEveningIntelligencePreviewCommand extends Command
 
     public function handle(
         TelegramEveningIntelligenceBuilder $builder,
+        TelegramLinenDefectReportBuilder $linen,
         TelegramDigestFormatter $formatter,
         TelegramDistrictRouteRegistry $districts,
     ): int {
@@ -42,6 +44,7 @@ class TelegramEveningIntelligencePreviewCommand extends Command
 
         try {
             $preview = $builder->build($date, ['district' => $route]);
+            $preview['linen_report'] = $linen->build($date);
         } catch (Throwable) {
             $this->error('Operational event ledger is unavailable.');
 
