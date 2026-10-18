@@ -1,6 +1,8 @@
 <?php
 
+use App\Services\Operations\OperationalContextBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\TelegramOperationalTestDatabase;
@@ -28,6 +30,48 @@ it('inspects no-event decisions by source message', function () {
         ->expectsOutputToContain('ordinary_conversation');
 
     expect(DB::connection('analytics')->table('telegram_operational_observations')->count())->toBe(1);
+});
+
+it('filters inspected messages by the Europe Rome calendar date over UTC storage', function () {
+    $messages = collect([
+        ['2026-06-16 23:59:59', '901'],
+        ['2026-06-17 00:00:00', '902'],
+        ['2026-06-17 23:59:59', '903'],
+        ['2026-06-18 00:00:00', '904'],
+    ])->map(fn (array $entry) => TelegramOperationalTestDatabase::message(
+        'Всем привет',
+        $entry[0],
+        $entry[1],
+    ));
+
+    foreach ($messages as $message) {
+        app(TelegramOperationalEventObserver::class)->observe($message);
+    }
+
+    expect(Artisan::call('telegram:operational-events', [
+        '--date' => '2026-06-17',
+        '--json' => true,
+    ]))->toBe(0);
+
+    $output = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect(collect($output['observations'])->pluck('message_id')->sort()->values()->all())
+        ->toBe($messages->slice(1, 2)->pluck('id')->sort()->values()->all());
+});
+
+it('counts operational Telegram context using Rome calendar boundaries over UTC storage', function () {
+    TelegramOperationalTestDatabase::message('Всем привет', '2026-06-16 23:59:59', '911');
+    TelegramOperationalTestDatabase::message('не работает замок в квартире', '2026-06-17 00:00:00', '912');
+    TelegramOperationalTestDatabase::message('Всем привет', '2026-06-17 23:59:59', '913');
+    TelegramOperationalTestDatabase::message('Всем привет', '2026-06-18 00:00:00', '914');
+
+    $builder = app(OperationalContextBuilder::class);
+    $telegram = new ReflectionMethod($builder, 'telegram');
+    $telegram->setAccessible(true);
+    $result = $telegram->invoke($builder, Carbon::parse('2026-06-17', 'Europe/Rome'));
+
+    expect($result['messages'])->toBe(2)
+        ->and($result['signals']['potential_problems']['count'])->toBe(1);
 });
 
 it('combines inspection filters instead of treating them as alternatives', function () {

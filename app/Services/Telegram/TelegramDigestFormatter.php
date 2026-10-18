@@ -226,7 +226,105 @@ class TelegramDigestFormatter
     {
         $district = $this->value($preview['district']['label'] ?? null);
 
+        if (array_key_exists('linen_report', $preview)) {
+            return $this->renderManagementEvening($preview, $district);
+        }
+
         return $this->renderEditorialEvening($preview, $district);
+    }
+
+    private function renderManagementEvening(array $preview, string $district): string
+    {
+        $date = Carbon::parse($preview['date'], $preview['timezone'] ?? 'Europe/Rome')->format('d.m.Y');
+        $lines = ['🌙 '.htmlspecialchars($district ?: 'TRIS', ENT_QUOTES, 'UTF-8').' — оперативные итоги дня · '.$date];
+        $sections = $preview['management_sections'] ?? [];
+        foreach ([
+            'technical_faults' => '🔧 Технические неисправности',
+            'unresolved_problems' => '⚠️ Значимые нерешённые проблемы',
+            'instruction_gaps' => '📚 Вопросы клинеров и инструкции',
+            'praise' => '👏 Поводы для похвалы',
+        ] as $key => $label) {
+            if (empty($sections[$key])) {
+                continue;
+            }
+            $lines[] = '';
+            $lines[] = $label;
+            foreach ($sections[$key] as $item) {
+                $location = trim((string) ($item['location'] ?? ''));
+                $summary = html_entity_decode(trim((string) ($item['summary'] ?? '')), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $lines[] = '• '.htmlspecialchars(($location !== '' ? $location.' — ' : '').$summary, ENT_COMPAT, 'UTF-8');
+                $author = trim((string) ($item['author'] ?? ''));
+                $time = filled($item['reported_at'] ?? null)
+                    ? Carbon::parse($item['reported_at'])->setTimezone('Europe/Rome')->format('H:i') : null;
+                if ($author !== '' || $time !== null) {
+                    $lines[] = '  👤 '.htmlspecialchars($author ?: 'Автор не указан', ENT_QUOTES, 'UTF-8').($time !== null ? ' · '.$time : '');
+                }
+                if ($key === 'technical_faults' || $key === 'unresolved_problems') {
+                    foreach ($item['follow_ups'] ?? [] as $followUp) {
+                        $lines[] = '  Что произошло: '.htmlspecialchars($followUp['text'], ENT_COMPAT, 'UTF-8');
+                        $lines[] = '  🔗 '.$followUp['source_url'];
+                    }
+                    $lines[] = '  Статус: '.(in_array($item['status'] ?? null, ['open', 'reopened'], true) ? 'решение не подтверждено' : 'решено');
+                    if (filled($item['next_action'] ?? null)) {
+                        $lines[] = '  Предложение: '.htmlspecialchars((string) $item['next_action'], ENT_COMPAT, 'UTF-8');
+                    }
+                }
+                if ($key === 'instruction_gaps') {
+                    $lines[] = '  Предложение: '.htmlspecialchars((string) $item['recommendation'], ENT_COMPAT, 'UTF-8');
+                }
+                $lines[] = '  🔗 '.$item['source_url'];
+            }
+        }
+
+        $linen = $preview['linen_report'];
+        $districtKey = $preview['district']['key'] ?? null;
+        $cases = collect($linen['cases'] ?? []);
+        if ($districtKey !== null) {
+            $cases = $cases->where('district', $districtKey);
+        }
+        $linenDistrict = $districtKey === null ? null : ($linen['districts'][$districtKey] ?? null);
+        $linenIncomplete = $districtKey === null
+            ? ($linen['incomplete'] ?? true)
+            : ($linenDistrict === null || ($linenDistrict['source_status'] ?? null) !== 'available');
+        if ($cases->isNotEmpty()) {
+            $lines[] = '';
+            $lines[] = '🧺 Брак белья';
+            $knownUnits = $districtKey === null
+                ? (int) ($linen['known_units'] ?? 0)
+                : (int) ($linenDistrict['known_units'] ?? 0);
+            if ($knownUnits > 0) {
+                $lines[] = 'Подтверждено: '.$knownUnits.' шт.';
+            }
+            foreach ($cases as $case) {
+                $details = collect($case['details'])->map(fn (array $detail): string => $detail['quantity'] === null
+                    ? $detail['item'].' — количество не указано'
+                    : $detail['quantity'].' × '.$detail['item'])->implode(', ');
+                $lines[] = '• '.htmlspecialchars(($case['location'] ?: $case['district_label']).' — '.$details.', '.$case['defect'], ENT_COMPAT, 'UTF-8')
+                    .(($case['quantity_confidence'] ?? null) === 'uncertain_duplicate'
+                        ? ' — возможный повтор, количество не входит в итог' : '');
+                if (filled($case['source_url'] ?? null)) {
+                    $lines[] = '  🔗 '.$case['source_url'];
+                }
+            }
+        }
+
+        $quality = $preview['data_quality']['source_status'] ?? 'unavailable';
+        if ($quality !== 'available') {
+            $lines[] = '';
+            $lines[] = $quality === 'incomplete'
+                ? '⚠️ Входящие сообщения обработаны не полностью; показаны доступные результаты.'
+                : '⚠️ Нет входящих данных за этот день. Отсутствие данных не подтверждает отсутствие проблем.';
+        }
+        if ($quality === 'available' && $linenIncomplete) {
+            $lines[] = '';
+            $lines[] = '⚠️ Данные о браке белья неполные; подтверждённый ноль недоступен.';
+        }
+        if ($quality === 'available' && ! $linenIncomplete && count($lines) === 1) {
+            $lines[] = '';
+            $lines[] = '✅ По обработанным сообщениям значимых выводов не выявлено.';
+        }
+
+        return implode("\n", $lines);
     }
 
     private function renderEditorialEvening(array $preview, string $district): string

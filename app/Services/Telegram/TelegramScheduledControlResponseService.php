@@ -136,7 +136,11 @@ class TelegramScheduledControlResponseService
             }
         }
         $timezone = config('app.timezone', 'Europe/Rome');
-        $respondedAt = isset($message['date']) ? CarbonImmutable::createFromTimestamp((int) $message['date'], $timezone) : CarbonImmutable::parse($stored->getRawOriginal('sent_at'), $timezone);
+        $respondedAt = isset($message['date'])
+            ? CarbonImmutable::createFromTimestamp((int) $message['date'], 'UTC')->setTimezone($timezone)
+            : ($stored->sent_at
+                ? CarbonImmutable::instance($stored->sent_at)
+                : CarbonImmutable::now($timezone));
         $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone);
         $authorId = data_get($message, 'from.id');
         $telegramUser = $stored->telegramUser;

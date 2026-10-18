@@ -30,6 +30,8 @@ class TelegramLinenDefectReportFormatter
             $lines[] = '<b>Всего:</b> '.$known.' шт. с указанным количеством';
         } elseif (! $incomplete && $cases->isEmpty()) {
             $lines[] = '✅ Подтверждённых сообщений о браке белья не найдено.';
+        } elseif ($cases->where('quantity_confidence', 'uncertain_duplicate')->isNotEmpty()) {
+            $lines[] = 'Количество не подтверждено: возможный повтор сообщений.';
         } elseif ($cases->isNotEmpty()) {
             $lines[] = 'Количество бракованных единиц не указано.';
         }
@@ -57,7 +59,9 @@ class TelegramLinenDefectReportFormatter
                     ? $detail['item'].' — количество не указано'
                     : $detail['quantity'].' × '.$detail['item'])->implode(', ');
                 $lines[] = '📍 '.htmlspecialchars($location, ENT_QUOTES, 'UTF-8').' — '
-                    .htmlspecialchars($details.', '.$case['defect'], ENT_QUOTES, 'UTF-8');
+                    .htmlspecialchars($details.', '.$case['defect'], ENT_QUOTES, 'UTF-8')
+                    .(($case['quantity_confidence'] ?? null) === 'uncertain_duplicate'
+                        ? ' — возможный повтор, количество не входит в итог' : '');
                 if ($case['source_url'] !== null) {
                     $lines[] = '🔗 '.$case['source_url'];
                 }

@@ -20,8 +20,9 @@ class TelegramOiCurrentInterpretationAudit
     public function build(Carbon $date, ?array $district, mixed $eventFilter = null, mixed $apartmentFilter = null): array
     {
         $allowed = $this->districts->operationalChatIds();
-        $start = $date->copy()->startOfDay();
-        $end = $date->copy()->endOfDay();
+        $day = $date->copy()->setTimezone(config('app.timezone', 'Europe/Rome'));
+        $start = $day->copy()->startOfDay()->setTimezone('UTC');
+        $end = $day->copy()->endOfDay()->setTimezone('UTC');
         $messages = TelegramMessage::query()
             ->whereBetween('sent_at', [$start, $end])
             ->whereHas('chat', fn ($query) => $query->whereIn('telegram_chat_id', $allowed)->where('type', '!=', 'private'))

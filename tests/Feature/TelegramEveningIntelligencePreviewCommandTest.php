@@ -65,7 +65,7 @@ it('renders compact daily problem cards and an explicit read-only footer', funct
 
     expect(Artisan::call('telegram:evening-intelligence-preview', ['--date' => '2026-06-17']))->toBe(0);
     expect(Artisan::output())
-        ->toContain('🌙 TRIS — проблемы за день · 17.06.2026', 'Не работает замок', 'https://t.me/c/1/1')
+        ->toContain('🌙 TRIS — оперативные итоги дня · 17.06.2026', 'Не работает замок', 'https://t.me/c/1/1')
         ->toContain('Предпросмотр: отправка в Telegram отключена')
         ->not->toContain('За день:', '🔄 Требует внимания:', 'Осталось сделать:', 'Решено сегодня:', 'Осталось с прошлых дней:')
         ->not->toContain('Открытых вопросов на конец дня нет.', 'Переходящие проблемы', 'Событие:', 'Доказательства:', 'статус:', 'уверенность:', 'Положительный вклад');
@@ -95,7 +95,7 @@ it('retains an open disposal question in diagnostics without presenting it as a 
         '--date' => '2026-06-17',
     ]))->toBe(0);
     expect(Artisan::output())
-        ->toContain('✅ Новых значимых событий не зафиксировано.')
+        ->toContain('⚠️ Данные о браке белья неполные')
         ->not->toContain('Уточняли, что делать со сломанными очками.', 'Уточнить, нужно ли выбрасывать сломанные очки.')
         ->not->toContain('@Tris_Anastasiia_Radevych')
         ->not->toContain('Открытых вопросов на конец дня нет.')

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\TelegramUtcDateTime;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -30,9 +31,9 @@ class TelegramOperationalEvent extends Model
 
     protected $casts = [
         'types' => 'array',
-        'first_observed_at' => 'datetime',
-        'last_observed_at' => 'datetime',
-        'resolved_at' => 'datetime',
+        'first_observed_at' => TelegramUtcDateTime::class,
+        'last_observed_at' => TelegramUtcDateTime::class,
+        'resolved_at' => TelegramUtcDateTime::class,
     ];
 
     public function rootMessage(): BelongsTo

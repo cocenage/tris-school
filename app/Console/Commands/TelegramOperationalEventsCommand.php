@@ -52,10 +52,9 @@ class TelegramOperationalEventsCommand extends Command
         }
 
         if ($date) {
-            $eventQuery->whereHas('evidence', fn ($query) => $query->whereBetween('occurred_at', [
-                $date->copy()->startOfDay(),
-                $date->copy()->endOfDay(),
-            ]));
+            $startUtc = $date->copy()->startOfDay()->setTimezone('UTC');
+            $endUtc = $date->copy()->endOfDay()->setTimezone('UTC');
+            $eventQuery->whereHas('evidence', fn ($query) => $query->whereBetween('occurred_at', [$startUtc, $endUtc]));
         }
 
         $events = $eventQuery->limit(50)->get()->map(fn (TelegramOperationalEvent $event) => [
@@ -107,10 +106,9 @@ class TelegramOperationalEventsCommand extends Command
         }
 
         if ($date) {
-            $observationQuery->whereHas('message', fn ($query) => $query->whereBetween('sent_at', [
-                $date->copy()->startOfDay(),
-                $date->copy()->endOfDay(),
-            ]));
+            $startUtc = $date->copy()->startOfDay()->setTimezone('UTC');
+            $endUtc = $date->copy()->endOfDay()->setTimezone('UTC');
+            $observationQuery->whereHas('message', fn ($query) => $query->whereBetween('sent_at', [$startUtc, $endUtc]));
         }
 
         if (filled($this->option('event'))) {

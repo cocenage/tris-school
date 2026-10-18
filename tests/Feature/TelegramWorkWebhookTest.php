@@ -14,6 +14,7 @@ use App\Services\Telegram\TelegramOperationalEventObserver;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use App\Services\Telegram\TelegramUpdatePoller;
 use App\Services\Telegram\TelegramWorkActionFreshness;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\ConnectionException;
@@ -971,12 +972,21 @@ it('polls an allowed work message through the existing ingest path', function ()
     $assistant->shouldReceive('handle')->never();
     $this->app->instance(TelegramAssistantService::class, $assistant);
 
+    $instant = CarbonImmutable::parse('2026-07-15 06:00:00', 'UTC');
+    $update = workPollingPayload(701, 201);
+    $update['message']['date'] = $instant->timestamp;
+
     fakeWorkPollResponses()
-        ->push(['ok' => true, 'result' => [workPollingPayload(701, 201)]])
+        ->push(['ok' => true, 'result' => [$update]])
         ->push(['ok' => true, 'result' => []]);
 
     expect(Artisan::call('telegram:work-poll'))->toBe(0)
         ->and(TelegramMessage::query()->where('message_id', '701')->count())->toBe(1);
+
+    $stored = TelegramMessage::query()->where('message_id', '701')->sole();
+    expect($stored->getRawOriginal('sent_at'))->toBe('2026-07-15 06:00:00')
+        ->and($stored->sent_at->timestamp)->toBe($instant->timestamp)
+        ->and($stored->sent_at->format('Y-m-d H:i:s'))->toBe('2026-07-15 08:00:00');
 
     $requests = Http::recorded()->pluck(0)->values();
     expect($requests[0]['allowed_updates'])->toBe(['message', 'edited_message', 'channel_post', 'callback_query'])

@@ -160,7 +160,10 @@ class TelegramOperationalReplayCommand extends Command
     {
         $query = TelegramMessage::query()
             ->with(['chat', 'topic', 'telegramUser', 'attachments'])
-            ->whereBetween('sent_at', [$from->copy()->startOfDay(), $cutoff])
+            ->whereBetween('sent_at', [
+                $from->copy()->startOfDay()->setTimezone('UTC'),
+                $cutoff->copy()->setTimezone('UTC'),
+            ])
             ->whereHas('chat', function ($query) use ($allowedChatIds) {
                 $query->whereIn('type', ['group', 'supergroup', 'channel']);
 

@@ -91,11 +91,11 @@ class TelegramAnalyticsWebhookController extends Controller
                 'caption' => $message['caption'] ?? null,
 
                 'sent_at' => isset($message['date'])
-                    ? Carbon::createFromTimestamp($message['date'])
+                    ? Carbon::createFromTimestamp($message['date'], 'UTC')
                     : null,
 
                 'edited_at' => isset($message['edit_date'])
-                    ? Carbon::createFromTimestamp($message['edit_date'])
+                    ? Carbon::createFromTimestamp($message['edit_date'], 'UTC')
                     : null,
 
                 'raw' => json_encode($update, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),

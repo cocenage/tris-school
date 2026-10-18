@@ -71,6 +71,45 @@ it('counts one OI event only once after a correlated follow-up', function () {
         ->and($report['cases'])->toHaveCount(1);
 });
 
+it('does not use the delivered quantity as the number of defective sheets', function () {
+    linenMessage('Курьер привёз 5 простыней, но две простыни с пятнами — брак.', '221');
+
+    $report = app(TelegramLinenDefectReportBuilder::class)->build('2026-10-15');
+
+    expect($report['known_units'])->toBe(2)
+        ->and($report['cases'])->toHaveCount(1)
+        ->and($report['cases'][0]['details'][0]['quantity'])->toBe(2);
+});
+
+it('counts one source message once even if OI created two event rows', function () {
+    linenMessage('Брак 2 полотенца с пятнами.', '231');
+    $original = TelegramOperationalEvent::query()->sole();
+    $duplicate = $original->replicate();
+    $duplicate->event_key = 'duplicate-of-'.$original->event_key;
+    $duplicate->save();
+    $evidence = $original->evidence()->sole()->replicate();
+    $evidence->operational_event_id = $duplicate->id;
+    $evidence->save();
+
+    $report = app(TelegramLinenDefectReportBuilder::class)->build('2026-10-15');
+
+    expect($report['known_units'])->toBe(2)
+        ->and($report['cases'])->toHaveCount(1);
+});
+
+it('keeps matching cross-message defect reports out of the confirmed quantity', function () {
+    linenMessage('Брак 2 полотенца с пятнами.', '241', topic: '12');
+    linenMessage('Брак 2 полотенца с пятнами.', '242', topic: '13');
+
+    $report = app(TelegramLinenDefectReportBuilder::class)->build('2026-10-15');
+    $text = app(TelegramLinenDefectReportFormatter::class)->format($report);
+
+    expect($report['cases'])->toHaveCount(2)
+        ->and($report['known_units'])->toBe(0)
+        ->and($text)->toContain('возможный повтор')
+        ->toContain('/241', '/242');
+});
+
 it('counts a defect reported as an early positive contribution', function () {
     linenMessage('Я заранее обнаружила брак 2 полотенец до заезда и сразу сообщила.', '251');
 

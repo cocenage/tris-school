@@ -129,9 +129,15 @@ it('keeps an operational question pending until four hours and matures it once',
     $early = $observer->observe($message, 'unanswered', Carbon::parse('2026-06-17 11:59:59', 'Europe/Rome'));
     $due = $observer->observe($message, 'unanswered', Carbon::parse('2026-06-17 12:00:00', 'Europe/Rome'));
     $again = $observer->observe($message, 'unanswered', Carbon::parse('2026-06-17 12:01:00', 'Europe/Rome'));
+    $observation = TelegramOperationalObservation::query()
+        ->where('telegram_message_id', $message->id)
+        ->where('evaluation_kind', 'message')
+        ->sole();
 
     expect($initial['outcome'])->toBe('pending_question')
         ->and($initial['unanswered_due_at'])->toContain('2026-06-17T12:00:00')
+        ->and($observation->getRawOriginal('unanswered_due_at'))->toBe('2026-06-17 10:00:00')
+        ->and($observation->unanswered_due_at->timestamp)->toBe(Carbon::parse('2026-06-17 12:00:00', 'Europe/Rome')->timestamp)
         ->and($early['outcome'])->toBe('pending_question')
         ->and($due['event_types'])->toContain('unanswered_question')
         ->and($again['idempotent_reuse'])->toBeTrue();
