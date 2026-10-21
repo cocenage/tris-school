@@ -7,7 +7,9 @@ use App\Models\SalaryQuestion;
 use App\Models\ScheduleQuestion;
 use App\Models\User;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramRichMessageBuilder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -26,6 +28,8 @@ class StaffFormTelegramService
             attachments: $record->attachments ?? [],
             adminUrl: url('/admin/salary-questions/' . $record->id . '/edit'),
             threadId: config('services.staff_forms.salary_thread_id'),
+            source: $record,
+            operationKey: 'salary_question:'.$record->id,
         );
     }
 
@@ -42,6 +46,8 @@ class StaffFormTelegramService
             attachments: $record->attachments ?? [],
             adminUrl: url('/admin/schedule-questions/' . $record->id . '/edit'),
             threadId: config('services.staff_forms.schedule_thread_id'),
+            source: $record,
+            operationKey: 'schedule_question:'.$record->id,
         );
     }
 
@@ -58,6 +64,8 @@ class StaffFormTelegramService
             attachments: $record->attachments ?? [],
             adminUrl: url('/admin/feedback-suggestions/' . $record->id . '/edit'),
             threadId: config('services.staff_forms.feedback_thread_id'),
+            source: $record,
+            operationKey: 'feedback_suggestion:'.$record->id,
         );
     }
 
@@ -91,6 +99,8 @@ class StaffFormTelegramService
         array $attachments,
         string $adminUrl,
         mixed $threadId = null,
+        ?Model $source = null,
+        ?string $operationKey = null,
     ): void {
         $token = config('services.telegram.bot_token');
         $chatId = config('services.staff_forms.chat_id');
@@ -100,6 +110,16 @@ class StaffFormTelegramService
 
             return;
         }
+
+        $context = [
+            'operation_key' => $operationKey,
+            'notification_type' => 'staff_form', 'bot' => 'work',
+            'chat_id' => (string) $chatId, 'message_thread_id' => $threadId,
+            'source_type' => $source ? class_basename($source) : null,
+            'source_id' => $source?->getKey(),
+        ];
+        $monitor = app(TelegramOutboundMonitor::class);
+        $monitor->expect($context);
 
         $message = [];
 
@@ -160,13 +180,13 @@ class StaffFormTelegramService
             notice: ! empty($attachments) ? 'Прикреплено файлов: ' . count($attachments) : null,
         );
 
-        $messageId = app(TelegramBotService::class)->sendRichMessage(
+        $messageId = $monitor->withContext($context, fn () => app(TelegramBotService::class)->sendRichMessage(
             chatId: (string) $chatId,
             richMessage: $rich,
             fallbackHtml: $payload['text'],
             threadId: filled($threadId) ? (string) $threadId : null,
             replyMarkup: $payload['reply_markup'],
-        );
+        ));
 
         if (! $messageId) {
             Log::error('Staff form telegram send failed', [
@@ -176,12 +196,9 @@ class StaffFormTelegramService
             throw new \RuntimeException('Telegram rejected staff form notification.');
         }
 
-        $this->sendAttachments(
-            token: $token,
-            chatId: $chatId,
-            threadId: $threadId,
-            attachments: $attachments,
-        );
+        $monitor->withContext($context, fn () => $this->sendAttachments(
+            token: $token, chatId: $chatId, threadId: $threadId, attachments: $attachments,
+        ));
     }
 
     protected function sendAttachments(

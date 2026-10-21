@@ -11,7 +11,6 @@
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     @livewireStyles
 
-    @if (request()->query('loader_preview') === '1')
         <style>
             #loader-preview-overlay {
                 position: fixed;
@@ -55,15 +54,12 @@
                 }
             }
         </style>
-    @endif
 </head>
 
 <body class="bg-[#FAFAFA] text-[#111]">
-    @if (request()->query('loader_preview') === '1')
         <div id="loader-preview-overlay" aria-hidden="true">
             <img src="{{ asset('assets/loaders/tris_academy_canvas_preview.gif') }}" alt="" width="128" height="128" fetchpriority="high">
         </div>
-    @endif
 
     <div class="mx-auto flex h-[100dvh] w-full max-w-[768px] flex-col overflow-hidden bg-[#FAFAFA]">
 
@@ -91,21 +87,20 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
     @livewireScripts
 
-    @if (request()->query('loader_preview') === '1')
         <script>
             (() => {
                 const overlay = document.getElementById('loader-preview-overlay');
                 const image = overlay?.querySelector('img');
 
-                if (!overlay || !image || window.__trisLoaderPreviewStarted) {
+                if (!overlay || !image || window.__trisLoaderStarted) {
+                    overlay?.remove();
                     return;
                 }
 
-                window.__trisLoaderPreviewStarted = true;
+                window.__trisLoaderStarted = true;
 
                 let dismissed = false;
-                let cycleStarted = false;
-                let cycleTimer;
+                let revealTimer;
                 let safetyTimer;
 
                 const dismiss = () => {
@@ -114,8 +109,9 @@
                     }
 
                     dismissed = true;
+                    window.__trisLoaderCompleted = true;
                     window.clearTimeout(safetyTimer);
-                    window.clearTimeout(cycleTimer);
+                    window.clearTimeout(revealTimer);
                     overlay.classList.remove('is-active');
                     overlay.classList.add('is-dismissing');
                     overlay.setAttribute('aria-hidden', 'true');
@@ -123,18 +119,6 @@
                 };
 
                 safetyTimer = window.setTimeout(dismiss, 8000);
-                const startCycle = () => {
-                    if (cycleStarted || dismissed) {
-                        return;
-                    }
-
-                    cycleStarted = true;
-                    overlay.classList.add('is-active');
-                    cycleTimer = window.setTimeout(() => {
-                        window.clearTimeout(safetyTimer);
-                        dismiss();
-                    }, 3300);
-                };
 
                 if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
                     dismiss();
@@ -142,20 +126,20 @@
                 }
 
                 image.addEventListener('error', dismiss, { once: true });
-
-                if (image.complete) {
-                    if (image.naturalWidth > 0) {
-                        startCycle();
-                    } else {
-                        dismiss();
+                const reveal = () => {
+                    if (!dismissed && image.complete && image.naturalWidth > 0 && document.readyState !== 'complete') {
+                        overlay.classList.add('is-active');
                     }
-
-                    return;
-                }
-
-                image.addEventListener('load', startCycle, { once: true });
+                };
+                image.addEventListener('load', reveal, { once: true });
+                revealTimer = window.setTimeout(reveal, 150);
+                window.addEventListener('load', dismiss, { once: true });
+                document.addEventListener('livewire:navigating', dismiss, { once: true });
+                document.addEventListener('livewire:navigated', () => {
+                    if (window.__trisLoaderCompleted) document.getElementById('loader-preview-overlay')?.remove();
+                });
+                if (document.readyState === 'complete' || (image.complete && image.naturalWidth === 0)) dismiss();
             })();
         </script>
-    @endif
 </body>
 </html>

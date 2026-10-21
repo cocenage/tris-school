@@ -5,6 +5,7 @@ namespace App\Filament\Resources\TelegramScheduledMessages;
 use App\Filament\Resources\TelegramScheduledMessages\Pages\CreateTelegramScheduledMessage;
 use App\Filament\Resources\TelegramScheduledMessages\Pages\EditTelegramScheduledMessage;
 use App\Filament\Resources\TelegramScheduledMessages\Pages\ListTelegramScheduledMessages;
+use App\Filament\Resources\TelegramScheduledMessages\RelationManagers\DeliveriesRelationManager;
 use App\Models\TelegramScheduledMessage;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramDestinationCatalog;
@@ -51,10 +52,10 @@ class TelegramScheduledMessageResource extends Resource
 
             Select::make('control_type')
                 ->label('Тип сообщения')
-                ->options(\App\Services\Telegram\ScheduledControlTypes::options())
+                ->options(ScheduledControlTypes::options())
                 ->native(false)
                 ->required()
-                ->helperText('Выберите один из шести типов контрольных сообщений.'),
+                ->helperText('Выберите один из семи типов контрольных сообщений.'),
 
             Select::make('telegram_chat_record_id')
                 ->label('Telegram чат')
@@ -92,7 +93,7 @@ class TelegramScheduledMessageResource extends Resource
                 ->label('Время отправки')
                 ->seconds(false)
                 ->helperText(fn (Get $get): ?string => match ($get('control_type')) {
-                    ScheduledControlTypes::CLOSING_CLEANINGS => 'Этот вопрос отправляется в 19:00 по Europe/Rome.',
+                    ScheduledControlTypes::SECOND_CLEANINGS_FINISHING => 'Этот вопрос отправляется в 19:00 по Europe/Rome.',
                     ScheduledControlTypes::CLOSING_PAYMENTS => 'Отправляется один раз после подтверждения завершения уборок.',
                     default => null,
                 })
@@ -183,7 +184,7 @@ class TelegramScheduledMessageResource extends Resource
 
     public static function getRelations(): array
     {
-        return [\App\Filament\Resources\TelegramScheduledMessages\RelationManagers\DeliveriesRelationManager::class];
+        return [DeliveriesRelationManager::class];
     }
 
     public static function getPages(): array

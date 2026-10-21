@@ -160,6 +160,8 @@ class InventoryRequest extends Model
             'request_id' => $this->id,
         ]);
 
+        SendRequestResultNotificationJob::reserve($this);
+
         SendRequestResultNotificationJob::dispatch(
             InventoryRequestTelegramService::class,
             self::class,

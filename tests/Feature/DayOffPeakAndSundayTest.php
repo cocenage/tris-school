@@ -174,6 +174,24 @@ it('does not add a peak date when a user selects it', function () {
         ->assertSet('peakModalDate', '25.08.2026');
 });
 
+it('keeps separate calendar clicks in one draft without submitting and lets a selected date be removed', function () {
+    $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Rome'));
+    $this->actingAs(dayOffTestUser());
+
+    Livewire::test('forms.page-weekend')
+        ->call('selectDate', '2026-08-24')
+        ->call('selectDate', '2026-08-27')
+        ->assertSet('ranges', [
+            ['start' => '2026-08-24', 'end' => '2026-08-24'],
+            ['start' => '2026-08-27', 'end' => '2026-08-27'],
+        ])
+        ->call('selectDate', '2026-08-24')
+        ->assertSet('ranges', [['start' => '2026-08-27', 'end' => '2026-08-27']])
+        ->assertDontSee('data-guide-target="selected-dates"', false);
+
+    expect(DayOffRequest::query()->count())->toBe(0);
+});
+
 it('rejects a peak date in a direct range submission', function () {
     $this->actingAs(dayOffTestUser());
 

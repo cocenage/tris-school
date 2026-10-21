@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\User;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramRichMessageBuilder;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -28,6 +29,9 @@ class TelegramUserNotificationService
             Log::warning('Telegram admin notification config missing.');
             return;
         }
+
+        $context = $this->accessContext($user, 'requested', (string) $adminChatId, $adminThreadId);
+        app(TelegramOutboundMonitor::class)->expect($context);
 
         $payload = [
             'chat_id' => $adminChatId,
@@ -78,13 +82,13 @@ class TelegramUserNotificationService
             notice: 'Пользователь ждёт подтверждения доступа к сайту.',
         );
 
-        $messageId = app(TelegramBotService::class)->sendRichMessage(
+        $messageId = app(TelegramOutboundMonitor::class)->withContext($context, fn () => app(TelegramBotService::class)->sendRichMessage(
             chatId: (string) $adminChatId,
             richMessage: $rich,
             fallbackHtml: $payload['text'],
             threadId: $adminThreadId ? (string) $adminThreadId : null,
             replyMarkup: $payload['reply_markup'],
-        );
+        ));
 
         if (!$messageId) {
             Log::warning('Telegram access requested notification failed.', [
@@ -121,7 +125,10 @@ class TelegramUserNotificationService
             return;
         }
 
-        if (! $this->sendAccessRichNotice(
+        $context = $this->accessContext($user, 'pending', (string) $user->telegram_id);
+        app(TelegramOutboundMonitor::class)->expect($context);
+
+        if (! app(TelegramOutboundMonitor::class)->withContext($context, fn () => $this->sendAccessRichNotice(
             user: $user,
             title: 'Заявка на доступ отправлена',
             status: 'Ожидает подтверждения',
@@ -133,7 +140,7 @@ class TelegramUserNotificationService
                 '',
                 'РљРѕРіРґР° Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂ РїРѕРґС‚РІРµСЂРґРёС‚ РґРѕСЃС‚СѓРї, РјС‹ РїСЂРёС€Р»С‘Рј СЃРѕРѕР±С‰РµРЅРёРµ Р·РґРµСЃСЊ.',
             ]),
-        )) {
+        ))) {
             Log::warning('Telegram access pending notification failed.', ['user_id' => $user->id]);
             return;
         }
@@ -194,7 +201,10 @@ class TelegramUserNotificationService
             return;
         }
 
-        if (! $this->sendAccessRichNotice(
+        $context = $this->accessContext($user, 'approved', (string) $user->telegram_id);
+        app(TelegramOutboundMonitor::class)->expect($context);
+
+        if (! app(TelegramOutboundMonitor::class)->withContext($context, fn () => $this->sendAccessRichNotice(
             user: $user,
             title: 'Доступ одобрен',
             status: 'Одобрено',
@@ -210,7 +220,7 @@ class TelegramUserNotificationService
                     'url' => route('landing'),
                 ]]],
             ],
-        )) {
+        ))) {
             Log::warning('Telegram access approved notification failed.', ['user_id' => $user->id]);
             return;
         }
@@ -265,6 +275,16 @@ class TelegramUserNotificationService
     protected function userAdminUrl(User $user): string
     {
         return url('/admin/education/users/' . $user->id . '/edit');
+    }
+
+    private function accessContext(User $user, string $kind, string $chatId, ?string $threadId = null): array
+    {
+        return [
+            'operation_key' => 'access:'.$kind.':'.$user->id,
+            'notification_type' => 'user_access', 'bot' => 'work',
+            'chat_id' => $chatId, 'message_thread_id' => $threadId,
+            'source_type' => 'User', 'source_id' => $user->id,
+        ];
     }
 
     private function sendAccessRichNotice(

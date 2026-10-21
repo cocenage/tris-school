@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Jobs\SendRequestResultNotificationJob;
 use App\Services\Forms\DayOffRequestTelegramService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -132,7 +133,9 @@ class DayOffRequest extends Model
             'request_id' => $this->id,
         ]);
 
-        \App\Jobs\SendRequestResultNotificationJob::dispatch(
+        SendRequestResultNotificationJob::reserve($this);
+
+        SendRequestResultNotificationJob::dispatch(
             DayOffRequestTelegramService::class,
             self::class,
             $this->id,

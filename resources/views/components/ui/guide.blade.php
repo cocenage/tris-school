@@ -1,4 +1,4 @@
-@props(['steps' => []])
+@props(['steps' => [], 'mode' => 'modal'])
 
 @php
     $guideKey = $attributes->get('guide-key', 'default-guide');
@@ -17,6 +17,135 @@
     }
 @endphp
 
+@if ($mode === 'spotlight')
+    <div x-data="{
+        open: false,
+        seen: @js($guideSeen),
+        guideKey: @js($guideKey),
+        steps: @js(array_values($steps)),
+        current: 0,
+        panes: [],
+        lastRect: '',
+        highlightStyle: '',
+        popupStyle: '',
+        reduced: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+        init() {
+            this.onOpen = () => this.start();
+            this.onClose = event => this.close(event.detail?.save ?? true);
+            this.onReposition = () => { if (this.open) window.requestAnimationFrame(() => this.measure()); };
+            window.addEventListener('open-guide', this.onOpen);
+            window.addEventListener('close-guide', this.onClose);
+            window.addEventListener('resize', this.onReposition);
+            window.addEventListener('scroll', this.onReposition, true);
+            this.observer = new MutationObserver(this.onReposition);
+            this.observer.observe(document.body, { childList: true, subtree: true });
+            this.popupObserver = new ResizeObserver(() => {
+                if (this.open) window.requestAnimationFrame(() => this.measure());
+            });
+            this.$nextTick(() => {
+                if (this.$refs.popup) this.popupObserver.observe(this.$refs.popup);
+            });
+            if (!this.seen) this.autoTimer = window.setTimeout(() => this.start(), 350);
+        },
+        destroy() {
+            window.removeEventListener('open-guide', this.onOpen);
+            window.removeEventListener('close-guide', this.onClose);
+            window.removeEventListener('resize', this.onReposition);
+            window.removeEventListener('scroll', this.onReposition, true);
+            window.clearTimeout(this.autoTimer);
+            this.observer?.disconnect();
+            this.popupObserver?.disconnect();
+        },
+        start() {
+            if (!this.steps.length) return;
+            this.current = 0;
+            this.open = true;
+            this.$nextTick(() => this.focusStep());
+        },
+        focusStep() {
+            this.lastRect = '';
+            window.dispatchEvent(new CustomEvent('guide-step-target', { detail: this.steps[this.current].target }));
+            const target = document.querySelector('[data-guide-target=' + this.steps[this.current].target + ']');
+            if (!target) return;
+            this.$nextTick(() => {
+                target.scrollIntoView({ behavior: this.reduced ? 'instant' : 'smooth', block: 'center' });
+                this.measure();
+                window.setTimeout(() => this.measure(), this.reduced ? 0 : 350);
+            });
+        },
+        measure() {
+            if (!this.open) return;
+            const target = document.querySelector('[data-guide-target=' + this.steps[this.current].target + ']');
+            if (!target) return;
+            const rect = target.getBoundingClientRect();
+            const height = this.$refs.popup?.offsetHeight || 210;
+            const signature = [this.current, rect.left, rect.top, rect.right, rect.bottom, window.innerWidth, window.innerHeight, height].join(':');
+            if (signature === this.lastRect) return;
+            this.lastRect = signature;
+            const left = Math.max(0, rect.left - 6);
+            const top = Math.max(0, rect.top - 6);
+            const right = Math.min(window.innerWidth, rect.right + 6);
+            const bottom = Math.min(window.innerHeight, rect.bottom + 6);
+            this.panes = [
+                { top: 0, left: 0, width: window.innerWidth, height: top },
+                { top: bottom, left: 0, width: window.innerWidth, height: window.innerHeight - bottom },
+                { top, left: 0, width: left, height: bottom - top },
+                { top, left: right, width: window.innerWidth - right, height: bottom - top },
+            ];
+            this.highlightStyle = `top:${top}px;left:${left}px;width:${right - left}px;height:${bottom - top}px`;
+            const width = Math.min(340, window.innerWidth - 32);
+            const popupLeft = Math.max(16, Math.min(window.innerWidth - width - 16, (left + right - width) / 2));
+            const preferredPopupTop = window.innerHeight - bottom >= top
+                ? bottom + 12 : top - height - 12;
+            const maxPopupTop = Math.max(16, window.innerHeight - height - 16);
+            const popupTop = Math.max(16, Math.min(maxPopupTop, preferredPopupTop));
+            this.popupStyle = `width:${width}px;left:${popupLeft}px;top:${popupTop}px`;
+        },
+        next() {
+            if (this.current === this.steps.length - 1) return this.close(true);
+            this.current++;
+            this.focusStep();
+        },
+        back() {
+            if (this.current === 0) return;
+            this.current--;
+            this.focusStep();
+        },
+        close(save = true) {
+            this.open = false;
+            this.panes = [];
+            if (!save || this.seen) return;
+            this.seen = true;
+            fetch(@js(route('form-guides.seen')), {
+                method: 'POST', credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json', 'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]')?.content ?? '',
+                },
+                body: JSON.stringify({ guide_key: this.guideKey }),
+            }).catch(() => {});
+        }
+    }" @keydown.escape.window="close(true)">
+        <template x-for="(pane, index) in panes" :key="index">
+            <div x-show="open" class="pointer-events-none fixed z-[130] bg-black/40 motion-reduce:transition-none" :style="`top:${pane.top}px;left:${pane.left}px;width:${pane.width}px;height:${pane.height}px`"></div>
+        </template>
+        <div x-show="open" x-cloak class="pointer-events-none fixed z-[131] rounded-[20px] ring-2 ring-[#213259]" :style="highlightStyle"></div>
+        <div x-show="open" x-cloak x-ref="popup" :style="popupStyle" class="fixed z-[132] rounded-[20px] bg-white p-4 text-[#213259] shadow-[0_16px_48px_rgba(0,0,0,0.22)]" role="dialog" aria-label="Как заполнить заявку">
+            <div class="mb-2 flex items-start justify-between gap-3">
+                <h2 class="text-[16px] font-semibold" x-text="steps[current]?.title"></h2>
+                <button type="button" @click="close(true)" class="text-[14px] text-[#52627A]" aria-label="Закрыть обучение">Закрыть</button>
+            </div>
+            <p class="text-[14px] leading-[1.5]" x-text="steps[current]?.text"></p>
+            <div class="mt-4 flex items-center justify-between gap-3">
+                <span class="text-[12px] text-[#7D8CA3]" x-text="(current + 1) + ' / ' + steps.length"></span>
+                <div class="flex gap-2">
+                    <button type="button" x-show="current > 0" @click="back()" class="rounded-full bg-[#F1F4F8] px-4 py-2 text-[14px]">Назад</button>
+                    <button type="button" @click="next()" class="rounded-full bg-[#213259] px-4 py-2 text-[14px] text-white" x-text="current === steps.length - 1 ? 'Готово' : 'Далее'"></button>
+                </div>
+            </div>
+        </div>
+    </div>
+@else
 <div
     x-data="{
         open: false,
@@ -162,3 +291,4 @@
         </div>
     </div>
 </div>
+@endif

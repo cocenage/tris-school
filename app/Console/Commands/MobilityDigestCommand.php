@@ -4,8 +4,11 @@ namespace App\Console\Commands;
 
 use App\Models\MobilityAlert;
 use App\Services\Mobility\MobilityAlertSyncService;
+use App\Services\Mobility\MobilityStrikesSummaryBuilder;
+use App\Services\Mobility\MobilityStrikesSummaryFormatter;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Weather\MilanWeatherService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
@@ -103,11 +106,16 @@ class MobilityDigestCommand extends Command
                         continue;
                     }
 
-                    $messageId = $bot->sendMessage(
+                    $messageId = app(TelegramOutboundMonitor::class)->withContext([
+                        'operation_key' => 'morning_digest:'.$date->toDateString().':'.$route['key'],
+                        'notification_type' => 'morning_digest',
+                        'district' => $route['key'],
+                        'scheduled_for' => $date->copy()->setTime(8, 0),
+                    ], fn () => $bot->sendAnalyticsMessage(
                         (string) $route['chat_id'],
                         $message,
                         (string) $route['duty_thread_id'],
-                    );
+                    ));
                     if ($messageId === null) {
                         $failed = true;
                         $this->error('District '.$route['key'].' morning digest was not sent.');
@@ -154,6 +162,11 @@ class MobilityDigestCommand extends Command
 
     protected function buildMessage(Carbon $date, $alerts, ?array $route = null): string
     {
+        $strikeSummary = app(MobilityStrikesSummaryBuilder::class)->build(
+            $date->toDateString(),
+            $route['key'] ?? null,
+            7,
+        );
         $weather = app(MilanWeatherService::class)->today(
             (float) ($route['latitude'] ?? 45.4642),
             (float) ($route['longitude'] ?? 9.1900),
@@ -162,6 +175,7 @@ class MobilityDigestCommand extends Command
 
         $alerts = $this->deduplicateAlerts($alerts)
             ->filter(fn (array $alert): bool => $this->isImportantWorkerAlert($alert))
+            ->reject(fn (array $alert): bool => $this->representedByStrikeSummary($alert, $strikeSummary['strikes']))
             ->values();
         $label = trim((string) ($route['label'] ?? ''));
         $text = Arr::random($this->greetings).($label !== '' ? ' · <b>'.e($label).'</b>' : '')."\n\n";
@@ -178,6 +192,8 @@ class MobilityDigestCommand extends Command
                 $text .= '• '.$this->workerAlertLine($alert)."\n";
             }
         }
+
+        $text .= "\n\n".app(MobilityStrikesSummaryFormatter::class)->formatMorningSection($strikeSummary);
 
         $text .= "\n".Arr::random($this->endings);
 
@@ -383,6 +399,26 @@ class MobilityDigestCommand extends Command
         }
 
         return preg_match('/interruzione totale|sospensione totale|blocco (?:totale|della circolazione)|servizio (?:completamente )?sospeso|полная остановка движения/iu', $text) === 1;
+    }
+
+    protected function representedByStrikeSummary(array $alert, array $strikes): bool
+    {
+        $title = mb_strtolower(trim((string) ($alert['title'] ?? '')));
+        $source = mb_strtolower((string) ($alert['source'] ?? ''));
+
+        foreach ($strikes as $strike) {
+            if ($source !== ($strike['source'] ?? null)) {
+                continue;
+            }
+            $representedTitle = $source === 'mit'
+                ? 'sciopero '.mb_strtolower((string) ($strike['operator'] ?? ''))
+                : mb_strtolower((string) ($strike['detail'] ?? ''));
+            if ($title !== '' && $title === $representedTitle) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function normalizedText(?string $value): string

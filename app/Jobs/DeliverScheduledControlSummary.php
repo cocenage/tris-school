@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -45,11 +46,16 @@ class DeliverScheduledControlSummary implements ShouldQueue
         }
 
         try {
-            $messageId = $telegram->sendAnalyticsMessage(
+            $messageId = app(TelegramOutboundMonitor::class)->withContext([
+                'operation_key' => 'scheduled_control_summary:'.$delivery->id,
+                'notification_type' => 'scheduled_control_summary',
+                'source_type' => 'telegram_scheduled_control_summary_delivery',
+                'source_id' => $delivery->id,
+            ], fn () => $telegram->sendAnalyticsMessage(
                 $delivery->chat_id,
                 $delivery->text,
                 $delivery->message_thread_id ?? '',
-            );
+            ));
         } catch (Throwable $error) {
             $this->markUncertain();
             Log::warning('scheduled_control_summary_outcome_uncertain', [

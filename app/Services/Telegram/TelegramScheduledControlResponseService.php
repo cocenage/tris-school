@@ -255,13 +255,13 @@ class TelegramScheduledControlResponseService
                 return ['status' => 'already_answered', 'response' => $delivery->responses()->latest('id')->first()];
             }
 
-            if ($delivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+            if (ScheduledControlTypes::triggersClosingPayments((string) $delivery->control_type)
                 && $existing !== null
                 && $existing->classification === 'confirmed') {
                 return ['status' => 'already_answered', 'response' => $existing];
             }
 
-            if ($delivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+            if (ScheduledControlTypes::triggersClosingPayments((string) $delivery->control_type)
                 && $existing !== null
                 && $action === 'no'
                 && $existing->classification === 'problem') {

@@ -27,11 +27,11 @@ class TelegramScheduledControlSummaryFormatter
             $parts = $answers->map(function ($response): string {
                 $name = htmlspecialchars((string) ($response->author_name ?: 'Сотрудник'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
-                $icon = match ($response->classification) {
-                    'confirmed' => '✅ ', 'problem' => '❌ ', 'partial' => '🟡 ', default => '❔ ',
+                $answer = match ($response->classification) {
+                    'confirmed' => '✅ Да', 'problem' => '❌ Нет', 'partial' => '🟡 Частично', default => '❔ Неясно',
                 };
 
-                return $icon.$name;
+                return $answer.' — '.$name;
             })->values()->all();
             $conflict = $answers->pluck('classification')->unique()->count() > 1;
             $lines[] = ($conflict ? '⚠️ ' : '').$label.($conflict ? ' — расхождение: ' : ' — ').implode(', ', $parts);

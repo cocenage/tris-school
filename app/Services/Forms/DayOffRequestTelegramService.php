@@ -4,6 +4,7 @@ namespace App\Services\Forms;
 
 use App\Models\DayOffRequest;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramRichMessageBuilder;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -27,6 +28,15 @@ class DayOffRequestTelegramService
 
             return;
         }
+
+        $monitor = app(TelegramOutboundMonitor::class);
+        $context = [
+            'operation_key' => 'day_off:created:'.$request->id,
+            'notification_type' => 'day_off', 'bot' => 'work',
+            'chat_id' => (string) $chatId, 'message_thread_id' => $threadId,
+            'source_type' => 'DayOffRequest', 'source_id' => $request->id,
+        ];
+        $monitor->expect($context);
 
         Carbon::setLocale('ru');
         $user = $request->user;
@@ -86,13 +96,13 @@ class DayOffRequestTelegramService
             notice: 'Заявка ожидает решения администратора или супервайзера.',
         );
 
-        $messageId = app(TelegramBotService::class)->sendRichMessage(
+        $messageId = $monitor->withContext($context, fn () => app(TelegramBotService::class)->sendRichMessage(
             chatId: (string) $chatId,
             richMessage: $rich,
             fallbackHtml: $text,
             threadId: filled($threadId) ? (string) $threadId : null,
             replyMarkup: ['inline_keyboard' => $keyboard],
-        );
+        ));
 
         if (! $messageId) {
             Log::error('Day off created telegram send failed', [

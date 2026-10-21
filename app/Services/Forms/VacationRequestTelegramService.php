@@ -4,6 +4,7 @@ namespace App\Services\Forms;
 
 use App\Models\VacationRequest;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramRichMessageBuilder;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -17,6 +18,16 @@ class VacationRequestTelegramService
         }
 
         $request->load(['user', 'days.reviewer']);
+        $version = substr(hash('sha256', $request->days->sortBy('id')
+            ->map(fn ($day) => $day->id.':'.$day->status.':'.$day->reviewed_at?->toISOString())->implode('|')), 0, 16);
+        $context = [
+            'operation_key' => 'vacation:source-edit:'.$request->id.':'.$version,
+            'notification_type' => 'vacation', 'method' => 'editMessageText', 'bot' => 'work',
+            'chat_id' => (string) $request->telegram_source_chat_id,
+            'source_type' => 'VacationRequest', 'source_id' => $request->id,
+        ];
+        $monitor = app(TelegramOutboundMonitor::class);
+        $monitor->expect($context);
         $statuses = $request->days->pluck('status');
         $pending = $statuses->contains('pending');
         $approved = $statuses->contains('approved');
@@ -60,10 +71,10 @@ class VacationRequestTelegramService
         $lines[] = '<a href="'.e(url('/admin/vacation-requests/'.$request->id.'/edit')).'">Открыть в админке</a>';
 
         try {
-            $edited = app(TelegramBotService::class)->editMessage(
+            $edited = $monitor->withContext($context, fn () => app(TelegramBotService::class)->editMessage(
                 (string) $request->telegram_source_chat_id, (int) $request->telegram_source_message_id, [],
                 implode("\n", $lines), forceLegacy: true,
-            );
+            ));
         } catch (\Throwable $exception) {
             Log::warning('Vacation source message sync failed.', ['request_id' => $request->id, 'exception' => class_basename($exception)]);
 
@@ -214,6 +225,15 @@ class VacationRequestTelegramService
             return;
         }
 
+        $monitor = app(TelegramOutboundMonitor::class);
+        $context = [
+            'operation_key' => 'vacation:created:'.$request->id,
+            'notification_type' => 'vacation', 'bot' => 'work',
+            'chat_id' => (string) $chatId, 'message_thread_id' => $threadId,
+            'source_type' => 'VacationRequest', 'source_id' => $request->id,
+        ];
+        $monitor->expect($context);
+
         Carbon::setLocale('ru');
 
         $dates = $request->days
@@ -254,12 +274,12 @@ class VacationRequestTelegramService
             notice: 'Заявка ожидает решения администратора или супервайзера.',
         );
 
-        $messageId = app(TelegramBotService::class)->sendRichMessage(
+        $messageId = $monitor->withContext($context, fn () => app(TelegramBotService::class)->sendRichMessage(
             chatId: (string) $chatId,
             richMessage: $rich,
             fallbackHtml: $text,
             threadId: filled($threadId) ? (string) $threadId : null,
-        );
+        ));
 
         if (! $messageId) {
             Log::error('Vacation created telegram send failed', [

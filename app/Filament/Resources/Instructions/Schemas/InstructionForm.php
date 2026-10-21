@@ -17,6 +17,8 @@ use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
+use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Components\View;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Str;
 
@@ -44,7 +46,7 @@ class InstructionForm
                                             ->unique(ignoreRecord: true),
                                     ]),
 
-          Textarea::make('telegram_keywords')
+                                    Textarea::make('telegram_keywords')
                                         ->label('Ключевые слова')
                                         ->rows(3)
                                         ->columnSpanFull(),
@@ -75,7 +77,7 @@ class InstructionForm
                                     FileUpload::make('cover_image')
                                         ->label('Обложка')
                                         ->image()
-                                            ->disk('public')
+                                        ->disk('public')
                                         ->directory('instructions/covers')
                                         ->columnSpanFull(),
 
@@ -174,6 +176,14 @@ class InstructionForm
                                                             'success' => 'Успешно',
                                                         ])
                                                         ->default('warning'),
+
+                                                    View::make('filament.instructions.callout-preview')
+                                                        ->viewData(fn (Get $get): array => [
+                                                            'type' => $get('type') ?? 'warning',
+                                                            'title' => $get('title') ?? '',
+                                                            'content' => $get('content') ?? '',
+                                                        ])
+                                                        ->columnSpanFull(),
                                                 ]),
 
                                             Block::make('steps')
@@ -267,7 +277,7 @@ class InstructionForm
                                                     FileUpload::make('image')
                                                         ->label('Изображение')
                                                         ->image()
-                                                            ->disk('public')
+                                                        ->disk('public')
                                                         ->directory('instructions/content'),
 
                                                     TextInput::make('caption')

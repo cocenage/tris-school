@@ -3,21 +3,40 @@
 namespace App\Services\Mobility;
 
 use App\Models\MobilityAlert;
+use Carbon\CarbonImmutable;
 
 class MobilityStrikesSummaryBuilder
 {
-    public function __construct(private MitStrikeSource $mit) {}
+    public function __construct(
+        private MitStrikeSource $mit,
+        private MobilityStrikeSourceStatus $sourceStatus,
+    ) {}
 
-    public function build(string $date): array
+    public function build(string $date, ?string $district = null, int $daysAhead = 0): array
     {
+        $start = CarbonImmutable::parse($date, 'Europe/Rome')->startOfDay();
+        $daysAhead = max(0, min(7, $daysAhead));
+        $end = $start->addDays($daysAhead);
+        $startDate = $start->toDateString();
+        $endDate = $end->toDateString();
+
         $alerts = MobilityAlert::query()
-            ->whereDate('starts_at', '<=', $date)
-            ->where(function ($query) use ($date): void {
-                $query->whereDate('starts_at', $date)->orWhereDate('ends_at', '>=', $date);
+            ->whereDate('starts_at', '<=', $endDate)
+            ->where(function ($query) use ($startDate, $endDate): void {
+                $query->whereDate('starts_at', '>=', $startDate)
+                    ->whereDate('starts_at', '<=', $endDate)
+                    ->orWhere(function ($active) use ($startDate): void {
+                        $active->whereDate('starts_at', '<', $startDate)
+                            ->whereDate('ends_at', '>=', $startDate);
+                    });
             })
             ->orderBy('id')
             ->get()
-            ->filter(fn (MobilityAlert $alert): bool => $this->relevant($alert, $date));
+            ->filter(fn (MobilityAlert $alert): bool => $this->relevant(
+                $alert,
+                $alert->starts_at?->toDateString() ?? $startDate,
+            ))
+            ->filter(fn (MobilityAlert $alert): bool => $district === null || $this->appliesToDistrict($alert, $district));
 
         $items = $alerts->map(fn (MobilityAlert $alert): array => $this->item($alert))
             ->sortBy(fn (array $item): int => $item['source'] === 'mit' ? 0 : 1)
@@ -51,7 +70,73 @@ class MobilityStrikesSummaryBuilder
 
         usort($strikes, fn (array $a, array $b): int => $a['cancelled'] <=> $b['cancelled']);
 
-        return ['date' => $date, 'strikes' => $strikes];
+        return [
+            'date' => $startDate,
+            'window_end' => $endDate,
+            'days_ahead' => $daysAhead,
+            'district' => $district,
+            'strikes' => $strikes,
+            'source_status' => $this->sourceStatus->forReport(),
+        ];
+    }
+
+    private function appliesToDistrict(MobilityAlert $alert, string $district): bool
+    {
+        $district = mb_strtolower(trim($district));
+        $milanDistricts = ['navigli', 'lodi', 'certosa', 'lambrate'];
+        $metadata = $alert->strike_metadata ?? [];
+        $source = mb_strtolower((string) $alert->source);
+        $operator = mb_strtolower((string) ($metadata['operator'] ?? '').' '.$alert->title);
+        $region = mb_strtolower(trim((string) ($metadata['region'] ?? '')));
+        $province = mb_strtolower(trim((string) ($metadata['province'] ?? '')));
+        $scope = mb_strtolower(trim((string) ($metadata['scope'] ?? '')));
+        $sector = mb_strtolower(trim((string) ($metadata['sector'] ?? '')));
+
+        $isAtm = $source === 'atm' || preg_match('/\batm\b|gruppo atm/iu', $operator) === 1;
+        if ($isAtm) {
+            return in_array($district, $milanDistricts, true);
+        }
+
+        if (str_contains($province, 'como')) {
+            return $district === 'como';
+        }
+
+        if (str_contains($province, 'milano') || str_contains($province, 'milan')) {
+            return in_array($district, $milanDistricts, true);
+        }
+
+        if (str_contains($scope, 'nazional')) {
+            return true;
+        }
+
+        $location = mb_strtolower(trim((string) $alert->district));
+        if (in_array($location, ['como', 'navigli', 'lodi', 'certosa', 'lambrate'], true)) {
+            return $location === $district;
+        }
+        if (in_array($location, ['milano', 'milan'], true) || preg_match('/\bm[1-5]\b/iu', $location) === 1) {
+            return in_array($district, $milanDistricts, true);
+        }
+        if (in_array($location, ['lombardia', 'italia'], true)) {
+            return true;
+        }
+
+        $text = mb_strtolower($alert->title.' '.($alert->description ?? ''));
+        if (preg_match('/\bcomo\b/iu', $text) === 1) {
+            return $district === 'como';
+        }
+        if (preg_match('/\bmilano\b|\bmilan\b/iu', $text) === 1) {
+            return in_array($district, $milanDistricts, true);
+        }
+
+        if ($region === 'lombardia') {
+            return true;
+        }
+
+        if ($source === 'trenord' || str_contains($operator, 'trenord') || str_contains($sector, 'ferroviar')) {
+            return true;
+        }
+
+        return false;
     }
 
     private function relevant(MobilityAlert $alert, string $date): bool
@@ -133,6 +218,12 @@ class MobilityStrikesSummaryBuilder
             str_contains($sector, 'trasporto pubblico') || $operator === 'ATM Milano' => 'Возможны перебои в работе общественного транспорта.',
             default => null,
         };
+        $geography = collect([
+            trim((string) ($metadata['scope'] ?? '')),
+            trim((string) ($metadata['region'] ?? '')),
+            trim((string) ($metadata['province'] ?? '')),
+            trim((string) $alert->district),
+        ])->filter()->unique()->implode(' · ');
 
         return [
             'identity' => $source === 'mit' ? 'mit:'.($metadata['identity'] ?? $alert->external_hash)
@@ -148,8 +239,13 @@ class MobilityStrikesSummaryBuilder
             'updated' => ($metadata['notification_kind'] ?? null) === 'updated',
             'duration' => $duration !== '' ? $duration : null,
             'guarantee' => $guarantee,
+            'starts_at' => $alert->starts_at?->toDateString(),
+            'ends_at' => $alert->ends_at?->toDateString(),
+            'sector' => trim((string) ($metadata['sector'] ?? '')) ?: null,
+            'geography' => $geography !== '' ? $geography : null,
             'effect' => $effect,
             'detail' => $source === 'mit' ? null : $title,
+            'url' => filled($alert->url) ? $alert->url : ($source === 'mit' ? config('mobility.strike_source_url') : null),
         ];
     }
 }
