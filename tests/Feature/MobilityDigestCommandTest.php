@@ -353,7 +353,7 @@ it('shows a confirmed critical network disruption but not a critical single-line
         ->not->toContain('M3 chiusura');
 });
 
-it('uses the existing sender and matching duty topics for regional morning delivery', function () {
+it('uses the analytics sender and matching duty topics for regional morning delivery', function () {
     config(['services.telegram.digest_districts' => [
         'navigli' => [
             'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11',
@@ -366,8 +366,8 @@ it('uses the existing sender and matching duty topics for regional morning deliv
     ]]);
     Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
     $this->mock(TelegramBotService::class, function (MockInterface $mock): void {
-        $mock->shouldReceive('sendMessage')->once()->with('-1001', Mockery::type('string'), '11')->andReturn(101);
-        $mock->shouldReceive('sendMessage')->once()->with('-1002', Mockery::type('string'), '22')->andReturn(102);
+        $mock->shouldReceive('sendAnalyticsMessage')->once()->with('-1001', Mockery::type('string'), '11')->andReturn(101);
+        $mock->shouldReceive('sendAnalyticsMessage')->once()->with('-1002', Mockery::type('string'), '22')->andReturn(102);
     });
 
     $this->artisan('mobility:digest', ['--date' => '2026-08-03'])
@@ -384,7 +384,7 @@ it('attempts the morning summary for every configured district', function () {
         ]])->all()]);
     $sent = [];
     $this->mock(TelegramBotService::class, function (MockInterface $mock) use (&$sent): void {
-        $mock->shouldReceive('sendMessage')->times(5)
+        $mock->shouldReceive('sendAnalyticsMessage')->times(5)
             ->andReturnUsing(function (string $chatId, string $text, string $threadId) use (&$sent): int {
                 $sent[] = [$chatId, $threadId, $text];
 
@@ -406,7 +406,7 @@ it('continues to later districts when an earlier morning send fails', function (
     ]]);
     $attempted = [];
     $this->mock(TelegramBotService::class, function (MockInterface $mock) use (&$attempted): void {
-        $mock->shouldReceive('sendMessage')->times(3)
+        $mock->shouldReceive('sendAnalyticsMessage')->times(3)
             ->andReturnUsing(function (string $chatId) use (&$attempted): ?int {
                 $attempted[] = $chatId;
                 if ($chatId === '-1001') {
@@ -428,7 +428,7 @@ it('reports incomplete district routes instead of silently sending only the firs
         'lodi' => ['label' => 'Lodi', 'chat_id' => '-1002', 'latitude' => 45.45, 'longitude' => 9.17],
     ]]);
     $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
-        ->shouldReceive('sendMessage')->once()->with('-1001', Mockery::type('string'), '11')->andReturn(101));
+        ->shouldReceive('sendAnalyticsMessage')->once()->with('-1001', Mockery::type('string'), '11')->andReturn(101));
 
     $this->artisan('mobility:digest', ['--date' => '2026-10-07'])
         ->expectsOutputToContain('District lodi skipped: missing_duty_thread_id')

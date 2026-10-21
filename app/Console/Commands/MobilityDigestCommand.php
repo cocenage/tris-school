@@ -103,7 +103,7 @@ class MobilityDigestCommand extends Command
                         continue;
                     }
 
-                    $messageId = $bot->sendMessage(
+                    $messageId = $bot->sendAnalyticsMessage(
                         (string) $route['chat_id'],
                         $message,
                         (string) $route['duty_thread_id'],
