@@ -106,6 +106,8 @@ class VacationRequest extends Model
 
         $this->syncSourceAfterCommit();
 
+        SendRequestResultNotificationJob::reserve($this);
+
         SendRequestResultNotificationJob::dispatch(
             VacationRequestTelegramService::class,
             self::class,

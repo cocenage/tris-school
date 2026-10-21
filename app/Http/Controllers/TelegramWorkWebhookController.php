@@ -13,6 +13,7 @@ use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramOperationalEventObserver;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramRichMessageBuilder;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
@@ -687,7 +688,15 @@ class TelegramWorkWebhookController extends Controller
             '<b>Время:</b> '.($user->approved_at ?? $user->updated_at)->timezone('Europe/Rome')->format('d.m.Y H:i'),
         ]);
 
-        return app(TelegramBotService::class)->editMessage(
+        $context = [
+            'operation_key' => 'access:review-message:'.$user->id.':'.$user->status,
+            'notification_type' => 'user_access', 'method' => 'editMessageText', 'bot' => 'work',
+            'chat_id' => (string) $chatId, 'source_type' => 'User', 'source_id' => $user->id,
+        ];
+        $monitor = app(TelegramOutboundMonitor::class);
+        $monitor->expect($context);
+
+        return $monitor->withContext($context, fn () => app(TelegramBotService::class)->editMessage(
             chatId: (string) $chatId,
             messageId: (int) $messageId,
             forceLegacy: true,
@@ -702,7 +711,7 @@ class TelegramWorkWebhookController extends Controller
             ),
             fallbackHtml: $fallbackHtml,
             replyMarkup: ['inline_keyboard' => []],
-        );
+        ));
     }
 
     private function editDayOffRequestMessage(
@@ -826,7 +835,17 @@ class TelegramWorkWebhookController extends Controller
             ];
         }
 
-        return app(TelegramBotService::class)->editMessage(
+        $version = substr(hash('sha256', $sortedDays->map(fn ($day) => $day->id.':'.$day->status.':'.$day->reviewed_at?->toISOString())->implode('|')), 0, 16);
+        $context = [
+            'operation_key' => 'day_off:review-message:'.$dayOffRequest->id.':'.$version,
+            'notification_type' => 'day_off', 'method' => 'editMessageText', 'bot' => 'work',
+            'chat_id' => (string) $chatId,
+            'source_type' => 'DayOffRequest', 'source_id' => $dayOffRequest->id,
+        ];
+        $monitor = app(TelegramOutboundMonitor::class);
+        $monitor->expect($context);
+
+        return $monitor->withContext($context, fn () => app(TelegramBotService::class)->editMessage(
             chatId: (string) $chatId,
             messageId: (int) $messageId,
             forceLegacy: true,
@@ -852,7 +871,7 @@ class TelegramWorkWebhookController extends Controller
             ),
             fallbackHtml: $payload['text'],
             replyMarkup: $payload['reply_markup'],
-        );
+        ));
     }
 
     private function answerCallback(array $callbackQuery, string $text): void

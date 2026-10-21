@@ -4,6 +4,7 @@ namespace App\Services\Forms;
 
 use App\Models\InventoryRequest;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramRichMessageBuilder;
 use Illuminate\Support\Facades\Log;
 
@@ -16,6 +17,16 @@ class InventoryRequestTelegramService
         }
 
         $request->load(['user', 'lines.processor']);
+        $version = substr(hash('sha256', $request->lines->sortBy('id')
+            ->map(fn ($line) => $line->id.':'.$line->status.':'.$line->issued_qty.':'.$line->processed_at?->toISOString())->implode('|')), 0, 16);
+        $context = [
+            'operation_key' => 'inventory:source-edit:'.$request->id.':'.$version,
+            'notification_type' => 'inventory', 'method' => 'editMessageText', 'bot' => 'work',
+            'chat_id' => (string) $request->telegram_source_chat_id,
+            'source_type' => 'InventoryRequest', 'source_id' => $request->id,
+        ];
+        $monitor = app(TelegramOutboundMonitor::class);
+        $monitor->expect($context);
         $status = match ($request->status) {
             'issued' => 'выдана', 'partially_issued' => 'частично выдана', 'cancelled' => 'отклонена',
             default => 'ожидает обработки',
@@ -51,10 +62,10 @@ class InventoryRequestTelegramService
         }
 
         try {
-            $edited = app(TelegramBotService::class)->editMessage(
+            $edited = $monitor->withContext($context, fn () => app(TelegramBotService::class)->editMessage(
                 (string) $request->telegram_source_chat_id, (int) $request->telegram_source_message_id, [],
                 implode("\n", $lines), forceLegacy: true,
-            );
+            ));
         } catch (\Throwable $exception) {
             Log::warning('Inventory source message sync failed.', ['request_id' => $request->id, 'exception' => class_basename($exception)]);
 
@@ -94,6 +105,15 @@ class InventoryRequestTelegramService
             return;
         }
 
+        $monitor = app(TelegramOutboundMonitor::class);
+        $context = [
+            'operation_key' => 'inventory:created:'.$request->id,
+            'notification_type' => 'inventory', 'bot' => 'work',
+            'chat_id' => (string) $forumChatId, 'message_thread_id' => $threadId,
+            'source_type' => 'InventoryRequest', 'source_id' => $request->id,
+        ];
+        $monitor->expect($context);
+
         $message = [];
         $message[] = '📦 <b>Новая заявка на инвентарь</b>';
         $message[] = '';
@@ -130,12 +150,12 @@ class InventoryRequestTelegramService
                 body: $request->comment,
             );
 
-            $messageId = app(TelegramBotService::class)->sendRichMessage(
+            $messageId = $monitor->withContext($context, fn () => app(TelegramBotService::class)->sendRichMessage(
                 chatId: (string) $forumChatId,
                 richMessage: $rich,
                 fallbackHtml: implode("\n", $message),
                 threadId: (string) $threadId,
-            );
+            ));
 
             if (! $messageId) {
                 throw new \RuntimeException('Telegram rejected inventory notification.');

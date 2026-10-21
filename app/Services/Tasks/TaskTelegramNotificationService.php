@@ -6,6 +6,7 @@ use App\Models\Task;
 use App\Models\TaskNotification;
 use App\Models\TaskRoom;
 use App\Models\User;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -197,8 +198,17 @@ class TaskTelegramNotificationService
             'status' => 'pending',
         ]);
 
+        $context = [
+            'operation_key' => 'task_notification:'.$notification->id,
+            'notification_type' => 'task', 'bot' => 'work',
+            'chat_id' => (string) $user->telegram_id,
+            'source_type' => 'TaskNotification', 'source_id' => $notification->id,
+        ];
+        $monitor = app(TelegramOutboundMonitor::class);
+        $monitor->expect($context);
+
         try {
-            $this->sendTelegram($user, $message, $buttons);
+            $monitor->withContext($context, fn () => $this->sendTelegram($user, $message, $buttons));
 
             $notification->update([
                 'status' => 'sent',

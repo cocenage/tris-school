@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
@@ -76,7 +77,13 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             $text = $isWorkControl
                 ? app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery)
                 : htmlspecialchars((string) $message->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-            $messageId = $telegram->{$send}(
+            $messageId = app(TelegramOutboundMonitor::class)->withContext([
+                'operation_key' => 'scheduled_delivery:'.$delivery->id,
+                'notification_type' => 'scheduled_control',
+                'source_type' => 'telegram_scheduled_message_delivery',
+                'source_id' => $delivery->id,
+                'scheduled_for' => $delivery->scheduled_for,
+            ], fn () => $telegram->{$send}(
                 (string) $delivery->chat_id,
                 $text,
                 $delivery->message_thread_id === null ? null : (string) $delivery->message_thread_id,
@@ -86,7 +93,7 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
                         ['text' => '❌ Нет', 'callback_data' => 'sc:'.$delivery->id.':no'],
                     ]],
                 ] : null),
-            );
+            ));
         } catch (ConnectionException $exception) {
             $this->markRetrying($delivery, 'connection_exception');
 

@@ -5,6 +5,7 @@ namespace App\Providers\Filament;
 use App\Filament\Widgets\ActivityOverview;
 use App\Filament\Widgets\AdminRequestsOverview;
 use App\Filament\Widgets\LatestActivity;
+use App\Filament\Widgets\TelegramDeliveryCenterWidget;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -52,6 +53,7 @@ class AdminPanelProvider extends PanelProvider
                 ActivityOverview::class,
                 AdminRequestsOverview::class,
                 LatestActivity::class,
+                TelegramDeliveryCenterWidget::class,
             ])
             ->middleware([
                 EncryptCookies::class,

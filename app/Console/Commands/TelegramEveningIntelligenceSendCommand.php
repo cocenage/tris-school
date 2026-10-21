@@ -7,6 +7,7 @@ use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramLinenDefectReportBuilder;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
@@ -155,9 +156,14 @@ class TelegramEveningIntelligenceSendCommand extends Command
             }
 
             try {
-                $messageId = $deliveryMode === 'centralized'
+                $messageId = app(TelegramOutboundMonitor::class)->withContext([
+                    'operation_key' => 'evening_intelligence:'.$date->toDateString().':'.$route['key'],
+                    'notification_type' => 'evening_intelligence',
+                    'district' => $route['key'],
+                    'scheduled_for' => $date->copy()->setTime(20, 30),
+                ], fn () => $deliveryMode === 'centralized'
                     ? $bot->sendMessage($targetChatId, $text, $targetThreadId)
-                    : $bot->sendAnalyticsMessage($targetChatId, $text, $targetThreadId);
+                    : $bot->sendAnalyticsMessage($targetChatId, $text, $targetThreadId));
             } catch (Throwable) {
                 $messageId = null;
             }

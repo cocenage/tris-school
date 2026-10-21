@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Services\Calendar\CalendarEventsService;
 use App\Services\Calendar\CalendarSummaryService;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
@@ -48,11 +49,19 @@ class SendTomorrowCalendarEventsNotification extends Command
             return self::FAILURE;
         }
 
-        $telegramBotService->sendMessage(
+        $context = [
+            'operation_key' => 'calendar:tomorrow:'.$tomorrow->toDateString(),
+            'notification_type' => 'calendar', 'bot' => 'work',
+            'chat_id' => (string) $chatId, 'message_thread_id' => $threadId,
+            'source_type' => 'CalendarDate', 'source_id' => $tomorrow->toDateString(),
+        ];
+        $monitor = app(TelegramOutboundMonitor::class);
+        $monitor->expect($context);
+        $monitor->withContext($context, fn () => $telegramBotService->sendMessage(
             chatId: $chatId,
             text: $message,
             threadId: $threadId,
-        );
+        ));
 
         $this->info('Уведомление отправлено.');
 

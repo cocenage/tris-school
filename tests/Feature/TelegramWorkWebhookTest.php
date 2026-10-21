@@ -7,6 +7,7 @@ use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\TelegramMessage;
+use App\Models\TelegramOutboundOperation;
 use App\Models\User;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramInstructionAutoReplyService;
@@ -44,7 +45,9 @@ beforeEach(function () {
 
     Schema::dropIfExists('day_off_request_days');
     Schema::dropIfExists('day_off_requests');
+    Schema::dropIfExists('telegram_outbound_operations');
     Schema::dropIfExists('users');
+    (require database_path('migrations/2026_10_21_000000_create_telegram_outbound_operations_table.php'))->up();
 
     Schema::create('users', function (Blueprint $table): void {
         $table->id();
@@ -550,7 +553,8 @@ it('applies an access rejection callback for an approved moderator', function ()
         ],
     ])->assertOk();
 
-    expect($employee->refresh()->status)->toBe('rejected');
+    expect($employee->refresh()->status)->toBe('rejected')
+        ->and(TelegramOutboundOperation::query()->where('operation_key', 'access:review-message:'.$employee->id.':rejected')->sole()->status)->toBe('edited');
 });
 
 it('resynchronizes a previously reviewed access request without applying another decision', function () {

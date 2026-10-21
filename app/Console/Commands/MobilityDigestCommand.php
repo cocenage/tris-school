@@ -6,6 +6,7 @@ use App\Models\MobilityAlert;
 use App\Services\Mobility\MobilityAlertSyncService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
+use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Weather\MilanWeatherService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
@@ -103,11 +104,16 @@ class MobilityDigestCommand extends Command
                         continue;
                     }
 
-                    $messageId = $bot->sendAnalyticsMessage(
+                    $messageId = app(TelegramOutboundMonitor::class)->withContext([
+                        'operation_key' => 'morning_digest:'.$date->toDateString().':'.$route['key'],
+                        'notification_type' => 'morning_digest',
+                        'district' => $route['key'],
+                        'scheduled_for' => $date->copy()->setTime(8, 0),
+                    ], fn () => $bot->sendAnalyticsMessage(
                         (string) $route['chat_id'],
                         $message,
                         (string) $route['duty_thread_id'],
-                    );
+                    ));
                     if ($messageId === null) {
                         $failed = true;
                         $this->error('District '.$route['key'].' morning digest was not sent.');
