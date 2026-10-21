@@ -176,28 +176,12 @@ new class extends Component
                 @endif
 
                 @if ($type === 'warning')
-                    @php
-                        $noteClass = match ($data['type'] ?? 'warning') {
-                            'info' => 'article-note-info',
-                            'success' => 'article-note-success',
-                            'danger' => 'article-note-danger',
-                            default => 'article-note-warning',
-                        };
-
-                        $noteTitle = trim($data['title'] ?? '');
-                    @endphp
-
-                    <aside class="article-note {{ $noteClass }}">
-                        @if ($noteTitle)
-                            <strong>{{ $noteTitle }}</strong>
-                        @endif
-
-                        @if (!empty($data['content']))
-                            <p class="{{ $noteTitle ? '' : 'article-note-no-title' }}">
-                                {{ $data['content'] }}
-                            </p>
-                        @endif
-                    </aside>
+                    <x-ui.instruction-callout
+                        :type="$data['type'] ?? 'warning'"
+                        :title="$data['title'] ?? ''"
+                        :content="$data['content'] ?? ''"
+                        :id="$sectionId"
+                    />
                 @endif
 
                 @if ($type === 'steps')
