@@ -696,7 +696,7 @@ public function getFormButtonTextProperty(): string
 
 
 
-<x-ui.guide-trigger />
+<button type="button" onclick="window.dispatchEvent(new CustomEvent('open-guide'))" class="rounded-full bg-[#E1E1E1] px-3 py-2 text-[13px] font-medium text-[#213259]">Как заполнить?</button>
 
     </div>
 </x-slot:header>
@@ -780,6 +780,7 @@ scrollToNextRequired(hasRanges, hasComment) {
 
     }"
     class="flex h-full min-h-0 flex-col bg-[#F4F7FB]"
+    @guide-step-target.window="if ($event.detail === 'submit') buttonsHidden = false"
 >
     <form wire:submit="submit" class="flex h-full min-h-0 flex-col">
         <div
@@ -788,7 +789,7 @@ scrollToNextRequired(hasRanges, hasComment) {
         >
             <div class="min-h-full rounded-t-[38px] bg-white">
               <div class="p-[20px] pb-[82px]">
-                    <div class="mb-[24px]" x-ref="calendarBlock">
+                    <div class="mb-[24px]" x-ref="calendarBlock" data-guide-target="calendar">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
                            Когда нужен выходной?
                         </h2>
@@ -887,7 +888,7 @@ scrollToNextRequired(hasRanges, hasComment) {
                         </div>
                     </div>
 
-                    <div class="mb-[8px]" x-ref="reasonBlock">
+                    <div class="mb-[8px]" x-ref="reasonBlock" data-guide-target="reason">
                         <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
                          Опишите причину
                         </h2>
@@ -934,7 +935,7 @@ scrollToNextRequired(hasRanges, hasComment) {
                         </x-ui.button>
                     </div>
 
-                    <div class="col-span-2">
+                    <div class="col-span-2" data-guide-target="submit">
                      <x-ui.button
     type="submit"
     variant="primary"
@@ -1071,146 +1072,9 @@ scrollToNextRequired(hasRanges, hasComment) {
         </x-ui.modal>
     </div>
 
-<x-ui.guide guide-key="day-off-request-guide-v4">
-    <div
-        x-data="{
-            current: 0,
-
-            steps: [
-                {
-                    image: '/images/weekend/1.webp',
-                    title: 'Запрос выходного',
-                    text: 'Выберите даты, укажите причину и отправьте заявку на согласование.',
-                },
-                {
-                        image: '/images/weekend/2.webp',
-                    title: 'Выберите даты',
-                    text: 'Нажимайте на нужные даты по одной. Повторное нажатие убирает дату из выбора.',
-                },
-                {
-                             image: '/images/weekend/3.webp',
-                    title: 'Можно выбрать несколько дней',
-                    text: 'Выберите все нужные даты. Они добавятся в одну заявку отдельными днями.',
-                },
-                {
-                             image: '/images/weekend/4.webp',
-                     title: 'Воскресенье можно выбрать',
-                     text: 'Заявку на воскресенье можно отправить заранее. Перед отправкой появится предупреждение, а решение примут в пятницу с учётом ожидаемой нагрузки.',
-                },
-                  {
-                             image: '/images/weekend/5.webp',
-                    title: 'Добавьте причину',
-                        text: 'Коротко объясните, почему нужен выходной. Так заявку будет проще согласовать.',
-                },
-                {
-                            image: '/images/weekend/6.webp',
-                    title: 'Отправьте заявку',
-                    text: 'После отправки заявка попадёт на рассмотрение, а статус вы можете посмотреть в разделе «Мои заявки».',
-                },
-            ],
-
-            init() {
-                window.addEventListener('open-guide', () => {
-                    this.current = 0;
-                });
-            },
-
-            next() {
-                if (this.current >= this.steps.length - 1) {
-                    window.dispatchEvent(new CustomEvent('close-guide', {
-                        detail: { save: true }
-                    }));
-
-                    return;
-                }
-
-                this.current++;
-            },
-
-            back() {
-                if (this.current > 0) {
-                    this.current--;
-                }
-            },
-        }"
-        class="flex min-h-[80vh] flex-col bg-white"
-    >
-        <div class="flex items-center justify-between px-[20px] pt-[20px]">
-            <div class="flex gap-[6px]">
-                <template x-for="(_, index) in steps" :key="index">
-                    <div
-                        class="h-[5px] rounded-full transition-all duration-300"
-                        :class="index <= current ? 'w-[26px] bg-[#111111]' : 'w-[5px] bg-[#DADADA]'"
-                    ></div>
-                </template>
-            </div>
-
-            <button
-                type="button"
-                onclick="window.dispatchEvent(new CustomEvent('close-guide', { detail: { save: true } }))"
-                class="flex h-[42px] w-[42px] items-center justify-center rounded-full bg-[#F4F4F4] text-[#111111] transition-all duration-300 active:scale-[0.94]"
-            >
-                <x-heroicon-o-x-mark class="h-[20px] w-[20px] stroke-[2.4]" />
-            </button>
-        </div>
-
-        <div class="flex flex-1 flex-col px-[20px] pt-[18px] pb-[8px]">
-            <div class="mb-[18px] rounded-[18px] bg-[#F7F9FC] px-[14px] py-[13px] text-[14px] leading-[1.5] text-[#52627A]">
-                <p class="font-semibold text-[#213259]">Как оформить выходной</p>
-                <ul class="mt-[7px] list-disc space-y-[4px] pl-[18px] text-left">
-                    <li>Выберите одну или несколько свободных дат в календаре.</li>
-                    <li>Красная дата недоступна из-за высокой загрузки — нажмите на неё, чтобы увидеть причину.</li>
-                    <li>Заполните причину: это обязательное поле, минимум несколько слов.</li>
-                    <li>После отправки заявка появится в разделе «Мои заявки». О решении сообщит система и Telegram.</li>
-                    <li>Если ответ задерживается, проверьте статус в «Моих заявках» и обратитесь к администратору.</li>
-                </ul>
-            </div>
-            <div class="flex flex-1 flex-col">
-                <div class="relative flex h-[330px] shrink-0 items-center justify-center overflow-hidden rounded-[36px] bg-gradient-to-br from-[#F4F7FB] via-[#EEF4FF] to-[#F7F2EC] p-[18px] ">
-              
-
-                    <img
-                        :src="steps[current].image"
-                        :alt="steps[current].title"
-                        class="relative z-[1] max-h-full max-w-full object-contain "
-                    >
-                </div>
-
-                <div class="min-h-[100px] pt-[18px] text-center">
-                    <h1
-                        class=" leading-[1.05] tracking-[-0.05em] text-[#111111]"
-                        x-text="steps[current].title"
-                    ></h1>
-
-                    <h2
-                        class="mx-auto mt-[8px] max-w-[330px] text-[15px] leading-[1.45] text-black/55"
-                        x-text="steps[current].text"
-                    ></h2>
-                </div>
-            </div>
-        </div>
-
-        <div class="px-[20px] pb-[20px]">
-            <div class="grid grid-cols-2 gap-[10px]">
-                <x-ui.button
-                    type="button"
-                    variant="secondary"
-                    @click="back()"
-                    x-bind:class="current === 0 ? 'opacity-0 pointer-events-none' : ''"
-                >
-                    Назад
-                </x-ui.button>
-
-                <x-ui.button
-                    type="button"
-                    variant="primary"
-                    progress="100"
-                    @click="next()"
-                >
-                    <span x-text="current === steps.length - 1 ? 'Понятно' : 'Далее'"></span>
-                </x-ui.button>
-            </div>
-        </div>
-    </div>
-</x-ui.guide>
+<x-ui.guide guide-key="day-off-request-guide-v5" mode="spotlight" :steps="[
+    ['target' => 'calendar', 'title' => 'Календарь', 'text' => 'В одной заявке можно выбрать сразу несколько выходных. Нажимайте на каждую нужную дату отдельно — она добавится к заявке. Повторное нажатие снимет выбор даты. Создавать новую заявку для каждой даты не нужно.'],
+    ['target' => 'reason', 'title' => 'Причина', 'text' => 'Теперь укажите, почему вам необходимы выходные. Одна причина относится ко всей заявке с выбранными датами.'],
+    ['target' => 'submit', 'title' => 'Отправка', 'text' => 'Проверьте выбранные даты и причину. После отправки все даты попадут в одну заявку на рассмотрение.'],
+]" />
 </div>

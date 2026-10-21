@@ -577,7 +577,7 @@ public function getFormButtonTextProperty(): string
             Заявка на отпуск
         </span>
 
-        <x-ui.guide-trigger />
+        <x-ui.guide-trigger label="Как заполнить?" />
     </div>
 </x-slot:header>
 
@@ -631,7 +631,7 @@ public function getFormButtonTextProperty(): string
         >
             <div class="min-h-full rounded-t-[38px] bg-white">
                 <div class="p-[20px] pb-[82px]">
-                    <div class="mb-[24px]">
+                    <div class="mb-[24px]" data-guide-target="vacation-period">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
                             Выберите период отпуска
                         </h2>
@@ -710,7 +710,7 @@ public function getFormButtonTextProperty(): string
                         </div>
                     </div>
 
-                    <div class="mb-[8px]">
+                    <div class="mb-[8px]" data-guide-target="vacation-reason">
                         <h2 class="mb-[14px] text-[16px] font-semibold text-[#213259]">
                             Опишите причину отпуска
                         </h2>
@@ -756,7 +756,7 @@ public function getFormButtonTextProperty(): string
                         </x-ui.button>
                     </div>
 
-                    <div class="col-span-2">
+                    <div class="col-span-2" data-guide-target="vacation-submit">
                        <x-ui.button
     type="submit"
     variant="primary"
@@ -822,11 +822,12 @@ public function getFormButtonTextProperty(): string
     </div>
 
     <x-ui.guide
-        guide-key="vacation-request-guide-v1"
+        guide-key="vacation-request-guide-v2"
+        mode="spotlight"
         :steps="[
-            ['title' => 'Заявка на отпуск', 'text' => 'Выберите период отпуска, укажите причину и отправьте заявку на согласование.'],
-            ['title' => 'Выберите даты', 'text' => 'Укажите первый и последний день отпуска. Перед отправкой проверьте весь период.'],
-            ['title' => 'Проверьте заявку', 'text' => 'Добавьте пояснение, убедитесь, что даты и причина заполнены, затем нажмите «Отправить».'],
+            ['target' => 'vacation-period', 'title' => 'Период отпуска', 'text' => 'Нажмите на дату начала, затем на дату окончания. Проверьте, что выделен весь нужный период.'],
+            ['target' => 'vacation-reason', 'title' => 'Причина', 'text' => 'Кратко объясните, почему вам нужен отпуск. Указанная причина относится ко всему периоду.'],
+            ['target' => 'vacation-submit', 'title' => 'Отправка', 'text' => 'Проверьте выбранный период и причину, затем нажмите «Отправить» для передачи заявки на рассмотрение.'],
         ]"
     />
 </div>

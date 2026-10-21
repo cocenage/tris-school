@@ -438,7 +438,7 @@ new class extends Component
             Заявка на инвентарь
         </span>
 
-        <x-ui.guide-trigger />
+        <x-ui.guide-trigger label="Как заполнить?" />
     </div>
 </x-slot:header>
 
@@ -486,7 +486,7 @@ new class extends Component
         >
             <div class="min-h-full rounded-t-[38px] bg-white">
                 <div class="p-[20px] pb-[110px]">
-                    <div class="mb-[20px]">
+                    <div class="mb-[20px]" data-guide-target="inventory-search">
                         <h2 class="mb-[14px] text-[16px] font-medium text-[#213259]">
                             Что необходимо получить?
                         </h2>
@@ -507,7 +507,7 @@ new class extends Component
                         </label>
                     </div>
 
-                    <div class="space-y-[14px]">
+                    <div class="space-y-[14px]" data-guide-target="inventory-catalog">
                         @forelse ($this->filteredCatalog as $product)
                             <section class="rounded-[23px] border border-[#E7E7E7] bg-[#F8F8F8] p-[14px]">
                                 <div class="mb-[12px] flex items-center justify-between gap-[12px]">
@@ -617,7 +617,7 @@ new class extends Component
                 </x-ui.button>
             </div>
 
-            <div class="col-span-2">
+            <div class="col-span-2" data-guide-target="inventory-submit">
                 <x-ui.button
                     type="button"
                     variant="primary"
@@ -690,11 +690,12 @@ new class extends Component
     </div>
 
     <x-ui.guide
-        guide-key="inventory-request-guide-v1"
+        guide-key="inventory-request-guide-v2"
+        mode="spotlight"
         :steps="[
-            ['title' => 'Заявка на инвентарь', 'text' => 'Выберите нужные позиции и количество, затем отправьте заявку ответственному сотруднику.'],
-            ['title' => 'Найдите позицию', 'text' => 'Используйте поиск или пролистайте каталог. Количество можно изменить прямо в карточке товара.'],
-            ['title' => 'Проверьте количество', 'text' => 'Перед отправкой убедитесь, что выбраны все нужные позиции и корректное количество.'],
+            ['target' => 'inventory-search', 'title' => 'Найдите позицию', 'text' => 'Введите название или вариант товара в поиске. Если поиск не нужен, пролистайте каталог ниже.'],
+            ['target' => 'inventory-catalog', 'title' => 'Выберите товар и количество', 'text' => 'Нажмите «Добавить» у нужного варианта. Затем измените количество кнопками −/+ или в поле; повторите для остальных позиций.'],
+            ['target' => 'inventory-submit', 'title' => 'Отправка', 'text' => 'Проверьте выбранные позиции и количество, затем нажмите кнопку отправки заявки.'],
         ]"
     />
 </div>
