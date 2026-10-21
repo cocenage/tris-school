@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Schema;
 use Mockery\MockInterface;
 
 beforeEach(function () {
+    config(['cache.default' => 'array']);
     Http::fake(['*' => Http::response(['hourly' => []])]);
     config(['services.telegram.digest_districts' => []]);
     Schema::dropIfExists('mobility_alerts');
@@ -36,6 +37,19 @@ beforeEach(function () {
 
 afterEach(function () {
     Schema::dropIfExists('mobility_alerts');
+});
+
+it('suppresses only the same strike already represented in the seven day overview', function () {
+    $method = new ReflectionMethod(MobilityDigestCommand::class, 'representedByStrikeSummary');
+    $command = app(MobilityDigestCommand::class);
+    $strikes = [[
+        'source' => 'mit',
+        'operator' => 'GRUPPO ATM DI MILANO',
+        'detail' => null,
+    ]];
+
+    expect($method->invoke($command, ['source' => 'mit', 'title' => 'Sciopero GRUPPO ATM DI MILANO'], $strikes))->toBeTrue()
+        ->and($method->invoke($command, ['source' => 'mit', 'title' => 'Sciopero TRENORD'], $strikes))->toBeFalse();
 });
 
 it('keeps routine metro closures out of the human morning digest', function () {

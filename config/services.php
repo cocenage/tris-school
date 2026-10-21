@@ -146,6 +146,8 @@ return [
 
         'mobility_targets' => env('TELEGRAM_MOBILITY_TARGETS'),
         'mobility_admin_targets' => env('TELEGRAM_MOBILITY_ADMIN_TARGETS'),
+        'mobility_strike_chat_id' => env('TELEGRAM_MOBILITY_STRIKE_CHAT_ID'),
+        'mobility_strike_thread_id' => env('TELEGRAM_MOBILITY_STRIKE_THREAD_ID'),
     ],
 
     'postmark' => [

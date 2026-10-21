@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\MobilityAlert;
+use App\Services\Mobility\MobilityStrikeSourceStatus;
 use App\Services\Mobility\MobilityStrikesSummaryBuilder;
 use App\Services\Mobility\MobilityStrikesSummaryFormatter;
 use App\Services\Telegram\TelegramBotService;
@@ -36,6 +37,7 @@ function strikeAlert(array $attributes = [], array $metadata = []): MobilityAler
 }
 
 beforeEach(function (): void {
+    config(['cache.default' => 'array']);
     Schema::create('mobility_alerts', function (Blueprint $table): void {
         $table->id();
         $table->string('source');
@@ -60,6 +62,14 @@ afterEach(function (): void {
 
 it('renders the requested date and a positive zero state without sending Telegram messages', function (): void {
     $this->mock(TelegramBotService::class)->shouldNotReceive('sendMessage', 'sendAnalyticsMessage');
+    app(MobilityStrikeSourceStatus::class)->recordRun([
+        'mit' => true,
+        'atm' => true,
+        'trenord_news' => true,
+        'trenord_strikes' => true,
+        'trenord_home' => true,
+        'telegram_undergroundstatus' => true,
+    ]);
 
     expect(Artisan::call('mobility:strikes-preview', ['--date' => '2026-10-07']))->toBe(0);
     expect(Artisan::output())->toContain('✊ TRIS — Забастовки · 07.10.2026')

@@ -31,13 +31,63 @@ function mitStrikeTable(array $overrides = [], bool $duplicate = false): string
 }
 
 beforeEach(function () {
+    config(['cache.default' => 'array']);
+    config(['mobility.strike_notifications_enabled' => true, 'mobility.strike_notifications_active_since' => '2026-07-01']);
     $this->travelTo(Carbon::parse('2026-10-01 10:00:00', 'Europe/Rome'));
-    config(['services.telegram.mobility_admin_targets' => '-100123:17', 'services.telegram.analytics_bot_token' => null, 'queue.connections.database.connection' => null]);
+    config(['services.telegram.mobility_admin_targets' => '-100123:17', 'services.telegram.mobility_strike_chat_id' => '-100123', 'services.telegram.mobility_strike_thread_id' => '17', 'services.telegram.analytics_bot_token' => null, 'queue.connections.database.connection' => null]);
     foreach (['2026_05_27_174319_create_mobility_alerts_table.php', '2026_07_02_042735_create_mobility_alert_messages_table.php', '2026_10_01_010000_add_strike_delivery_tracking_to_mobility_tables.php'] as $file) {
         (require database_path('migrations/'.$file))->up();
     }
     Bus::fake([DeliverMobilityAlert::class]);
     Http::fake(['*' => Http::response(mitStrikeTable())]);
+});
+
+it('stores historical first discoveries without sending a backlog and still notifies a later amendment', function () {
+    config(['mobility.strike_notifications_active_since' => '2026-10-01']);
+    $source = Mockery::mock(MitStrikeSource::class);
+    $source->shouldReceive('relevant')->twice()->andReturnTrue();
+    $source->shouldReceive('fetch')->twice()->andReturn(
+        app(MitStrikeSource::class)->normalize(mitStrikeTable()),
+        app(MitStrikeSource::class)->normalize(mitStrikeTable(['Modalità' => '4 ORE'])),
+    );
+    $sync = new MobilityStrikeSyncService($source);
+
+    expect($sync->sync()['queued'])->toBe(0)
+        ->and(MobilityAlert::count())->toBe(1)
+        ->and(MobilityAlertMessage::count())->toBe(0);
+    expect($sync->sync()['queued'])->toBe(1)
+        ->and(MobilityAlertMessage::count())->toBe(1);
+});
+
+it('does not reserve strike notifications while activation is disabled', function () {
+    config(['mobility.strike_notifications_enabled' => false]);
+
+    expect(app(MobilityStrikeSyncService::class)->sync()['queued'])->toBe(0)
+        ->and(MobilityAlert::count())->toBe(1)
+        ->and(MobilityAlertMessage::count())->toBe(0);
+});
+
+it('reserves one version for a newly announced strike, its move and its cancellation', function () {
+    config(['mobility.strike_notifications_active_since' => '2026-10-01']);
+    $source = Mockery::mock(MitStrikeSource::class);
+    $source->shouldReceive('relevant')->times(4)->andReturnTrue();
+    $source->shouldReceive('fetch')->times(4)->andReturn(
+        app(MitStrikeSource::class)->normalize(mitStrikeTable(['Data proclamazione' => '01/10/2026'])),
+        app(MitStrikeSource::class)->normalize(mitStrikeTable(['Data proclamazione' => '01/10/2026', 'Inizio' => '10/10/2026', 'Fine' => '10/10/2026'])),
+        app(MitStrikeSource::class)->normalize(mitStrikeTable(['Data proclamazione' => '01/10/2026', 'Inizio' => '10/10/2026', 'Fine' => '10/10/2026', 'Note' => 'SCIOPERO REVOCATO'])),
+        app(MitStrikeSource::class)->normalize(mitStrikeTable(['Data proclamazione' => '01/10/2026', 'Inizio' => '10/10/2026', 'Fine' => '10/10/2026', 'Note' => 'SCIOPERO REVOCATO'])),
+    );
+    $sync = new MobilityStrikeSyncService($source);
+
+    expect($sync->sync()['queued'])->toBe(1)
+        ->and($sync->sync()['queued'])->toBe(1)
+        ->and($sync->sync()['queued'])->toBe(1)
+        ->and($sync->sync()['queued'])->toBe(0)
+        ->and(MobilityAlert::count())->toBe(1)
+        ->and(MobilityAlertMessage::count())->toBe(3)
+        ->and(MobilityAlertMessage::query()->distinct()->pluck('chat_id')->all())->toBe(['-100123'])
+        ->and(MobilityAlertMessage::query()->distinct()->pluck('thread_id')->all())->toBe(['17'])
+        ->and(MobilityAlertMessage::latest('id')->first()->text)->toContain('Забастовка отменена');
 });
 
 afterEach(function () {
@@ -271,10 +321,10 @@ it('queues operator and scope amendments under the official ID', function () {
 });
 
 it('keeps normal delivery available when the destination is configured later', function () {
-    config(['services.telegram.mobility_admin_targets' => null]);
+    config(['services.telegram.mobility_strike_chat_id' => null]);
     app(MobilityStrikeSyncService::class)->sync();
     expect(MobilityAlert::count())->toBe(1)->and(MobilityAlertMessage::count())->toBe(0);
-    config(['services.telegram.mobility_admin_targets' => '-100123:17', 'services.telegram.analytics_bot_token' => null, 'queue.connections.database.connection' => null]);
+    config(['services.telegram.mobility_strike_chat_id' => '-100123', 'services.telegram.analytics_bot_token' => null, 'queue.connections.database.connection' => null]);
     expect(app(MobilityStrikeSyncService::class)->sync()['queued'])->toBe(1);
 });
 

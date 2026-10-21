@@ -13,6 +13,8 @@ class MobilityAlertSyncService
 {
     public array $strikeReport = [];
 
+    private array $strikeSourceStatuses = [];
+
     public function splitTelegramStatusEvents(string $title): array
     {
         $clean = $this->cleanTitle($title);
@@ -40,8 +42,8 @@ class MobilityAlertSyncService
                     'status' => $status,
                     'type' => $partial ? 'partial_closure' : 'closure',
                     'risk' => $partial ? 'medium' : 'high',
-                    'title' => $line . ' ' . $status,
-                    'description' => $line . ' ' . $status,
+                    'title' => $line.' '.$status,
+                    'description' => $line.' '.$status,
                 ];
             })
             ->filter()
@@ -105,7 +107,7 @@ class MobilityAlertSyncService
 
     protected function representationIdentities(MobilityAlert $alert): array
     {
-        $text = $this->cleanTitle($alert->title . ' ' . ($alert->description ?? ''));
+        $text = $this->cleanTitle($alert->title.' '.($alert->description ?? ''));
         $events = $this->splitTelegramStatusEvents($alert->title);
 
         if ($events !== []) {
@@ -132,7 +134,7 @@ class MobilityAlertSyncService
 
     protected function lineIdentity(string $line, string $type, ?string $date): string
     {
-        return mb_strtoupper($line) . '|' . $type . '|' . ($date ?: '');
+        return mb_strtoupper($line).'|'.$type.'|'.($date ?: '');
     }
 
     protected function inferRawEventType(string $text, ?string $type): string
@@ -168,7 +170,7 @@ class MobilityAlertSyncService
 
     protected function isIndependentEvent(MobilityAlert $alert): bool
     {
-        $text = mb_strtolower($alert->title . ' ' . ($alert->description ?? ''));
+        $text = mb_strtolower($alert->title.' '.($alert->description ?? ''));
 
         foreach (['concert', 'concerto', 'san siro', 'assago', 'partita', 'maraton', 'evento'] as $keyword) {
             if (str_contains($text, $keyword)) {
@@ -193,7 +195,7 @@ class MobilityAlertSyncService
         ?string $type,
         ?string $date,
     ): string {
-        $text = mb_strtolower($this->cleanTitle($title . ' ' . ($description ?? '')));
+        $text = mb_strtolower($this->cleanTitle($title.' '.($description ?? '')));
         preg_match('/\b(M[1-5])\b/i', $text, $lineMatch);
         $line = mb_strtoupper($lineMatch[1] ?? '');
 
@@ -248,15 +250,30 @@ class MobilityAlertSyncService
 
     public function sync(): int
     {
-        return $this->syncMitStrikes()
-            + $this->syncAtm()
-            + $this->syncTrenord()
-            + $this->syncUndergroundStatus();
+        $this->strikeSourceStatuses = array_fill_keys([
+            'mit', 'atm', 'trenord_news', 'trenord_strikes', 'trenord_home', 'telegram_undergroundstatus',
+        ], false);
+
+        try {
+            return $this->syncMitStrikes()
+                + $this->syncAtm()
+                + $this->syncTrenord()
+                + $this->syncUndergroundStatus();
+        } finally {
+            try {
+                app(MobilityStrikeSourceStatus::class)->recordRun($this->strikeSourceStatuses);
+            } catch (\Throwable $exception) {
+                Log::warning('Mobility strike source status could not be stored.', [
+                    'exception' => class_basename($exception),
+                ]);
+            }
+        }
     }
 
     protected function syncMitStrikes(): int
     {
         $this->strikeReport = app(MobilityStrikeSyncService::class)->sync();
+        $this->strikeSourceStatuses['mit'] = ($this->strikeReport['failed'] ?? 1) === 0;
 
         return $this->strikeReport['new'];
     }
@@ -265,7 +282,8 @@ class MobilityAlertSyncService
     {
         return $this->syncGenericPage(
             source: 'atm',
-            url: 'https://www.atm.it/it/Pagine/default.aspx'
+            url: 'https://www.atm.it/it/Pagine/default.aspx',
+            healthKey: 'atm',
         );
     }
 
@@ -274,13 +292,14 @@ class MobilityAlertSyncService
         $created = 0;
 
         foreach ([
-            'https://www.trenord.it/news/',
-            'https://www.trenord.it/assistenza/informazioni-utili/in-caso-di-sciopero/',
-            'https://www.trenord.it/',
-        ] as $url) {
+            'trenord_news' => 'https://www.trenord.it/news/',
+            'trenord_strikes' => 'https://www.trenord.it/assistenza/informazioni-utili/in-caso-di-sciopero/',
+            'trenord_home' => 'https://www.trenord.it/',
+        ] as $healthKey => $url) {
             $created += $this->syncGenericPage(
                 source: 'trenord',
-                url: $url
+                url: $url,
+                healthKey: $healthKey,
             );
         }
 
@@ -302,6 +321,7 @@ class MobilityAlertSyncService
                 ])
                 ->get($url);
         } catch (\Throwable $e) {
+            $this->strikeSourceStatuses['telegram_undergroundstatus'] = false;
             Log::warning('Mobility telegram source failed', [
                 'source' => 'telegram_undergroundstatus',
                 'url' => $url,
@@ -312,6 +332,7 @@ class MobilityAlertSyncService
         }
 
         if (! $response->successful()) {
+            $this->strikeSourceStatuses['telegram_undergroundstatus'] = false;
             Log::warning('Mobility telegram source bad status', [
                 'source' => 'telegram_undergroundstatus',
                 'url' => $url,
@@ -326,6 +347,8 @@ class MobilityAlertSyncService
             $response->body(),
             $matches
         );
+
+        $this->strikeSourceStatuses['telegram_undergroundstatus'] = ($matches[1] ?? []) !== [];
 
         $created = 0;
 
@@ -404,8 +427,10 @@ class MobilityAlertSyncService
         string $source,
         string $url,
         ?string $forcedType = null,
-        ?string $forcedRisk = null
+        ?string $forcedRisk = null,
+        ?string $healthKey = null,
     ): int {
+        $healthKey ??= $source;
         try {
             $response = Http::withoutVerifying()
                 ->connectTimeout(10)
@@ -417,6 +442,7 @@ class MobilityAlertSyncService
                 ])
                 ->get($url);
         } catch (\Throwable $e) {
+            $this->strikeSourceStatuses[$healthKey] = false;
             Log::warning('Mobility source request failed', [
                 'source' => $source,
                 'url' => $url,
@@ -427,6 +453,7 @@ class MobilityAlertSyncService
         }
 
         if (! $response->successful()) {
+            $this->strikeSourceStatuses[$healthKey] = false;
             Log::warning('Mobility source returned bad status', [
                 'source' => $source,
                 'url' => $url,
@@ -438,6 +465,9 @@ class MobilityAlertSyncService
         }
 
         $items = $this->extractLinks($url, $response->body());
+        $this->strikeSourceStatuses[$healthKey] = collect($items)->contains(fn (array $item): bool => preg_match('/scioper|\bstrike\b/iu', $item['title']) === 1
+            && $this->extractDate($item['title']) !== null
+        );
 
         $created = 0;
 
@@ -516,7 +546,7 @@ class MobilityAlertSyncService
         }
 
         return collect($items)
-            ->unique(fn ($item) => $item['title'] . '|' . $item['url'])
+            ->unique(fn ($item) => $item['title'].'|'.$item['url'])
             ->take(120)
             ->values()
             ->all();
@@ -776,7 +806,7 @@ class MobilityAlertSyncService
         $lower = mb_strtolower($text);
 
         foreach ($months as $monthName => $monthNumber) {
-            if (preg_match('/(\d{1,2})\s+' . $monthName . '/u', $lower, $match)) {
+            if (preg_match('/(\d{1,2})\s+'.$monthName.'/u', $lower, $match)) {
                 return Carbon::create(now()->year, $monthNumber, (int) $match[1])->startOfDay();
             }
         }
@@ -817,9 +847,9 @@ class MobilityAlertSyncService
         $host = $parts['host'] ?? '';
 
         if (Str::startsWith($href, '/')) {
-            return $scheme . '://' . $host . $href;
+            return $scheme.'://'.$host.$href;
         }
 
-        return rtrim($baseUrl, '/') . '/' . ltrim($href, '/');
+        return rtrim($baseUrl, '/').'/'.ltrim($href, '/');
     }
 }

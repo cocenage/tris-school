@@ -5,6 +5,7 @@ namespace App\Services\Mobility;
 use App\Jobs\DeliverMobilityAlert;
 use App\Models\MobilityAlert;
 use App\Models\MobilityAlertMessage;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -52,6 +53,16 @@ class MobilityStrikeSyncService
                     $counts[$kind]++;
                     $revision = $kind === 'unchanged' ? ($old['revision'] ?? 1) : ($old['revision'] ?? 0) + 1;
                     if ($dryRun) {
+                        if (! $this->shouldNotify($item, $kind, $old)) {
+                            if ($alert) {
+                                $counts['already_notified'] += MobilityAlertMessage::query()
+                                    ->where('mobility_alert_id', $alert->id)
+                                    ->where('message_type', 'strike_alert')
+                                    ->whereNotNull('sent_at')->count();
+                            }
+
+                            return;
+                        }
                         foreach ($this->targets() as $target) {
                             $key = $this->deliveryKey($alert?->id ?? 0, $revision, $item['version'], $target);
                             $existing = MobilityAlertMessage::query()->where('delivery_key', $key)->first();
@@ -77,6 +88,9 @@ class MobilityStrikeSyncService
                             'starts_at' => $item['starts_at'], 'ends_at' => $item['ends_at'],
                             'url' => config('mobility.strike_source_url'), 'strike_metadata' => $item,
                         ])->save();
+                    }
+                    if (! $this->shouldNotify($item, $kind, $old)) {
+                        return;
                     }
                     foreach ($this->targets() as $target) {
                         $key = $this->deliveryKey($alert->id, $revision, $item['version'], $target);
@@ -104,8 +118,9 @@ class MobilityStrikeSyncService
                 $counts['failed']++;
             }
         }
-        if (! $dryRun) {
+        if (! $dryRun && ($activation = $this->notificationActivation())) {
             MobilityAlertMessage::query()->where('message_type', 'strike_alert')->whereNull('sent_at')->whereNull('deleted_at')
+                ->where('created_at', '>=', $activation)
                 ->where(fn ($query) => $query->whereNull('queued_at')->orWhere('queued_at', '<=', now()->subHour()))
                 ->each(function (MobilityAlertMessage $message) use (&$counts): void {
                     try {
@@ -133,6 +148,54 @@ class MobilityStrikeSyncService
         return 1;
     }
 
+    private function shouldNotify(array $item, string $kind, array $old): bool
+    {
+        $activation = $this->notificationActivation();
+        if (! $activation) {
+            return false;
+        }
+
+        if ($item['ends_at'] < CarbonImmutable::now('Europe/Rome')->toDateString()) {
+            return false;
+        }
+
+        if ($kind === 'unchanged') {
+            if (in_array($old['notification_kind'] ?? null, ['updated', 'cancelled'], true)) {
+                return true;
+            }
+        } elseif ($kind !== 'new') {
+            return true;
+        }
+
+        if ($item['status'] === 'cancelled') {
+            return false;
+        }
+
+        try {
+            $announced = CarbonImmutable::createFromFormat('!d/m/Y', (string) ($item['proclaimed_at'] ?? ''), 'Europe/Rome');
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $announced && $announced->gte($activation) && $announced->lte(CarbonImmutable::now('Europe/Rome'));
+    }
+
+    private function notificationActivation(): ?CarbonImmutable
+    {
+        if (! config('mobility.strike_notifications_enabled')) {
+            return null;
+        }
+
+        $date = config('mobility.strike_notifications_active_since');
+        try {
+            $activation = CarbonImmutable::createFromFormat('!Y-m-d', (string) $date, 'Europe/Rome');
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $activation && $activation->toDateString() === $date ? $activation : null;
+    }
+
     private function deliveryKey(int $alertId, int $revision, string $version, array $target): string
     {
         return hash('sha256', implode('|', [$alertId, $revision, $version, $target['chat'], $target['thread'] ?? '']));
@@ -140,13 +203,10 @@ class MobilityStrikeSyncService
 
     private function targets(): array
     {
-        return collect(explode(',', (string) config('services.telegram.mobility_admin_targets')))
-            ->map(fn ($value) => trim($value))->filter()
-            ->map(function (string $value): array {
-                [$chat, $thread] = array_pad(explode(':', $value, 2), 2, null);
+        $chat = trim((string) config('services.telegram.mobility_strike_chat_id'));
+        $thread = trim((string) config('services.telegram.mobility_strike_thread_id'));
 
-                return ['chat' => trim($chat), 'thread' => $thread ? trim($thread) : null];
-            })->filter(fn ($target) => $target['chat'] !== '')->unique(fn ($target) => json_encode($target))->values()->all();
+        return $chat !== '' && $thread !== '' ? [['chat' => $chat, 'thread' => $thread]] : [];
     }
 
     private function message(MobilityAlert $alert, array $old): string
