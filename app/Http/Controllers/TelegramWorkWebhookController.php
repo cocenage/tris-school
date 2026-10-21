@@ -270,7 +270,7 @@ class TelegramWorkWebhookController extends Controller
             return response()->json(['ok' => true, 'callback_status' => $result['status']]);
         }
 
-        if ($delivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+        if (ScheduledControlTypes::triggersClosingPayments((string) $delivery->control_type)
             && app(TelegramScheduledControlResponseService::class)->allDistrictsConfirmed($delivery)
             && ! app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($delivery)) {
             Log::warning('Scheduled control payment follow-up could not be queued.', ['delivery_id' => $delivery->id]);

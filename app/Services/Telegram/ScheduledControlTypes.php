@@ -12,7 +12,9 @@ class ScheduledControlTypes
         'como' => 'Como',
     ];
 
-    public const CLOSING_CLEANINGS = 'second_cleanings_finishing';
+    public const CLOSING_CLEANINGS = 'cleanings_completed';
+
+    public const SECOND_CLEANINGS_FINISHING = 'second_cleanings_finishing';
 
     public const CLOSING_PAYMENTS = 'extra_payments_completed';
 
@@ -21,6 +23,7 @@ class ScheduledControlTypes
         'first_cleanings_started' => 'Все первые уборки начались',
         'first_cleanings_finishing' => 'Первые уборки подходят к завершению',
         'second_cleanings_finishing' => 'Вторые уборки подходят к завершению',
+        'cleanings_completed' => 'Все уборки завершены',
         'couriers_completed' => 'Курьеры завершили все доставки',
         'extra_payments_completed' => 'Все доплаты произведены',
     ];
@@ -33,7 +36,7 @@ class ScheduledControlTypes
     public static function scheduledTime(string $controlType, string $configuredTime): ?string
     {
         return match ($controlType) {
-            self::CLOSING_CLEANINGS => '19:00:00',
+            self::SECOND_CLEANINGS_FINISHING => '19:00:00',
             self::CLOSING_PAYMENTS => null,
             default => $configuredTime,
         };
@@ -41,7 +44,12 @@ class ScheduledControlTypes
 
     public static function supportsInlineAnswer(string $controlType): bool
     {
-        return in_array($controlType, [self::CLOSING_CLEANINGS, self::CLOSING_PAYMENTS], true);
+        return in_array($controlType, [self::CLOSING_CLEANINGS, self::SECOND_CLEANINGS_FINISHING, self::CLOSING_PAYMENTS], true);
+    }
+
+    public static function triggersClosingPayments(string $controlType): bool
+    {
+        return in_array($controlType, [self::CLOSING_CLEANINGS, self::SECOND_CLEANINGS_FINISHING], true);
     }
 
     public static function districtKeyboard(int $deliveryId): array

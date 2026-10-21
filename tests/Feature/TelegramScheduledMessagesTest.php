@@ -145,10 +145,14 @@ it('respects configured weekdays when the message is due at the current minute',
     Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
 });
 
-it('moves the closing cleanings question to 19:00 and never sends the payment question on its own', function (): void {
+it('sends closing cleanings at 17:30, preserves second cleanings at 19:00, and never schedules payments alone', function (): void {
     makeScheduledTelegramMessage([
         'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
         'name' => 'All cleanings finished', 'send_time' => '17:30:00', 'weekdays' => [1],
+    ]);
+    makeScheduledTelegramMessage([
+        'control_type' => ScheduledControlTypes::SECOND_CLEANINGS_FINISHING,
+        'name' => 'Second cleanings finishing', 'send_time' => '14:00:00', 'weekdays' => [1],
     ]);
     makeScheduledTelegramMessage([
         'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS,
@@ -158,7 +162,7 @@ it('moves the closing cleanings question to 19:00 and never sends the payment qu
 
     Carbon::setTestNow(Carbon::parse('2026-09-28 17:30:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
-        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
         ->assertExitCode(0);
     Carbon::setTestNow(Carbon::parse('2026-09-28 18:00:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
@@ -170,14 +174,15 @@ it('moves the closing cleanings question to 19:00 and never sends the payment qu
         ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
         ->assertExitCode(0);
 
-    expect(TelegramScheduledMessageDelivery::query()->sole()->control_type)->toBe(ScheduledControlTypes::CLOSING_CLEANINGS);
-    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+    expect(TelegramScheduledMessageDelivery::query()->pluck('control_type')->all())
+        ->toBe([ScheduledControlTypes::CLOSING_CLEANINGS, ScheduledControlTypes::SECOND_CLEANINGS_FINISHING]);
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 2);
 });
 
 it('adds five district answer rows to a control and no buttons to an informational message', function (): void {
     makeScheduledTelegramMessage([
         'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
-        'message' => 'All cleanings finished?', 'send_time' => '11:00:00', 'weekdays' => [1],
+        'message' => 'All cleanings finished?', 'send_time' => '19:00:00', 'weekdays' => [1],
     ]);
     makeScheduledTelegramMessage([
         'control_type' => 'reminder',

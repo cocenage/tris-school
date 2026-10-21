@@ -191,6 +191,25 @@ it('reserves new canonical controls for the Work bot and leaves informational me
         ->and(TelegramScheduledMessageDelivery::where('scheduled_message_id', $notice->id)->value('bot_type'))->toBe('scheduled');
 });
 
+it('keeps the 17:30 closing cleanings and conditional payments as distinct types', function () {
+    expect(ScheduledControlTypes::CLOSING_CLEANINGS)->not->toBe(ScheduledControlTypes::CLOSING_PAYMENTS)
+        ->and(ScheduledControlTypes::CLOSING_CLEANINGS)->not->toBe('second_cleanings_finishing')
+        ->and(ScheduledControlTypes::scheduledTime(ScheduledControlTypes::CLOSING_CLEANINGS, '17:30'))->toBe('17:30')
+        ->and(ScheduledControlTypes::scheduledTime('second_cleanings_finishing', '14:00'))->toBe('19:00:00')
+        ->and(ScheduledControlTypes::scheduledTime(ScheduledControlTypes::CLOSING_PAYMENTS, '18:00'))->toBeNull();
+});
+
+it('does not choose a wrong payment template while two active definitions share the payment type', function () {
+    Bus::fake();
+    $cleanings = controlDeliveryFixture(['control_type' => ScheduledControlTypes::CLOSING_CLEANINGS, 'bot_type' => 'work']);
+    closingPaymentTemplateFor($cleanings);
+    closingPaymentTemplateFor($cleanings);
+
+    expect(app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($cleanings))->toBeFalse()
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
+});
+
 it('sends a new control through Work bot with five district answer rows', function () {
     config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.scheduled_bot_token' => null]);
     $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work', 'status' => 'pending', 'telegram_message_id' => null]);
@@ -224,12 +243,23 @@ it('renders conflicting current district answers and linked comments without los
 
     $text = app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery->fresh());
 
-    expect($text)->toContain('Como', 'расхождение', 'Курьеров на Комо не было', 't.me/c/')
+    expect($text)->toContain('Como — расхождение:', '✅ Да — Duty', '❌ Нет — Duty', 'Курьеров на Комо не было', 't.me/c/')
+        ->toContain('Lambrate — нет ответа', 'Lodi — нет ответа', 'Certosa — нет ответа', 'Navigli — нет ответа')
         ->not->toContain('701', '702');
     expect($delivery->responses()->count())->toBe(4);
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
     $districts = collect($summary['controls'])->firstWhere('control_type', 'couriers_completed')['district_results'];
     expect(collect($districts)->firstWhere('district', 'Como')['status'])->toBe('conflict');
+});
+
+it('shows a linked question without turning it into a district yes or no', function () {
+    $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
+    captureControlReply(controlReplyPayload($delivery, 'Курьеров на Комо не было, закрывать уборки или ещё будут?', 501));
+
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery);
+
+    expect($text)->toContain('Como — нет ответа', 'Курьеров на Комо не было', 't.me/c/')
+        ->not->toContain('Como — ❌ Нет');
 });
 
 it('routes a Work bot district callback through polling and updates its original message', function () {
@@ -927,18 +957,19 @@ it('preserves later replies but uses each responders first reply for median late
         ->and($stats['median_response_latency_seconds'])->toBe(120.0)->and($stats['result'])->toBe('problem');
 });
 
-it('exposes the six canonical scheduled control types', function () {
+it('exposes the distinct closing cleanings and payments control types', function () {
     expect(ScheduledControlTypes::options())->toEqual([
         'schedule_checked' => 'Время уборок и заметки проверены',
         'first_cleanings_started' => 'Все первые уборки начались',
         'first_cleanings_finishing' => 'Первые уборки подходят к завершению',
         'second_cleanings_finishing' => 'Вторые уборки подходят к завершению',
+        'cleanings_completed' => 'Все уборки завершены',
         'couriers_completed' => 'Курьеры завершили все доставки',
         'extra_payments_completed' => 'Все доплаты произведены',
     ]);
 });
 
-it('renders only the six canonical control types and describes zero captured data clearly', function () {
+it('renders only the seven canonical control types and describes zero captured data clearly', function () {
     foreach (array_keys(ScheduledControlTypes::LABELS) as $controlType) {
         controlDeliveryFixture(['control_type' => $controlType]);
     }
@@ -947,7 +978,7 @@ it('renders only the six canonical control types and describes zero captured dat
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
     $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
 
-    expect($summary['controls'])->toHaveCount(6)
+    expect($summary['controls'])->toHaveCount(7)
         ->and(collect($summary['controls'])->pluck('control_type')->all())->toEqual(array_keys(ScheduledControlTypes::LABELS))
         ->and($text)->toContain('График и заметки: нет данных', 'Доплаты: нет данных')
         ->and(substr_count($text, 'Ответы на контрольные сообщения за этот день не зафиксированы.'))->toBe(1);
@@ -1154,7 +1185,7 @@ it('does not duplicate an expected occurrence when its sent delivery exists', fu
     ])->and($summary['missing_deliveries'])->toBe([]);
 });
 
-it('expects the closing cleanings question at 19:00 and excludes the follow-up from standalone expectations', function () {
+it('expects closing cleanings at its configured time and excludes the payment follow-up', function () {
     $this->travelTo(Carbon::parse('2026-10-01 08:00:00', 'Europe/Rome'));
     $chat = TelegramChat::firstOrCreate(
         ['telegram_chat_id' => '-1001'],
@@ -1175,7 +1206,7 @@ it('expects the closing cleanings question at 19:00 and excludes the follow-up f
 
     expect($summary['missing_deliveries'])->toHaveCount(1)
         ->and($summary['missing_deliveries'][0]['control_type'])->toBe(ScheduledControlTypes::CLOSING_CLEANINGS)
-        ->and($summary['missing_deliveries'][0]['scheduled_for'])->toContain('T19:00:00');
+        ->and($summary['missing_deliveries'][0]['scheduled_for'])->toContain('T17:30:00');
 });
 
 it('does not invent a missing occurrence when a filtered delivery already exists for that control and day', function () {

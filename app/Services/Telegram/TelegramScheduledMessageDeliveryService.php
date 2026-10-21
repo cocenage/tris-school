@@ -115,12 +115,12 @@ class TelegramScheduledMessageDeliveryService
         $scheduledFor = CarbonImmutable::parse($cleaningsDelivery->getRawOriginal('scheduled_for'), $timezone);
         $cleaningsThreadId = $cleaningsDelivery->message_thread_id === null ? null : (string) $cleaningsDelivery->message_thread_id;
 
-        $message = TelegramScheduledMessage::query()->enabled()
+        $matches = TelegramScheduledMessage::query()->enabled()
             ->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)
             ->with(['telegramChat', 'telegramTopic'])
             ->orderBy('id')
             ->get()
-            ->first(function (TelegramScheduledMessage $candidate) use ($cleaningsDelivery, $cleaningsThreadId, $scheduledFor): bool {
+            ->filter(function (TelegramScheduledMessage $candidate) use ($cleaningsDelivery, $cleaningsThreadId, $scheduledFor): bool {
                 $candidateThreadId = $candidate->telegramTopic?->telegram_thread_id;
                 $candidateThreadId = $candidateThreadId === null ? null : (string) $candidateThreadId;
 
@@ -134,9 +134,18 @@ class TelegramScheduledMessageDeliveryService
                     && in_array($scheduledFor->dayOfWeekIso, array_map('intval', $candidate->weekdays ?? []), true);
             });
 
-        if ($message === null) {
+        if ($matches->count() !== 1) {
+            if ($matches->count() > 1) {
+                Log::warning('Scheduled closing payment has ambiguous active templates.', [
+                    'source_delivery_id' => $cleaningsDelivery->getKey(),
+                    'candidate_count' => $matches->count(),
+                ]);
+            }
+
             return false;
         }
+
+        $message = $matches->first();
 
         $occurrences = TelegramScheduledMessageDelivery::query()
             ->where('scheduled_message_id', $message->getKey())

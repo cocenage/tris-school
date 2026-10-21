@@ -42,7 +42,7 @@ class TelegramScheduledInboundProcessor
             $response = $this->responses->capture($stored, $message);
             $delivery = $response?->delivery;
 
-            if ($delivery?->control_type === ScheduledControlTypes::CLOSING_CLEANINGS && $response?->classification === 'confirmed') {
+            if ($delivery !== null && ScheduledControlTypes::triggersClosingPayments((string) $delivery->control_type) && $response?->classification === 'confirmed') {
                 if (! $this->deliveries->queueClosingPayments($delivery)) {
                     throw new \RuntimeException('Could not queue the scheduled closing payment question.');
                 }
@@ -77,7 +77,7 @@ class TelegramScheduledInboundProcessor
         $answer = 'Эта кнопка больше не действует.';
 
         if ($delivery !== null && $response !== null) {
-            if ($delivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+            if (ScheduledControlTypes::triggersClosingPayments((string) $delivery->control_type)
                 && $response->classification === 'confirmed') {
                 if (! $this->deliveries->queueClosingPayments($delivery)) {
                     if (is_string($callbackId) && $callbackId !== '') {
@@ -89,7 +89,7 @@ class TelegramScheduledInboundProcessor
 
                 $answer = 'Ответ сохранён. Вопрос о доплатах отправлен.';
                 $this->telegram->clearScheduledMessageButtons((string) $delivery->chat_id, (int) $delivery->telegram_message_id);
-            } elseif ($delivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS && $result['action'] === 'no') {
+            } elseif (ScheduledControlTypes::triggersClosingPayments((string) $delivery->control_type) && $result['action'] === 'no') {
                 $answer = 'Ответ сохранён. Его можно изменить на «Да». Зафиксирован дежурный ответ.';
             } elseif ($delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
                 $answer = 'Итоговый ответ сохранён.';
