@@ -9,67 +9,30 @@ class MobilityStrikesSummaryFormatter
     public function formatMorningSection(array $summary): string
     {
         $start = CarbonImmutable::parse($summary['date'], 'Europe/Rome');
-        $end = CarbonImmutable::parse($summary['window_end'] ?? $summary['date'], 'Europe/Rome');
-        $range = $start->format('d.m.Y');
-        if ($end->toDateString() !== $start->toDateString()) {
-            $range .= '–'.$end->format('d.m.Y');
+        $strikes = collect($summary['strikes'] ?? [])
+            ->reject(fn (array $strike): bool => (bool) ($strike['cancelled'] ?? false))
+            ->take(6)
+            ->values();
+
+        if ($strikes->isEmpty()) {
+            return '';
         }
 
-        $lines = ['🚇 <b>Забастовки · '.$range.'</b>'];
-        $strikes = $summary['strikes'] ?? [];
+        $lines = [];
+        foreach ($strikes as $strike) {
+            $line = '🚇 Забастовка '.$this->morningTransport($strike);
+            $date = $this->morningDate($strike, $start);
+            $time = $this->confirmedTime($strike['duration'] ?? null);
 
-        if ($strikes === []) {
-            $lines[] = $this->emptyMorningStatus($summary['source_status'] ?? []);
-
-            return implode("\n", $lines);
-        }
-
-        foreach (array_slice($strikes, 0, 6) as $strike) {
-            $lines[] = '';
-            $date = $this->strikeDate($strike);
-            $tomorrow = ! $strike['cancelled']
-                && ($strike['starts_at'] ?? null) === $start->addDay()->toDateString();
-            $status = $strike['cancelled'] ? '✅ ' : ($tomorrow ? '🚨 Завтра: ' : '⚠️ ');
-            $suffix = $strike['cancelled'] ? ' — забастовка отменена.' : ($strike['updated'] ? ' — данные обновлены.' : '');
-            $lines[] = $status.$this->clean($strike['operator']).' · '.$date.$suffix;
-
-            if ($strike['sector'] !== null) {
-                $lines[] = 'Сфера: '.$this->sector($strike['sector']);
+            if ($date !== null) {
+                $line .= ' · '.$date;
             }
-            if ($strike['geography'] !== null) {
-                $lines[] = 'География: '.$this->clean($strike['geography']);
-            }
-            if (! $strike['cancelled']) {
-                if ($strike['duration'] !== null) {
-                    $lines[] = 'Время: '.$this->clean($strike['duration']);
-                }
-                if ($strike['guarantee'] !== null) {
-                    $lines[] = $this->clean($strike['guarantee']);
-                }
-                if ($strike['effect'] !== null) {
-                    $lines[] = 'Влияние: '.$strike['effect'];
-                }
-                if ($strike['detail'] !== null && $strike['duration'] === null) {
-                    $lines[] = $this->clean($strike['detail']);
-                }
+            if ($time !== null) {
+                $line .= ' · '.$time;
             }
 
-            $source = $this->clean(implode(', ', array_unique($strike['sources'] ?? [$strike['source_label'] ?? 'Источник'])));
-            $url = trim((string) ($strike['url'] ?? ''));
-            $lines[] = $url !== ''
-                ? 'Источник: <a href="'.e($url).'">'.$source.'</a>'
-                : 'Источник: '.$source;
-        }
-
-        if (count($strikes) > 6) {
-            $lines[] = '';
-            $lines[] = 'Ещё '.(count($strikes) - 6).' подтверждённых сообщений в источниках.';
-        }
-
-        $warning = $this->incompleteMorningStatus($summary['source_status'] ?? []);
-        if ($warning !== null) {
-            $lines[] = '';
-            $lines[] = $warning;
+            $lines[] = $line;
+            $lines[] = $this->morningImpact($strike);
         }
 
         return implode("\n", $lines);
@@ -140,6 +103,61 @@ class MobilityStrikesSummaryFormatter
         $value = trim((string) preg_replace('/\s+/u', ' ', $value));
 
         return mb_strimwidth($value, 0, 180, '…');
+    }
+
+    private function morningTransport(array $strike): string
+    {
+        $sector = mb_strtolower((string) ($strike['sector'] ?? ''));
+        $source = mb_strtolower((string) ($strike['source'] ?? ''));
+
+        return str_contains($sector, 'ferroviar') || $source === 'trenord'
+            ? 'железнодорожного транспорта'
+            : (str_contains($sector, 'trasporto pubblico') || $source === 'atm'
+                ? 'городского транспорта'
+                : 'транспорта');
+    }
+
+    private function morningImpact(array $strike): string
+    {
+        $sector = mb_strtolower((string) ($strike['sector'] ?? ''));
+        $source = mb_strtolower((string) ($strike['source'] ?? ''));
+
+        return str_contains($sector, 'ferroviar') || $source === 'trenord'
+            ? 'Возможны перебои в движении поездов.'
+            : (str_contains($sector, 'trasporto pubblico') || $source === 'atm'
+                ? 'Возможны перебои в работе городского транспорта.'
+                : 'Возможны перебои в работе транспорта.');
+    }
+
+    private function morningDate(array $strike, CarbonImmutable $reportDate): ?string
+    {
+        $start = CarbonImmutable::parse($strike['starts_at'] ?? $reportDate->toDateString(), 'Europe/Rome');
+        $end = CarbonImmutable::parse($strike['ends_at'] ?? $start->toDateString(), 'Europe/Rome');
+
+        if ($start->toDateString() === $reportDate->toDateString()
+            && $end->toDateString() === $reportDate->toDateString()) {
+            return null;
+        }
+
+        $label = $start->format('d.m.Y');
+
+        return $end->toDateString() !== $start->toDateString()
+            ? $label.'–'.$end->format('d.m.Y')
+            : $label;
+    }
+
+    private function confirmedTime(mixed $duration): ?string
+    {
+        $duration = trim((string) $duration);
+        $range = '(?:[01]?\d|2[0-3]):[0-5]\d\s*[-–—]\s*(?:[01]?\d|2[0-3]):[0-5]\d';
+
+        if ($duration === '' || preg_match('/^'.$range.'(?:\s*(?:e|,|;)\s*'.$range.')*$/iu', $duration) !== 1) {
+            return null;
+        }
+
+        $duration = preg_replace('/\s*[-–—]\s*/u', '–', $duration);
+
+        return trim((string) preg_replace('/\s*(?:e|;)\s*/iu', ', ', $duration));
     }
 
     private function strikeDate(array $strike): string

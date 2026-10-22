@@ -96,9 +96,9 @@ it('includes a confirmed strike during the report date plus seven day window wit
     $text = app(MobilityStrikesSummaryFormatter::class)->formatMorningSection($summary);
 
     expect($summary['strikes'])->toHaveCount(1)
-        ->and($text)->toContain('20.10.2026–27.10.2026', 'Trenord', '24.10.2026–25.10.2026')
-        ->toContain('06:00–09:00 e 18:00–21:00', 'железнодорожный транспорт', 'Como')
-        ->toContain('https://scioperi.mit.gov.it/official-strike');
+        ->and($text)->toContain('🚇 Забастовка железнодорожного транспорта · 24.10.2026–25.10.2026 · 06:00–09:00, 18:00–21:00')
+        ->toContain('Возможны перебои в движении поездов.')
+        ->not->toContain('Trenord', 'TRENORD', 'MIT', 'Источник:', 'Como', 'География:', 'Сфера:');
 });
 
 it('limits an ATM strike to Milan districts and excludes events beyond the seven day horizon', function (): void {
@@ -124,9 +124,10 @@ it('limits an ATM strike to Milan districts and excludes events beyond the seven
     $milan = $formatter->formatMorningSection($builder->build('2026-10-20', 'navigli', 7));
     $como = $formatter->formatMorningSection($builder->build('2026-10-20', 'como', 7));
 
-    expect($milan)->toContain('ATM Milano · 24.10.2026')
+    expect($milan)->toContain('Забастовка городского транспорта · 24.10.2026')
+        ->not->toContain('ATM')
         ->not->toContain('28/10/2026')
-        ->and($como)->not->toContain('ATM Milano 24/10/2026');
+        ->and($como)->toBe('');
 });
 
 it('emphasizes tomorrow once within the seven day district overview', function (): void {
@@ -136,8 +137,37 @@ it('emphasizes tomorrow once within the seven day district overview', function (
         app(MobilityStrikesSummaryBuilder::class)->build('2026-10-20', 'navigli', 7)
     );
 
-    expect($text)->toContain('Завтра')
-        ->and(substr_count($text, 'ATM Milano · 21.10.2026'))->toBe(1);
+    expect($text)->toContain('21.10.2026')
+        ->not->toContain('Завтра', 'ATM Milano', 'источник')
+        ->and(substr_count($text, '21.10.2026'))->toBe(1);
+});
+
+it('does not show source diagnostics or cancelled announcements in the morning digest', function (): void {
+    $formatter = app(MobilityStrikesSummaryFormatter::class);
+    $summary = app(MobilityStrikesSummaryBuilder::class)->build('2026-10-20', 'lodi', 7);
+
+    expect($formatter->formatMorningSection($summary))->toBe('');
+
+    morningStrike([], ['status' => 'cancelled']);
+    $cancelled = app(MobilityStrikesSummaryBuilder::class)->build('2026-10-20', 'navigli', 7);
+
+    expect($formatter->formatMorningSection($cancelled))->toBe('');
+});
+
+it('omits duration text that is not a confirmed time range', function (): void {
+    morningStrike([
+        'title' => 'Sciopero GRUPPO ATM DI MILANO',
+        'description' => 'Durata prevista per tutta la giornata',
+    ], [
+        'duration' => '24 ORE: VARIE MODALITA',
+    ]);
+
+    $text = app(MobilityStrikesSummaryFormatter::class)->formatMorningSection(
+        app(MobilityStrikesSummaryBuilder::class)->build('2026-10-20', 'navigli', 7)
+    );
+
+    expect($text)->toContain('Забастовка городского транспорта · 24.10.2026')
+        ->not->toContain('24 ORE', '06:00', '08:45', '15:00', 'ATM', 'MIT');
 });
 
 it('does not certify an empty strike overview from an empty successful HTML page', function (): void {
@@ -159,7 +189,7 @@ it('does not report a positive zero state when source completeness is unknown or
     $unknown = $formatter->formatMorningSection($unknownSummary);
     $standalone = $formatter->format($unknownSummary);
 
-    expect($unknown)->toContain('отсутствие забастовок не подтверждено')
+    expect($unknown)->toBe('')
         ->not->toContain('Подтверждённых забастовок')
         ->and($standalone)->toContain('отсутствие забастовок не подтверждено')
         ->not->toContain('На сегодня подтверждённых забастовок');
@@ -174,9 +204,7 @@ it('does not report a positive zero state when source completeness is unknown or
     ]);
     $partial = $formatter->formatMorningSection($builder->build('2026-10-20', 'lodi', 7));
 
-    expect(mb_strtolower($partial))->toContain('источники забастовок обработаны частично')
-        ->toContain('trenord')
-        ->not->toContain('подтверждённых забастовок');
+    expect($partial)->toBe('');
 });
 
 it('reports a zero state only after all configured strike sources were recently available', function (): void {
@@ -193,8 +221,7 @@ it('reports a zero state only after all configured strike sources were recently 
         app(MobilityStrikesSummaryBuilder::class)->build('2026-10-20', 'certosa', 7)
     );
 
-    expect($text)->toContain('На этот период подтверждённых забастовок не найдено.')
-        ->not->toContain('отсутствие забастовок не подтверждено');
+    expect($text)->toBe('');
 });
 
 it('marks old source checks as stale instead of claiming that no strike exists', function (): void {
@@ -211,8 +238,7 @@ it('marks old source checks as stale instead of claiming that no strike exists',
         app(MobilityStrikesSummaryBuilder::class)->build('2026-10-20', 'certosa', 7)
     );
 
-    expect($text)->toContain('Статус источников устарел')
-        ->not->toContain('На этот период подтверждённых забастовок не найдено.');
+    expect($text)->toBe('');
 });
 
 it('records unavailable providers from the existing mobility sync for the next morning report', function (): void {

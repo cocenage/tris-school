@@ -38,7 +38,7 @@ class TelegramDeliveryCenter
             ? TelegramOutboundOperation::query()->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
                 ->where('notification_type', '!=', 'mobility_alert')
                 ->where(fn ($query) => $query->whereNull('operation_key')
-                    ->orWhereNotIn('notification_type', ['morning_digest', 'evening_intelligence', 'scheduled_control', 'scheduled_control_summary']))
+                    ->orWhereNotIn('notification_type', ['morning_digest', 'evening_intelligence', 'scheduled_control', 'scheduled_control_summary', 'calendar']))
                 ->selectRaw('status, COUNT(*) as total')->groupBy('status')->get()
             : collect();
 
@@ -47,7 +47,10 @@ class TelegramDeliveryCenter
             $slots = $this->scheduledSlots($date, $now, $journalAvailable, $monitorStartedAt);
             $slots = [...$slots, ...$this->existingDeliverySlots($date, $now, $journalAvailable)];
         } catch (Throwable $exception) {
-            $slots = [];
+            $calendarSlot = $this->calendarSlot($date, $now, null);
+            $calendarSlot['status'] = 'unmonitored';
+            $calendarSlot['reason'] = 'Источник доставок недоступен';
+            $slots = [$calendarSlot];
             $sourceError = 'Источник доставок недоступен: '.class_basename($exception);
         }
         $expected = count($slots) + $dailyOperations->sum('total');
@@ -74,7 +77,7 @@ class TelegramDeliveryCenter
                 ->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
                 ->where('notification_type', '!=', 'mobility_alert')
                 ->where(fn ($query) => $query->whereNull('operation_key')
-                    ->orWhereNotIn('notification_type', ['morning_digest', 'evening_intelligence', 'scheduled_control', 'scheduled_control_summary']))
+                    ->orWhereNotIn('notification_type', ['morning_digest', 'evening_intelligence', 'scheduled_control', 'scheduled_control_summary', 'calendar']))
                 ->where('status', 'pending')
                 ->where('attempted_at', '<', $now->subMinutes(10)->format('Y-m-d H:i:s'))
                 ->count();
@@ -83,6 +86,7 @@ class TelegramDeliveryCenter
 
             $staleExpected = TelegramOutboundOperation::query()
                 ->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
+                ->where('notification_type', '!=', 'calendar')
                 ->where('status', 'expected')
                 ->where('created_at', '<', $now->subMinutes(10)->format('Y-m-d H:i:s'))
                 ->count();
@@ -137,13 +141,20 @@ class TelegramDeliveryCenter
             }
         }
 
+        $calendarSlot = $this->calendarSlot($date, $now, $monitorStartedAt);
+        $keys[] = $calendarSlot['key'];
+        $slots[] = $calendarSlot;
+
         if ($journalAvailable && $keys !== []) {
             $actual = TelegramOutboundOperation::query()->whereIn('operation_key', $keys)->get()->keyBy('operation_key');
             foreach ($slots as &$slot) {
                 $operation = $actual->get($slot['key']);
                 if ($operation !== null) {
                     $slot['status'] = $operation->status === 'pending' && $operation->attempted_at?->lt($now->subMinutes(10))
-                        ? 'uncertain' : $operation->status;
+                        ? 'uncertain'
+                        : ($slot['type'] === 'calendar' && $operation->status === 'expected'
+                            && $operation->created_at?->lt($now->subMinutes($graceMinutes))
+                            ? 'missed' : $operation->status);
                     $slot['reason'] = $operation->error_reason;
                 }
             }
@@ -201,6 +212,26 @@ class TelegramDeliveryCenter
         }
 
         return $slots;
+    }
+
+    private function calendarSlot(string $date, CarbonImmutable $now, ?string $monitorStartedAt): array
+    {
+        $forDate = CarbonImmutable::parse($date, 'Europe/Rome')->addDay();
+        $key = 'calendar:tomorrow:'.$forDate->toDateString();
+        $due = CarbonImmutable::parse($date.' 06:00', 'Europe/Rome');
+
+        return [
+            'key' => $key,
+            'type' => 'calendar',
+            'district' => null,
+            'bot' => 'work',
+            'chat_id' => config('services.telegram.chat_id_calendar'),
+            'thread_id' => config('services.telegram.thread_id_calendar'),
+            'due' => $due,
+            'for_date' => $forDate,
+            'status' => $this->missingStatus($due, $now, 10, $monitorStartedAt),
+            'reason' => config('services.telegram.chat_id_calendar') ? null : 'Маршрут календарной сводки не настроен',
+        ];
     }
 
     private function missingStatus(CarbonImmutable $due, CarbonImmutable $now, int $graceMinutes, ?string $monitorStartedAt): string
