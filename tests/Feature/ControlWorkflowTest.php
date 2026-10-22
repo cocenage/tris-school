@@ -330,6 +330,7 @@ it('stores a short video with its Classic control question', function () {
         ->set('answers.0.0.selected', 'yes')
         ->set('photoUploads.0.0', [UploadedFile::fake()->create('clip.mp4', 512, 'video/mp4')])
         ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('saved')
         ->assertCount('answers.0.0.media', 1)
         ->call('openReview')
         ->assertSet('reviewSheetOpen', true)
@@ -350,8 +351,43 @@ it('rejects unsupported Classic attachments', function () {
     Livewire::test('forms.page-control')
         ->set('photoUploads.0.0', [UploadedFile::fake()->create('document.pdf', 50, 'application/pdf')])
         ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('error')
         ->assertCount('answers.0.0.media', 0)
         ->assertHasErrors('queuedPhotos.0.0');
+});
+
+it('recovers from a failed optional Classic upload without losing answers or blocking submission', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('local');
+
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('first.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('saved')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->create('document.pdf', 50, 'application/pdf')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('error')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('too-big.jpg')->size(11000)])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('error')
+        ->assertCount('answers.0.0.media', 1)
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('retry.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('saved')
+        ->assertCount('answers.0.0.media', 2);
+
+    $component->call('removeQueuedPhoto', 0, 0, 0)
+        ->call('removeQueuedPhoto', 0, 0, 0)
+        ->assertCount('answers.0.0.media', 0)
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    expect(DB::table('control_responses')->count())->toBe(1)
+        ->and(json_decode((string) DB::table('control_responses')->value('responses'), true)[0][0]['selected'])->toBe('yes');
 });
 
 it('restores, removes and submits Classic draft media without accepting a foreign path', function () {
