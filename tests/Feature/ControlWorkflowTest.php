@@ -330,6 +330,7 @@ it('stores a short video with its Classic control question', function () {
         ->set('answers.0.0.selected', 'yes')
         ->set('photoUploads.0.0', [UploadedFile::fake()->create('clip.mp4', 512, 'video/mp4')])
         ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('saved')
         ->assertCount('answers.0.0.media', 1)
         ->call('openReview')
         ->assertSet('reviewSheetOpen', true)
@@ -350,8 +351,43 @@ it('rejects unsupported Classic attachments', function () {
     Livewire::test('forms.page-control')
         ->set('photoUploads.0.0', [UploadedFile::fake()->create('document.pdf', 50, 'application/pdf')])
         ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('error')
         ->assertCount('answers.0.0.media', 0)
         ->assertHasErrors('queuedPhotos.0.0');
+});
+
+it('recovers from a failed optional Classic upload without losing answers or blocking submission', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('local');
+
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('first.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('saved')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->create('document.pdf', 50, 'application/pdf')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('error')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('too-big.jpg')->size(11000)])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('error')
+        ->assertCount('answers.0.0.media', 1)
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('retry.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('saved')
+        ->assertCount('answers.0.0.media', 2);
+
+    $component->call('removeQueuedPhoto', 0, 0, 0)
+        ->call('removeQueuedPhoto', 0, 0, 0)
+        ->assertCount('answers.0.0.media', 0)
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    expect(DB::table('control_responses')->count())->toBe(1)
+        ->and(json_decode((string) DB::table('control_responses')->value('responses'), true)[0][0]['selected'])->toBe('yes');
 });
 
 it('restores, removes and submits Classic draft media without accepting a foreign path', function () {
@@ -443,40 +479,59 @@ it('keeps Focus separate from Classic and restores the same server draft', funct
     Livewire::test('forms.page-control')->assertSet('answers.0.0.selected', 'yes');
 });
 
-it('navigates Focus questions and preserves options text and both answers', function () {
+it('shows all questions in the active Focus room and preserves configured question types and answers', function () {
     [, , , $control] = mountControlWorkflow();
     $control->update(['main' => [[
-        'title' => 'Комната A',
+        'title' => 'Ванная',
         'items' => [
-            controlWorkflowSchema()[0]['items'][0],
-            ['question' => 'Комментарий', 'answer_type' => 'text'],
+            [
+                'question' => 'Полотенца на месте?',
+                'answer_type' => 'options',
+                'answer_options_scored' => [
+                    ['value' => 'complete', 'label' => 'Все на месте', 'points' => 1],
+                    ['value' => 'missing', 'label' => 'Не хватает', 'points' => 0],
+                ],
+            ],
+            ['question' => 'Комментарий по ванной', 'answer_type' => 'text'],
+            [
+                'question' => 'Смеситель исправен?',
+                'answer_type' => 'both',
+                'custom_answer_label' => 'Что именно не так?',
+                'answer_options_scored' => [['value' => 'ok', 'label' => 'Работает', 'points' => 1]],
+            ],
         ],
     ], [
-        'title' => 'Комната B',
-        'items' => [[
-            'question' => 'Состояние', 'answer_type' => 'both',
-            'custom_answer_label' => 'Подробности состояния',
-            'answer_options_scored' => [['value' => 'good', 'label' => 'Хорошо', 'points' => 1]],
-        ]],
+        'title' => 'Кухня',
+        'items' => [['question' => 'Плита чистая?', 'answer_type' => 'text']],
     ]]]);
 
     Livewire::test('forms.page-control-focus')
         ->call('start')
-        ->assertSet('questionPosition', 0)
-        ->call('setAnswer', 0, 0, 'yes')
-        ->call('next')
-        ->set('answers.0.1.custom', 'Есть замечание')
+        ->assertSet('currentRoomIndex', 0)
+        ->assertSee('Полотенца на месте?')
+        ->assertSee('Комментарий по ванной')
+        ->assertSee('Смеситель исправен?')
+        ->assertSee('Все на месте')
+        ->assertSee('Что именно не так?')
+        ->call('setAnswer', 0, 0, 'complete')
+        ->set('answers.0.1.custom', 'Без замечаний')
         ->call('goToRoom', 1)
-        ->assertSet('questionPosition', 2)
-        ->assertSee('Хорошо')
-        ->assertSee('Подробности состояния')
-        ->call('setAnswer', 1, 0, 'good')
-        ->set('answers.1.0.custom', 'Подробность')
-        ->call('goToQuestion', 0, 0)
-        ->assertSet('questionPosition', 0)
-        ->assertSet('answers.0.1.custom', 'Есть замечание')
-        ->assertSet('answers.1.0.selected', 'good')
-        ->assertSet('answers.1.0.custom', 'Подробность');
+        ->assertSet('currentRoomIndex', 1)
+        ->call('goToRoom', 0)
+        ->assertSet('currentRoomIndex', 0)
+        ->assertSet('answers.0.0.selected', 'complete')
+        ->assertSet('answers.0.1.custom', 'Без замечаний');
+});
+
+it('clears pending Focus upload state when an upload is cancelled', function () {
+    mountControlWorkflow();
+
+    Livewire::test('forms.page-control-focus')
+        ->call('beginMediaUpload')
+        ->assertSet('pendingMediaCount', 1)
+        ->call('cancelMediaUpload')
+        ->assertSet('pendingMediaCount', 0)
+        ->assertHasNoErrors('mediaUpload');
 });
 
 it('submits a negative Focus answer without corrective UI while preserving existing scoring once', function () {
@@ -489,8 +544,8 @@ it('submits a negative Focus answer without corrective UI while preserving exist
         ->call('setAnswer', 0, 0, 'no')
         ->assertDontSee('Что исправить')
         ->assertDontSee('К проверке ответов')
-        ->assertSee('Проверить контроль')
-        ->call('next')
+        ->assertSee('Завершить контроль')
+        ->call('review', 0)
         ->assertSet('stage', 'review')
         ->call('submit')
         ->assertHasNoErrors()
@@ -519,7 +574,7 @@ it('keeps previously saved corrective data when Focus hides that UI', function (
         ->assertSet('answers.0.0.corrective.action', 'Проверить ключи')
         ->call('start')
         ->assertDontSee('Что исправить')
-        ->call('next')
+        ->call('review', 0)
         ->call('submit')
         ->assertSet('submitted', true);
 
@@ -587,7 +642,7 @@ it('does not persist client-supplied media paths in Focus', function () {
     expect($responses[0][0]['media'])->toBe([]);
 });
 
-it('handles a larger Focus schema without losing question position', function () {
+it('handles a larger Focus room without losing its answers', function () {
     [, , , $control] = mountControlWorkflow();
     $room = controlWorkflowSchema()[0];
     $room['items'] = array_fill(0, 25, $room['items'][0]);
@@ -597,11 +652,10 @@ it('handles a larger Focus schema without losing question position', function ()
         ->assertCount('questions', 25)
         ->call('start')
         ->call('goToQuestion', 0, 24)
-        ->assertSet('questionPosition', 24)
+        ->assertSet('currentRoomIndex', 0)
         ->call('setAnswer', 0, 24, 'yes')
-        ->call('previous')
-        ->assertSet('questionPosition', 23)
-        ->call('next')
+        ->call('review', 0)
+        ->assertSet('stage', 'review')
         ->assertSet('answers.0.24.selected', 'yes');
 });
 
@@ -609,21 +663,22 @@ it('keeps a media upload attached to its original question after navigating away
     [, , , $control] = mountControlWorkflow();
     $room = controlWorkflowSchema()[0];
     $room['items'][] = ['question' => 'Второй вопрос', 'answer_type' => 'text'];
-    $control->update(['main' => [$room]]);
+    $control->update(['main' => [$room, ['title' => 'Кухня', 'items' => [['question' => 'Плита', 'answer_type' => 'text']]]]]);
     Storage::fake('public');
 
     Livewire::test('forms.page-control-focus')
         ->call('start')
         ->call('beginMediaUpload')
-        ->call('next')
-        ->assertSet('questionPosition', 1)
+        ->call('goToRoom', 1)
+        ->assertSet('currentRoomIndex', 1)
         ->assertSet('pendingMediaCount', 1)
         ->set('mediaUpload', UploadedFile::fake()->image('first.jpg'))
         ->call('attachMedia', 0, 0)
         ->assertCount('savedMedia.0.0', 1)
         ->assertCount('savedMedia.0.1', 0)
         ->assertSet('pendingMediaCount', 0)
-        ->call('previous')
+        ->call('goToRoom', 0)
+        ->assertSet('currentRoomIndex', 0)
         ->assertSee('Фото и видео')
         ->assertSee('Фото')
         ->assertSee('Видео')
@@ -643,8 +698,7 @@ it('shows missing required questions on Focus review and requires explicit confi
         ->call('submit')
         ->assertSet('submitted', false)
         ->call('start')
-        ->call('next')
-        ->call('next')
+        ->call('review', 0)
         ->assertSet('stage', 'review')
         ->assertSee('Дополнительный вопрос')
         ->call('submit')
@@ -652,7 +706,7 @@ it('shows missing required questions on Focus review and requires explicit confi
         ->call('goToQuestion', 0, 1)
         ->assertSet('stage', 'questions')
         ->set('answers.0.1.custom', 'Ответ')
-        ->call('next')
+        ->call('review', 0)
         ->call('submit')
         ->assertSet('submitted', true);
 

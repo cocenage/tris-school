@@ -7,6 +7,7 @@ use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\User;
 use App\Services\Telegram\TelegramDeliveryCenter;
+use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use Carbon\CarbonImmutable;
 use Filament\Facades\Filament;
 use Illuminate\Support\Facades\Schema;
@@ -25,6 +26,8 @@ beforeEach(function (): void {
         'services.telegram.evening_intelligence_delivery_mode' => 'centralized',
         'services.telegram.evening_intelligence_central_chat_id' => 'central-chat',
         'services.telegram.evening_intelligence_central_thread_id' => '2',
+        'services.telegram.chat_id_calendar' => 'calendar-chat',
+        'services.telegram.thread_id_calendar' => '7',
     ]);
 });
 
@@ -32,7 +35,7 @@ afterEach(function (): void {
     Schema::dropIfExists('telegram_outbound_operations');
 });
 
-it('shows all five district morning and evening slots while distinguishing missed and accepted', function (): void {
+it('shows five district slots plus the calendar summary and distinguishes missed and accepted', function (): void {
     TelegramOutboundOperation::query()->create([
         'operation_key' => 'morning_digest:2026-10-22:navigli',
         'notification_type' => 'morning_digest', 'method' => 'sendMessage', 'bot' => 'analytics',
@@ -42,17 +45,76 @@ it('shows all five district morning and evening slots while distinguishing misse
 
     $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 21:00', 'Europe/Rome'));
 
-    expect($snapshot['slots'])->toHaveCount(10)
-        ->and($snapshot['counts']['expected'])->toBe(10)
+    expect($snapshot['slots'])->toHaveCount(11)
+        ->and($snapshot['counts']['expected'])->toBe(11)
         ->and($snapshot['counts']['sent'])->toBe(1)
-        ->and($snapshot['counts']['missed'])->toBe(9);
+        ->and($snapshot['counts']['missed'])->toBe(10);
 });
 
 it('does not claim a pre-monitoring gap was a missed delivery', function (): void {
     $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 21:00', 'Europe/Rome'));
 
     expect($snapshot['counts']['missed'])->toBe(0)
-        ->and($snapshot['counts']['unmonitored'])->toBe(10);
+        ->and($snapshot['counts']['unmonitored'])->toBe(11);
+});
+
+it('tracks one Rome calendar digest against its intended event date without double counting', function (): void {
+    TelegramOutboundOperation::query()->create([
+        'operation_key' => 'calendar:tomorrow:2026-10-23',
+        'notification_type' => 'calendar', 'method' => 'sendMessage', 'bot' => 'work',
+        'chat_id' => 'calendar-chat', 'message_thread_id' => '7',
+        'source_type' => 'CalendarDate', 'source_id' => '2026-10-23',
+        'status' => 'sent', 'attempts' => 1, 'created_at' => '2026-10-22 06:00:00',
+        'attempted_at' => '2026-10-22 06:00:00', 'finished_at' => '2026-10-22 06:00:01',
+    ]);
+
+    $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 21:00', 'Europe/Rome'));
+    $calendar = collect($snapshot['slots'])->firstWhere('type', 'calendar');
+
+    expect($calendar['status'])->toBe('sent')
+        ->and($calendar['for_date']->toDateString())->toBe('2026-10-23')
+        ->and($calendar['due']->format('Y-m-d H:i'))->toBe('2026-10-22 06:00')
+        ->and($snapshot['counts']['expected'])->toBe(11)
+        ->and($snapshot['counts']['sent'])->toBe(1);
+});
+
+it('marks a monitored calendar digest as missed only after its schedule and grace period', function (): void {
+    TelegramOutboundOperation::query()->create([
+        'operation_key' => 'already-monitored-operation', 'notification_type' => 'task',
+        'method' => 'sendMessage', 'bot' => 'work', 'chat_id' => 'test-chat',
+        'status' => 'sent', 'attempts' => 1, 'created_at' => '2026-10-22 05:00:00',
+    ]);
+
+    $beforeGrace = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 06:09:00', 'Europe/Rome'));
+    $afterGrace = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 06:11:00', 'Europe/Rome'));
+
+    expect(collect($beforeGrace['slots'])->firstWhere('type', 'calendar')['status'])->toBe('pending')
+        ->and(collect($afterGrace['slots'])->firstWhere('type', 'calendar')['status'])->toBe('missed');
+});
+
+it('keeps the calendar digest unmonitored when monitoring began after its due time', function (): void {
+    TelegramOutboundOperation::query()->create([
+        'operation_key' => 'monitor-started-later', 'notification_type' => 'task',
+        'method' => 'sendMessage', 'bot' => 'work', 'chat_id' => 'test-chat',
+        'status' => 'sent', 'attempts' => 1, 'created_at' => '2026-10-22 19:00:00',
+    ]);
+
+    $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 21:00', 'Europe/Rome'));
+
+    expect(collect($snapshot['slots'])->firstWhere('type', 'calendar')['status'])->toBe('unmonitored');
+});
+
+it('shows the calendar digest as unknown when another delivery source is unavailable', function (): void {
+    $routes = Mockery::mock(TelegramDistrictRouteRegistry::class);
+    $routes->shouldReceive('diagnostics')->once()->andThrow(new RuntimeException('route source unavailable'));
+    app()->instance(TelegramDistrictRouteRegistry::class, $routes);
+
+    $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 21:00', 'Europe/Rome'));
+    $calendar = collect($snapshot['slots'])->firstWhere('type', 'calendar');
+
+    expect($calendar['status'])->toBe('unmonitored')
+        ->and($calendar['reason'])->toBe('Источник доставок недоступен')
+        ->and($snapshot['source_error'])->toContain('RuntimeException');
 });
 
 it('treats an abandoned API attempt as an unknown result', function (): void {
@@ -77,8 +139,9 @@ it('shows an event reserved before the API as missed when no attempt follows', f
 
     $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 21:00', 'Europe/Rome'));
 
-    expect($snapshot['counts']['expected'])->toBe(11)
+    expect($snapshot['counts']['expected'])->toBe(12)
         ->and($snapshot['counts']['missed'])->toBe(11)
+        ->and($snapshot['counts']['unmonitored'])->toBe(1)
         ->and($snapshot['counts']['pending'])->toBe(0);
 });
 
@@ -87,8 +150,8 @@ it('keeps five district slots across both Europe Rome daylight-saving transition
     $spring = $center->snapshot(CarbonImmutable::parse('2026-03-29 21:00', 'Europe/Rome'));
     $autumn = $center->snapshot(CarbonImmutable::parse('2026-10-25 21:00', 'Europe/Rome'));
 
-    expect($spring['slots'])->toHaveCount(10)
-        ->and($autumn['slots'])->toHaveCount(10)
+    expect($spring['slots'])->toHaveCount(11)
+        ->and($autumn['slots'])->toHaveCount(11)
         ->and($spring['slots'][0]['due']->utcOffset())->toBe(120)
         ->and($autumn['slots'][0]['due']->utcOffset())->toBe(60);
 });
@@ -152,7 +215,7 @@ it('uses existing scheduled delivery records and excludes disabled, off-day and 
         ]);
         $after = app(TelegramDeliveryCenter::class)->snapshot($at);
         expect(collect($after['slots'])->where('type', 'scheduled_control')->first()['status'])->toBe('sent')
-            ->and($after['counts']['expected'])->toBe(11)
+            ->and($after['counts']['expected'])->toBe(12)
             ->and($after['counts']['sent'])->toBe(1);
 
         TelegramScheduledMessageDelivery::query()->create([

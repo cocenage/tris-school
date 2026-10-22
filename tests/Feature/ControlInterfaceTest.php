@@ -5,8 +5,12 @@ it('keeps control navigation anchored to the internal scroll container', functio
 
     expect($view)
         ->toContain('id="control-scroll-area" data-control-scroll-area')
-        ->toContain('toggleRoomAfterSave({{ $roomIndex }})')
-        ->toContain('aria-expanded="{{ $isOpen ? \'true\' : \'false\' }}"')
+        ->toContain('toggleRoomLocally({{ $roomIndex }})')
+        ->toContain(':aria-expanded="(openRoomIndex === {{ $roomIndex }}).toString()"')
+        ->toContain('x-show="openRoomIndex === {{ $roomIndex }}"')
+        ->not->toContain('toggleRoomAfterSave(roomIndex)')
+        ->toContain('class="grid gap-[8px]" x-data="{ selected: @entangle(')
+        ->not->toContain('choose(); save()')
         ->toContain('data-control-room-section=')
         ->toContain('data-control-anchor="question-')
         ->toContain('Открыть инструкцию')
@@ -25,7 +29,11 @@ it('keeps control navigation anchored to the internal scroll container', functio
         ->toContain('min-h-[44px] rounded-full')
         ->toContain('mediaUploads: {}')
         ->toContain('startMediaUpload(key, input, room, question, files)')
-        ->toContain("mediaUploads['{{ \$roomIndex }}.{{ \$questionIndex }}'].files")
+        ->toContain('cancelMediaUpload(key, room, question, id)')
+        ->toContain('controlUploadCompressedPhotos(')
+        ->toContain('cancelUpload(property')
+        ->toContain('Upload timed out')
+        ->toContain("mediaUploads['{{ \$roomIndex }}.{{ \$questionIndex }}'] || []")
         ->toContain('Дождитесь завершения загрузки файлов')
         ->toContain('wire:click="goToQuestion({{ $issue[\'room\'] }}, {{ $issue[\'question\'] }})"')
         ->toContain('Отправить контроль');
@@ -73,6 +81,19 @@ it('keeps control navigation anchored to the internal scroll container', functio
         ->not->toContain('wire:target="setAnswer"')
         ->toContain("area.scrollTo({ top: Math.max(0, top), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })")
         ->not->toContain('scrollIntoView(');
+});
+
+it('keeps Focus room navigation in Alpine and provides one room page at a time', function () {
+    $view = file_get_contents(base_path('resources/views/components/forms/⚡page-control-focus.blade.php'));
+
+    expect($view)
+        ->toContain("activeRoomIndex: @entangle('currentRoomIndex')")
+        ->toContain('x-on:click="nextRoom()"')
+        ->toContain('x-on:click="previousRoom()"')
+        ->toContain('x-if="activeRoomIndex === {{ $roomIndex }}"')
+        ->toContain('env(safe-area-inset-bottom)')
+        ->toContain('scrollToActiveRoom()')
+        ->not->toContain('wire:click="goToRoom({{ $roomIndex }})"');
 });
 
 it('keeps the optional control comment compact while preserving existing text', function () {

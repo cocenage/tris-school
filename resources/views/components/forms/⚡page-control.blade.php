@@ -849,6 +849,7 @@ protected function getDraftPayload(?array $media = null): array
 
         $roomIndex = (int) $parts[1];
         $questionIndex = (int) $parts[2];
+        $this->resetErrorBag("queuedPhotos.$roomIndex.$questionIndex");
 
         $incoming = $this->photoUploads[$roomIndex][$questionIndex] ?? [];
 
@@ -953,12 +954,16 @@ protected function getDraftPayload(?array $media = null): array
             || in_array($mime, ['video/mp4', 'video/quicktime', 'video/webm'], true);
     }
 
-    public function finishPhotoUpload(int $roomIndex, int $questionIndex): void
-{
-    $this->ensureCanConductControl();
+    public function finishPhotoUpload(int $roomIndex, int $questionIndex): string
+    {
+        $this->ensureCanConductControl();
 
-    $this->queueUploadedPhotos("photoUploads.$roomIndex.$questionIndex");
-}
+        $this->queueUploadedPhotos("photoUploads.$roomIndex.$questionIndex");
+
+        return $this->draftState === 'error' || $this->getErrorBag()->has("queuedPhotos.$roomIndex.$questionIndex")
+            ? 'error'
+            : 'saved';
+    }
 
     public function removeQueuedPhoto(int $roomIndex, int $questionIndex, int $photoIndex): void
     {
@@ -1566,6 +1571,9 @@ protected function getDraftPayload(?array $media = null): array
             timer: null,
             pendingUploads: 0,
             mediaUploads: {},
+            mediaProcessing: {},
+            nextMediaUploadId: 0,
+            openRoomIndex: @js($openRoomIndex),
             hasUnsavedChanges: @entangle('hasUnsavedChanges').live,
             clientDraftState: @js($draftState),
             saveRevision: 0,
@@ -1686,21 +1694,10 @@ protected function getDraftPayload(?array $media = null): array
                 }
             },
 
-            async toggleRoomAfterSave(roomIndex) {
-                if (this.controlActionInFlight) return;
-                this.controlActionInFlight = true;
-                try {
-                    await this.waitForActiveSave();
-                    const revision = this.saveRevision;
-                    this.clientDraftState = 'saving';
-                    const result = await $wire.toggleRoom(roomIndex);
-                    if (! this.applyActionSaveResult(result, revision)) this.notifySaveError();
-                } catch (error) {
-                    this.attemptedSaveRevision = this.saveRevision;
-                    this.clientDraftState = 'error';
-                    this.notifySaveError();
-                } finally {
-                    this.controlActionInFlight = false;
+            toggleRoomLocally(roomIndex) {
+                this.openRoomIndex = this.openRoomIndex === roomIndex ? null : roomIndex;
+                if (this.openRoomIndex !== null) {
+                    this.$nextTick(() => window.dispatchEvent(new CustomEvent('control-room-opened', { detail: { room: roomIndex } })));
                 }
             },
 
@@ -1784,26 +1781,72 @@ protected function getDraftPayload(?array $media = null): array
 
             startMediaUpload(key, input, room, question, files) {
                 const selectedFiles = Array.from(files || []);
-                if (!selectedFiles.length || this.mediaUploads[key]?.state === 'uploading') return;
+                input.value = '';
+                if (!selectedFiles.length) return;
 
-                this.mediaUploads[key] = { state: 'uploading', progress: 0, files: selectedFiles };
+                this.mediaUploads[key] ??= [];
+                for (const file of selectedFiles) {
+                    this.mediaUploads[key].push({ id: ++this.nextMediaUploadId, file, name: file.name, state: 'queued', progress: 0, error: '', controller: null });
+                    this.pendingUploads++;
+                }
+                this.processMediaUploads(key, room, question);
+            },
+
+            async processMediaUploads(key, room, question) {
+                if (this.mediaProcessing[key]) return;
+                this.mediaProcessing[key] = true;
+                try {
+                    let item;
+                    while ((item = this.mediaUploads[key]?.find(file => file.state === 'queued'))) {
+                        item.state = 'uploading';
+                        item.controller = new AbortController();
+                        try {
+                            const result = await window.controlUploadCompressedPhotos(
+                                $wire, `photoUploads.${room}.${question}`, room, question, item.file,
+                                progress => item.progress = progress, item.controller,
+                                () => item.state = 'saving'
+                            );
+                            if (result !== 'saved') throw new Error('File was not saved');
+                            item.state = 'saved';
+                            item.file = null;
+                        } catch (error) {
+                            if (item.state !== 'cancelled') {
+                                item.state = 'error';
+                                item.error = error.message === 'Upload timed out'
+                                    ? 'Загрузка не завершилась вовремя.'
+                                    : 'Не удалось загрузить файл.';
+                            }
+                        } finally {
+                            item.controller = null;
+                            this.pendingUploads = Math.max(0, this.pendingUploads - 1);
+                        }
+                    }
+                } finally {
+                    delete this.mediaProcessing[key];
+                }
+            },
+
+            cancelMediaUpload(key, room, question, id) {
+                const item = this.mediaUploads[key]?.find(file => file.id === id);
+                if (!item || !['queued', 'uploading'].includes(item.state)) return;
+                if (item.state === 'queued') this.pendingUploads = Math.max(0, this.pendingUploads - 1);
+                item.state = 'cancelled';
+                item.controller?.abort();
+            },
+
+            retryMediaUpload(key, room, question, id) {
+                const item = this.mediaUploads[key]?.find(file => file.id === id);
+                if (!item || !['error', 'cancelled'].includes(item.state)) return;
+                item.state = 'queued';
+                item.progress = 0;
+                item.error = '';
                 this.pendingUploads++;
+                this.processMediaUploads(key, room, question);
+            },
 
-                window.controlUploadCompressedPhotos(
-                    input,
-                    $wire,
-                    `photoUploads.${room}.${question}`,
-                    room,
-                    question,
-                    selectedFiles,
-                    progress => this.mediaUploads[key].progress = progress
-                ).then(() => {
-                    this.mediaUploads[key] = { state: 'idle', progress: 0, files: [] };
-                }).catch(() => {
-                    this.mediaUploads[key].state = 'error';
-                }).finally(() => {
-                    this.pendingUploads = Math.max(0, this.pendingUploads - 1);
-                });
+            removeMediaUpload(key, room, question, id) {
+                this.cancelMediaUpload(key, room, question, id);
+                this.mediaUploads[key] = (this.mediaUploads[key] || []).filter(file => file.id !== id);
             },
 
             save() {
@@ -1813,7 +1856,7 @@ protected function getDraftPayload(?array $media = null): array
             },
 
             init() {
-                window.addEventListener('beforeunload', (event) => {
+                this.beforeUnloadHandler = (event) => {
                     const unsaved = this.saveRevision > this.persistedSaveRevision
                         || this.saveInFlight
                         || (this.submissionInFlight && this.clientDraftState !== 'submitted')
@@ -1825,10 +1868,17 @@ protected function getDraftPayload(?array $media = null): array
 
                     event.preventDefault();
                     event.returnValue = '';
-                });
+                };
+                window.addEventListener('beforeunload', this.beforeUnloadHandler);
+            },
+
+            destroy() {
+                window.removeEventListener('beforeunload', this.beforeUnloadHandler);
             }
         }"
         x-on:control-reset-request.window="resetFormFromMenu()"
+        x-on:control-scroll.window="if (['room', 'question'].includes($event.detail.type)) openRoomIndex = Number($event.detail.room)"
+        x-on:control-form-reset.window="openRoomIndex = 0"
         x-on:input="save()"
         x-on:change="save()"
         class="flex h-full min-h-0 flex-col"
@@ -2129,7 +2179,6 @@ protected function getDraftPayload(?array $media = null): array
                                 @php
                                     $roomStatus = $this->getRoomStatus($roomIndex);
                                     $roomProgress = $this->getRoomProgress($roomIndex);
-                                    $isOpen = $openRoomIndex === $roomIndex;
 
                                     $statusClass = match($roomStatus) {
                                         'done' => 'bg-[#E7F8EF] text-[#16834B]',
@@ -2152,8 +2201,8 @@ protected function getDraftPayload(?array $media = null): array
                                 >
                                     <button
                                         type="button"
-                                        x-on:click="toggleRoomAfterSave({{ $roomIndex }})"
-                                        aria-expanded="{{ $isOpen ? 'true' : 'false' }}"
+                                        x-on:click="toggleRoomLocally({{ $roomIndex }})"
+                                        :aria-expanded="(openRoomIndex === {{ $roomIndex }}).toString()"
                                         @class([
                                             'flex min-h-[58px] w-full items-center justify-between gap-[12px] px-[14px] py-[12px] text-left transition active:bg-[#F6F8F6]',
                                             'bg-[#F6FBF7]' => $roomStatus === 'done',
@@ -2177,13 +2226,12 @@ protected function getDraftPayload(?array $media = null): array
                                             </span>
 
                                             <span aria-hidden="true" class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-[#F1F4F2] text-[18px] font-medium leading-none text-[#68736C]">
-                                                {{ $isOpen ? '−' : '+' }}
+                                                <span x-text="openRoomIndex === {{ $roomIndex }} ? '−' : '+'"></span>
                                             </span>
                                         </div>
                                     </button>
 
-                                    @if($isOpen)
-                                        <div class="px-[12px] pb-[14px] pt-[2px]">
+                                        <div x-show="openRoomIndex === {{ $roomIndex }}" x-cloak class="px-[12px] pb-[14px] pt-[2px]">
                                             @if(!empty($room['description']))
                                                 <div class="mb-[12px] border-l-2 border-[#D9E3EE] px-[12px] py-[4px] text-[13px] leading-[1.45] text-[#64748B]">
                                                     {{ $room['description'] }}
@@ -2194,6 +2242,8 @@ protected function getDraftPayload(?array $media = null): array
                                                 <img
                                                     src="{{ $roomImage }}"
                                                     alt="{{ $room['title'] ?? 'Комната' }}"
+                                                    loading="lazy"
+                                                    decoding="async"
                                                     class="mb-[12px] h-[120px] w-full rounded-[18px] object-cover"
                                                 >
                                             @endif
@@ -2238,6 +2288,8 @@ protected function getDraftPayload(?array $media = null): array
                                                             <img
                                                                 src="{{ $questionImage }}"
                                                                 alt=""
+                                                                loading="lazy"
+                                                                decoding="async"
                                                                 class="mb-[12px] max-h-[180px] w-full rounded-[16px] object-contain bg-[#F8FAFC]"
                                                             >
                                                         @endif
@@ -2249,45 +2301,30 @@ protected function getDraftPayload(?array $media = null): array
                                                         @enderror
 
                                                         @if($type === 'options' || $type === 'both')
-                                                            <div class="grid gap-[8px]">
+                                                            <div class="grid gap-[8px]" x-data="{ selected: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.selected') }">
                                                        @foreach($opts as $optIndex => $opt)
     @php
         $value = (string) ($opt['value'] ?? $opt['label'] ?? ('option_' . $optIndex));
         $legacyValue = 'option_' . $optIndex;
     @endphp
 
-    <div
-        x-data="{
-            selected: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.selected'),
-            value: @js($value),
-            legacyValue: @js($legacyValue),
-
-            get active() {
-                return this.selected === this.value || this.selected === this.legacyValue;
-            },
-
-            choose() {
-                if (this.submissionInFlight) return;
-                this.selected = this.value;
-            }
-        }"
-    >
         <button
             type="button"
-            @click="choose(); save()"
+            data-value="{{ $value }}"
+            data-legacy-value="{{ $legacyValue }}"
+            @click="if (!submissionInFlight) { selected = $el.dataset.value; save() }"
             :disabled="submissionInFlight"
-            :aria-pressed="active.toString()"
-            :class="active
+            :aria-pressed="(selected === $el.dataset.value || selected === $el.dataset.legacyValue).toString()"
+            :class="(selected === $el.dataset.value || selected === $el.dataset.legacyValue)
                 ? 'bg-[#EAF6EE] text-[#176B43] ring-1 ring-inset ring-[#B8DEC5]'
                 : 'bg-[#F0F3F1] text-[#34423A]'"
             class="flex min-h-[56px] w-full items-center gap-[12px] rounded-[16px] px-[14px] py-[12px] text-left text-[15px] font-semibold transition active:scale-[0.995] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#25845A]/30"
         >
             <span class="flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded-full bg-white/90 ring-1 ring-inset ring-[#C8D1CB]">
-                <span x-show="active" x-cloak class="h-[10px] w-[10px] rounded-full bg-[#25845A]"></span>
+                <span x-show="selected === $el.closest('button').dataset.value || selected === $el.closest('button').dataset.legacyValue" x-cloak class="h-[10px] w-[10px] rounded-full bg-[#25845A]"></span>
             </span>
             <span class="min-w-0 whitespace-normal break-words leading-[1.35]">{{ $opt['label'] ?? 'Вариант' }}</span>
         </button>
-    </div>
 @endforeach
                                                             </div>
                                                         @endif
@@ -2405,24 +2442,28 @@ protected function getDraftPayload(?array $media = null): array
     multiple
     accept="image/*,video/mp4,video/quicktime,video/webm"
     aria-label="Добавить фото или видео"
-    x-bind:disabled="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.state === 'uploading'"
     x-on:change="startMediaUpload('{{ $roomIndex }}.{{ $questionIndex }}', $event.target, {{ $roomIndex }}, {{ $questionIndex }}, $event.target.files)"
     class="absolute inset-0 h-full w-full cursor-pointer opacity-0"
 >
                                                                 </label>
                                                             </div>
 
-                                                            <div x-show="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.state === 'uploading'" x-cloak class="mt-[10px]" role="status" aria-live="polite">
-                                                                <div class="text-[12px] font-semibold text-[#526157]" x-text="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.progress > 0 ? `Загружаем: ${mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}'].progress}%` : 'Подготавливаем файл…'"></div>
-                                                                <div class="mt-[6px] h-[4px] overflow-hidden rounded-full bg-[#DDE8E0]">
-                                                                    <div class="h-full rounded-full bg-[#25845A] transition-[width] duration-150" x-bind:style="`width: ${mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.progress ?? 0}%`"></div>
+                                                            <template x-for="item in mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}'] || []" :key="item.id">
+                                                                <div class="mt-[10px] rounded-[13px] bg-white px-[12px] py-[9px] text-[12px] text-[#526157]" role="status" aria-live="polite">
+                                                                    <div class="flex items-center justify-between gap-[8px]">
+                                                                        <span class="min-w-0 truncate font-semibold" x-text="item.name"></span>
+                                                                        <span x-text="item.state === 'queued' ? 'В очереди' : item.state === 'uploading' ? (item.progress ? `Загружаем: ${item.progress}%` : 'Подготавливаем файл…') : item.state === 'saving' ? 'Сохраняем…' : item.state === 'saved' ? 'Сохранено' : item.state === 'cancelled' ? 'Отменено' : item.error"></span>
+                                                                    </div>
+                                                                    <div x-show="item.state === 'uploading'" class="mt-[6px] h-[4px] overflow-hidden rounded-full bg-[#DDE8E0]">
+                                                                        <div class="h-full bg-[#25845A] transition-[width] duration-150" :style="`width: ${item.progress}%`"></div>
+                                                                    </div>
+                                                                    <div class="mt-[4px] flex justify-end gap-[12px]" x-show="item.state !== 'saved' && item.state !== 'saving'">
+                                                                        <button type="button" x-show="item.state === 'queued' || item.state === 'uploading'" class="min-h-[36px] font-semibold underline" @click="cancelMediaUpload('{{ $roomIndex }}.{{ $questionIndex }}', {{ $roomIndex }}, {{ $questionIndex }}, item.id)">Отменить</button>
+                                                                        <button type="button" x-show="item.state === 'error' || item.state === 'cancelled'" class="min-h-[36px] font-semibold underline" @click="retryMediaUpload('{{ $roomIndex }}.{{ $questionIndex }}', {{ $roomIndex }}, {{ $questionIndex }}, item.id)">Повторить</button>
+                                                                        <button type="button" x-show="item.state === 'error' || item.state === 'cancelled'" class="min-h-[36px] font-semibold underline" @click="removeMediaUpload('{{ $roomIndex }}.{{ $questionIndex }}', {{ $roomIndex }}, {{ $questionIndex }}, item.id)">Удалить</button>
+                                                                    </div>
                                                                 </div>
-                                                            </div>
-
-                                                            <div x-show="mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}']?.state === 'error'" x-cloak class="mt-[10px] flex items-center justify-between gap-[10px] rounded-[13px] bg-[#FEE4E2] px-[12px] py-[9px] text-[12px] font-semibold text-[#B42318]" role="alert">
-                                                                <span>Не удалось загрузить файл.</span>
-                                                                <button type="button" class="min-h-[40px] shrink-0 underline underline-offset-2" x-on:click="startMediaUpload('{{ $roomIndex }}.{{ $questionIndex }}', $refs.mediaInput_{{ $roomIndex }}_{{ $questionIndex }}, {{ $roomIndex }}, {{ $questionIndex }}, mediaUploads['{{ $roomIndex }}.{{ $questionIndex }}'].files)">Повторить</button>
-                                                            </div>
+                                                            </template>
 
                                                             @error("queuedPhotos.$roomIndex.$questionIndex")
                                                                 <div class="mt-[10px] rounded-[16px] bg-[#FEE4E2] px-[12px] py-[9px] text-[13px] font-semibold text-[#B42318]">
@@ -2446,7 +2487,7 @@ protected function getDraftPayload(?array $media = null): array
                                                                             @if(str_starts_with((string) ($photo['mime'] ?? ''), 'video/'))
                                                                                 <video src="{{ $mediaUrl }}" muted preload="metadata" aria-label="Видео контроля" class="h-[88px] w-full object-cover"></video>
                                                                             @else
-                                                                                <img src="{{ $mediaUrl }}" alt="Фото контроля" class="h-[88px] w-full object-cover">
+                                                                                <img src="{{ $mediaUrl }}" alt="Фото контроля" loading="lazy" decoding="async" class="h-[88px] w-full object-cover">
                                                                             @endif
 
                                                                             <span class="absolute bottom-[5px] left-[5px] rounded-full bg-black/65 px-[6px] py-[2px] text-[10px] font-semibold text-white">Готово</span>
@@ -2470,7 +2511,6 @@ protected function getDraftPayload(?array $media = null): array
                                                 @endforeach
                                             </div>
                                         </div>
-                                    @endif
                                 </div>
                             @endforeach
                         </div>
@@ -2762,6 +2802,7 @@ protected function getDraftPayload(?array $media = null): array
 </div>
 <script>
     window.controlCompressPhoto = async function (file) {
+        let objectUrl = null;
         try {
             if (!file || !file.type || !file.type.startsWith('image/')) {
                 return file;
@@ -2781,7 +2822,7 @@ protected function getDraftPayload(?array $media = null): array
                 return file;
             }
 
-            const objectUrl = URL.createObjectURL(file);
+            objectUrl = URL.createObjectURL(file);
 
             const image = await new Promise((resolve, reject) => {
                 const img = new Image();
@@ -2794,8 +2835,6 @@ protected function getDraftPayload(?array $media = null): array
             const maxSize = 1600;
             let width = image.naturalWidth || image.width;
             let height = image.naturalHeight || image.height;
-
-            URL.revokeObjectURL(objectUrl);
 
             if (!width || !height) {
                 return file;
@@ -2841,34 +2880,53 @@ protected function getDraftPayload(?array $media = null): array
         } catch (error) {
             console.warn('Photo compression failed, uploading original:', error);
             return file;
+        } finally {
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
         }
     };
 
-    window.controlUploadCompressedPhotos = async function (input, livewire, property, roomIndex, questionIndex, files, onProgress) {
-        const selectedFiles = Array.from(files || []);
-
-        if (!selectedFiles.length) {
-            return;
-        }
-
-        const compressed = [];
-
-        for (const file of selectedFiles) {
-            compressed.push(await window.controlCompressPhoto(file));
-        }
-
+    window.controlUploadCompressedPhotos = async function (livewire, property, roomIndex, questionIndex, file, onProgress, controller, onSaving) {
+        const signal = controller.signal;
+        let uploadStarted = false;
+        let timedOut = false;
+        const abort = () => {
+            if (uploadStarted) livewire.cancelUpload(property);
+        };
+        const cancelled = new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () => {
+                abort();
+                reject(new Error(timedOut ? 'Upload timed out' : 'Upload cancelled'));
+            }, { once: true });
+        });
+        const timeout = window.setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, 90000);
         try {
-            await new Promise((resolve, reject) => {
-                livewire.uploadMultiple(
-                    property,
-                    compressed,
-                    () => livewire.call('finishPhotoUpload', roomIndex, questionIndex).then(resolve, reject),
-                    () => reject(new Error('Upload failed')),
-                    event => onProgress(event.detail?.progress ?? 0)
-                );
-            });
+            return await Promise.race([
+                (async () => {
+                    const compressed = await window.controlCompressPhoto(file);
+                    if (signal.aborted) throw new Error('Upload cancelled');
+                    return new Promise((resolve, reject) => {
+                        uploadStarted = true;
+                        livewire.upload(
+                            property, compressed,
+                            () => {
+                                uploadStarted = false;
+                                if (signal.aborted) return;
+                                onSaving();
+                                livewire.call('finishPhotoUpload', roomIndex, questionIndex).then(resolve, reject);
+                            },
+                            () => reject(new Error('Upload failed')),
+                            event => onProgress(event.detail?.progress ?? 0),
+                            () => reject(new Error('Upload cancelled'))
+                        );
+                    });
+                })(),
+                cancelled,
+            ]);
         } finally {
-            input.value = '';
+            window.clearTimeout(timeout);
         }
     };
 </script>
@@ -2928,10 +2986,15 @@ protected function getDraftPayload(?array $media = null): array
             });
         };
 
-        Livewire.on('control-scroll', (event) => {
+        window.controlNavigationCleanup?.();
+        window.controlNavigationCleanup = Livewire.on('control-scroll', (event) => {
             const payload = Array.isArray(event) ? event[0] : event;
-            window.setTimeout(() => scrollToControlTarget(payload), 80);
+            requestAnimationFrame(() => scrollToControlTarget(payload));
         });
+
+        if (window.controlRoomScrollHandler) window.removeEventListener('control-room-opened', window.controlRoomScrollHandler);
+        window.controlRoomScrollHandler = (event) => scrollToControlTarget({ type: 'room', room: event.detail.room });
+        window.addEventListener('control-room-opened', window.controlRoomScrollHandler);
     };
 
     if (window.Livewire?.on) {

@@ -53,7 +53,7 @@
             <div class="mt-2 max-h-72 space-y-2 overflow-y-auto">
                 @foreach ($delivery['slots'] as $slot)
                     <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-800">
-                        <span class="font-medium">{{ $typeLabels[$slot['type']] ?? $slot['type'] }}{{ $slot['district'] ? ' · '.$slot['district'] : '' }}</span>
+                        <span class="font-medium">{{ $typeLabels[$slot['type']] ?? $slot['type'] }}{{ $slot['district'] ? ' · '.$slot['district'] : '' }}{{ isset($slot['for_date']) ? ' · события '.$slot['for_date']->format('d.m.Y') : '' }}</span>
                         · {{ $slot['due']->format('H:i') }} · {{ $statusLabels[$slot['status']] ?? $slot['status'] }}
                         <div class="break-all text-xs text-gray-500">{{ $slot['bot'] }} · chat {{ $slot['chat_id'] ?? 'не настроен' }} · topic {{ $slot['thread_id'] ?? '—' }}{{ $slot['reason'] ? ' · '.$slot['reason'] : '' }}</div>
                     </div>
