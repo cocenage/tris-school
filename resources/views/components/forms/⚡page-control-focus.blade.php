@@ -35,7 +35,7 @@ new class extends Component
 
     public string $stage = 'setup';
 
-    public int $questionPosition = 0;
+    public int $currentRoomIndex = 0;
 
     public ?int $cleaner_id = null;
 
@@ -123,11 +123,6 @@ new class extends Component
         }
 
         return $questions;
-    }
-
-    public function getCurrentQuestionProperty(): ?array
-    {
-        return $this->questions[$this->questionPosition] ?? null;
     }
 
     public function getCompletedCountProperty(): int
@@ -262,16 +257,18 @@ new class extends Component
     public function start(): void
     {
         $this->ensureAuthorized();
+        $this->currentRoomIndex = 0;
         $this->stage = 'questions';
     }
 
     public function goToQuestion(int $roomIndex, int $questionIndex): void
     {
         $this->ensureAuthorized();
-        foreach ($this->questions as $position => $item) {
+        foreach ($this->questions as $item) {
             if ($item['room_index'] === $roomIndex && $item['question_index'] === $questionIndex) {
-                $this->questionPosition = $position;
+                $this->currentRoomIndex = $roomIndex;
                 $this->stage = 'questions';
+                $this->dispatch('focus-question-selected', room: $roomIndex, question: $questionIndex);
 
                 return;
             }
@@ -292,10 +289,10 @@ new class extends Component
     public function next(): void
     {
         $this->ensureAuthorized();
-        if ($this->questionPosition + 1 < count($this->questions)) {
-            $this->questionPosition++;
+        if ($this->currentRoomIndex + 1 < count($this->rooms)) {
+            $this->currentRoomIndex++;
         } else {
-            $this->stage = 'review';
+            $this->review($this->currentRoomIndex);
         }
     }
 
@@ -304,11 +301,17 @@ new class extends Component
         $this->ensureAuthorized();
         if ($this->stage === 'review') {
             $this->stage = 'questions';
-        } elseif ($this->questionPosition > 0) {
-            $this->questionPosition--;
+        } elseif ($this->currentRoomIndex > 0) {
+            $this->currentRoomIndex--;
         } else {
             $this->stage = 'setup';
         }
+    }
+
+    public function backToSetup(): void
+    {
+        $this->ensureAuthorized();
+        $this->stage = 'setup';
     }
 
     public function setAnswer(int $roomIndex, int $questionIndex, string $value): void
@@ -356,6 +359,15 @@ new class extends Component
         $this->addError('mediaUpload', 'Файл не загружен. Попробуйте ещё раз.');
         $this->draftState = 'error';
         $this->draftError = 'Файл не сохранён. Повторите загрузку.';
+    }
+
+    public function cancelMediaUpload(): void
+    {
+        $this->ensureAuthorized();
+        $this->pendingMediaCount = max(0, $this->pendingMediaCount - 1);
+        $this->resetErrorBag('mediaUpload');
+        $this->draftState = 'dirty';
+        $this->draftError = '';
     }
 
     public function attachMedia(int $roomIndex, int $questionIndex): bool
@@ -485,9 +497,12 @@ new class extends Component
         return $this->getErrorBag()->isEmpty();
     }
 
-    public function review(): void
+    public function review(?int $roomIndex = null): void
     {
         $this->ensureAuthorized();
+        if ($roomIndex !== null && isset($this->rooms[$roomIndex])) {
+            $this->currentRoomIndex = $roomIndex;
+        }
         $this->stage = 'review';
     }
 
@@ -570,51 +585,128 @@ new class extends Component
 
 <div class="mx-auto flex min-h-full w-full max-w-[620px] flex-col bg-white px-4 pb-8 pt-5 text-[#111827]"
     x-data="{
+        activeRoomIndex: @entangle('currentRoomIndex'),
+        roomCount: {{ count($rooms) }},
         uploads: [], queue: Promise.resolve(), nextId: 0,
+        goToRoom(index) {
+            if (index < 0 || index >= this.roomCount) return;
+            this.activeRoomIndex = index;
+            this.$nextTick(() => this.scrollToActiveRoom());
+        },
+        nextRoom() {
+            if (this.activeRoomIndex + 1 < this.roomCount) {
+                this.goToRoom(this.activeRoomIndex + 1);
+                return;
+            }
+            this.$wire.review(this.activeRoomIndex);
+        },
+        previousRoom() {
+            if (this.activeRoomIndex > 0) {
+                this.goToRoom(this.activeRoomIndex - 1);
+                return;
+            }
+            this.$wire.backToSetup();
+        },
+        scrollToActiveRoom() {
+            const room = this.$refs.roomTop;
+            if (!room) return;
+            const top = room.getBoundingClientRect().top + window.scrollY - 72;
+            window.scrollTo({ top: Math.max(0, top), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+        },
+        focusQuestion(detail) {
+            this.activeRoomIndex = detail.room;
+            window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+                const question = document.getElementById(`focus-question-${detail.room}-${detail.question}`);
+                if (!question) return;
+                const top = question.getBoundingClientRect().top + window.scrollY - 72;
+                window.scrollTo({ top: Math.max(0, top), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+            }));
+        },
         add(event, room, question) {
             for (const file of Array.from(event.target.files || [])) {
                 const item = { id: ++this.nextId, file, room, question, name: file.name,
                     preview: URL.createObjectURL(file), kind: file.type.startsWith('video/') ? 'video' : 'image',
-                    status: 'ожидание', progress: 0 };
+                    status: 'ожидание', progress: 0, cancelled: false, timedOut: false, timeout: null };
                 this.uploads.push(item);
                 this.queue = this.queue.then(() => this.send(item));
             }
             event.target.value = '';
         },
         async send(item) {
+            if (item.cancelled) return;
             item.status = 'загрузка';
             item.progress = 0;
+            let serverPending = false;
             try {
                 await this.$wire.beginMediaUpload();
-                await new Promise((resolve, reject) => this.$wire.upload('mediaUpload', item.file,
-                    () => resolve(), () => reject(new Error('upload')),
-                    event => { item.progress = event.detail.progress; }));
+                serverPending = true;
+                await new Promise((resolve, reject) => {
+                    let settled = false;
+                    const finish = (callback, value) => {
+                        if (settled) return;
+                        settled = true;
+                        window.clearTimeout(item.timeout);
+                        callback(value);
+                    };
+                    item.timeout = window.setTimeout(() => {
+                        item.timedOut = true;
+                        this.$wire.cancelUpload('mediaUpload');
+                        finish(reject, new Error('timeout'));
+                    }, 90000);
+                    this.$wire.upload('mediaUpload', item.file,
+                        () => finish(resolve),
+                        () => finish(reject, new Error('upload')),
+                        event => { item.progress = event.detail?.progress ?? 0; },
+                        () => finish(reject, new Error('cancelled')));
+                });
                 item.status = 'загружено';
                 const saved = await this.$wire.attachMedia(item.room, item.question);
+                serverPending = false;
                 if (!saved) throw new Error('save');
                 item.status = 'сохранено в контроле';
                 URL.revokeObjectURL(item.preview);
                 this.uploads = this.uploads.filter(candidate => candidate.id !== item.id);
             } catch (error) {
-                if (item.status !== 'загружено') {
-                    try { await this.$wire.failMediaUpload(); } catch (ignored) {}
+                window.clearTimeout(item.timeout);
+                if (item.cancelled) {
+                    if (serverPending) {
+                        try { await this.$wire.cancelMediaUpload(); } catch (ignored) {}
+                    }
+                    item.status = 'отменено';
+                    return;
                 }
+                if (item.status !== 'загружено' && serverPending) {
+                    try { await this.$wire.failMediaUpload(); } catch (ignored) {}
+                    serverPending = false;
+                }
+                item.error = item.timedOut ? 'Загрузка не завершилась вовремя.' : 'Не удалось загрузить файл.';
                 item.status = 'ошибка';
             }
         },
-        retry(item) { this.queue = this.queue.then(() => this.send(item)); },
+        retry(item) {
+            item.cancelled = false;
+            item.timedOut = false;
+            item.error = '';
+            item.status = 'ожидание';
+            this.queue = this.queue.then(() => this.send(item));
+        },
+        cancel(item) {
+            if (!['ожидание', 'загрузка'].includes(item.status)) return;
+            item.cancelled = true;
+            if (item.status === 'загрузка') this.$wire.cancelUpload('mediaUpload');
+            else item.status = 'отменено';
+        },
         dismiss(item) {
-            if (item.status === 'ожидание' || item.status === 'загрузка' || item.status === 'загружено') return;
+            if (item.status === 'загрузка' || item.status === 'загружено') return;
             if (item.preview) URL.revokeObjectURL(item.preview);
             this.uploads = this.uploads.filter(candidate => candidate.id !== item.id);
         },
         get busy() { return this.uploads.some(item => ['ожидание', 'загрузка', 'загружено'].includes(item.status)); }
-    }">
+    }"
+    x-on:focus-question-selected.window="focusQuestion($event.detail)">
     <div class="mb-4 flex items-start justify-between gap-3">
         <div class="min-w-0">
-            <h1 class="mt-1 truncate text-[22px] font-bold leading-tight">
-                {{ $stage === 'questions' ? ($this->currentQuestion['room_title'] ?? 'Контроль') : ($stage === 'review' ? 'Проверка контроля' : 'Новый контроль') }}
-            </h1>
+            <h1 class="mt-1 truncate text-[22px] font-bold leading-tight">{{ $stage === 'review' ? 'Проверка контроля' : ($control?->name ?? 'Контроль качества') }}</h1>
         </div>
         @if($stage === 'setup')
             <a href="{{ route('page-checks.control') }}" class="shrink-0 rounded-full bg-[#F1F5F9] px-3 py-2 text-xs font-semibold text-[#285B86]">Classic</a>
@@ -624,11 +716,20 @@ new class extends Component
     @if($stage !== 'done')
         <div class="mb-5">
             <div class="flex justify-between text-xs font-semibold text-[#475569]">
-                <span>{{ $stage === 'questions' ? 'Вопрос '.($questionPosition + 1).' из '.count($this->questions) : 'Отвечено '.$this->completedCount.' из '.count($this->questions) }}</span>
-                <span>{{ count($this->questions) > 0 ? round($this->completedCount / count($this->questions) * 100) : 0 }}%</span>
+                @if($stage === 'questions')
+                    <span x-text="`Комната ${activeRoomIndex + 1} из ${roomCount}`"></span>
+                    <span>Ответов {{ $this->completedCount }} из {{ count($this->questions) }}</span>
+                @else
+                    <span>Отвечено {{ $this->completedCount }} из {{ count($this->questions) }}</span>
+                    <span>{{ count($this->questions) > 0 ? round($this->completedCount / count($this->questions) * 100) : 0 }}%</span>
+                @endif
             </div>
             <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-[#E8EDF3]">
-                <div class="h-full rounded-full bg-[#285B86] transition-all" style="width: {{ count($this->questions) > 0 ? round($this->completedCount / count($this->questions) * 100) : 0 }}%"></div>
+                @if($stage === 'questions')
+                    <div class="h-full rounded-full bg-[#285B86] transition-[width] duration-200" :style="`width: ${roomCount ? ((activeRoomIndex + 1) / roomCount) * 100 : 0}%`"></div>
+                @else
+                    <div class="h-full rounded-full bg-[#285B86]" style="width: {{ count($this->questions) > 0 ? round($this->completedCount / count($this->questions) * 100) : 0 }}%"></div>
+                @endif
             </div>
             <p x-show="busy" class="mt-2 text-xs font-semibold text-[#8A6116]" role="status">Загружаем файлы · можно продолжать вопросы</p>
             <p x-show="!busy" class="mt-2 text-xs {{ $draftState === 'error' ? 'text-[#B42318]' : 'text-[#8A97A8]' }}" role="status">
@@ -687,134 +788,123 @@ new class extends Component
             </label>
             <button type="button" wire:click="start" class="min-h-12 w-full rounded-2xl bg-[#285B86] px-4 text-base font-semibold text-white">К вопросам →</button>
         </section>
-    @elseif($stage === 'questions' && $this->currentQuestion)
-        @php
-            $item = $this->currentQuestion;
-            $roomIndex = $item['room_index'];
-            $questionIndex = $item['question_index'];
-            $question = $item['question'];
-            $answer = $answers[$roomIndex][$questionIndex] ?? [];
-            $answer['media'] = $savedMedia[$roomIndex][$questionIndex] ?? [];
-            $type = $question['answer_type'] ?? 'options';
-            $options = $question['answer_options_scored'] ?? [];
-            $binaryOptions = count($options) === 2 && collect($options)
-                ->pluck('label')->map(fn ($label) => mb_strtolower(trim((string) $label)))
-                ->sort()->values()->all() === ['да', 'нет'];
-        @endphp
-        <nav aria-label="Комнаты" class="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 pb-2">
-            @foreach($rooms as $index => $room)
-                @php
-                    $roomItems = array_filter($this->questions, fn ($entry) => $entry['room_index'] === $index);
-                    $roomDone = count(array_filter($roomItems, fn ($entry) => $this->filledAnswer($answers[$entry['room_index']][$entry['question_index']] ?? [])));
-                @endphp
-                <button type="button" wire:click="goToRoom({{ $index }})" class="shrink-0 rounded-full px-4 py-2 text-sm font-semibold {{ $index === $roomIndex ? 'bg-[#285B86] text-white' : 'bg-[#F1F5F9] text-[#475569]' }}">
-                    {{ $room['title'] ?? 'Комната '.($index + 1) }} · {{ $roomDone }}/{{ count($roomItems) }}
-                </button>
+    @elseif($stage === 'questions')
+        <div class="space-y-3">
+            @foreach($rooms as $roomIndex => $room)
+                <template x-if="activeRoomIndex === {{ $roomIndex }}">
+                    <section x-ref="roomTop" data-focus-room-page class="min-w-0">
+                        <div class="mb-2">
+                            <p class="text-xs font-semibold text-[#64748B]">Комната {{ $roomIndex + 1 }} из {{ count($rooms) }}</p>
+                            <h2 class="mt-1 text-xl font-bold leading-tight text-[#18283D]">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}</h2>
+                            <p class="mt-1 truncate text-xs text-[#64748B]">{{ collect($apartmentOptions)->firstWhere('id', $apartment_id)['name'] ?? 'Квартира не выбрана' }}</p>
+                        </div>
+
+                        @foreach(($room['items'] ?? []) as $questionIndex => $question)
+                            @php
+                                $answer = $answers[$roomIndex][$questionIndex] ?? [];
+                                $media = $savedMedia[$roomIndex][$questionIndex] ?? [];
+                                $type = $question['answer_type'] ?? 'options';
+                                $options = $question['answer_options_scored'] ?? [];
+                                $optional = (bool) (($room['is_optional'] ?? false) || ($question['is_optional'] ?? false));
+                                $binaryOptions = count($options) === 2 && collect($options)
+                                    ->pluck('label')->map(fn ($label) => mb_strtolower(trim((string) $label)))
+                                    ->sort()->values()->all() === ['да', 'нет'];
+                            @endphp
+                            <article id="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" wire:key="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" class="border-b border-[#EEF1F4] py-4 last:border-b-0">
+                                <div class="flex items-start justify-between gap-3">
+                                    <h3 class="min-w-0 text-base font-semibold leading-snug text-[#18283D]">{{ $question['question'] ?? 'Вопрос' }}</h3>
+                                    @if($optional) <span class="shrink-0 pt-0.5 text-[11px] text-[#64748B]">Необязательно</span> @endif
+                                </div>
+                                @if(filled($question['question_image'] ?? null))
+                                    <img src="{{ Storage::disk('public')->url($question['question_image']) }}" alt="" loading="lazy" class="mt-3 max-h-40 w-full rounded-xl object-contain">
+                                @endif
+                                @error("answers.$roomIndex.$questionIndex") <p class="mt-2 text-sm text-[#B42318]">{{ $message }}</p> @enderror
+
+                                @if(in_array($type, ['options', 'both'], true))
+                                    <div class="mt-3 grid grid-cols-1 gap-2" x-data="{ selected: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.selected') }">
+                                        @foreach(($question['answer_options_scored'] ?? []) as $optionIndex => $option)
+                                            @php
+                                                $value = (string) ($option['value'] ?? $option['label'] ?? 'option_'.$optionIndex);
+                                                $isPositiveBinaryOption = $binaryOptions && mb_strtolower(trim((string) ($option['label'] ?? ''))) === 'да';
+                                                $isNegativeBinaryOption = $binaryOptions && mb_strtolower(trim((string) ($option['label'] ?? ''))) === 'нет';
+                                            @endphp
+                                            <button type="button" x-on:click="selected = @js($value)" :aria-pressed="selected === @js($value)" wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
+                                                :class="selected === @js($value) ? (@js($isPositiveBinaryOption) ? 'border-[#B8E3C8] bg-[#EAF7EE] text-[#176B3A] ring-2 ring-[#2F9E5B]/10' : (@js($isNegativeBinaryOption) ? 'border-[#F3C5C3] bg-[#FFF1F0] text-[#A63832] ring-2 ring-[#D4544D]/10' : 'border-[#D7E2EC] bg-[#F1F6FA] text-[#194C75] ring-2 ring-[#285B86]/10')) : 'border-transparent bg-[#F5F7F9] text-[#263B51] hover:bg-[#EEF2F5]'"
+                                                class="flex {{ $binaryOptions ? 'min-h-14 text-base' : 'min-h-12 text-sm' }} w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left font-semibold transition-colors">
+                                                @if($binaryOptions)
+                                                    <span aria-hidden="true" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 text-lg">{{ $isPositiveBinaryOption ? '✓' : '×' }}</span>
+                                                @endif
+                                                <span class="min-w-0 break-words">{{ $option['label'] ?? $value }}</span>
+                                            </button>
+                                        @endforeach
+                                    </div>
+                                @endif
+                                @if(in_array($type, ['text', 'both'], true))
+                                    <label class="mt-3 block text-xs font-semibold text-[#475569]">{{ $type === 'both' ? ($question['custom_answer_label'] ?? 'Комментарий к ответу') : 'Ответ' }}
+                                        <textarea wire:model.blur="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom" maxlength="2000" rows="2"
+                                            class="mt-1.5 w-full rounded-xl border-[#CBD5E1] text-base" placeholder="Введите ответ"></textarea>
+                                    </label>
+                                @endif
+
+                                <div class="mt-3">
+                                    <div class="flex items-center justify-between gap-2">
+                                        <h4 class="text-sm font-semibold">Фото и видео</h4>
+                                        <span class="text-[11px] text-[#8A97A8]">{{ count($media) }} / 12</span>
+                                    </div>
+                                    <div class="mt-2 grid grid-cols-2 gap-2">
+                                        <label class="flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#EEF5FC] px-3 text-xs font-semibold text-[#285B86]">
+                                            Фото
+                                            <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
+                                        </label>
+                                        <label class="flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#EEF5FC] px-3 text-xs font-semibold text-[#285B86]">
+                                            Видео
+                                            <input type="file" multiple accept="video/mp4,video/quicktime,video/webm" class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
+                                        </label>
+                                    </div>
+                                    <p class="mt-1.5 text-[11px] text-[#8A97A8]">Фото до 10 МБ · видео до 12 МБ.</p>
+                                    @error('mediaUpload') <p class="mt-2 text-xs text-[#B42318]">{{ $message }}</p> @enderror
+                                    <div class="mt-2 grid grid-cols-2 gap-2 min-[390px]:grid-cols-3" aria-live="polite">
+                                        @foreach($media as $mediaIndex => $file)
+                                            <div class="min-w-0 overflow-hidden rounded-xl bg-[#F6F8FB] p-1" wire:key="focus-media-{{ $roomIndex }}-{{ $questionIndex }}-{{ $mediaIndex }}">
+                                                @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
+                                                    <video src="{{ ControlResponse::resolveMediaUrl($file) }}" controls preload="metadata" class="h-20 w-full rounded-lg object-cover"></video>
+                                                @else
+                                                    <img src="{{ ControlResponse::resolveMediaUrl($file) }}" alt="Вложение к вопросу" loading="lazy" class="h-20 w-full rounded-lg object-cover">
+                                                @endif
+                                                <div class="flex items-center justify-between gap-1 px-1 py-1 text-[10px]">
+                                                    <span class="font-semibold text-[#16834B]">Сохранено</span>
+                                                    <button type="button" wire:click="removeMedia({{ $roomIndex }}, {{ $questionIndex }}, {{ $mediaIndex }})" class="font-semibold text-[#B42318]">Удалить</button>
+                                                </div>
+                                            </div>
+                                        @endforeach
+                                        <template x-for="item in uploads.filter(file => file.room === {{ $roomIndex }} && file.question === {{ $questionIndex }})" :key="item.id">
+                                            <div class="min-w-0 overflow-hidden rounded-xl bg-[#F6F8FB] p-1">
+                                                <img x-show="item.kind === 'image'" :src="item.preview" alt="Локальное превью" class="h-20 w-full rounded-lg object-cover">
+                                                <video x-show="item.kind === 'video'" :src="item.preview" muted preload="metadata" class="h-20 w-full rounded-lg object-cover"></video>
+                                                <p class="truncate px-1 pt-1 text-[10px] font-medium" x-text="item.name"></p>
+                                                <p class="px-1 text-[10px]" :class="item.status === 'ошибка' ? 'text-[#B42318]' : 'text-[#64748B]'" x-text="item.error || (item.status === 'загрузка' ? 'Загрузка · ' + item.progress + '%' : item.status)"></p>
+                                                <progress x-show="item.status === 'загрузка'" :value="item.progress" max="100" class="mt-1 w-full"></progress>
+                                                <div class="flex gap-2 px-1 text-[10px] font-semibold">
+                                                    <button x-show="item.status === 'ожидание' || item.status === 'загрузка'" type="button" @click="cancel(item)" class="text-[#475569]">Отменить</button>
+                                                    <button x-show="item.status === 'ошибка' || item.status === 'отменено'" type="button" @click="retry(item)" class="text-[#285B86]">Повторить</button>
+                                                    <button x-show="item.status === 'ошибка' || item.status === 'отменено'" type="button" @click="dismiss(item)" class="text-[#B42318]">Удалить</button>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </article>
+                        @endforeach
+                    </section>
+                </template>
             @endforeach
-        </nav>
-        <details class="mb-4 rounded-2xl bg-[#F8FAFC] px-3 py-2 text-sm">
-            <summary class="cursor-pointer font-semibold text-[#285B86]">Все вопросы · перейти к нужному</summary>
-            <div class="mt-3 grid grid-cols-5 gap-2">
-                @foreach($this->questions as $position => $entry)
-                    @php $entryAnswer = $answers[$entry['room_index']][$entry['question_index']] ?? []; @endphp
-                    <button type="button" wire:click="goToQuestion({{ $entry['room_index'] }}, {{ $entry['question_index'] }})"
-                        aria-label="Вопрос {{ $position + 1 }}: {{ $entry['question']['question'] ?? 'Вопрос' }}"
-                        title="{{ $entry['question']['question'] ?? 'Вопрос' }}"
-                        class="min-h-10 rounded-xl font-semibold {{ $position === $questionPosition ? 'bg-[#285B86] text-white' : ($this->filledAnswer($entryAnswer) ? 'bg-[#DDF4E6] text-[#16834B]' : 'bg-white text-[#64748B]') }}">
-                        {{ $position + 1 }}
-                    </button>
-                @endforeach
-            </div>
-        </details>
-        <section wire:key="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" class="min-w-0 py-2">
-            <div class="flex items-center justify-between gap-3 text-xs font-semibold text-[#64748B]">
-                <span class="min-w-0 truncate">{{ collect($apartmentOptions)->firstWhere('id', $apartment_id)['name'] ?? 'Квартира не выбрана' }}</span>
-                @if($item['optional']) <span class="shrink-0">Необязательно</span> @endif
-            </div>
-            <h2 class="mt-5 text-[26px] font-bold leading-[1.18] tracking-[-0.025em] text-[#18283D]">{{ $question['question'] ?? 'Вопрос' }}</h2>
-            @if(filled($question['question_image'] ?? null))
-                <img src="{{ Storage::disk('public')->url($question['question_image']) }}" alt="" class="mt-4 max-h-48 w-full rounded-2xl object-contain">
-            @endif
-            @error("answers.$roomIndex.$questionIndex") <p class="mt-3 text-sm text-[#B42318]">{{ $message }}</p> @enderror
-
-            @if(in_array($type, ['options', 'both'], true))
-                <div class="mt-7 grid grid-cols-1 gap-3" x-data="{ selected: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.selected') }">
-                    @foreach(($question['answer_options_scored'] ?? []) as $optionIndex => $option)
-                        @php
-                            $value = (string) ($option['value'] ?? $option['label'] ?? 'option_'.$optionIndex);
-                            $isPositiveBinaryOption = $binaryOptions && mb_strtolower(trim((string) ($option['label'] ?? ''))) === 'да';
-                            $isNegativeBinaryOption = $binaryOptions && mb_strtolower(trim((string) ($option['label'] ?? ''))) === 'нет';
-                        @endphp
-                        <button type="button" x-on:click="selected = @js($value)" :aria-pressed="selected === @js($value)" wire:click="setAnswer({{ $roomIndex }}, {{ $questionIndex }}, @js($value))"
-                            :class="selected === @js($value) ? (@js($isPositiveBinaryOption) ? 'border-[#B8E3C8] bg-[#EAF7EE] text-[#176B3A] ring-2 ring-[#2F9E5B]/10' : (@js($isNegativeBinaryOption) ? 'border-[#F3C5C3] bg-[#FFF1F0] text-[#A63832] ring-2 ring-[#D4544D]/10' : 'border-[#D7E2EC] bg-[#F1F6FA] text-[#194C75] ring-2 ring-[#285B86]/10')) : 'border-transparent bg-[#F5F7F9] text-[#263B51] hover:bg-[#EEF2F5]'"
-                            class="flex {{ $binaryOptions ? 'min-h-[76px] text-lg' : 'min-h-16 text-base' }} w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left font-semibold transition active:scale-[0.99]">
-                            @if($binaryOptions)
-                                <span aria-hidden="true" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/80 text-xl">{{ $isPositiveBinaryOption ? '✓' : '×' }}</span>
-                            @endif
-                            <span class="min-w-0 break-words">{{ $option['label'] ?? $value }}</span>
-                        </button>
-                    @endforeach
-                </div>
-            @endif
-            @if(in_array($type, ['text', 'both'], true))
-                <label class="mt-4 block text-sm font-semibold">{{ $type === 'both' ? ($question['custom_answer_label'] ?? 'Комментарий к ответу') : 'Ответ' }}
-                    <textarea wire:model.blur="answers.{{ $roomIndex }}.{{ $questionIndex }}.custom" maxlength="2000" rows="3"
-                        class="mt-2 w-full rounded-2xl border-[#CBD5E1] text-base" placeholder="Введите ответ"></textarea>
-                </label>
-            @endif
-            {{-- TODO Focus V2: restore corrective questions as an optional, separate flow in a later sprint. --}}
-
-            <div class="mt-8">
-                <div class="flex items-center justify-between gap-2">
-                    <h3 class="text-base font-bold">Фото и видео</h3>
-                    <span class="text-xs text-[#8A97A8]">{{ count($answer['media'] ?? []) }} / 12</span>
-                </div>
-                <div class="mt-3 grid grid-cols-2 gap-3">
-                    <label class="flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-2xl bg-[#EEF5FC] px-3 text-sm font-semibold text-[#285B86]">
-                        <span aria-hidden="true">▣</span> Фото
-                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-                            class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
-                    </label>
-                    <label class="flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-2xl bg-[#EEF5FC] px-3 text-sm font-semibold text-[#285B86]">
-                        <span aria-hidden="true">▷</span> Видео
-                        <input type="file" multiple accept="video/mp4,video/quicktime,video/webm"
-                            class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
-                    </label>
-                </div>
-                <p class="mt-2 text-xs text-[#8A97A8]">Фото до 10 МБ · видео до 12 МБ при текущем лимите загрузки.</p>
-                @error('mediaUpload') <p class="mt-2 text-sm text-[#B42318]">{{ $message }}</p> @enderror
-                <div class="mt-3 grid grid-cols-2 gap-2 min-[390px]:grid-cols-3" aria-live="polite">
-                    @foreach(($answer['media'] ?? []) as $mediaIndex => $media)
-                        <div class="min-w-0 overflow-hidden rounded-2xl bg-[#F6F8FB] p-1.5" wire:key="focus-media-{{ $roomIndex }}-{{ $questionIndex }}-{{ $mediaIndex }}">
-                            @if(str_starts_with((string) ($media['mime'] ?? ''), 'video/'))
-                                <video src="{{ ControlResponse::resolveMediaUrl($media) }}" controls preload="metadata" class="h-24 w-full rounded-xl object-cover"></video>
-                            @else
-                                <img src="{{ ControlResponse::resolveMediaUrl($media) }}" alt="Вложение к вопросу" class="h-24 w-full rounded-xl object-cover">
-                            @endif
-                            <div class="flex items-center justify-between gap-1 px-1 py-1 text-[11px]">
-                                <span class="font-semibold text-[#16834B]">Сохранено</span>
-                                <button type="button" wire:click="removeMedia({{ $roomIndex }}, {{ $questionIndex }}, {{ $mediaIndex }})" class="font-semibold text-[#B42318]">Удалить</button>
-                            </div>
-                        </div>
-                    @endforeach
-                    <template x-for="item in uploads.filter(file => file.room === {{ $roomIndex }} && file.question === {{ $questionIndex }})" :key="item.id">
-                        <div class="min-w-0 overflow-hidden rounded-2xl bg-[#F6F8FB] p-1.5">
-                            <img x-show="item.kind === 'image'" :src="item.preview" alt="Локальное превью" class="h-24 w-full rounded-xl object-cover">
-                            <video x-show="item.kind === 'video'" :src="item.preview" muted preload="metadata" class="h-24 w-full rounded-xl object-cover"></video>
-                            <p class="truncate px-1 pt-1 text-[11px] font-medium" x-text="item.name"></p>
-                            <p class="px-1 text-[11px]" :class="item.status === 'ошибка' ? 'text-[#B42318]' : 'text-[#64748B]'"
-                                x-text="item.status === 'загрузка' ? 'Загрузка · ' + item.progress + '%' : item.status"></p>
-                            <progress x-show="item.status === 'загрузка'" :value="item.progress" max="100" class="mt-1 w-full"></progress>
-                            <button x-show="item.status === 'ошибка'" type="button" @click="retry(item)" class="px-1 text-[11px] font-semibold text-[#285B86]">Повторить</button>
-                            <button x-show="item.status === 'ошибка'" type="button" @click="dismiss(item)" class="ml-2 text-[11px] font-semibold text-[#B42318]">Удалить</button>
-                        </div>
-                    </template>
-                </div>
-            </div>
-        </section>
-        <div class="mt-6 grid grid-cols-2 gap-3 pb-3">
-            <button type="button" wire:click="previous" class="min-h-12 rounded-2xl bg-[#F1F5F9] px-4 font-semibold">← Назад</button>
-            <button type="button" wire:click="next" class="min-h-12 rounded-2xl bg-[#285B86] px-4 font-semibold text-white">{{ $questionPosition + 1 === count($this->questions) ? 'Проверить контроль' : 'Далее →' }}</button>
+        </div>
+        <div class="sticky bottom-0 z-10 -mx-4 mt-3 grid grid-cols-2 gap-2 border-t border-[#EEF1F4] bg-white/95 px-4 pt-2.5 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur-sm">
+            <button type="button" x-on:click="previousRoom()" class="min-h-11 rounded-xl bg-[#F1F5F9] px-3 text-sm font-semibold">← Назад</button>
+            <button type="button" x-on:click="nextRoom()" class="min-h-11 rounded-xl bg-[#285B86] px-3 text-sm font-semibold text-white">
+                <span x-show="activeRoomIndex + 1 !== roomCount">Далее →</span>
+                <span x-show="activeRoomIndex + 1 === roomCount">Завершить контроль</span>
+            </button>
         </div>
     @elseif($stage === 'review')
         <section class="min-w-0 pb-5">
@@ -831,7 +921,7 @@ new class extends Component
                 <h3 class="mt-5 font-bold text-[#B42318]">Незаполненные обязательные вопросы</h3>
                 <div class="mt-2 space-y-2">
                     @foreach($this->incompleteQuestions as $item)
-                        <button type="button" wire:click="goToQuestion({{ $item['room_index'] }}, {{ $item['question_index'] }})" class="block min-h-11 w-full rounded-xl bg-[#FEF3F2] px-3 py-2 text-left text-sm text-[#B42318]">
+                <button type="button" wire:click="goToQuestion({{ $item['room_index'] }}, {{ $item['question_index'] }})" class="block min-h-11 w-full rounded-xl bg-[#FEF3F2] px-3 py-2 text-left text-sm text-[#B42318]">
                             {{ $item['room_title'] }} · {{ $item['question']['question'] ?? 'Вопрос' }} →
                         </button>
                     @endforeach

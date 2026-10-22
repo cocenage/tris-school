@@ -83,6 +83,19 @@ it('keeps control navigation anchored to the internal scroll container', functio
         ->not->toContain('scrollIntoView(');
 });
 
+it('keeps Focus room navigation in Alpine and provides one room page at a time', function () {
+    $view = file_get_contents(base_path('resources/views/components/forms/⚡page-control-focus.blade.php'));
+
+    expect($view)
+        ->toContain("activeRoomIndex: @entangle('currentRoomIndex')")
+        ->toContain('x-on:click="nextRoom()"')
+        ->toContain('x-on:click="previousRoom()"')
+        ->toContain('x-if="activeRoomIndex === {{ $roomIndex }}"')
+        ->toContain('env(safe-area-inset-bottom)')
+        ->toContain('scrollToActiveRoom()')
+        ->not->toContain('wire:click="goToRoom({{ $roomIndex }})"');
+});
+
 it('keeps the optional control comment compact while preserving existing text', function () {
     $view = file_get_contents(base_path('resources/views/components/forms/⚡page-control.blade.php'));
 
