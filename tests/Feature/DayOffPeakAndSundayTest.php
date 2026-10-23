@@ -73,6 +73,9 @@ beforeEach(function () {
     Schema::create('vacation_requests', function (Blueprint $table) {
         $table->id();
         $table->unsignedBigInteger('user_id');
+        $table->date('start_date')->nullable();
+        $table->date('end_date')->nullable();
+        $table->unsignedInteger('days_count')->default(0);
         $table->text('reason')->nullable();
         $table->string('status')->default('pending');
         $table->timestamps();
@@ -81,6 +84,7 @@ beforeEach(function () {
     Schema::create('vacation_request_days', function (Blueprint $table) {
         $table->id();
         $table->unsignedBigInteger('vacation_request_id');
+        $table->unsignedBigInteger('user_id')->nullable();
         $table->date('date');
         $table->string('status')->default('pending');
         $table->timestamps();
@@ -118,6 +122,75 @@ function dayOffTestUser(): User
 
     return $user;
 }
+
+it('does not restore abandoned session dates into a new DayOff form and keeps current dates after validation errors', function () {
+    $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Rome'));
+    $this->actingAs(dayOffTestUser());
+    $this->withSession(['day_off_request_draft_1001' => [
+        'ranges' => [['start' => '2026-07-20', 'end' => '2026-07-20']],
+        'comment' => 'Old abandoned reason',
+        'draftStartDate' => null,
+        'month' => '2026-07-01',
+    ]]);
+
+    Livewire::test('forms.page-weekend')
+        ->assertSet('ranges', [])
+        ->call('selectDate', '2026-08-24')
+        ->set('comment', '')
+        ->call('submit')
+        ->assertHasErrors('comment')
+        ->assertSet('ranges', [['start' => '2026-08-24', 'end' => '2026-08-24']]);
+});
+
+it('rejects a past DayOff date submitted directly to the server', function () {
+    $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Rome'));
+    $this->actingAs(dayOffTestUser());
+
+    Livewire::test('forms.page-weekend')
+        ->set('ranges', [['start' => '2026-07-27', 'end' => '2026-07-27']])
+        ->set('comment', 'Причина достаточно подробная')
+        ->call('submit')
+        ->assertHasErrors('ranges');
+
+    expect(DayOffRequest::query()->count())->toBe(0);
+});
+
+it('does not restore abandoned session dates into a new Vacation form and preserves current dates on validation errors', function () {
+    $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Rome'));
+    $this->actingAs(dayOffTestUser());
+    $this->withSession(['vacation_request_draft_1001' => [
+        'draftStartDate' => '2026-07-20',
+        'draftEndDate' => '2026-07-24',
+        'comment' => 'Old abandoned reason',
+        'month' => '2026-07-01',
+    ]]);
+
+    Livewire::test('forms.page-vacation')
+        ->assertSet('draftStartDate', null)
+        ->assertSet('draftEndDate', null)
+        ->set('draftStartDate', '2026-08-10')
+        ->set('draftEndDate', '2026-08-12')
+        ->set('comment', '')
+        ->call('submit')
+        ->assertHasErrors('comment')
+        ->assertSet('draftStartDate', '2026-08-10')
+        ->assertSet('draftEndDate', '2026-08-12');
+});
+
+it('rejects a past Vacation date submitted directly to the server', function () {
+    $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Rome'));
+    $this->actingAs(dayOffTestUser());
+
+    Livewire::test('forms.page-vacation')
+        ->set('draftStartDate', '2026-07-27')
+        ->set('draftEndDate', '2026-07-28')
+        ->set('comment', 'Причина достаточно подробная')
+        ->call('submit')
+        ->assertHasErrors('draftStartDate');
+
+    expect(DB::table('vacation_requests')->count())->toBe(0)
+        ->and(DB::table('vacation_request_days')->count())->toBe(0);
+});
 
 it('expands active peak events and ignores inactive or non-peak events', function () {
     CalendarEvent::create([
@@ -246,6 +319,7 @@ it('does not submit a Sunday request after returning from the warning', function
 });
 
 it('creates a Sunday request after explicit confirmation', function () {
+    $this->travelTo(Carbon::parse('2026-08-01 12:00:00', 'Europe/Rome'));
     Http::fake();
     Queue::fake();
     $this->actingAs(dayOffTestUser());

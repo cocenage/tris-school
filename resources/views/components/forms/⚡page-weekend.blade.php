@@ -112,11 +112,7 @@ public function getFormButtonTextProperty(): string
             return;
         }
 
-        $this->ranges = is_array($draft['ranges'] ?? null) ? $draft['ranges'] : [];
         $this->comment = (string) ($draft['comment'] ?? '');
-        $this->draftStartDate = ! empty($draft['draftStartDate'])
-            ? (string) $draft['draftStartDate']
-            : null;
 
         if (! empty($draft['month'])) {
             try {
@@ -548,6 +544,23 @@ public function getFormButtonTextProperty(): string
             foreach ($this->ranges as $range) {
                 $rangeStart = Carbon::parse($range['start'])->startOfDay();
                 $rangeEnd = Carbon::parse($range['end'])->startOfDay();
+
+                if ($rangeStart->lt(now()->startOfDay()) || $rangeEnd->lt(now()->startOfDay())) {
+                    $message = 'Нельзя отправить новую заявку на прошедшие даты. Выберите будущие даты.';
+                    $this->addError('ranges', $message);
+                    $this->toast('warning', 'Проверьте даты', $message);
+
+                    return;
+                }
+
+                if ($rangeEnd->lt($rangeStart)) {
+                    $message = 'Дата окончания не может быть раньше даты начала.';
+                    $this->addError('ranges', $message);
+                    $this->toast('warning', 'Проверьте даты', $message);
+
+                    return;
+                }
+
                 $peakDateSet = $this->peakDatesForRange($rangeStart, $rangeEnd);
 
                 foreach (CarbonPeriod::create($rangeStart, $rangeEnd) as $day) {

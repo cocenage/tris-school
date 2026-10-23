@@ -112,9 +112,6 @@ public function getFormButtonTextProperty(): string
         }
 
         $this->comment = (string) ($draft['comment'] ?? '');
-        $this->draftStartDate = ! empty($draft['draftStartDate']) ? (string) $draft['draftStartDate'] : null;
-        $this->draftEndDate = ! empty($draft['draftEndDate']) ? (string) $draft['draftEndDate'] : null;
-
         if (! empty($draft['month'])) {
             try {
                 $this->month = Carbon::parse($draft['month'])->startOfMonth();
@@ -436,6 +433,33 @@ public function getFormButtonTextProperty(): string
             return;
         }
 
+        try {
+            $start = Carbon::parse($this->draftStartDate)->startOfDay();
+            $end = Carbon::parse($this->draftEndDate)->startOfDay();
+        } catch (\Throwable) {
+            $message = 'Укажите корректный период отпуска.';
+            $this->addError('draftStartDate', $message);
+            $this->toast('warning', 'Проверьте даты', $message);
+
+            return;
+        }
+
+        if ($start->lt(now()->startOfDay()) || $end->lt(now()->startOfDay())) {
+            $message = 'Нельзя отправить новую заявку на прошедшие даты. Выберите будущие даты.';
+            $this->addError('draftStartDate', $message);
+            $this->toast('warning', 'Проверьте даты', $message);
+
+            return;
+        }
+
+        if ($end->lt($start)) {
+            $message = 'Дата окончания не может быть раньше даты начала.';
+            $this->addError('draftEndDate', $message);
+            $this->toast('warning', 'Проверьте даты', $message);
+
+            return;
+        }
+
         $reason = $this->conflictReason($this->draftStartDate, $this->draftEndDate);
 
         if ($reason !== null) {
@@ -449,9 +473,6 @@ public function getFormButtonTextProperty(): string
         }
 
         try {
-            $start = Carbon::parse($this->draftStartDate)->startOfDay();
-            $end = Carbon::parse($this->draftEndDate)->startOfDay();
-
             $dates = [];
 
             foreach (CarbonPeriod::create($start, $end) as $day) {

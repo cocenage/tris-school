@@ -150,14 +150,13 @@ class VacationRequestTelegramService
             $message[] = e($request->admin_comment);
         }
 
-        $profileUrl = config('services.vacation.profile_url');
         $adminChatUrl = config('services.vacation.admin_chat_url');
 
         $keyboard = [
             [
                 [
                     'text' => '📋 Мои заявки',
-                    'url' => $profileUrl,
+                    'web_app' => ['url' => secure_url('/')],
                 ],
                 [
                     'text' => '💬 Чат с админом',
