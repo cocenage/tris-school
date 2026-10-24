@@ -164,7 +164,7 @@ it('does not acknowledge an empty Classic upload as saved', function () {
 
     Livewire::test('forms.page-control')
         ->call('finishPhotoUpload', 0, 0)
-        ->assertReturned('error');
+        ->assertReturned('Файл не получен сервером. Повторите загрузку.');
 
     expect(DB::table('control_response_drafts')->count())->toBe(0);
 });
@@ -406,6 +406,80 @@ it('stores a short video with its Classic control question', function () {
     Storage::disk('local')->assertExists($responses[0][0]['media'][0]['path']);
 });
 
+it('keeps sequential videos in the draft and result when a later upload is rejected', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('local');
+    $firstId = (string) Str::uuid();
+    $secondId = (string) Str::uuid();
+
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0.'.$firstId.'_1', UploadedFile::fake()->create('first.webm', 32, 'video/webm'))
+        ->call('finishPhotoUpload', 0, 0, $firstId, $firstId.'_1')
+        ->assertReturned('saved')
+        ->set('photoUploads.0.0.'.$secondId.'_1', UploadedFile::fake()->create('second.webm', 48, 'video/webm'))
+        ->call('finishPhotoUpload', 0, 0, $secondId, $secondId.'_1')
+        ->assertReturned('saved')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->create('rejected.pdf', 8, 'application/pdf')])
+        ->call('finishPhotoUpload', 0, 0);
+
+    $draftMedia = json_decode((string) DB::table('control_response_drafts')->value('responses'), true)[0][0]['media'];
+    expect($draftMedia)->toHaveCount(2)
+        ->and(collect($draftMedia)->pluck('upload_id')->all())->toBe([$firstId, $secondId]);
+    Storage::disk('local')->assertExists($draftMedia[0]['path']);
+    Storage::disk('local')->assertExists($draftMedia[1]['path']);
+
+    $component->assertReturned('Можно загружать только фото и видео')
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    $resultMedia = ControlResponse::query()->sole()->responses[0][0]['media'];
+    expect($resultMedia)->toHaveCount(2)
+        ->and(collect($resultMedia)->pluck('original_name')->all())->toBe(['first.webm', 'second.webm']);
+    foreach ($resultMedia as $file) {
+        Storage::disk('local')->assertExists($file['path']);
+    }
+});
+
+it('isolates saved media between consecutive apartment controls in one Livewire session', function () {
+    [, $cleaner, $firstApartment] = mountControlWorkflow();
+    Storage::fake('local');
+    $secondApartment = DB::table('apartments')->insertGetId([
+        'name' => 'Second apartment', 'is_active' => true, 'sort_order' => 1,
+        'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $firstApartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('Bramante-A.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true)
+        ->call('resetControl')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $secondApartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('Mercato-B.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    $responses = ControlResponse::query()->orderBy('id')->get();
+    expect($responses)->toHaveCount(2)
+        ->and($responses[0]->apartment_id)->toBe($firstApartment)
+        ->and($responses[1]->apartment_id)->toBe($secondApartment)
+        ->and($responses[0]->responses[0][0]['media'][0]['original_name'])->toBe('Bramante-A.jpg')
+        ->and($responses[1]->responses[0][0]['media'][0]['original_name'])->toBe('Mercato-B.jpg')
+        ->and($responses[0]->responses[0][0]['media'][0]['path'])->not->toBe($responses[1]->responses[0][0]['media'][0]['path']);
+});
+
 it('rejects unsupported Classic attachments', function () {
     mountControlWorkflow();
     Storage::fake('local');
@@ -413,7 +487,7 @@ it('rejects unsupported Classic attachments', function () {
     Livewire::test('forms.page-control')
         ->set('photoUploads.0.0', [UploadedFile::fake()->create('document.pdf', 50, 'application/pdf')])
         ->call('finishPhotoUpload', 0, 0)
-        ->assertReturned('error')
+        ->assertReturned('Можно загружать только фото и видео')
         ->assertCount('answers.0.0.media', 0)
         ->assertHasErrors('queuedPhotos.0.0');
 });
@@ -431,10 +505,10 @@ it('recovers from a failed optional Classic upload without losing answers or blo
         ->assertReturned('saved')
         ->set('photoUploads.0.0', [UploadedFile::fake()->create('document.pdf', 50, 'application/pdf')])
         ->call('finishPhotoUpload', 0, 0)
-        ->assertReturned('error')
+        ->assertReturned('Можно загружать только фото и видео')
         ->set('photoUploads.0.0', [UploadedFile::fake()->image('too-big.jpg')->size(11000)])
         ->call('finishPhotoUpload', 0, 0)
-        ->assertReturned('error')
+        ->assertReturned('Один файл не должен быть больше 10 МБ')
         ->assertCount('answers.0.0.media', 1)
         ->set('photoUploads.0.0', [UploadedFile::fake()->image('retry.jpg')])
         ->call('finishPhotoUpload', 0, 0)

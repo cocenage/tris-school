@@ -968,6 +968,21 @@ protected function getDraftPayload(?array $media = null): array
             || in_array($mime, ['video/mp4', 'video/quicktime', 'video/webm'], true);
     }
 
+    protected function effectiveMediaUploadLimitBytes(): int
+    {
+        $limits = [10 * 1024 * 1024];
+
+        foreach (['upload_max_filesize', 'post_max_size'] as $setting) {
+            $limit = ini_parse_quantity((string) ini_get($setting));
+            if ($limit > 0) {
+                // Reserve room for multipart headers and other form fields.
+                $limits[] = $setting === 'post_max_size' ? max(1, $limit - 64 * 1024) : $limit;
+            }
+        }
+
+        return min($limits);
+    }
+
     public function finishPhotoUpload(int $roomIndex, int $questionIndex, ?string $uploadId = null, ?string $uploadKey = null): string
     {
         $this->ensureCanConductControl();
@@ -980,7 +995,7 @@ protected function getDraftPayload(?array $media = null): array
         $lock = Cache::lock($this->draftMediaLockKey(), 30);
         if (! $lock->get()) {
             $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Сохранение ещё выполняется. Повторите попытку.');
-            return 'error';
+            return $this->getErrorBag()->first("queuedPhotos.$roomIndex.$questionIndex");
         }
         try {
             $this->queueUploadedPhotos("photoUploads.$roomIndex.$questionIndex".($uploadId !== null ? '.'.$uploadKey : ''), $uploadId);
@@ -989,7 +1004,7 @@ protected function getDraftPayload(?array $media = null): array
         }
 
         return $this->getErrorBag()->has("queuedPhotos.$roomIndex.$questionIndex")
-            ? 'error'
+            ? $this->getErrorBag()->first("queuedPhotos.$roomIndex.$questionIndex")
             : 'saved';
     }
 
@@ -1626,6 +1641,7 @@ protected function getDraftPayload(?array $media = null): array
         x-data="{
             timer: null,
             pendingUploads: 0,
+            maxMediaUploadBytes: @js($this->effectiveMediaUploadLimitBytes()),
             mediaUploads: {},
             mediaProcessing: false,
             nextMediaUploadId: 0,
@@ -1788,6 +1804,10 @@ protected function getDraftPayload(?array $media = null): array
                     const revision = this.saveRevision;
                     await $wire.confirmSubmit();
                     if ($wire.successSheetOpen) {
+                        // The server has cleared the completed draft; discard its local previews too.
+                        this.mediaUploads = {};
+                        this.pendingUploads = 0;
+                        this.nextMediaUploadId = 0;
                         this.attemptedSaveRevision = Math.max(this.attemptedSaveRevision, revision);
                         this.persistedSaveRevision = Math.max(this.persistedSaveRevision, revision);
                         this.clientDraftState = 'submitted';
@@ -1842,10 +1862,24 @@ protected function getDraftPayload(?array $media = null): array
 
                 this.mediaUploads[key] ??= [];
                 for (const file of selectedFiles) {
-                    this.mediaUploads[key].push({ id: ++this.nextMediaUploadId, uploadId: crypto.randomUUID(), attempt: 0, room, question, file, name: file.name, state: 'queued', progress: 0, error: '', controller: null });
-                    this.pendingUploads++;
+                    const fileSize = Number(file.size) || 0;
+                    const tooLarge = fileSize > this.maxMediaUploadBytes;
+                    this.mediaUploads[key].push({
+                        id: ++this.nextMediaUploadId,
+                        uploadId: crypto.randomUUID(),
+                        attempt: 0,
+                        room,
+                        question,
+                        file,
+                        name: file.name,
+                        state: tooLarge ? 'error' : 'queued',
+                        progress: 0,
+                        error: tooLarge ? `Файл превышает текущий лимит загрузки ${Math.floor(this.maxMediaUploadBytes / 1024 / 1024)} МБ.` : '',
+                        controller: null,
+                    });
+                    if (!tooLarge) this.pendingUploads++;
                 }
-                this.processMediaUploads(key, room, question);
+                if (selectedFiles.some(file => (Number(file.size) || 0) <= this.maxMediaUploadBytes)) this.processMediaUploads(key, room, question);
             },
 
             async processMediaUploads(key, room, question) {
@@ -1867,7 +1901,7 @@ protected function getDraftPayload(?array $media = null): array
                                 progress => item.progress = progress, item.controller,
                                 () => item.state = 'saving', item.uploadId, uploadKey
                             );
-                            if (result !== 'saved') throw new Error('File was not saved');
+                            if (result !== 'saved') throw new Error(typeof result === 'string' && result ? result : 'Сервер не подтвердил сохранение файла.');
                             item.state = 'saved';
                             item.file = null;
                         } catch (error) {
@@ -1875,7 +1909,11 @@ protected function getDraftPayload(?array $media = null): array
                                 item.state = 'error';
                                 item.error = error.message === 'Upload timed out'
                                     ? 'Загрузка не завершилась вовремя.'
-                                    : 'Не удалось загрузить файл.';
+                                    : error.message === 'Upload failed'
+                                        ? 'Сервер отклонил временную загрузку. Проверьте доступный размер файла и соединение.'
+                                        : error.message === 'File was not saved'
+                                            ? 'Сервер не подтвердил сохранение файла.'
+                                            : (error.message || 'Не удалось загрузить файл.');
                             }
                         } finally {
                             item.controller = null;
