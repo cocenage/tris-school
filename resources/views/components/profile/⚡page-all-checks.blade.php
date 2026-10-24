@@ -1,15 +1,22 @@
 <?php
 
+use App\Models\Apartment;
+use App\Models\Coaching;
 use App\Models\ControlResponse;
 use App\Models\User;
+use App\Services\ProfileActivityTimeline;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
 
-new class extends Component {
+new class extends Component
+{
     public string $search = '';
+
     public string $activityPeriod = 'all';
+
     public string $activityFilter = 'all';
+
     public string $workPeriod = 'all';
 
     public function mount(): void
@@ -19,414 +26,73 @@ new class extends Component {
 
     public function getDataProperty(): array
     {
-        $cleaners = User::query()
-            ->where('is_active', true)
-            ->whereIn('role', ['cleaner', 'supervisor'])
-            ->orderByRaw('work_started_at IS NULL, work_started_at DESC')
-            ->orderBy('name')
-            ->get();
-
-        $responses = ControlResponse::query()
-            ->with(['control', 'cleaner', 'supervisor', 'apartment'])
-            ->get()
-            ->map(function (ControlResponse $item) {
-                $item->item_type = 'control';
-                $item->sort_date = $item->inspection_date
-                    ?? $item->cleaning_date
-                    ?? $item->sent_at
-                    ?? $item->created_at;
-
-                return $item;
-            });
-
-        $allItems = $responses
-            ->sortByDesc(fn ($item) => $item->sort_date ?? $item->created_at)
-            ->values();
-
-        $periodFrom = match ($this->activityPeriod) {
-            '7' => now()->subDays(7)->startOfDay(),
-            '30' => now()->subDays(30)->startOfDay(),
+        abort_unless(Auth::user()?->role === 'admin', 403);
+        $cleaners = User::query()->where('is_active', true)->whereIn('role', ['cleaner', 'supervisor'])->get();
+        $from = match ($this->activityPeriod) {
+            '7' => now()->subDays(7)->toDateString(),
+            '30' => now()->subDays(30)->toDateString(),
             default => null,
         };
-
-        $groupedItems = collect();
-        $stats = collect();
-
-        foreach ($cleaners as $cleaner) {
-            $items = $allItems
-                ->where('cleaner_id', $cleaner->id)
-                ->filter(function ($item) use ($periodFrom) {
-                    if (! $periodFrom) {
-                        return true;
-                    }
-
-                    $date = $item->sort_date ?? $item->created_at;
-
-                    return $date && Carbon::parse($date)->gte($periodFrom);
-                })
-                ->sortByDesc(fn ($item) => Carbon::parse($item->sort_date ?? $item->created_at)->timestamp)
-                ->values();
-
-            $groupedItems[$cleaner->id] = $items;
-
-            $lastItem = $items->first();
-
-            $stats[$cleaner->id] = [
-                'controls_count' => $items->where('item_type', 'control')->count(),
-                'coachings_count' => $items->where('item_type', 'coaching')->count(),
-                'last_activity_at' => $lastItem?->sort_date ?? $cleaner->work_started_at,
-            ];
+        $stats = app(ProfileActivityTimeline::class)->statisticsForCleaners($cleaners->modelKeys(), $from);
+        $search = mb_strtolower(trim($this->search));
+        $apartmentEmployees = collect();
+        if ($search !== '') {
+            $apartmentIds = Apartment::query()->get(['id', 'name'])->filter(fn ($apartment) => str_contains(mb_strtolower((string) $apartment->name), $search))->modelKeys();
+            $apartmentEmployees = ControlResponse::query()->whereIn('apartment_id', $apartmentIds)
+                ->when($from, fn ($q) => $q->whereRaw('date(COALESCE(inspection_date, cleaning_date, sent_at, created_at)) >= ?', [$from]))->pluck('cleaner_id')
+                ->merge(Coaching::query()->whereIn('apartment_id', $apartmentIds)->when($from, fn ($q) => $q->whereRaw('date(COALESCE(inspection_date, created_at)) >= ?', [$from]))->pluck('user_id'));
         }
-
-        $cleaners = $cleaners
-            ->filter(function ($cleaner) use ($groupedItems) {
-                $items = $groupedItems[$cleaner->id] ?? collect();
-
-                if ($this->activityFilter === 'has_items' && $items->isEmpty()) {
+        $cleaners = $cleaners->filter(function ($cleaner) use ($stats, $search, $apartmentEmployees) {
+            $stat = $stats->get($cleaner->id);
+            $count = (int) ($stat?->controls_count ?? 0) + (int) ($stat?->coachings_count ?? 0);
+            if (($this->activityFilter === 'has_items' && $count === 0) || ($this->activityFilter === 'no_items' && $count > 0)) {
+                return false;
+            }
+            if ($this->workPeriod !== 'all') {
+                if (! $cleaner->work_started_at) {
                     return false;
                 }
-
-                if ($this->activityFilter === 'no_items' && $items->isNotEmpty()) {
+                $months = $cleaner->work_started_at->diffInMonths(now());
+                if (($this->workPeriod === '1' && $months >= 1) || ($this->workPeriod === '2' && ($months < 1 || $months >= 2)) || ($this->workPeriod === '3' && ($months < 2 || $months >= 3)) || ($this->workPeriod === '3_plus' && $months < 3)) {
                     return false;
                 }
+            }
 
-                if ($this->workPeriod !== 'all') {
-                    if (! $cleaner->work_started_at) {
-                        return false;
-                    }
+            return $search === '' || str_contains(mb_strtolower((string) $cleaner->name), $search) || $apartmentEmployees->contains($cleaner->id);
+        })->sort(function ($a, $b) use ($stats) {
+            $aDate = $stats->get($a->id)?->last_activity_at ?? $a->work_started_at;
+            $bDate = $stats->get($b->id)?->last_activity_at ?? $b->work_started_at;
 
-                    $monthsWorked = Carbon::parse($cleaner->work_started_at)->diffInMonths(now());
+            return ($bDate ? Carbon::parse($bDate)->timestamp : 0) <=> ($aDate ? Carbon::parse($aDate)->timestamp : 0) ?: strcmp((string) $a->name, (string) $b->name);
+        })->values();
 
-                    if ($this->workPeriod === '1' && $monthsWorked >= 1) {
-                        return false;
-                    }
-
-                    if ($this->workPeriod === '2' && ($monthsWorked < 1 || $monthsWorked >= 2)) {
-                        return false;
-                    }
-
-                    if ($this->workPeriod === '3' && ($monthsWorked < 2 || $monthsWorked >= 3)) {
-                        return false;
-                    }
-
-                    if ($this->workPeriod === '3_plus' && $monthsWorked < 3) {
-                        return false;
-                    }
-                }
-
-                $search = mb_strtolower(trim($this->search));
-
-                if ($search === '') {
-                    return true;
-                }
-
-                $hasUserMatch = str_contains(
-                    mb_strtolower((string) $cleaner->name),
-                    $search
-                );
-
-                $hasApartmentMatch = $items->contains(function ($item) use ($search) {
-                    $apartmentName = (string) ($item->apartment?->name ?? '');
-
-                    return $apartmentName !== ''
-                        && str_contains(mb_strtolower($apartmentName), $search);
-                });
-
-                return $hasUserMatch || $hasApartmentMatch;
-            })
-            ->sort(function ($a, $b) use ($stats) {
-                $aDate = $stats[$a->id]['last_activity_at'] ?? $a->work_started_at;
-                $bDate = $stats[$b->id]['last_activity_at'] ?? $b->work_started_at;
-
-                $aTs = $aDate ? Carbon::parse($aDate)->timestamp : 0;
-                $bTs = $bDate ? Carbon::parse($bDate)->timestamp : 0;
-
-                return $bTs <=> $aTs ?: strcmp((string) $a->name, (string) $b->name);
-            })
-            ->values();
-
-        return [
-            'cleaners' => $cleaners,
-            'groupedItems' => $groupedItems,
-            'stats' => $stats,
-        ];
+        return compact('cleaners', 'stats');
     }
-
-    protected function percent($item): int
-    {
-        if (($item->item_type ?? null) !== 'control') {
-            return 0;
-        }
-
-        if ($item->score_percent !== null) {
-            return max(0, min(100, (int) $item->score_percent));
-        }
-
-        $total = (int) ($item->total_points ?? 0);
-        $max = (int) ($item->max_points ?? 0);
-
-        return $max > 0 ? max(0, min(100, (int) round(($total / $max) * 100))) : 0;
-    }
-
-   protected function controlColor($item): string
-{
-    return match ((string) ($item->result_zone ?? '')) {
-        'green' => '#27AE60',
-        'yellow' => '#F59E0B',
-        'red' => '#D92D20',
-        default => '#7D7D7D',
-    };
-}
 };
 ?>
 
 <x-slot:header>
-    <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
-        <button
-            type="button"
-            onclick="history.back()"
-            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259]"
-        >
-            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2]" />
-        </button>
-
-        <span class="text-[18px] leading-none">
-            Все контроли
-        </span>
-
-        <div class="h-[36px] w-[36px]"></div>
-    </div>
+    <div class="flex h-[70px] items-center gap-3 px-4 text-[#213259]"><a href="{{ route('page-profile') }}" aria-label="Назад" class="p-2"><x-heroicon-o-arrow-left class="size-5" /></a><span role="heading" aria-level="1" class="text-[18px] leading-none">История сотрудников</span></div>
 </x-slot:header>
-
-@php
-    $data = $this->data;
-    $cleaners = $data['cleaners'];
-    $groupedItems = $data['groupedItems'];
-    $stats = $data['stats'];
-@endphp
-
-<div class="flex h-full min-h-0 flex-col bg-[#F4F7FB]">
-    <div class="flex-1 min-h-0 overflow-y-auto">
-        <div class="min-h-full rounded-t-[38px] bg-white">
-            <div class="p-[20px] pb-[40px]">
-
-                <div class="mb-[20px] space-y-[12px]">
-                    <div class="flex h-[48px] items-center gap-[10px] rounded-full bg-[#E2E2E2] px-[18px]">
-                        <x-heroicon-o-magnifying-glass class="h-[20px] w-[20px] shrink-0 text-black/45 stroke-[2]" />
-
-                        <input
-                            type="text"
-                            wire:model.live.debounce.300ms="search"
-                            placeholder="Поиск сотрудника или квартиры"
-                            class="h-full min-w-0 flex-1 border-0 bg-transparent p-0 text-[15px] font-medium text-[#111111] placeholder:text-black/40 outline-none focus:ring-0"
-                        >
-                    </div>
-
-                    <div class="grid grid-cols-3 gap-[8px]">
-                        <select
-                            wire:model.live="activityPeriod"
-                            class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0"
-                        >
-                            <option value="all">Всё время</option>
-                            <option value="30">30 дней</option>
-                            <option value="7">7 дней</option>
-                        </select>
-
-                        <select
-                            wire:model.live="activityFilter"
-                            class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0"
-                        >
-                            <option value="all">Все</option>
-                            <option value="has_items">С контролями</option>
-                            <option value="no_items">Без контролей</option>
-                        </select>
-
-                        <select
-                            wire:model.live="workPeriod"
-                            class="h-[42px] rounded-full border-0 bg-[#E2E2E2] px-[12px] text-[13px] focus:ring-0"
-                        >
-                            <option value="all">Стаж</option>
-                            <option value="1">До 1 мес.</option>
-                            <option value="2">1–2 мес.</option>
-                            <option value="3">2–3 мес.</option>
-                            <option value="3_plus">3+ мес.</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="space-y-[14px]">
-                    @forelse($cleaners as $cleaner)
-                        @php
-                            $items = ($groupedItems[$cleaner->id] ?? collect())
-                                ->sortByDesc(fn ($r) => Carbon::parse($r->sort_date ?? $r->created_at)->timestamp)
-                                ->values();
-
-                            $controlsCount = $stats[$cleaner->id]['controls_count'] ?? 0;
-                            $coachingsCount = $stats[$cleaner->id]['coachings_count'] ?? 0;
-
-$lastControls = $items
-    ->filter(fn ($item) => ($item->item_type ?? null) === 'control')
-    ->take(12)
-    ->values();
-
-                            $monthsWorked = $cleaner->work_started_at
-                                ? Carbon::parse($cleaner->work_started_at)->diffInMonths(now())
-                                : null;
-
-                            $borderColor = match (true) {
-                                $monthsWorked !== null && $monthsWorked < 1 => '#86EFAC',
-                                $monthsWorked !== null && $monthsWorked < 2 => '#7DD3FC',
-                                $monthsWorked !== null && $monthsWorked < 3 => '#93C5FD',
-                                default => '#EAEAEA',
-                            };
-                        @endphp
-
-                        <div
-                            x-data="{ open: false }"
-                            class="overflow-hidden bg-white"
-                            style="border: 1px solid {{ $borderColor }}; border-radius: 30px;"
-                        >
-                            <button
-                                type="button"
-                                @click="open = !open"
-                                class="w-full px-[16px] py-[16px] text-left active:bg-black/[0.02]"
-                            >
-                                <div class="flex items-center justify-between gap-[14px]">
-                                    <div class="min-w-0">
-                                        <div class="truncate text-[17px] font-semibold text-[#111111]">
-                                            {{ $cleaner->name }}
-                                        </div>
-
-                                        <div class="mt-[4px] text-[12px] text-black/45">
-                                            Начало работы:
-                                            <span class="font-semibold text-black/70">
-                                                {{ optional($cleaner->work_started_at)->format('d.m.Y') ?? '—' }}
-                                            </span>
-                                        </div>
-
-                                        @if($lastControls->isNotEmpty())
-    <div class="mt-[8px] flex flex-wrap gap-[5px]">
-        @foreach($lastControls as $controlItem)
-            <span
-                class="h-[10px] w-[10px] rounded-full"
-                title="{{ optional($controlItem->inspection_date ?? $controlItem->sent_at ?? $controlItem->created_at)->format('d.m.Y') }}"
-                style="background: {{ $this->controlColor($controlItem) }};"
-            ></span>
-        @endforeach
-    </div>
-@endif
-                                    </div>
-
-                                    <div class="flex items-center gap-[8px] shrink-0">
-                                        <span class="rounded-full bg-[#F8F8F8] px-[10px] py-[6px] text-[12px] font-semibold text-black/50">
-                                            {{ $controlsCount }} / {{ $coachingsCount }}
-                                        </span>
-
-                                        <span class="flex h-[38px] w-[38px] items-center justify-center rounded-full bg-[#F8F8F8]">
-                                            <x-heroicon-o-chevron-down
-                                                class="h-[18px] w-[18px] text-black/45 transition"
-                                                x-bind:class="{ 'rotate-180': open }"
-                                            />
-                                        </span>
-                                    </div>
-                                </div>
-                            </button>
-
-                            <div x-show="open" x-collapse class="px-[12px] pb-[12px]" style="display:none;">
-                                @if($items->isNotEmpty())
-                                    <div class="space-y-[10px]">
-                                        @foreach($items as $item)
-                                            @php
-                                                $isCoaching = ($item->item_type ?? null) === 'coaching';
-
-                                                $date = $item->inspection_date?->format('d.m.Y')
-                                                    ?? $item->cleaning_date?->format('d.m.Y')
-                                                    ?? $item->sent_at?->format('d.m.Y')
-                                                    ?? $item->created_at?->format('d.m.Y');
-
-                                                if ($isCoaching) {
-                                                    $url = route('page.coaching', $item->id);
-                                                    $label = 'Коучинг';
-                                                    $apartment = $item->apartment?->name ?? '—';
-                                                    $circleColor = '#0EA5E9';
-                                                    $note = trim((string) ($item->reason ?? ''));
-                                                    $meta = '';
-                                                } else {
-                                                    $url = route('page-profile.checks.result', $item);
-                                                    $label = 'Контроль';
-                                                    $apartment = $item->apartment?->name ?? '—';
-                                                    $circleColor = $this->controlColor($item);
-                                                    $note = trim((string) ($item->comment ?? ''));
-                                                    $meta = $this->percent($item) . '%';
-                                                }
-                                            @endphp
-
-                                            <div x-data="{ noteOpen: false }">
-                                                <a
-                                                    href="{{ $url }}"
-                                                    class="block rounded-[24px] border border-[#EAEAEA] bg-[#FAFAFA] px-[14px] py-[13px] active:scale-[0.99] transition"
-                                                >
-                                                    <div class="flex items-center justify-between gap-[12px]">
-                                                        <div class="min-w-0">
-                                                            <div class="flex items-center gap-[8px]">
-                                                                <span class="text-[14px] font-semibold text-[#111111]">
-                                                                    {{ $label }}
-                                                                </span>
-
-                                                                <span
-                                                                    class="h-[14px] w-[14px] rounded-full"
-                                                                    style="background: {{ $circleColor }};"
-                                                                ></span>
-
-                                                                <span class="text-[13px] text-black/45">
-                                                                    {{ $date }}
-                                                                </span>
-
-                                                                @if($meta !== '')
-                                                                    <span class="rounded-full bg-white px-[8px] py-[3px] text-[11px] font-semibold text-black/45">
-                                                                        {{ $meta }}
-                                                                    </span>
-                                                                @endif
-                                                            </div>
-
-                                                            <div class="mt-[4px] truncate text-[13px] text-black/45">
-                                                                {{ $apartment }}
-                                                            </div>
-                                                        </div>
-
-                                                        <button
-                                                            type="button"
-                                                            @click.prevent.stop="noteOpen = !noteOpen"
-                                                            class="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full bg-white"
-                                                        >
-                                                            <x-heroicon-o-chat-bubble-left-right class="h-[19px] w-[19px] text-black/45" />
-                                                        </button>
-                                                    </div>
-                                                </a>
-
-                                                <div x-show="noteOpen" x-collapse class="mt-[8px]" style="display:none;">
-                                                    <div class="rounded-[22px] bg-[#F8F8F8] px-[15px] py-[13px] text-[14px] leading-[1.4] text-black/60">
-                                                        {{ $note !== '' ? $note : 'Комментарий не указан' }}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        @endforeach
-                                    </div>
-                                @else
-                                    <div class="rounded-[24px] bg-[#F8F8F8] px-[16px] py-[18px] text-[14px] text-black/45">
-                                        У этого человека пока нет контролей
-                                    </div>
-                                @endif
-                            </div>
-                        </div>
-                    @empty
-                        <div class="rounded-[28px] bg-[#F8F8F8] px-[18px] py-[20px] text-center text-[15px] text-black/45">
-                            Ничего не найдено
-                        </div>
-                    @endforelse
-                </div>
-
-            </div>
+<div class="h-full overflow-y-auto bg-white px-5 pb-10 pt-5">
+    <div class="mx-auto max-w-2xl space-y-5">
+        <input type="search" wire:model.live.debounce.300ms="search" placeholder="Поиск сотрудника или квартиры" aria-label="Поиск сотрудника или квартиры" class="min-h-12 w-full rounded-full border-0 bg-[#E2E2E2] px-5">
+        <div class="grid grid-cols-3 gap-2">
+            <select wire:model.live="activityPeriod" aria-label="Период активности" class="min-w-0 rounded-full border-0 bg-[#E2E2E2] p-3 text-sm"><option value="all">Всё время</option><option value="30">30 дней</option><option value="7">7 дней</option></select>
+            <select wire:model.live="activityFilter" aria-label="Наличие записей" class="min-w-0 rounded-full border-0 bg-[#E2E2E2] p-3 text-sm"><option value="all">Все</option><option value="has_items">С записями</option><option value="no_items">Без записей</option></select>
+            <select wire:model.live="workPeriod" aria-label="Стаж" class="min-w-0 rounded-full border-0 bg-[#E2E2E2] p-3 text-sm"><option value="all">Стаж</option><option value="1">До 1 мес.</option><option value="2">1–2 мес.</option><option value="3">2–3 мес.</option><option value="3_plus">3+ мес.</option></select>
         </div>
+        @php($data = $this->data)
+        @forelse($data['cleaners'] as $cleaner)
+            @php($stat = $data['stats']->get($cleaner->id))
+            <a wire:key="employee-{{ $cleaner->id }}" href="{{ route('page-profile.employee-history', $cleaner) }}" class="block rounded-[30px] border border-[#EAEAEA] p-4">
+                <div class="font-semibold">{{ $cleaner->name }}</div>
+                <p class="mt-2 text-sm text-black/50">Начало работы: {{ $cleaner->work_started_at?->format('d.m.Y') ?? '—' }}</p>
+                <p class="mt-2 text-sm">Контроли: {{ (int) ($stat?->controls_count ?? 0) }} · Коучинги: {{ (int) ($stat?->coachings_count ?? 0) }}</p>
+                <span class="mt-3 inline-block text-sm text-[#213259]">Открыть историю →</span>
+            </a>
+        @empty
+            <p class="py-8 text-center text-black/50">Ничего не найдено</p>
+        @endforelse
     </div>
 </div>

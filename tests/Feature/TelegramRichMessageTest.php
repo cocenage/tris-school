@@ -3,7 +3,10 @@
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\User;
+use App\Models\VacationRequest;
+use App\Models\VacationRequestDay;
 use App\Services\Forms\DayOffRequestTelegramService;
+use App\Services\Forms\VacationRequestTelegramService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramRichMessageBuilder;
 use Illuminate\Http\Client\ConnectionException;
@@ -11,6 +14,7 @@ use Illuminate\Http\Client\Factory as HttpClientFactory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\URL;
 
 beforeEach(function (): void {
     config([
@@ -221,6 +225,46 @@ it('renders a day-off application through the shared rich transport', function (
             && ($httpRequest['reply_markup']['inline_keyboard'][0][1]['callback_data'] ?? null) === 'dayoffday:reject:77';
     });
 });
+
+dataset('request result notices', [
+    'day off approved' => [DayOffRequestTelegramService::class, 'approved'],
+    'day off rejected' => [DayOffRequestTelegramService::class, 'rejected'],
+    'vacation approved' => [VacationRequestTelegramService::class, 'approved'],
+    'vacation rejected' => [VacationRequestTelegramService::class, 'rejected'],
+]);
+
+it('opens DayOff and Vacation result notices through the authenticated Telegram Mini App', function (string $serviceClass, string $status): void {
+    config([
+        'app.url' => 'https://academy.example.test',
+        'services.day_off.profile_url' => 'https://academy.example.test/profile/applications',
+        'services.day_off.admin_chat_url' => 'https://t.me/admin_help',
+        'services.vacation.admin_chat_url' => 'https://t.me/admin_help',
+    ]);
+    URL::forceRootUrl('https://academy.example.test');
+    URL::forceScheme('https');
+    Http::fake(fn () => Http::response(['ok' => true, 'result' => ['message_id' => 507]]));
+
+    $request = $serviceClass === DayOffRequestTelegramService::class
+        ? new DayOffRequest(['reason' => 'Test', 'status' => $status])
+        : new VacationRequest(['reason' => 'Test', 'status' => $status]);
+    $request->id = 88;
+    $request->exists = true;
+    $request->setRelation('user', new User(['name' => 'Employee', 'telegram_id' => '999']));
+    $day = $serviceClass === DayOffRequestTelegramService::class
+        ? new DayOffRequestDay(['date' => '2026-11-02', 'status' => $status])
+        : new VacationRequestDay(['date' => '2026-11-02', 'status' => $status]);
+    $day->id = 77;
+    $request->setRelation('days', collect([$day]));
+
+    app($serviceClass)->sendResult($request);
+
+    Http::assertSent(fn (Request $httpRequest): bool => str_ends_with($httpRequest->url(), '/sendRichMessage')
+        && ($httpRequest['reply_markup']['inline_keyboard'][0][0]['web_app']['url'] ?? null) === 'https://academy.example.test'
+        && ! isset($httpRequest['reply_markup']['inline_keyboard'][0][0]['url'])
+        && ($httpRequest['reply_markup']['inline_keyboard'][0][1]['url'] ?? null) === 'https://t.me/admin_help'
+        && ! str_contains((string) ($httpRequest['reply_markup']['inline_keyboard'][0][0]['web_app']['url'] ?? ''), 'token')
+    );
+})->with('request result notices');
 
 it('falls back to the existing HTML message when rich sending is rejected', function (): void {
     Http::fakeSequence()

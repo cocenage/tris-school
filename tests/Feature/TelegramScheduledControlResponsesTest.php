@@ -1756,7 +1756,7 @@ it('registers automatic summary with overlap protection without changing schedul
     $summary = $events->first(fn ($event) => str_contains($event->command ?? '', 'scheduled-controls-summary-send --only-if-due'));
     $poll = $events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:scheduled-poll'));
     expect($summary->expression)->toBe('*/15 * * * *')->and($summary->withoutOverlapping)->toBeTrue();
-    expect($poll->expression)->toBe('* * * * *')->and($poll->withoutOverlapping)->toBeTrue();
+    expect($poll->expression)->toBe('*/5 * * * *')->and($poll->withoutOverlapping)->toBeTrue();
     expect($events->first(fn ($event) => str_contains($event->command ?? '', 'telegram:scheduled-messages-send'))->expression)->toBe('* * * * *');
     expect($events->contains(fn ($event) => str_contains($event->command ?? '', 'telegram:analytics-poll')))->toBeFalse()
         ->and($events->contains(fn ($event) => str_contains($event->command ?? '', 'telegram:work-poll')))->toBeFalse();
@@ -1778,10 +1778,10 @@ it('registers automatic summary with overlap protection without changing schedul
         $workPoll = $enabledEvents->first(fn ($event) => str_contains($event->command ?? '', 'telegram:work-poll'));
 
         expect($analyticsPoll)->not->toBeNull()
-            ->and($analyticsPoll->expression)->toBe('* * * * *')
+            ->and($analyticsPoll->expression)->toBe('*/2 * * * *')
             ->and($analyticsPoll->withoutOverlapping)->toBeTrue()
             ->and($workPoll)->not->toBeNull()
-            ->and($workPoll->expression)->toBe('* * * * *')
+            ->and($workPoll->expression)->toBe('*/2 * * * *')
             ->and($workPoll->withoutOverlapping)->toBeTrue();
     } finally {
         Illuminate\Support\Facades\Schedule::swap($originalSchedule);

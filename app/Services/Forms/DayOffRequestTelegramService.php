@@ -42,33 +42,33 @@ class DayOffRequestTelegramService
         $user = $request->user;
         $name = $user?->name ?: 'Неизвестный пользователь';
         $employeeText = $user?->telegram_id
-            ? '<a href="tg://user?id=' . e((string) $user->telegram_id) . '">' . e($name) . '</a>'
+            ? '<a href="tg://user?id='.e((string) $user->telegram_id).'">'.e($name).'</a>'
             : e($name);
         $dipText = isset($user?->dip) ? ($user->dip ? 'dip' : 'no dip') : '—';
         $sortedDays = $request->days->sortBy('date');
         $formattedDates = $sortedDays
             ->map(fn ($day) => Carbon::parse($day->date)->translatedFormat('d.m.Y (l)'))
-            ->map(fn ($date) => '• ' . $date)
+            ->map(fn ($date) => '• '.$date)
             ->implode("\n");
 
         $text = "📌 <b>Новый запрос на выходной</b>\n\n";
         $text .= "👤 <b>Сотрудник:</b> {$employeeText}\n";
-        $text .= "🏷️ <b>Dip:</b> " . e($dipText) . "\n";
+        $text .= '🏷️ <b>Dip:</b> '.e($dipText)."\n";
         $text .= "📅 <b>Даты:</b>\n{$formattedDates}\n\n";
 
         if (filled($request->reason)) {
             $text .= "💬 <b>Причина:</b>\n";
-            $text .= "<blockquote>" . e(trim((string) $request->reason)) . "</blockquote>\n\n";
+            $text .= '<blockquote>'.e(trim((string) $request->reason))."</blockquote>\n\n";
         }
 
-        $text .= "⏳ <b>Статус:</b> ожидает решения";
+        $text .= '⏳ <b>Статус:</b> ожидает решения';
 
         $keyboard = $sortedDays->map(function ($day) {
             $date = Carbon::parse($day->date)->format('d.m');
 
             return [
-                ['text' => "✅ {$date}", 'callback_data' => 'dayoffday:approve:' . $day->id],
-                ['text' => "❌ {$date}", 'callback_data' => 'dayoffday:reject:' . $day->id],
+                ['text' => "✅ {$date}", 'callback_data' => 'dayoffday:approve:'.$day->id],
+                ['text' => "❌ {$date}", 'callback_data' => 'dayoffday:reject:'.$day->id],
             ];
         })->values()->all();
 
@@ -165,7 +165,7 @@ class DayOffRequestTelegramService
             $message[] = "{$dayStatus} <b>{$date}</b>";
 
             if ($day->admin_comment) {
-                $message[] = '— <i>' . e($day->admin_comment) . '</i>';
+                $message[] = '— <i>'.e($day->admin_comment).'</i>';
             }
         }
 
@@ -175,14 +175,13 @@ class DayOffRequestTelegramService
             $message[] = e($request->admin_comment);
         }
 
-        $profileUrl = config('services.day_off.profile_url');
         $adminChatUrl = config('services.day_off.admin_chat_url');
 
         $keyboard = [
             [
                 [
                     'text' => '📋 Мои заявки',
-                    'url' => $profileUrl,
+                    'web_app' => ['url' => secure_url('/')],
                 ],
                 [
                     'text' => '💬 Чат с админом',
@@ -211,7 +210,7 @@ class DayOffRequestTelegramService
                     default => 'ожидает решения',
                 };
 
-                return Carbon::parse($day->date)->translatedFormat('d F') . ' — ' . $status;
+                return Carbon::parse($day->date)->translatedFormat('d F').' — '.$status;
             })->all(),
         );
 

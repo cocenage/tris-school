@@ -41,18 +41,18 @@ Schedule::command('telegram:scheduled-messages-send')
     ->withoutOverlapping();
 
 Schedule::command('telegram:scheduled-poll')
-    ->everyMinute()
+    ->everyFiveMinutes()
     ->withoutOverlapping();
 
 if ((bool) config('services.telegram.analytics_polling_enabled', false)) {
     Schedule::command('telegram:analytics-poll')
-        ->everyMinute()
+        ->everyTwoMinutes()
         ->withoutOverlapping();
 }
 
 if ((bool) config('services.telegram.work_polling_enabled', false)) {
     Schedule::command('telegram:work-poll --listen-seconds=50')
-        ->everyMinute()
+        ->everyTwoMinutes()
         ->runInBackground()
         ->withoutOverlapping();
 }

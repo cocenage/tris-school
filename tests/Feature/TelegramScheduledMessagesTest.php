@@ -556,7 +556,7 @@ it('preserves a disabled current destination only while editing its schedule', f
         ->toBe([$topic->getKey() => 'Test topic · thread 42 · отключена (текущий адресат)']);
 });
 
-it('registers the sender and scheduled poll every minute without scheduling a queue worker', function (): void {
+it('keeps the sender every minute and schedules the scheduled poll every five minutes without scheduling a queue worker', function (): void {
     $events = collect(app(Schedule::class)->events());
     $senderPosition = $events->search(fn ($event): bool => str_contains($event->command ?? '', 'telegram:scheduled-messages-send'));
     $poll = $events->first(fn ($event): bool => str_contains($event->command ?? '', 'telegram:scheduled-poll'));
@@ -566,7 +566,7 @@ it('registers the sender and scheduled poll every minute without scheduling a qu
     expect($event)->not->toBeNull()
         ->and($event->expression)->toBe('* * * * *')
         ->and($poll)->not->toBeNull()
-        ->and($poll->expression)->toBe('* * * * *')
+        ->and($poll->expression)->toBe('*/5 * * * *')
         ->and($poll->withoutOverlapping)->toBeTrue()
         ->and($worker)->toBeNull();
 });

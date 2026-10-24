@@ -34,6 +34,7 @@ class TelegramApartmentImportService
             $row = $this->normaliseMessage($item);
             if ($row === null) {
                 $skipped++;
+
                 continue;
             }
             $rows[] = $row;
@@ -125,12 +126,15 @@ class TelegramApartmentImportService
                     if ($row['media_reference'] !== null) {
                         $skipped++;
                     }
+
                     continue;
                 }
 
                 $extension = strtolower(pathinfo($entry['name'], PATHINFO_EXTENSION));
                 $relative = 'apartment-information/'.$apartment->getKey().'/telegram-import-'.$preview['sha256'].'/'.$order.'.'.$extension;
-                Storage::disk('local')->put($relative, $entry['contents']);
+                if (! Storage::disk('local')->put($relative, $entry['contents'])) {
+                    throw new \RuntimeException('Не удалось сохранить вложение квартиры. Импорт не завершён.');
+                }
                 ApartmentInformationAttachment::query()->create([
                     'apartment_id' => $apartment->getKey(),
                     'information_section_id' => $section->getKey(),
@@ -207,6 +211,7 @@ class TelegramApartmentImportService
                 }
             }
         }
+
         return $messages;
     }
 
@@ -235,6 +240,7 @@ class TelegramApartmentImportService
             return null;
         }
         $date = (string) ($item['date'] ?? $item['date_unixtime'] ?? '');
+
         return [
             'date' => $date,
             'author' => trim((string) ($item['from'] ?? $item['from_name'] ?? '')),
@@ -256,6 +262,7 @@ class TelegramApartmentImportService
         if (is_array($value)) {
             return collect($value)->map(fn ($part): string => is_array($part) ? $this->textValue($part['text'] ?? '') : $this->textValue($part))->implode('');
         }
+
         return '';
     }
 
@@ -263,6 +270,7 @@ class TelegramApartmentImportService
     {
         $prefix = $row['date'] !== '' ? '['.$row['date'].'] ' : '';
         $author = $row['author'] !== '' ? $row['author'].': ' : '';
+
         return trim($prefix.$author.($row['text'] !== '' ? $row['text'] : '[media]'));
     }
 
@@ -274,7 +282,7 @@ class TelegramApartmentImportService
         }
 
         $path = $this->resolveUpload($upload, 'media_path')['absolute_path'];
-        $zip = new ZipArchive();
+        $zip = new ZipArchive;
         if ($zip->open($path) !== true) {
             throw ValidationException::withMessages(['media_path' => 'Не удалось открыть архив media.']);
         }
@@ -295,6 +303,7 @@ class TelegramApartmentImportService
             $entries[] = ['name' => $name, 'mime' => $mime, 'contents' => $contents];
         }
         $zip->close();
+
         return $entries;
     }
 
@@ -309,6 +318,7 @@ class TelegramApartmentImportService
                 return $entry;
             }
         }
+
         return null;
     }
 
