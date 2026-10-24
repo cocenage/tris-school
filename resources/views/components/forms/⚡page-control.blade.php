@@ -1636,7 +1636,8 @@ protected function getDraftPayload(?array $media = null): array
 </style>
 
 <div class="flex h-full min-h-0 flex-col bg-[#F7F8F7]">
-    <form x-on:control-confirm-submit.window="confirmSubmitAfterSave()"
+    {{-- Keep the live File queue when server draftState changes the initial x-data expression. --}}
+    <form wire:ignore.self x-on:control-confirm-submit.window="confirmSubmitAfterSave()"
         x-on:submit.prevent="continueAfterSave()"
         x-data="{
             timer: null,
