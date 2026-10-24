@@ -839,7 +839,7 @@ protected function getDraftPayload(?array $media = null): array
         return $valid;
     }
 
-    protected function queueUploadedPhotos(string $name): void
+    protected function queueUploadedPhotos(string $name, ?string $uploadId = null): void
     {
         $parts = explode('.', $name);
 
@@ -851,7 +851,7 @@ protected function getDraftPayload(?array $media = null): array
         $questionIndex = (int) $parts[2];
         $this->resetErrorBag("queuedPhotos.$roomIndex.$questionIndex");
 
-        $incoming = $this->photoUploads[$roomIndex][$questionIndex] ?? [];
+        $incoming = data_get($this->photoUploads, implode('.', array_slice($parts, 1)), []);
 
         if ($incoming instanceof TemporaryUploadedFile) {
             $incoming = [$incoming];
@@ -862,12 +862,25 @@ protected function getDraftPayload(?array $media = null): array
         }
 
         if (! isset($this->rooms[$roomIndex]['items'][$questionIndex])) {
+            $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Вопрос недоступен. Обновите контроль.');
             return;
         }
 
         $media = $this->draftMedia();
         $existing = $media[$roomIndex][$questionIndex] ?? [];
         $storedPaths = [];
+
+        // A retry after a lost HTTP response must acknowledge the same attachment.
+        if ($uploadId !== null && collect($existing)->contains('upload_id', $uploadId)) {
+            $this->answers[$roomIndex][$questionIndex]['media'] = $existing;
+            $this->photoUploads[$roomIndex][$questionIndex] = [];
+            return;
+        }
+
+        if ($incoming === []) {
+            $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Файл не получен сервером. Повторите загрузку.');
+            return;
+        }
 
         foreach ($incoming as $file) {
             if (! $file instanceof TemporaryUploadedFile) {
@@ -906,6 +919,7 @@ protected function getDraftPayload(?array $media = null): array
 
             $storedPaths[] = $path;
             $existing[] = [
+                'upload_id' => $uploadId,
                 'disk' => 'local',
                 'path' => $path,
                 'original_name' => $originalName,
@@ -954,15 +968,34 @@ protected function getDraftPayload(?array $media = null): array
             || in_array($mime, ['video/mp4', 'video/quicktime', 'video/webm'], true);
     }
 
-    public function finishPhotoUpload(int $roomIndex, int $questionIndex): string
+    public function finishPhotoUpload(int $roomIndex, int $questionIndex, ?string $uploadId = null, ?string $uploadKey = null): string
     {
         $this->ensureCanConductControl();
 
-        $this->queueUploadedPhotos("photoUploads.$roomIndex.$questionIndex");
+        if ($uploadId !== null) {
+            abort_unless(\Illuminate\Support\Str::isUuid($uploadId)
+                && preg_match('/^'.preg_quote($uploadId, '/').'_[1-9][0-9]*$/D', $uploadKey ?? ''), 422);
+        }
 
-        return $this->draftState === 'error' || $this->getErrorBag()->has("queuedPhotos.$roomIndex.$questionIndex")
+        $lock = Cache::lock($this->draftMediaLockKey(), 30);
+        if (! $lock->get()) {
+            $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Сохранение ещё выполняется. Повторите попытку.');
+            return 'error';
+        }
+        try {
+            $this->queueUploadedPhotos("photoUploads.$roomIndex.$questionIndex".($uploadId !== null ? '.'.$uploadKey : ''), $uploadId);
+        } finally {
+            $lock->release();
+        }
+
+        return $this->getErrorBag()->has("queuedPhotos.$roomIndex.$questionIndex")
             ? 'error'
             : 'saved';
+    }
+
+    protected function draftMediaLockKey(): string
+    {
+        return 'control-draft-media:'.$this->control->id.':'.Auth::id();
     }
 
     public function removeQueuedPhoto(int $roomIndex, int $questionIndex, int $photoIndex): void
@@ -1326,6 +1359,23 @@ protected function getDraftPayload(?array $media = null): array
         }
 
         try {
+            // Keep the existing ten-minute duplicate window even if the cache marker was lost.
+            if (ControlResponse::query()
+                ->where('control_id', $this->control->id)
+                ->where('supervisor_id', Auth::id())
+                ->where('cleaner_id', $this->cleaner_id)
+                ->where('apartment_id', $this->apartment_id)
+                ->whereDate('cleaning_date', $this->cleaning_date)
+                ->whereDate('inspection_date', $this->inspection_date)
+                ->where('status', ControlResponse::STATUS_SENT)
+                ->where('sent_at', '>=', now()->subMinutes(10))
+                ->exists()) {
+                $this->isSubmitting = false;
+                $this->dispatch('toast', type: 'error', message: 'Этот контроль уже отправлен.');
+
+                return;
+            }
+
             $responseData = DB::transaction(function () use (&$storedPaths) {
                 $answersForSave = $this->storeQueuedPhotos($storedPaths);
                 $score = ControlResponse::calculateScores($this->rooms, $answersForSave);
@@ -1384,7 +1434,6 @@ protected function getDraftPayload(?array $media = null): array
                 ];
             });
 
-            Cache::put($submitLockKey . ':completed', true, now()->addMinutes(10));
         } catch (\Throwable $e) {
             foreach ($storedPaths as $path) {
                 Storage::disk('local')->delete($path);
@@ -1400,6 +1449,13 @@ protected function getDraftPayload(?array $media = null): array
         }
 
         $score = $responseData['score'];
+
+        // The result is already committed. A cache outage must never delete its files.
+        try {
+            Cache::put($submitLockKey . ':completed', true, now()->addMinutes(10));
+        } catch (\Throwable $e) {
+            report($e);
+        }
 
         $this->clearDraft();
         $this->resetControlForm();
@@ -1566,12 +1622,12 @@ protected function getDraftPayload(?array $media = null): array
 
 <div class="flex h-full min-h-0 flex-col bg-[#F7F8F7]">
     <form x-on:control-confirm-submit.window="confirmSubmitAfterSave()"
-        wire:submit.prevent="submit"
+        x-on:submit.prevent="continueAfterSave()"
         x-data="{
             timer: null,
             pendingUploads: 0,
             mediaUploads: {},
-            mediaProcessing: {},
+            mediaProcessing: false,
             nextMediaUploadId: 0,
             openRoomIndex: @js($openRoomIndex),
             hasUnsavedChanges: @entangle('hasUnsavedChanges').live,
@@ -1786,25 +1842,30 @@ protected function getDraftPayload(?array $media = null): array
 
                 this.mediaUploads[key] ??= [];
                 for (const file of selectedFiles) {
-                    this.mediaUploads[key].push({ id: ++this.nextMediaUploadId, file, name: file.name, state: 'queued', progress: 0, error: '', controller: null });
+                    this.mediaUploads[key].push({ id: ++this.nextMediaUploadId, uploadId: crypto.randomUUID(), attempt: 0, room, question, file, name: file.name, state: 'queued', progress: 0, error: '', controller: null });
                     this.pendingUploads++;
                 }
                 this.processMediaUploads(key, room, question);
             },
 
             async processMediaUploads(key, room, question) {
-                if (this.mediaProcessing[key]) return;
-                this.mediaProcessing[key] = true;
+                if (this.mediaProcessing) return;
+                this.mediaProcessing = true;
                 try {
                     let item;
-                    while ((item = this.mediaUploads[key]?.find(file => file.state === 'queued'))) {
+                    while ((item = Object.values(this.mediaUploads).flat().find(file => file.state === 'queued'))) {
+                        room = item.room;
+                        question = item.question;
                         item.state = 'uploading';
                         item.controller = new AbortController();
                         try {
+                            await this.waitForActiveSave();
+                            if (item.controller.signal.aborted) throw new Error('Upload cancelled');
+                            const uploadKey = `${item.uploadId}_${++item.attempt}`;
                             const result = await window.controlUploadCompressedPhotos(
-                                $wire, `photoUploads.${room}.${question}`, room, question, item.file,
+                                $wire, `photoUploads.${room}.${question}.${uploadKey}`, room, question, item.file,
                                 progress => item.progress = progress, item.controller,
-                                () => item.state = 'saving'
+                                () => item.state = 'saving', item.uploadId, uploadKey
                             );
                             if (result !== 'saved') throw new Error('File was not saved');
                             item.state = 'saved';
@@ -1822,7 +1883,7 @@ protected function getDraftPayload(?array $media = null): array
                         }
                     }
                 } finally {
-                    delete this.mediaProcessing[key];
+                    this.mediaProcessing = false;
                 }
             },
 
@@ -1836,7 +1897,7 @@ protected function getDraftPayload(?array $media = null): array
 
             retryMediaUpload(key, room, question, id) {
                 const item = this.mediaUploads[key]?.find(file => file.id === id);
-                if (!item || !['error', 'cancelled'].includes(item.state)) return;
+                if (!item || item.controller || !['error', 'cancelled'].includes(item.state)) return;
                 item.state = 'queued';
                 item.progress = 0;
                 item.error = '';
@@ -2885,7 +2946,7 @@ protected function getDraftPayload(?array $media = null): array
         }
     };
 
-    window.controlUploadCompressedPhotos = async function (livewire, property, roomIndex, questionIndex, file, onProgress, controller, onSaving) {
+    window.controlUploadCompressedPhotos = async function (livewire, property, roomIndex, questionIndex, file, onProgress, controller, onSaving, uploadId, uploadKey) {
         const signal = controller.signal;
         let uploadStarted = false;
         let timedOut = false;
@@ -2915,7 +2976,7 @@ protected function getDraftPayload(?array $media = null): array
                                 uploadStarted = false;
                                 if (signal.aborted) return;
                                 onSaving();
-                                livewire.call('finishPhotoUpload', roomIndex, questionIndex).then(resolve, reject);
+                                livewire.call('finishPhotoUpload', roomIndex, questionIndex, uploadId, uploadKey).then(resolve, reject);
                             },
                             () => reject(new Error('Upload failed')),
                             event => onProgress(event.detail?.progress ?? 0),

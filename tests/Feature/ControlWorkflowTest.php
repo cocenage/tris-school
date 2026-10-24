@@ -4,11 +4,14 @@ use App\Models\Control;
 use App\Models\ControlResponse;
 use App\Models\User;
 use App\Services\UserApplicationBadgeService;
+use Illuminate\Cache\ArrayStore;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Livewire\Livewire;
 
 beforeEach(function () {
@@ -154,6 +157,65 @@ it('hides corrective details and does not require them for a negative answer', f
         ->assertHasNoErrors()
         ->assertSet('reviewSheetOpen', false)
         ->assertSet('successSheetOpen', true);
+});
+
+it('does not acknowledge an empty Classic upload as saved', function () {
+    mountControlWorkflow();
+
+    Livewire::test('forms.page-control')
+        ->call('finishPhotoUpload', 0, 0)
+        ->assertReturned('error');
+
+    expect(DB::table('control_response_drafts')->count())->toBe(0);
+});
+
+it('does not duplicate a Classic attachment when its save acknowledgement is retried', function () {
+    mountControlWorkflow();
+    Storage::fake('local');
+    $uploadId = (string) Str::uuid();
+
+    Livewire::test('forms.page-control')
+        ->set('photoUploads.0.0.'.$uploadId.'_1', UploadedFile::fake()->image('one.jpg'))
+        ->call('finishPhotoUpload', 0, 0, $uploadId, $uploadId.'_1')
+        ->set('photoUploads.0.0.'.$uploadId.'_2', UploadedFile::fake()->image('one.jpg'))
+        ->call('finishPhotoUpload', 0, 0, $uploadId, $uploadId.'_2');
+
+    $media = json_decode(DB::table('control_response_drafts')->value('responses'), true)[0][0]['media'];
+    expect($media)->toHaveCount(1)
+        ->and(Storage::disk('local')->allFiles('control-drafts'))->toHaveCount(1);
+});
+
+it('keeps committed Classic media when the completed cache marker fails', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('local');
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('proof.jpg')])
+        ->call('finishPhotoUpload', 0, 0);
+
+    Cache::extend('control-marker-failure', fn () => Cache::repository(new class extends ArrayStore
+    {
+        public function put($key, $value, $seconds)
+        {
+            if (str_ends_with($key, ':completed')) {
+                throw new RuntimeException('Synthetic cache write failure');
+            }
+
+            return parent::put($key, $value, $seconds);
+        }
+    })
+    );
+    config(['cache.default' => 'control-marker-failure', 'cache.stores.control-marker-failure' => ['driver' => 'control-marker-failure']]);
+
+    $staleComponent = Livewire::test('forms.page-control');
+    $component->call('submit')->assertSet('successSheetOpen', true);
+    $response = ControlResponse::query()->sole();
+    expect($response->status)->toBe(ControlResponse::STATUS_SENT);
+    Storage::disk('local')->assertExists($response->responses[0][0]['media'][0]['path']);
+    $staleComponent->call('submit');
+    expect(ControlResponse::query()->count())->toBe(1);
 });
 
 it('renders the loader preview only when explicitly requested', function () {
