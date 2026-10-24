@@ -80,6 +80,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-home.instructions.single');
 
     Route::livewire('/checks', 'page-checks')->name('page-checks');
+    Route::livewire('/coachings', 'page-coachings')->name('page-coachings');
+    Route::livewire('/coachings/create', 'forms.page-coaching-create')->name('page-coachings.create');
+    Route::livewire('/coachings/{coaching}', 'profile.page-coaching-result')->whereNumber('coaching')->name('page-coachings.show');
     Route::get('/checks/control/draft-media/{control}/{room}/{question}/{media}', [ControlMediaController::class, 'draft'])
         ->whereNumber(['room', 'question', 'media'])
         ->name('page-checks.control.draft-media');
@@ -104,6 +107,7 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/profile/checks', 'profile.page-checks')->name('page-profile.checks');
     Route::livewire('/profile/checks/{controlResponse}', 'profile.page-check-result')->name('page-profile.checks.result');
     Route::livewire('/profile/all-checks', 'profile.page-all-checks')->name('page-profile.all-checks');
+    Route::livewire('/profile/employees/{employee}/history', 'profile.page-employee-history')->whereNumber('employee')->name('page-profile.employee-history');
     Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
 
     Route::livewire('/apartments', 'apartments.page-apartments')->name('page-apartments');

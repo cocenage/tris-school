@@ -2,7 +2,8 @@
 
 use Livewire\Component;
 
-new class extends Component {
+new class extends Component
+{
     //
 };
 ?>
@@ -31,7 +32,7 @@ new class extends Component {
             </div>
         </a>
 
-        <a href="">
+        <a href="{{ route('page-coachings') }}">
             <div class="grid grid-cols-3 gap-[10px] bg-[#E1E1E1] rounded-[30px]">
 
                 {{-- большая --}}
