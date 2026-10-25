@@ -38,6 +38,15 @@ beforeEach(function () {
         $table->timestamps();
     });
 
+    Schema::connection('sqlite')->create('user_panel_accesses', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('user_id');
+        $table->string('panel');
+        $table->boolean('can_access')->default(false);
+        $table->timestamps();
+        $table->unique(['user_id', 'panel']);
+    });
+
     Schema::connection('sqlite')->create('calendar_events', function (Blueprint $table): void {
         $table->id();
         $table->string('title');
@@ -174,7 +183,7 @@ it('lets the real admin exit preview and returns the UI to the real role', funct
         ->and($this->admin->fresh()->role)->toBe('admin');
 });
 
-it('blocks listed write actions and autosaving property updates but allows read navigation', function () {
+it('blocks form updates and allows explicit read navigation', function () {
     $guard = app(BlockRolePreviewWrites::class);
     $component = fn (string $name, array $updates = [], array $calls = []): array => [
         'snapshot' => json_encode(['memo' => ['name' => $name]], JSON_THROW_ON_ERROR),
@@ -193,6 +202,35 @@ it('blocks listed write actions and autosaving property updates but allows read 
         ]))->toBeFalse();
 });
 
+it('fails closed for unlisted Livewire actions, malformed components, and Filament mutations', function () {
+    $guard = app(BlockRolePreviewWrites::class);
+    $component = fn (string $name, array $updates = [], array $calls = []): array => [
+        'snapshot' => json_encode(['memo' => ['name' => $name]], JSON_THROW_ON_ERROR),
+        'updates' => $updates,
+        'calls' => $calls,
+    ];
+
+    expect($guard->containsWriteOperation([
+        $component('forms.page-weekend', [], [['method' => 'futureMutation', 'params' => []]]),
+    ]))->toBeTrue()
+        ->and($guard->containsWriteOperation([
+            $component('future.application-component', [], [['method' => 'saveLater', 'params' => []]]),
+        ]))->toBeTrue()
+        ->and($guard->containsWriteOperation([
+            $component('future.application-component', ['state' => 'changed']),
+        ]))->toBeTrue()
+        ->and($guard->containsWriteOperation([
+            $component('tasks.page-calendar', [], [['method' => 'openDay', 'params' => ['2026-10-25']]]),
+        ]))->toBeFalse()
+        ->and($guard->containsWriteOperation([
+            $component('app.filament.resources.users.pages.edit-user', [], [['method' => 'save', 'params' => []]]),
+        ]))->toBeTrue()
+        ->and($guard->containsWriteOperation([
+            $component('app.filament.pages.dashboard', ['form.name' => 'changed']),
+        ]))->toBeTrue()
+        ->and($guard->containsWriteOperation([new stdClass]))->toBeTrue();
+});
+
 it('installs the guard on Livewire updates and blocks writes without blocking ordinary page reads', function () {
     $updateRoute = collect(Route::getRoutes()->getRoutes())
         ->first(fn ($route) => $route->getName() === 'role-preview.livewire.update');
@@ -204,6 +242,9 @@ it('installs the guard on Livewire updates and blocks writes without blocking or
     app(RolePreviewContext::class)->start('cleaner');
 
     $request = Request::create('/livewire/update', 'POST');
+    expect(fn () => app(BlockRolePreviewWrites::class)->handle($request, fn () => response()->noContent()))
+        ->toThrow(HttpException::class);
+
     $request->request->set('components', [[
         'snapshot' => json_encode(['memo' => ['name' => 'forms.page-weekend']], JSON_THROW_ON_ERROR),
         'updates' => [],
@@ -240,6 +281,21 @@ it('shows the preview selector only to the actual admin', function () {
     Livewire::actingAs($this->cleaner)
         ->test('page-profile')
         ->assertDontSee('Режим просмотра');
+});
+
+it('changes the visible profile interface during preview without changing the real admin role', function () {
+    $this->actingAs($this->admin);
+
+    Livewire::test('page-profile')->assertSee('Администрирование');
+
+    app(RolePreviewContext::class)->start('cleaner');
+
+    Livewire::test('page-profile')
+        ->assertSee('Мои контроли')
+        ->assertDontSee('Администрирование');
+
+    expect($this->admin->fresh()->role)->toBe('admin')
+        ->and($this->admin->fresh()->canAccessPanel(Filament::getPanel('admin')))->toBeTrue();
 });
 
 it('shows a safe empty state instead of employee records during a role preview', function () {
