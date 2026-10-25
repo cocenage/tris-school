@@ -58,13 +58,13 @@ new class extends Component
 <x-slot:header>
     <div class="flex h-[70px] items-center gap-3 px-4 text-[#213259]">
         <a href="{{ route('page-checks') }}" aria-label="Назад" class="p-2"><x-heroicon-o-arrow-left class="size-5" /></a>
-        <span role="heading" aria-level="1" class="text-[18px] leading-none">Коучинги</span>
+        <span role="heading" aria-level="1" class="text-[18px] leading-none">История коучингов</span>
     </div>
 </x-slot:header>
 
 <div class="h-full overflow-y-auto bg-white px-5 pb-10 pt-5">
     <div class="mx-auto max-w-2xl space-y-5">
-        @if(auth()->user()->role === 'supervisor')
+        @if(in_array(auth()->user()->role, ['admin', 'supervisor'], true))
             <a href="{{ route('page-coachings.create') }}" class="flex min-h-12 items-center justify-center rounded-full bg-[#213259] px-5 font-semibold text-white">Записать коучинг</a>
         @endif
         @if(auth()->user()->role === 'admin')

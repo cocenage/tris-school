@@ -185,6 +185,31 @@ it('does not duplicate a Classic attachment when its save acknowledgement is ret
         ->and(Storage::disk('local')->allFiles('control-drafts'))->toHaveCount(1);
 });
 
+it('retains five Classic photos in the same draft across save acknowledgements and autosave', function () {
+    mountControlWorkflow();
+    Storage::fake('local');
+    $component = Livewire::test('forms.page-control');
+    $uploadIds = [];
+
+    for ($i = 1; $i <= 5; $i++) {
+        $uploadId = (string) Str::uuid();
+        $uploadIds[] = $uploadId;
+        $component->set('photoUploads.0.0.'.$uploadId.'_1', UploadedFile::fake()->image('photo'.$i.'.jpg'))
+            ->call('finishPhotoUpload', 0, 0, $uploadId, $uploadId.'_1')
+            ->assertReturned('saved');
+    }
+
+    $component->call('saveDraftAuto');
+    $media = json_decode(DB::table('control_response_drafts')->sole()->responses, true)[0][0]['media'];
+    expect($media)->toHaveCount(5)
+        ->and(array_column($media, 'upload_id'))->toBe($uploadIds)
+        ->and(Storage::disk('local')->allFiles('control-drafts'))->toHaveCount(5);
+    foreach ($media as $item) {
+        Storage::disk('local')->assertExists($item['path']);
+    }
+    Livewire::test('forms.page-control')->assertSet('answers.0.0.media', $media);
+});
+
 it('keeps committed Classic media when the completed cache marker fails', function () {
     [, $cleaner, $apartment] = mountControlWorkflow();
     Storage::fake('local');
