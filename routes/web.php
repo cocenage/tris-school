@@ -5,11 +5,13 @@ use App\Http\Controllers\ControlMediaController;
 use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\LogoutController;
+use App\Http\Controllers\RolePreviewController;
 use App\Http\Controllers\TelegramAnalyticsWebhookController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
 use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
+use App\Http\Middleware\SafeguardRolePreviewData;
 use App\Models\Instruction;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\Auth;
@@ -67,6 +69,11 @@ Route::get('/instruction/obiazatelnye-foto', function () {
 });
 
 Route::middleware(['auth', 'approved'])->group(function () {
+    Route::post('/ui/role-preview', [RolePreviewController::class, 'store'])
+        ->name('role-preview.store');
+    Route::post('/ui/role-preview/exit', [RolePreviewController::class, 'clear'])
+        ->name('role-preview.clear');
+
     Route::get('/knowledge', [KnowledgeController::class, 'roadmap'])->name('knowledge.roadmap');
     Route::get('/knowledge/entities', [KnowledgeController::class, 'catalog'])->name('knowledge.entities');
     Route::get('/knowledge/entities/{entity}', [KnowledgeController::class, 'show'])->name('knowledge.show');
@@ -85,17 +92,19 @@ Route::middleware(['auth', 'approved'])->group(function () {
             ? 'page-coachings.create'
             : 'page-coachings.history');
     })->name('page-coachings');
-    Route::livewire('/coachings/history', 'page-coachings')->name('page-coachings.history');
-    Route::livewire('/coachings/create', 'forms.page-coaching-create')->name('page-coachings.create');
-    Route::livewire('/coachings/{coaching}', 'profile.page-coaching-result')->whereNumber('coaching')->name('page-coachings.show');
+    Route::livewire('/coachings/history', 'page-coachings')->middleware(SafeguardRolePreviewData::class)->name('page-coachings.history');
+    Route::livewire('/coachings/create', 'forms.page-coaching-create')->middleware(SafeguardRolePreviewData::class)->name('page-coachings.create');
+    Route::livewire('/coachings/{coaching}', 'profile.page-coaching-result')->middleware(SafeguardRolePreviewData::class)->whereNumber('coaching')->name('page-coachings.show');
     Route::get('/checks/control/draft-media/{control}/{room}/{question}/{media}', [ControlMediaController::class, 'draft'])
+        ->middleware(SafeguardRolePreviewData::class)
         ->whereNumber(['room', 'question', 'media'])
         ->name('page-checks.control.draft-media');
     Route::get('/checks/control/result-media/{controlResponse}/{room}/{question}/{media}', [ControlMediaController::class, 'result'])
+        ->middleware(SafeguardRolePreviewData::class)
         ->whereNumber(['room', 'question', 'media'])
         ->name('page-checks.control.result-media');
-    Route::livewire('/checks/control', 'forms.page-control')->name('page-checks.control');
-    Route::livewire('/checks/control/focus', 'forms.page-control-focus')->name('page-checks.control.focus');
+    Route::livewire('/checks/control', 'forms.page-control')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control');
+    Route::livewire('/checks/control/focus', 'forms.page-control-focus')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control.focus');
 
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
@@ -109,11 +118,11 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('form-guides.seen');
 
     Route::livewire('/profile', 'page-profile')->name('page-profile');
-    Route::livewire('/profile/checks', 'profile.page-checks')->name('page-profile.checks');
-    Route::livewire('/profile/checks/{controlResponse}', 'profile.page-check-result')->name('page-profile.checks.result');
-    Route::livewire('/profile/all-checks', 'profile.page-all-checks')->name('page-profile.all-checks');
-    Route::livewire('/profile/employees/{employee}/history', 'profile.page-employee-history')->whereNumber('employee')->name('page-profile.employee-history');
-    Route::livewire('/profile/applications', 'profile.page-applications')->name('page-profile.applications');
+    Route::livewire('/profile/checks', 'profile.page-checks')->middleware(SafeguardRolePreviewData::class)->name('page-profile.checks');
+    Route::livewire('/profile/checks/{controlResponse}', 'profile.page-check-result')->middleware(SafeguardRolePreviewData::class)->name('page-profile.checks.result');
+    Route::livewire('/profile/all-checks', 'profile.page-all-checks')->middleware(SafeguardRolePreviewData::class)->name('page-profile.all-checks');
+    Route::livewire('/profile/employees/{employee}/history', 'profile.page-employee-history')->middleware(SafeguardRolePreviewData::class)->whereNumber('employee')->name('page-profile.employee-history');
+    Route::livewire('/profile/applications', 'profile.page-applications')->middleware(SafeguardRolePreviewData::class)->name('page-profile.applications');
 
     Route::livewire('/apartments', 'apartments.page-apartments')->name('page-apartments');
     Route::livewire('/apartments/{apartment}', 'apartments.page-apartment')->name('page-apartments.show');
@@ -121,21 +130,27 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-apartments.attachment');
 
     Route::livewire('/tasks', 'tasks.page-tasks')
+        ->middleware(SafeguardRolePreviewData::class)
         ->name('page-tasks');
 
     Route::livewire('/tasks/calendar', 'tasks.page-calendar')
+        ->middleware(SafeguardRolePreviewData::class)
         ->name('page-tasks.calendar');
 
     Route::livewire('/tasks/rooms', 'tasks.page-rooms')
+        ->middleware(SafeguardRolePreviewData::class)
         ->name('page-tasks.rooms');
 
     Route::livewire('/tasks/rooms/{taskRoom}', 'tasks.page-room')
+        ->middleware(SafeguardRolePreviewData::class)
         ->name('page-tasks.room');
 
     Route::livewire('/tasks/boards/{taskBoard}', 'tasks.page-board')
+        ->middleware(SafeguardRolePreviewData::class)
         ->name('page-tasks.board');
 
     Route::livewire('/tasks/{task}', 'tasks.page-task')
+        ->middleware(SafeguardRolePreviewData::class)
         ->name('page-tasks.show');
 
     Route::get('/profile/calendar', function () {

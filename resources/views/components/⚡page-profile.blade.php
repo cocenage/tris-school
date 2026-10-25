@@ -6,6 +6,7 @@ use App\Services\UserApplicationBadgeService;
 use App\Models\CalendarEvent;
 use App\Models\DayOffRequestDay;
 use App\Models\VacationRequest;
+use App\Services\RolePreviewContext;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
@@ -249,6 +250,7 @@ $this->profileRequired = false;
 <x-slot:header>
     @php
         $user = auth()->user();
+        $effectiveUiRole = app(RolePreviewContext::class)->effectiveUiRole();
     @endphp
 
     <div class="flex items-center gap-[10px] p-[15px]">
@@ -279,7 +281,7 @@ $this->profileRequired = false;
                 </span>
 
                 <span class="text-[18px] opacity-50">
-                    @switch($user->role)
+                    @switch($effectiveUiRole)
                         @case('admin')
                             Администратор
                             @break
@@ -290,7 +292,7 @@ $this->profileRequired = false;
                             Клинер
                             @break
                         @default
-                            {{ $user->role }}
+                            {{ $effectiveUiRole }}
                     @endswitch
                 </span>
             </div>
@@ -311,6 +313,27 @@ $this->profileRequired = false;
     x-on:open-profile-edit.window="$wire.openProfileEdit()"
     class="w-full bg-white p-[15px]"
 >
+    @php
+        $rolePreview = app(RolePreviewContext::class);
+    @endphp
+
+    @if($user?->isAdmin())
+        <section class="mb-[20px] rounded-[24px] border border-[#E7EBF2] bg-[#F8FAFC] p-4">
+            <h2 class="text-[16px] font-semibold text-[#213259]">Режим просмотра</h2>
+            <p class="mt-1 text-[13px] leading-[1.4] text-black/55">Показывает клиентский интерфейс выбранной роли. Данные и права администратора не меняются.</p>
+            <form method="POST" action="{{ route('role-preview.store') }}" class="mt-3 flex items-center gap-2">
+                @csrf
+                <label for="ui-role-preview" class="sr-only">Роль для предпросмотра</label>
+                <select id="ui-role-preview" name="role" class="min-w-0 flex-1 rounded-xl border border-[#D8DEE8] bg-white px-3 py-2 text-[14px] text-[#213259]">
+                    <option value="admin" @selected($rolePreview->effectiveUiRole() === 'admin')>Администратор</option>
+                    <option value="supervisor" @selected($rolePreview->effectiveUiRole() === 'supervisor')>Супервайзер</option>
+                    <option value="cleaner" @selected($rolePreview->effectiveUiRole() === 'cleaner')>Клинер</option>
+                </select>
+                <button type="submit" class="shrink-0 rounded-xl bg-[#213259] px-4 py-2 text-[14px] font-semibold text-white">Показать</button>
+            </form>
+        </section>
+    @endif
+
     <div class="mb-[10px]">
         <span class="text-[16px] opacity-50">
             Рабочие инструменты
@@ -380,9 +403,9 @@ $this->profileRequired = false;
     </div>
 
 @php
-$canSeeAdminPanel = $user->isAdmin();
-$canSeeFinancePanel = $user->isAdmin() || $user->hasPanelAccess('finance');
-$canSeeEducationPanel = $user->isAdmin() || $user->hasPanelAccess('education');
+$canSeeAdminPanel = ! $rolePreview->isActive() && $user->isAdmin();
+$canSeeFinancePanel = ! $rolePreview->isActive() && ($user->isAdmin() || $user->hasPanelAccess('finance'));
+$canSeeEducationPanel = ! $rolePreview->isActive() && ($user->isAdmin() || $user->hasPanelAccess('education'));
 
 $hasAnyAdminAccess =
     $canSeeAdminPanel ||
