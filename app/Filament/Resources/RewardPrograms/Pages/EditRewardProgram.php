@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\RewardPrograms\Pages;
 
 use App\Filament\Resources\RewardPrograms\RewardProgramResource;
-use App\Filament\Widgets\RewardProgramLeaderboardWidget;
 use Filament\Resources\Pages\EditRecord;
 
 class EditRewardProgram extends EditRecord
@@ -12,8 +11,6 @@ class EditRewardProgram extends EditRecord
 
     public function getHeaderWidgets(): array
     {
-        return [
-            RewardProgramLeaderboardWidget::class,
-        ];
+        return [];
     }
 }
