@@ -6,6 +6,7 @@ use App\Filament\Widgets\ActivityOverview;
 use App\Filament\Widgets\AdminRequestsOverview;
 use App\Filament\Widgets\LatestActivity;
 use App\Filament\Widgets\TelegramDeliveryCenterWidget;
+use App\Http\Middleware\EndRolePreviewOnFilamentAccess;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -66,6 +67,7 @@ class AdminPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
+                EndRolePreviewOnFilamentAccess::class,
             ]);
     }
 }

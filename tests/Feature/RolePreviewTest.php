@@ -1,10 +1,14 @@
 <?php
 
+use App\Filament\Resources\RewardPrograms\Pages\EditRewardProgram;
 use App\Http\Middleware\BlockRolePreviewWrites;
+use App\Http\Middleware\EndRolePreviewOnFilamentAccess;
+use App\Models\RewardProgram;
 use App\Models\User;
 use App\Services\RolePreviewContext;
 use App\Services\UserApplicationBadgeService;
 use Filament\Facades\Filament;
+use Filament\Http\Middleware\Authenticate;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -181,6 +185,44 @@ it('lets the real admin exit preview and returns the UI to the real role', funct
     expect(session()->has(RolePreviewContext::SESSION_KEY))->toBeFalse()
         ->and(app(RolePreviewContext::class)->effectiveUiRole())->toBe('admin')
         ->and($this->admin->fresh()->role)->toBe('admin');
+});
+
+it('exits preview when the real admin enters Filament and can save a record there', function () {
+    (require database_path('migrations/2026_06_10_201258_create_reward_programs_table.php'))->up();
+
+    $program = RewardProgram::query()->create([
+        'name' => 'Preview transition test',
+        'is_active' => true,
+    ]);
+
+    $authMiddleware = Filament::getPanel('admin')->getAuthMiddleware();
+    $authenticateIndex = array_search(Authenticate::class, $authMiddleware, true);
+    $exitPreviewIndex = array_search(EndRolePreviewOnFilamentAccess::class, $authMiddleware, true);
+
+    expect($exitPreviewIndex)->toBeGreaterThan($authenticateIndex);
+
+    $this->actingAs($this->admin);
+    app(RolePreviewContext::class)->start('cleaner');
+
+    $response = app(EndRolePreviewOnFilamentAccess::class)->handle(
+        Request::create('/admin/reward-programs/'.$program->getKey().'/edit'),
+        fn () => response()->noContent(),
+    );
+
+    expect($response->getStatusCode())->toBe(204)
+        ->and(app(RolePreviewContext::class)->isActive())->toBeFalse()
+        ->and($this->admin->fresh()->role)->toBe('admin')
+        ->and($this->admin->fresh()->canAccessPanel(Filament::getPanel('admin')))->toBeTrue();
+
+    Filament::setCurrentPanel(Filament::getPanel('admin'));
+
+    Livewire::actingAs($this->admin)
+        ->test(EditRewardProgram::class, ['record' => $program->getKey()])
+        ->fillForm(['name' => 'Updated by Filament'])
+        ->call('save')
+        ->assertHasNoErrors();
+
+    expect($program->fresh()->name)->toBe('Updated by Filament');
 });
 
 it('blocks form updates and allows explicit read navigation', function () {

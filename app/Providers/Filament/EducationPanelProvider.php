@@ -5,6 +5,7 @@ namespace App\Providers\Filament;
 use App\Filament\Resources\DayOffRequests\DayOffRequestResource;
 use App\Filament\Resources\Users\UserResource;
 use App\Filament\Resources\VacationRequests\VacationRequestResource;
+use App\Http\Middleware\EndRolePreviewOnFilamentAccess;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -79,6 +80,7 @@ class EducationPanelProvider extends PanelProvider
             ])
             ->authMiddleware([
                 Authenticate::class,
+                EndRolePreviewOnFilamentAccess::class,
             ]);
 
     }
