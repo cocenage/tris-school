@@ -73,7 +73,7 @@ it('keeps control navigation anchored to the internal scroll container', functio
         ->toContain('clientDraftState === \'saving\'')
         ->toContain('clientDraftState === \'dirty\'')
         ->toContain('await this.flushPendingChanges()')
-        ->toContain('x-bind:disabled="pendingUploads > 0 || submissionInFlight || controlActionInFlight"')
+        ->toContain('x-bind:disabled="pendingUploads > 0 || hasUnconfirmedMedia || submissionInFlight || controlActionInFlight"')
         ->toContain("\$problem['selected_label'] ?? '—'")
         ->not->toContain('@js($isSubmitting)')
         ->not->toContain("\$problem['answer'] ?? '—'")

@@ -2,6 +2,7 @@
 
 use App\Models\Control;
 use App\Models\ControlResponse;
+use App\Models\ControlResponseDraft;
 use App\Models\User;
 use App\Services\UserApplicationBadgeService;
 use Illuminate\Cache\ArrayStore;
@@ -169,6 +170,34 @@ it('does not acknowledge an empty Classic upload as saved', function () {
     expect(DB::table('control_response_drafts')->count())->toBe(0);
 });
 
+it('does not acknowledge a malformed Classic temporary file as saved', function () {
+    mountControlWorkflow();
+    Livewire::test('forms.page-control')->set('photoUploads.0.0', ['missing-file'])
+        ->call('finishPhotoUpload', 0, 0)->assertReturned('Файл не получен сервером. Повторите загрузку.');
+    expect(ControlResponseDraft::query()->count())->toBe(0);
+});
+
+it('cleans a failed Classic media write and safely retries without duplicate physical files', function () {
+    mountControlWorkflow();
+    Storage::fake('local');
+    $id = (string) Str::uuid();
+    $component = Livewire::test('forms.page-control')->call('setAnswer', 0, 0, 'no');
+    ControlResponseDraft::saving(fn () => throw new RuntimeException('Simulated draft write failure'));
+    try {
+        $component->set('photoUploads.0.0.'.$id.'_1', UploadedFile::fake()->image('proof.jpg'))
+            ->call('finishPhotoUpload', 0, 0, $id, $id.'_1')
+            ->assertReturned('Не удалось сохранить файл. Повторите загрузку.');
+    } finally {
+        ControlResponseDraft::flushEventListeners();
+    }
+    expect(Storage::disk('local')->allFiles('control-drafts'))->toBe([]);
+    $component->assertSet('answers.0.0.selected', 'no')
+        ->set('photoUploads.0.0.'.$id.'_2', UploadedFile::fake()->image('proof.jpg'))
+        ->call('finishPhotoUpload', 0, 0, $id, $id.'_2')->assertReturned('saved');
+    expect(ControlResponseDraft::query()->sole()->responses[0][0]['media'])->toHaveCount(1)
+        ->and(Storage::disk('local')->allFiles('control-drafts'))->toHaveCount(1);
+});
+
 it('does not duplicate a Classic attachment when its save acknowledgement is retried', function () {
     mountControlWorkflow();
     Storage::fake('local');
@@ -210,6 +239,123 @@ it('retains five Classic photos in the same draft across save acknowledgements a
     Livewire::test('forms.page-control')->assertSet('answers.0.0.media', $media);
 });
 
+it('serializes Classic autosave with a media acknowledgement instead of overwriting its file', function () {
+    mountControlWorkflow();
+    Storage::fake('local');
+    $autosave = Livewire::test('forms.page-control')->set('comment', 'Initial')->call('saveDraftAuto');
+    $id = (string) Str::uuid();
+    $uploader = Livewire::test('forms.page-control')
+        ->set('photoUploads.0.0.'.$id.'_1', UploadedFile::fake()->image('proof.jpg'));
+    $interleaved = false;
+    $acknowledgement = null;
+
+    ControlResponseDraft::updating(function () use ($uploader, $id, &$interleaved, &$acknowledgement): void {
+        if (! $interleaved) {
+            $interleaved = true;
+            $acknowledgement = $uploader->instance()->finishPhotoUpload(0, 0, $id, $id.'_1');
+        }
+    });
+    try {
+        $autosave->set('comment', 'Changed during upload')
+            ->set('answers.0.0.custom', 'Answer changed during upload')
+            ->call('saveDraftAuto');
+    } finally {
+        ControlResponseDraft::flushEventListeners();
+    }
+
+    if ($acknowledgement !== 'saved') {
+        $uploader->call('finishPhotoUpload', 0, 0, $id, $id.'_1')->assertReturned('saved');
+    }
+    $media = ControlResponseDraft::query()->sole()->responses[0][0]['media'];
+    expect($interleaved)->toBeTrue()
+        ->and($media)->toHaveCount(1)
+        ->and($media[0]['upload_id'])->toBe($id)
+        ->and(Storage::disk('local')->size($media[0]['path']))->toBeGreaterThan(0)
+        ->and(Storage::disk('local')->allFiles('control-drafts'))->toHaveCount(1)
+        ->and($acknowledgement)->toBe('Сохранение ещё выполняется. Повторите попытку.');
+    Livewire::test('forms.page-control')->assertSet('answers.0.0.media', $media);
+});
+
+it('serializes Classic removal and removes the identified attachment despite shifted indexes', function () {
+    [$supervisor, , , $control] = mountControlWorkflow();
+    Storage::fake('local');
+    $component = Livewire::test('forms.page-control');
+    $ids = [];
+    foreach (range(1, 3) as $number) {
+        $id = $ids[] = (string) Str::uuid();
+        $component->set('photoUploads.0.0.'.$id.'_1', UploadedFile::fake()->image('proof'.$number.'.jpg'))
+            ->call('finishPhotoUpload', 0, 0, $id, $id.'_1');
+    }
+    $lock = Cache::lock('control-draft-media:'.$control->id.':'.$supervisor->id, 30);
+    $lock->get();
+    try {
+        $component->call('removeQueuedPhoto', 0, 0, 0, $ids[0]);
+        expect(ControlResponseDraft::query()->sole()->responses[0][0]['media'])->toHaveCount(3);
+    } finally {
+        $lock->release();
+    }
+    $component->call('removeQueuedPhoto', 0, 0, 0, $ids[0])
+        ->call('removeQueuedPhoto', 0, 0, 1, $ids[1]);
+    $media = ControlResponseDraft::query()->sole()->responses[0][0]['media'];
+    expect(array_column($media, 'upload_id'))->toBe([$ids[2]])
+        ->and(Storage::disk('local')->allFiles('control-drafts'))->toHaveCount(1);
+});
+
+it('retains all twelve Classic attachments and rejects a thirteenth without deleting prior files', function () {
+    mountControlWorkflow();
+    Storage::fake('local');
+    $component = Livewire::test('forms.page-control');
+    foreach (range(1, 12) as $number) {
+        $id = (string) Str::uuid();
+        $component->set('photoUploads.0.0.'.$id.'_1', UploadedFile::fake()->image('proof'.$number.'.jpg'))
+            ->call('finishPhotoUpload', 0, 0, $id, $id.'_1')->assertReturned('saved');
+    }
+    $id = (string) Str::uuid();
+    $component->set('photoUploads.0.0.'.$id.'_1', UploadedFile::fake()->image('extra.jpg'))
+        ->call('finishPhotoUpload', 0, 0, $id, $id.'_1')->assertReturned('Максимум 12 файлов на один вопрос');
+    $media = ControlResponseDraft::query()->sole()->responses[0][0]['media'];
+    expect($media)->toHaveCount(12)
+        ->and(array_unique(array_column($media, 'upload_id')))->toHaveCount(12)
+        ->and(Storage::disk('local')->allFiles('control-drafts'))->toHaveCount(12);
+    foreach ($media as $file) {
+        expect(Storage::disk('local')->size($file['path']))->toBe($file['size']);
+    }
+});
+
+it('preserves real Classic video bytes through reload, finalization, Range and authorized download', function (string $extension, string $mime) {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    Storage::fake('local');
+    $path = base_path('tests/Fixtures/ControlMedia/green.'.$extension);
+    $id = (string) Str::uuid();
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)->set('apartment_id', $apartment)
+        ->set('photoUploads.0.0.'.$id.'_1', UploadedFile::fake()->createWithContent('clip.'.$extension, file_get_contents($path))
+            ->mimeType((new finfo(FILEINFO_MIME_TYPE))->file($path)))
+        ->call('finishPhotoUpload', 0, 0, $id, $id.'_1')->assertReturned('saved');
+    $media = ControlResponseDraft::query()->sole()->responses[0][0]['media'];
+    expect($media[0]['mime'])->toBe($mime)
+        ->and(hash('sha256', Storage::disk('local')->get($media[0]['path'])))->toBe(hash_file('sha256', $path));
+    $draftUrl = route('page-checks.control.draft-media', [$control, 0, 0, 0]);
+    $this->get($draftUrl, ['Range' => 'bytes=0-31'])->assertStatus(206)->assertHeader('Content-Length', '32')->assertHeader('Content-Type', $mime);
+    $this->get($draftUrl.'?download=1')->assertDownload('clip.'.$extension);
+    $other = User::create(['name' => 'Other supervisor', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($other)->get($draftUrl)->assertNotFound();
+    Livewire::test('forms.page-control')->call('removeQueuedPhoto', 0, 0, 0);
+    Storage::disk('local')->assertExists($media[0]['path']);
+    $this->actingAs($supervisor);
+    Livewire::test('forms.page-control')->assertSet('answers.0.0.media', $media)
+        ->call('setAnswer', 0, 0, 'yes')->call('confirmSubmit')->assertSet('successSheetOpen', true);
+    $result = ControlResponse::query()->sole();
+    $saved = $result->responses[0][0]['media'];
+    expect($saved)->toHaveCount(1)
+        ->and(hash('sha256', Storage::disk('local')->get($saved[0]['path'])))->toBe(hash_file('sha256', $path));
+    Storage::disk('local')->assertMissing($media[0]['path']);
+    $url = route('page-checks.control.result-media', [$result, 0, 0, 0]);
+    $this->get($url, ['Range' => 'bytes=0-31'])->assertStatus(206)->assertHeader('Content-Type', $mime);
+    $this->actingAs($other)->get($url)->assertForbidden();
+    $this->actingAs($cleaner)->get($url.'?download=1')->assertDownload('clip.'.$extension);
+})->with([['mp4', 'video/mp4'], ['mov', 'video/quicktime'], ['webm', 'video/webm']]);
+
 it('keeps committed Classic media when the completed cache marker fails', function () {
     [, $cleaner, $apartment] = mountControlWorkflow();
     Storage::fake('local');
@@ -242,6 +388,46 @@ it('keeps committed Classic media when the completed cache marker fails', functi
     $staleComponent->call('submit');
     expect(ControlResponse::query()->count())->toBe(1);
 });
+
+it('does not acknowledge a late Classic attachment between result creation and draft cleanup', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('local');
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('saved.jpg')])
+        ->call('finishPhotoUpload', 0, 0);
+    $id = (string) Str::uuid();
+    $lateUpload = Livewire::test('forms.page-control')
+        ->set('photoUploads.0.0.'.$id.'_1', UploadedFile::fake()->image('late.jpg'));
+    $ack = null;
+    ControlResponse::created(function () use ($lateUpload, $id, &$ack): void {
+        $ack = $lateUpload->instance()->finishPhotoUpload(0, 0, $id, $id.'_1');
+    });
+    try {
+        $component->call('confirmSubmit')->assertSet('successSheetOpen', true);
+    } finally {
+        ControlResponse::flushEventListeners();
+    }
+    expect($ack)->toBe('Сохранение ещё выполняется. Повторите попытку.')
+        ->and(ControlResponseDraft::query()->count())->toBe(0)
+        ->and(ControlResponse::query()->sole()->responses[0][0]['media'])->toHaveCount(1)
+        ->and(Storage::disk('local')->allFiles('controls'))->toHaveCount(1);
+});
+
+it('stores actual PNG and WebP bytes without changing existing Classic answers', function (string $extension, string $mime) {
+    mountControlWorkflow();
+    Storage::fake('local');
+    $image = UploadedFile::fake()->image('proof.'.$extension, 40, 30);
+    $bytes = file_get_contents($image->getPathname());
+    expect((new finfo(FILEINFO_MIME_TYPE))->buffer($bytes))->toBe($mime);
+    Livewire::test('forms.page-control')->call('setAnswer', 0, 0, 'no')
+        ->set('photoUploads.0.0', [$image])->call('finishPhotoUpload', 0, 0)->assertReturned('saved');
+    $draft = ControlResponseDraft::query()->sole()->responses[0][0];
+    expect($draft['selected'])->toBe('no')
+        ->and(hash('sha256', Storage::disk('local')->get($draft['media'][0]['path'])))->toBe(hash('sha256', $bytes));
+    Livewire::test('forms.page-control')->assertSet('answers.0.0.selected', 'no')->assertCount('answers.0.0.media', 1);
+})->with([['png', 'image/png'], ['webp', 'image/webp']]);
 
 it('renders the loader preview only when explicitly requested', function () {
     [$supervisor] = mountControlWorkflow();

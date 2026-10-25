@@ -22,6 +22,155 @@ function form(upload, wire = {}) {
     });
 }
 
+function helpers(overrides = {}) {
+    const window = { setTimeout, clearTimeout, ...overrides };
+    const script = source.slice(source.indexOf('window.controlCompressPhoto ='), source.indexOf('</script>', source.indexOf('window.controlCompressPhoto =')));
+    vm.runInNewContext(script, { window, File, Blob, URL, Image: overrides.Image, document: overrides.document, console });
+    return window;
+}
+
+test('a compressible photo above the transport limit enters preparation instead of being discarded', async () => {
+    let uploads = 0;
+    const state = form(async () => { uploads++; return 'saved'; });
+    state.startMediaUpload('0.0', {}, 0, 0, [new File([new Uint8Array(3 * 1024 * 1024)], 'large.png', { type: 'image/png' })]);
+    await tick();
+    assert.equal(uploads, 1);
+    assert.equal(state.mediaUploads['0.0'][0].state, 'saved');
+    assert.equal(state.pendingUploads, 0);
+});
+
+test('compression keeps the original when JPEG encoding would make it larger', async () => {
+    const file = new File([new Uint8Array(1024 * 1024)], 'photo.png', { type: 'image/png' });
+    const window = helpers({
+        Image: class { naturalWidth = 1000; naturalHeight = 800; set src(value) { this.onload(); } },
+        document: { createElement: () => ({ getContext: () => ({ drawImage() {} }), toBlob: callback => callback(new Blob([new Uint8Array(file.size + 1)])) }) },
+    });
+    assert.equal(await window.controlCompressPhoto(file), file);
+});
+
+test('only the prepared file is checked against the real transport limit', async () => {
+    const original = new File([new Uint8Array(3 * 1024 * 1024)], 'large.png', { type: 'image/png' });
+    const prepared = new File(['prepared'], 'photo.jpg', { type: 'image/jpeg' });
+    const window = helpers();
+    window.controlCompressPhoto = async () => prepared;
+    let received;
+    const livewire = { upload(property, file, success) { received = file; success(); }, async call() { return 'saved'; } };
+    assert.equal(await window.controlUploadCompressedPhotos(livewire, 'photoUploads.0.0.test', 0, 0, original, () => {}, new AbortController(), () => {}, 'id', 'key', 2 * 1024 * 1024), 'saved');
+    assert.equal(received, prepared);
+    window.controlCompressPhoto = async file => file;
+    await assert.rejects(window.controlUploadCompressedPhotos(livewire, 'photoUploads.0.0.test', 0, 0, original, () => {}, new AbortController(), () => {}, 'id', 'key', 2 * 1024 * 1024), /лимит загрузки 2 МБ/);
+});
+
+test('file input events do not schedule a redundant answer autosave', () => {
+    const state = form(null);
+    state.handleFormChange({ target: { type: 'file' } });
+    assert.equal(state.saveRevision, 0);
+    state.handleFormChange({ target: { type: 'text' } });
+    assert.equal(state.saveRevision, 1);
+});
+
+test('a saving item cannot disappear from the queue through a local remove', async () => {
+    let complete;
+    const state = form((wire, property, room, question, file, progress, controller, saving) => {
+        saving();
+        return new Promise(resolve => { complete = resolve; });
+    });
+    state.startMediaUpload('0.0', {}, 0, 0, [new File(['one'], 'one.jpg')]);
+    await tick();
+    const item = state.mediaUploads['0.0'][0];
+    state.removeMediaUpload('0.0', 0, 0, item.id);
+    assert.equal(state.mediaUploads['0.0'][0], item);
+    assert.equal(state.pendingUploads, 1);
+    complete('saved');
+    await tick();
+    assert.equal(item.state, 'saved');
+    assert.equal(state.pendingUploads, 0);
+});
+
+test('cancelling preparation drains the queue and keeps the cancelled File available for retry', async () => {
+    const state = form((wire, property, room, question, file, progress, controller) => new Promise((resolve, reject) => {
+        controller.signal.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+    }));
+    const file = new File(['one'], 'one.jpg');
+    state.startMediaUpload('0.0', {}, 0, 0, [file]);
+    await tick();
+    const item = state.mediaUploads['0.0'][0];
+    assert.equal(item.state, 'preparing');
+    state.cancelMediaUpload('0.0', 0, 0, item.id);
+    await tick();
+    assert.equal(item.state, 'cancelled');
+    assert.equal(item.file, file);
+    assert.equal(state.pendingUploads, 0);
+    assert.equal(state.mediaProcessing, false);
+});
+
+test('a timed out upload is cancelled and a late callback cannot confirm a file', async () => {
+    const timers = [];
+    const window = helpers({ setTimeout(callback) { timers.push(callback); return timers.length; }, clearTimeout() {} });
+    window.controlCompressPhoto = async file => file;
+    let success;
+    let cancelled;
+    let cancellations = 0;
+    let confirmations = 0;
+    const livewire = { upload(property, file, callback, error, progress, cancel) { success = callback; cancelled = cancel; }, cancelUpload() { cancellations++; cancelled(); }, async call() { confirmations++; return 'saved'; } };
+    const pending = window.controlUploadCompressedPhotos(livewire, 'photoUploads.0.0.key', 0, 0, new File(['one'], 'one.jpg'), () => {}, new AbortController(), () => {});
+    await tick();
+    timers[0]();
+    await assert.rejects(pending, /Upload timed out/);
+    success();
+    await tick();
+    assert.equal(cancellations, 1);
+    assert.equal(confirmations, 0);
+});
+
+test('review and Livewire navigation do not bypass an unfinished file upload', async () => {
+    let actions = 0;
+    const state = form(null, { async continueForm() { actions++; return 'saved'; } });
+    state.pendingUploads = 1;
+    await state.continueAfterSave();
+    assert.equal(actions, 0);
+    state.init();
+    let prevented = false;
+    state.navigationHandler({ preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    state.destroy();
+});
+
+test('a non-Error network rejection cannot strand later files or pendingUploads', async () => {
+    const state = form((wire, property, room, question, file) => file.name === 'bad.jpg' ? Promise.reject(null) : Promise.resolve('saved'));
+    state.startMediaUpload('0.0', {}, 0, 0, [new File(['bad'], 'bad.jpg'), new File(['good'], 'good.jpg')]);
+    for (let i = 0; i < 5; i++) await tick();
+    assert.deepEqual(Array.from(state.mediaUploads['0.0'], item => item.state), ['error', 'saved']);
+    assert.equal(state.pendingUploads, 0);
+});
+
+test('a lost save acknowledgement is reconciled before retrying bytes or finalizing', async () => {
+    let uploads = 0;
+    let submits = 0;
+    const wire = { async finishPhotoUpload() { return 'saved'; }, async confirmSubmit() { submits++; } };
+    const state = form(async (wire, property, room, question, file, progress, controller, saving) => {
+        uploads++;
+        saving();
+        throw new Error('Connection lost after save');
+    }, wire);
+    state.startMediaUpload('0.0', {}, 0, 0, [new File(['one'], 'one.jpg')]);
+    await tick();
+    const item = state.mediaUploads['0.0'][0];
+    assert.equal(item.state, 'error');
+    assert.equal(state.hasUnconfirmedMedia, true);
+    state.removeMediaUpload('0.0', 0, 0, item.id);
+    assert.equal(state.mediaUploads['0.0'][0], item);
+    await state.confirmSubmitAfterSave();
+    assert.equal(submits, 0);
+    state.retryMediaUpload('0.0', 0, 0, item.id);
+    await tick();
+    assert.equal(item.state, 'saved');
+    assert.equal(item.file, null);
+    assert.equal(uploads, 1);
+    assert.equal(state.hasUnconfirmedMedia, false);
+    assert.equal(state.pendingUploads, 0);
+});
+
 test('media across different questions uses one upload slot', async () => {
     let active = 0;
     let peak = 0;

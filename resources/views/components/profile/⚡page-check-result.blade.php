@@ -265,13 +265,17 @@ new class extends Component {
                                     <div class="text-[13px] font-semibold">{{ $item['room'] }} · {{ $item['question'] }}</div>
                                     <div class="mt-[10px] flex gap-[8px] overflow-x-auto">
                                         @foreach($item['media'] as $file)
-                                            <a href="{{ $file['url'] }}" target="_blank" class="shrink-0" aria-label="Открыть вложение">
                                                 @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
-                                                    <video src="{{ $file['url'] }}" controls preload="metadata" class="h-[92px] w-[92px] rounded-[18px] object-cover"></video>
+                                                    <div x-data="{ playbackFailed: false }" class="shrink-0">
+                                                        <video src="{{ $file['url'] }}" controls preload="metadata" x-on:error="playbackFailed = true" class="h-[92px] w-[92px] rounded-[18px] object-cover"></video>
+                                                        <p x-show="playbackFailed" x-cloak class="text-[11px]">Браузер не воспроизводит это видео.</p>
+                                                        <a href="{{ $file['url'] }}?download=1" class="text-[11px] font-semibold underline">Оригинал видео</a>
+                                                    </div>
                                                 @else
+                                                    <a href="{{ $file['url'] }}" target="_blank" class="shrink-0" aria-label="Открыть вложение">
                                                     <img src="{{ $file['url'] }}" alt="Фото к вопросу" class="h-[92px] w-[92px] rounded-[18px] object-cover">
+                                                    </a>
                                                 @endif
-                                            </a>
                                         @endforeach
                                     </div>
                                 </div>
