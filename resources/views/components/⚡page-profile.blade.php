@@ -6,6 +6,7 @@ use App\Services\UserApplicationBadgeService;
 use App\Models\CalendarEvent;
 use App\Models\DayOffRequestDay;
 use App\Models\VacationRequest;
+use App\Services\RolePreviewContext;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
@@ -157,16 +158,6 @@ $this->profileRequired = false;
         return 'событий';
     }
 
-public function showTrisMareHelp(): void
-{
-    $this->toast(
-        'info',
-        'Вопрос по баллам?',
-        'Если есть вопросы по баллам, свяжитесь с супервайзером. Данные обновляются после вечерней синхронизации.',
-        6500,
-    );
-}
-
     protected function eventsForDay(Carbon $day): Collection
     {
         $events = collect();
@@ -259,6 +250,7 @@ public function showTrisMareHelp(): void
 <x-slot:header>
     @php
         $user = auth()->user();
+        $effectiveUiRole = app(RolePreviewContext::class)->effectiveUiRole();
     @endphp
 
     <div class="flex items-center gap-[10px] p-[15px]">
@@ -289,7 +281,7 @@ public function showTrisMareHelp(): void
                 </span>
 
                 <span class="text-[18px] opacity-50">
-                    @switch($user->role)
+                    @switch($effectiveUiRole)
                         @case('admin')
                             Администратор
                             @break
@@ -300,7 +292,7 @@ public function showTrisMareHelp(): void
                             Клинер
                             @break
                         @default
-                            {{ $user->role }}
+                            {{ $effectiveUiRole }}
                     @endswitch
                 </span>
             </div>
@@ -321,164 +313,26 @@ public function showTrisMareHelp(): void
     x-on:open-profile-edit.window="$wire.openProfileEdit()"
     class="w-full bg-white p-[15px]"
 >
-@php
-    $trisMare = \App\Models\TrisMareSnapshot::query()
-        ->where('user_id', $user->id)
-        ->first();
+    @php
+        $rolePreview = app(RolePreviewContext::class);
+    @endphp
 
-    $dailyHistory = collect($trisMare?->daily_history ?? [])
-        ->take(10);
-
-    $progress = $trisMare
-        ? min(100, max(0, (int) $trisMare->progress_percent))
-        : 0;
-@endphp
-
-@if($trisMare)
-    <div
-        x-data="{ trisMareHistoryOpen: false }"
-        class="mt-6 rounded-[32px] bg-[#F2F2F2] p-[15px] text-left"
-    >
-        <div class="flex items-start justify-between gap-[14px]">
-            <div>
-                <div class="text-[12px] text-black/40">
-                    TRIS Mare 2026
-                </div>
-
-                <div class="mt-[4px] text-[28px] font-bold leading-none text-[#111]">
-                    {{ $trisMare->total_points }}
-                    <span class="text-[14px] font-medium text-black/40">/ 230</span>
-                </div>
-            </div>
-
-            <div class="rounded-full bg-white px-[11px] py-[7px] text-[12px] font-semibold text-[#111]">
-                {{ $progress }}%
-            </div>
-        </div>
-
-        <div class="mt-[14px] h-[8px] overflow-hidden rounded-full bg-white">
-            <div
-                class="h-full rounded-full bg-[#111]"
-                style="width: {{ $progress }}%;"
-            ></div>
-        </div>
-
-        <div class="mt-[14px] grid grid-cols-4 gap-[7px]">
-    
-            <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
-                <div class="text-[10px] text-black/35">Дней</div>
-                <div class="mt-[2px] text-[14px] font-semibold">
-                    {{ $trisMare->working_days }}
-                </div>
-            </div>
-
-            <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
-                <div class="text-[10px] text-black/35">До 230</div>
-                <div class="mt-[2px] text-[14px] font-semibold">
-                    {{ $trisMare->left_to_230 }}
-                </div>
-            </div>
-
-            <div class="rounded-[18px] bg-white px-[10px] py-[10px]">
-                <div class="text-[10px] text-black/35">День</div>
-                <div class="mt-[2px] text-[14px] font-semibold">
-                    +{{ $trisMare->daily_points }}
-                </div>
-            </div>
-        </div>
-
-        <div class="mt-[12px] flex items-center gap-[8px]">
-            <button
-                type="button"
-                x-on:click="trisMareHistoryOpen = true"
-                class="flex-1 rounded-full bg-[#111] px-[14px] py-[11px] text-[13px] font-semibold text-white"
-            >
-                История начислений
-            </button>
-
-            <button
-                type="button"
-                wire:click="showTrisMareHelp"
-                class="rounded-full bg-white px-[14px] py-[11px] text-[13px] font-semibold text-[#111]"
-            >
-                ?
-            </button>
-        </div>
-
-        <div
-            x-cloak
-            x-show="trisMareHistoryOpen"
-            x-transition.opacity
-            class="fixed inset-0 z-[100] bg-black/35"
-            x-on:click.self="trisMareHistoryOpen = false"
-        >
-            <div
-                x-show="trisMareHistoryOpen"
-                x-transition:enter="transition ease-out duration-200"
-                x-transition:enter-start="translate-y-full"
-                x-transition:enter-end="translate-y-0"
-                x-transition:leave="transition ease-in duration-150"
-                x-transition:leave-start="translate-y-0"
-                x-transition:leave-end="translate-y-full"
-                class="absolute bottom-0 left-1/2 max-h-[75dvh] w-full max-w-[768px] -translate-x-1/2 overflow-hidden rounded-t-[34px] bg-white"
-            >
-                <div class="sticky top-0 bg-white px-[20px] pb-[12px] pt-[16px]">
-                    <div class="mx-auto mb-[14px] h-[4px] w-[44px] rounded-full bg-black/15"></div>
-
-                    <div class="flex items-center justify-between gap-[12px]">
-                        <div>
-                            <div class="text-[20px] font-semibold">
-                                История начислений
-                            </div>
-
-                            <div class="mt-[2px] text-[12px] text-black/40">
-                                Последние {{ $dailyHistory->count() }} дней
-                            </div>
-                        </div>
-
-                        <button
-                            type="button"
-                            x-on:click="trisMareHistoryOpen = false"
-                            class="rounded-full bg-[#F2F2F2] px-[13px] py-[9px] text-[13px] font-semibold"
-                        >
-                            Закрыть
-                        </button>
-                    </div>
-                </div>
-
-                <div class="max-h-[58dvh] overflow-y-auto px-[20px] pb-[24px]">
-                    @if($dailyHistory->isNotEmpty())
-                        <div class="flex flex-col gap-[8px]">
-                            @foreach($dailyHistory as $day)
-                                <div class="rounded-[20px] bg-[#F2F2F2] px-[14px] py-[12px]">
-                                    <div class="flex items-center justify-between gap-[12px]">
-                                        <div class="text-[13px] font-medium text-black/45">
-                                            {{ $day['date'] ?? '—' }}
-                                        </div>
-
-                                        <div class="text-[16px] font-bold text-[#111]">
-                                            +{{ $day['points'] ?? 0 }}
-                                        </div>
-                                    </div>
-
-                                    @if(! empty($day['comment']))
-                                        <div class="mt-[6px] text-[13px] leading-[1.35] text-black/65">
-                                            {{ $day['comment'] }}
-                                        </div>
-                                    @endif
-                                </div>
-                            @endforeach
-                        </div>
-                    @else
-                        <div class="rounded-[22px] bg-[#F2F2F2] p-[16px] text-[14px] text-black/50">
-                            История начислений пока пустая.
-                        </div>
-                    @endif
-                </div>
-            </div>
-        </div>
-    </div>
-@endif
+    @if($user?->isAdmin())
+        <section class="mb-[20px] rounded-[24px] border border-[#E7EBF2] bg-[#F8FAFC] p-4">
+            <h2 class="text-[16px] font-semibold text-[#213259]">Режим просмотра</h2>
+            <p class="mt-1 text-[13px] leading-[1.4] text-black/55">Показывает клиентский интерфейс выбранной роли. Данные и права администратора не меняются.</p>
+            <form method="POST" action="{{ route('role-preview.store') }}" class="mt-3 flex items-center gap-2">
+                @csrf
+                <label for="ui-role-preview" class="sr-only">Роль для предпросмотра</label>
+                <select id="ui-role-preview" name="role" class="min-w-0 flex-1 rounded-xl border border-[#D8DEE8] bg-white px-3 py-2 text-[14px] text-[#213259]">
+                    <option value="admin" @selected($rolePreview->effectiveUiRole() === 'admin')>Администратор</option>
+                    <option value="supervisor" @selected($rolePreview->effectiveUiRole() === 'supervisor')>Супервайзер</option>
+                    <option value="cleaner" @selected($rolePreview->effectiveUiRole() === 'cleaner')>Клинер</option>
+                </select>
+                <button type="submit" class="shrink-0 rounded-xl bg-[#213259] px-4 py-2 text-[14px] font-semibold text-white">Показать</button>
+            </form>
+        </section>
+    @endif
 
     <div class="mb-[10px]">
         <span class="text-[16px] opacity-50">
@@ -549,9 +403,9 @@ public function showTrisMareHelp(): void
     </div>
 
 @php
-$canSeeAdminPanel = $user->isAdmin();
-$canSeeFinancePanel = $user->isAdmin() || $user->hasPanelAccess('finance');
-$canSeeEducationPanel = $user->isAdmin() || $user->hasPanelAccess('education');
+$canSeeAdminPanel = ! $rolePreview->isActive() && $user->isAdmin();
+$canSeeFinancePanel = ! $rolePreview->isActive() && ($user->isAdmin() || $user->hasPanelAccess('finance'));
+$canSeeEducationPanel = ! $rolePreview->isActive() && ($user->isAdmin() || $user->hasPanelAccess('education'));
 
 $hasAnyAdminAccess =
     $canSeeAdminPanel ||

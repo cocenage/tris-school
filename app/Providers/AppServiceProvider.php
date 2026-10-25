@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Http\Middleware\BlockRolePreviewWrites;
 use App\Models\Apartment;
 use App\Models\User;
 use App\Observers\UserObserver;
@@ -14,7 +15,9 @@ use Illuminate\Http\Client\Events\RequestSending;
 use Illuminate\Http\Client\Events\ResponseReceived;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Livewire\Livewire;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -31,6 +34,12 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Livewire::setUpdateRoute(function ($handle, $path) {
+            return Route::post($path, $handle)
+                ->middleware(BlockRolePreviewWrites::class)
+                ->name('role-preview.livewire.update');
+        });
+
         Event::listen(RequestSending::class, [TelegramOutboundMonitor::class, 'sending']);
         Event::listen(ResponseReceived::class, [TelegramOutboundMonitor::class, 'received']);
         Event::listen(ConnectionFailed::class, [TelegramOutboundMonitor::class, 'failed']);
