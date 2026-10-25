@@ -22,7 +22,7 @@ class ControlMediaController
 
         $file = $draft->responses[$room][$question]['media'][$media] ?? null;
 
-        return $this->serve($file, $control->id, $request->user()->id);
+        return $this->serve($file, $control->id, $request->user()->id, $request->boolean('download'));
     }
 
     public function result(Request $request, ControlResponse $controlResponse, int $room, int $question, int $media): BinaryFileResponse
@@ -33,10 +33,10 @@ class ControlMediaController
 
         $file = $controlResponse->responses[$room][$question]['media'][$media] ?? null;
 
-        return $this->serve($file, $controlResponse->control_id);
+        return $this->serve($file, $controlResponse->control_id, null, $request->boolean('download'));
     }
 
-    private function serve(mixed $file, int $controlId, ?int $supervisorId = null): BinaryFileResponse
+    private function serve(mixed $file, int $controlId, ?int $supervisorId = null, bool $download = false): BinaryFileResponse
     {
         abort_unless(is_array($file), 404);
 
@@ -52,11 +52,19 @@ class ControlMediaController
         $disk = Storage::disk($diskName);
         abort_unless($disk->exists($path), 404);
 
-        return response()->file($disk->path($path), [
+        $headers = [
             'Content-Type' => (string) ($file['mime'] ?? 'application/octet-stream'),
-            'Content-Disposition' => 'inline',
             'Cache-Control' => 'private, no-store',
             'X-Content-Type-Options' => 'nosniff',
-        ]);
+        ];
+
+        if ($download) {
+            $name = basename(str_replace('\\', '/', (string) ($file['original_name'] ?? basename($path))));
+            $name = preg_replace('/[\x00-\x1F\x7F]/', '', $name) ?: basename($path);
+
+            return response()->download($disk->path($path), $name, $headers);
+        }
+
+        return response()->file($disk->path($path), $headers + ['Content-Disposition' => 'inline']);
     }
 }
