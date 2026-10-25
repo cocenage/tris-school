@@ -21,11 +21,12 @@ new class extends Component
     public function mount(): void
     {
         $this->authorizeCreation();
+        $this->conductedDate = today()->toDateString();
     }
 
     protected function authorizeCreation(): void
     {
-        abort_unless(Auth::user()?->role === 'supervisor' && Auth::user()?->status === 'approved', 403);
+        abort_unless(in_array(Auth::user()?->role, ['admin', 'supervisor'], true) && Auth::user()?->status === 'approved', 403);
     }
 
     public function getCleanersProperty()
@@ -72,7 +73,7 @@ new class extends Component
 
 <x-slot:header>
     <div class="flex h-[70px] items-center gap-3 px-4 text-[#213259]">
-        <a href="{{ route('page-coachings') }}" aria-label="Назад" class="p-2"><x-heroicon-o-arrow-left class="size-5" /></a>
+        <a href="{{ route('page-checks') }}" aria-label="Назад" class="p-2"><x-heroicon-o-arrow-left class="size-5" /></a>
         <span role="heading" aria-level="1" class="text-[18px] leading-none">Новый коучинг</span>
     </div>
 </x-slot:header>
@@ -91,12 +92,12 @@ new class extends Component
             @error('cleanerId') <p role="alert" class="mt-2 text-sm text-red-700">{{ $message }}</p> @enderror
         </div>
         <div>
-            <label for="coaching-date" class="mb-2 block font-medium">Дата коучинга</label>
+            <label for="coaching-date" class="mb-2 block font-medium">Дата проведения коучинга</label>
             <input id="coaching-date" type="date" wire:model="conductedDate" max="{{ today()->toDateString() }}" class="min-h-12 w-full min-w-0 rounded-2xl border border-black/15 bg-white px-3">
             @error('conductedDate') <p role="alert" class="mt-2 text-sm text-red-700">{{ $message }}</p> @enderror
         </div>
         <div>
-            <label for="coaching-description" class="mb-2 block font-medium">Что разобрали с сотрудником</label>
+            <label for="coaching-description" class="mb-2 block font-medium">Что отработали</label>
             <textarea id="coaching-description" wire:model="description" rows="8" class="w-full rounded-2xl border border-black/15 p-3 leading-relaxed" placeholder="Что обсудили, что показали и к чему пришли"></textarea>
             @error('description') <p role="alert" class="mt-2 text-sm text-red-700">{{ $message }}</p> @enderror
         </div>
@@ -104,5 +105,6 @@ new class extends Component
             <span wire:loading.remove wire:target="save">Сохранить коучинг</span>
             <span wire:loading wire:target="save">Сохраняем…</span>
         </button>
+        <a href="{{ route('page-coachings.history') }}" class="flex min-h-12 items-center justify-center text-sm font-medium text-[#213259] underline">История коучингов</a>
     </form>
 </div>

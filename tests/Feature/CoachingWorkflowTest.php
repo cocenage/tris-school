@@ -143,8 +143,9 @@ function coachingWorkflowRecord(User $cleaner, User $supervisor, string $date, s
     ]);
 }
 
-it('registers a list, create, and detail route for coaching', function () {
+it('registers entry, history, create, and detail routes for coaching', function () {
     expect(Route::has('page-coachings'))->toBeTrue()
+        ->and(Route::has('page-coachings.history'))->toBeTrue()
         ->and(Route::has('page-coachings.create'))->toBeTrue()
         ->and(Route::has('page-coachings.show'))->toBeTrue();
 });
@@ -157,9 +158,18 @@ it('links the existing coaching tile to the working list', function () {
         ->assertSee(route('page-coachings'), false);
 });
 
-it('lets a supervisor create one coaching record attributed to the authenticated supervisor', function () {
+it('opens the creation form directly for managers and history for cleaners', function (string $role) {
     coachingMigration()->up();
-    $supervisor = coachingWorkflowUser('Supervisor', 'supervisor');
+    $user = coachingWorkflowUser('Entry user', $role);
+    $destination = $role === 'cleaner' ? 'page-coachings.history' : 'page-coachings.create';
+
+    $this->actingAs($user)->get(route('page-coachings'))->assertRedirect(route($destination));
+    $this->get(route($destination))->assertOk();
+})->with(['admin', 'supervisor', 'cleaner']);
+
+it('lets a manager create one coaching attributed to the authenticated author and open its card', function (string $role) {
+    coachingMigration()->up();
+    $supervisor = coachingWorkflowUser('Manager', $role);
     $cleaner = coachingWorkflowUser('Cleaner', 'cleaner');
 
     Livewire::actingAs($supervisor)
@@ -168,7 +178,8 @@ it('lets a supervisor create one coaching record attributed to the authenticated
         ->set('conductedDate', '2026-10-24')
         ->set('description', 'Поговорили о порядке подготовки квартиры к заезду.')
         ->call('save')
-        ->assertHasNoErrors();
+        ->assertHasNoErrors()
+        ->assertRedirect(route('page-coachings.show', Coaching::query()->sole()));
 
     $record = DB::table('coachings')->sole();
 
@@ -176,7 +187,7 @@ it('lets a supervisor create one coaching record attributed to the authenticated
         ->and((int) $record->supervisor_id)->toBe($supervisor->id)
         ->and(Carbon::parse($record->inspection_date)->toDateString())->toBe('2026-10-24')
         ->and($record->reason)->toBe('Поговорили о порядке подготовки квартиры к заезду.');
-});
+})->with(['admin', 'supervisor']);
 
 it('requires a cleaner, conducted date, and narrative when creating a coaching', function () {
     coachingMigration()->up();
@@ -184,6 +195,7 @@ it('requires a cleaner, conducted date, and narrative when creating a coaching',
 
     Livewire::actingAs($supervisor)
         ->test('forms.page-coaching-create')
+        ->set('conductedDate', '')
         ->call('save')
         ->assertHasErrors(['cleanerId', 'conductedDate', 'description']);
 
@@ -300,11 +312,32 @@ it('shows a clear empty state for a staff member with no coachings', function ()
         ->assertSee('Пока нет коучингов');
 });
 
-it('blocks coaching creation by cleaners and administrators', function () {
+it('blocks coaching creation by cleaners', function () {
     coachingMigration()->up();
-    foreach (['cleaner', 'admin'] as $role) {
-        $user = coachingWorkflowUser($role, $role);
-        Livewire::actingAs($user)->test('forms.page-coaching-create')->assertForbidden();
-    }
+    $user = coachingWorkflowUser('Cleaner', 'cleaner');
+    Livewire::actingAs($user)->test('forms.page-coaching-create')->assertForbidden();
+    $this->actingAs($user)->get(route('page-coachings.create'))->assertForbidden();
     expect(DB::table('coachings')->count())->toBe(0);
+});
+
+it('defaults to today and retains an earlier date and cleaner after validation errors', function () {
+    coachingMigration()->up();
+    $admin = coachingWorkflowUser('Admin', 'admin');
+    $cleaner = coachingWorkflowUser('Cleaner', 'cleaner');
+
+    Livewire::actingAs($admin)->test('forms.page-coaching-create')
+        ->assertSet('conductedDate', '2026-10-24')
+        ->assertSee(route('page-coachings.history'), false)
+        ->set('cleanerId', $cleaner->id)
+        ->set('conductedDate', '2026-10-20')
+        ->set('description', '')
+        ->call('save')
+        ->assertHasErrors('description')
+        ->assertSet('cleanerId', $cleaner->id)
+        ->assertSet('conductedDate', '2026-10-20')
+        ->set('description', 'Отработали последовательность уборки.')
+        ->call('save')
+        ->assertHasNoErrors();
+
+    expect(Coaching::query()->sole()->conducted_date->toDateString())->toBe('2026-10-20');
 });

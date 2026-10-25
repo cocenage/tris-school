@@ -80,7 +80,12 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-home.instructions.single');
 
     Route::livewire('/checks', 'page-checks')->name('page-checks');
-    Route::livewire('/coachings', 'page-coachings')->name('page-coachings');
+    Route::get('/coachings', function () {
+        return redirect()->route(in_array(Auth::user()?->role, ['admin', 'supervisor'], true)
+            ? 'page-coachings.create'
+            : 'page-coachings.history');
+    })->name('page-coachings');
+    Route::livewire('/coachings/history', 'page-coachings')->name('page-coachings.history');
     Route::livewire('/coachings/create', 'forms.page-coaching-create')->name('page-coachings.create');
     Route::livewire('/coachings/{coaching}', 'profile.page-coaching-result')->whereNumber('coaching')->name('page-coachings.show');
     Route::get('/checks/control/draft-media/{control}/{room}/{question}/{media}', [ControlMediaController::class, 'draft'])
