@@ -36,7 +36,6 @@ class ScheduledControlTypes
     public static function scheduledTime(string $controlType, string $configuredTime): ?string
     {
         return match ($controlType) {
-            self::SECOND_CLEANINGS_FINISHING => '19:00:00',
             self::CLOSING_PAYMENTS => null,
             default => $configuredTime,
         };

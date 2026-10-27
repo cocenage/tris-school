@@ -12,6 +12,7 @@ use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDestinationCatalog;
 use Carbon\Carbon;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TimePicker;
 use Filament\Schemas\Schema as FilamentSchema;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Database\Schema\Blueprint;
@@ -145,7 +146,7 @@ it('respects configured weekdays when the message is due at the current minute',
     Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
 });
 
-it('sends closing cleanings at 17:30, preserves second cleanings at 19:00, and never schedules payments alone', function (): void {
+it('uses the configured second-cleaning time and never schedules closing payments by time', function (): void {
     makeScheduledTelegramMessage([
         'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
         'name' => 'All cleanings finished', 'send_time' => '17:30:00', 'weekdays' => [1],
@@ -160,10 +161,33 @@ it('sends closing cleanings at 17:30, preserves second cleanings at 19:00, and n
     ]);
     Queue::fake();
 
+    Carbon::setTestNow(Carbon::parse('2026-09-28 13:59:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    expect(TelegramScheduledMessageDelivery::query()->count())->toBe(0);
+    Queue::assertNothingPushed();
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 14:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    $secondCleaning = TelegramScheduledMessageDelivery::query()->sole();
+    expect($secondCleaning->control_type)->toBe(ScheduledControlTypes::SECOND_CLEANINGS_FINISHING)
+        ->and($secondCleaning->scheduled_for->format('Y-m-d H:i:s'))->toBe('2026-09-28 14:00:00');
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 14:02:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 0; failed: 0; duplicate: 1')
+        ->assertExitCode(0);
+
     Carbon::setTestNow(Carbon::parse('2026-09-28 17:30:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
         ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
         ->assertExitCode(0);
+
     Carbon::setTestNow(Carbon::parse('2026-09-28 18:00:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
         ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
@@ -171,13 +195,61 @@ it('sends closing cleanings at 17:30, preserves second cleanings at 19:00, and n
 
     Carbon::setTestNow(Carbon::parse('2026-09-28 19:00:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
-        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
         ->assertExitCode(0);
 
     expect(TelegramScheduledMessageDelivery::query()->pluck('control_type')->all())
-        ->toBe([ScheduledControlTypes::CLOSING_CLEANINGS, ScheduledControlTypes::SECOND_CLEANINGS_FINISHING]);
+        ->toBe([ScheduledControlTypes::SECOND_CLEANINGS_FINISHING, ScheduledControlTypes::CLOSING_CLEANINGS])
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
     Queue::assertPushed(DeliverScheduledTelegramMessage::class, 2);
 });
+
+it('applies the selected weekday to the configured second-cleaning time', function (): void {
+    makeScheduledTelegramMessage([
+        'control_type' => ScheduledControlTypes::SECOND_CLEANINGS_FINISHING,
+        'send_time' => '14:00:00',
+        'weekdays' => [2],
+    ]);
+    Queue::fake();
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 14:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    Carbon::setTestNow(Carbon::parse('2026-09-29 14:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    expect(TelegramScheduledMessageDelivery::query()->sole()->scheduled_for->format('Y-m-d H:i:s'))
+        ->toBe('2026-09-29 14:00:00');
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('keeps a configured local delivery time across Europe Rome daylight saving transitions', function (string $date, string $offset): void {
+    makeScheduledTelegramMessage([
+        'control_type' => ScheduledControlTypes::SECOND_CLEANINGS_FINISHING,
+        'send_time' => '14:00:00',
+        'weekdays' => [7],
+    ]);
+    Carbon::setTestNow(Carbon::parse($date.' 14:00:20', 'Europe/Rome'));
+    Queue::fake();
+
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    $delivery = TelegramScheduledMessageDelivery::query()->sole();
+    $scheduledAt = Carbon::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome');
+
+    expect($scheduledAt->format('Y-m-d H:i:s'))->toBe($date.' 14:00:00')
+        ->and($scheduledAt->format('P'))->toBe($offset);
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+})->with([
+    'spring clock change' => ['2026-03-29', '+02:00'],
+    'autumn clock change' => ['2026-10-25', '+01:00'],
+]);
 
 it('adds five district answer rows to a control and no buttons to an informational message', function (): void {
     makeScheduledTelegramMessage([
@@ -495,7 +567,9 @@ it('exposes searchable existing chat and topic selectors and persists the select
         ->and($components['telegram_topic_record_id']->isSearchable())->toBeTrue()
         ->and($components['telegram_topic_record_id']->getOptions())->toBe([
             $message->telegram_topic_record_id => 'Test topic · thread 42',
-        ]);
+        ])
+        ->and($components['send_time'])->toBeInstanceOf(TimePicker::class)
+        ->and($components['send_time']->getLabel())->toBe('Время отправки (Europe/Rome)');
 
     $reloaded = TelegramScheduledMessage::query()->findOrFail($message->getKey());
 

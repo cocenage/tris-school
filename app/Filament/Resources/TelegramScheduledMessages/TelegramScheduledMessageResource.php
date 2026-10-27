@@ -90,10 +90,9 @@ class TelegramScheduledMessageResource extends Resource
                 ->columnSpanFull(),
 
             TimePicker::make('send_time')
-                ->label('Время отправки')
+                ->label('Время отправки (Europe/Rome)')
                 ->seconds(false)
                 ->helperText(fn (Get $get): ?string => match ($get('control_type')) {
-                    ScheduledControlTypes::SECOND_CLEANINGS_FINISHING => 'Этот вопрос отправляется в 19:00 по Europe/Rome.',
                     ScheduledControlTypes::CLOSING_PAYMENTS => 'Отправляется один раз после подтверждения завершения уборок.',
                     default => null,
                 })

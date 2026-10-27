@@ -195,7 +195,7 @@ it('keeps the 17:30 closing cleanings and conditional payments as distinct types
     expect(ScheduledControlTypes::CLOSING_CLEANINGS)->not->toBe(ScheduledControlTypes::CLOSING_PAYMENTS)
         ->and(ScheduledControlTypes::CLOSING_CLEANINGS)->not->toBe('second_cleanings_finishing')
         ->and(ScheduledControlTypes::scheduledTime(ScheduledControlTypes::CLOSING_CLEANINGS, '17:30'))->toBe('17:30')
-        ->and(ScheduledControlTypes::scheduledTime('second_cleanings_finishing', '14:00'))->toBe('19:00:00')
+        ->and(ScheduledControlTypes::scheduledTime(ScheduledControlTypes::SECOND_CLEANINGS_FINISHING, '14:00'))->toBe('14:00')
         ->and(ScheduledControlTypes::scheduledTime(ScheduledControlTypes::CLOSING_PAYMENTS, '18:00'))->toBeNull();
 });
 
