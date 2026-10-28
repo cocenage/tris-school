@@ -10,10 +10,10 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('telegram_scheduled_messages', function (Blueprint $table): void {
-            $table->boolean('followup_repeat_enabled')->default(true);
+            $table->boolean('followup_repeat_enabled')->default(false);
             $table->unsignedSmallInteger('followup_interval_minutes')->default(60);
             $table->unsignedTinyInteger('followup_max_repeats')->default(2);
-            $table->boolean('followup_reminder_enabled')->default(true);
+            $table->boolean('followup_reminder_enabled')->default(false);
             $table->unsignedSmallInteger('followup_reminder_minutes')->default(20);
             $table->time('followup_cutoff')->nullable();
         });

@@ -27,6 +27,7 @@ use Illuminate\Support\Facades\Validator;
 use Mockery\MockInterface;
 
 beforeEach(function (): void {
+    Http::preventStrayRequests();
     config([
         'app.timezone' => 'Europe/Rome',
         'queue.default' => 'database',
@@ -654,10 +655,10 @@ it('validates the existing control form follow-up settings and their defaults', 
     $schema = TelegramScheduledMessageResource::form(FilamentSchema::make($page)->model($message)->statePath('data'));
     $components = collect($schema->getComponents())->keyBy(fn ($component) => $component->getName());
 
-    expect($components['followup_repeat_enabled']->getDefaultState())->toBeTrue()
+    expect($components['followup_repeat_enabled']->getDefaultState())->toBeFalse()
         ->and($components['followup_interval_minutes']->getDefaultState())->toBe(60)
         ->and($components['followup_max_repeats']->getDefaultState())->toBe(2)
-        ->and($components['followup_reminder_enabled']->getDefaultState())->toBeTrue()
+        ->and($components['followup_reminder_enabled']->getDefaultState())->toBeFalse()
         ->and($components['followup_reminder_minutes']->getDefaultState())->toBe(20);
     foreach ([
         'followup_interval_minutes' => [0, 60],

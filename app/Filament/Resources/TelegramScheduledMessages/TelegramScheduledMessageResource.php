@@ -115,7 +115,7 @@ class TelegramScheduledMessageResource extends Resource
 
             Toggle::make('followup_repeat_enabled')
                 ->label('Повторять при отрицательном или частичном ответе')
-                ->default(true),
+                ->default(false),
 
             TextInput::make('followup_interval_minutes')
                 ->label('Интервал повтора, минут')
@@ -127,7 +127,7 @@ class TelegramScheduledMessageResource extends Resource
 
             Toggle::make('followup_reminder_enabled')
                 ->label('Напоминать при отсутствии ответа')
-                ->default(true),
+                ->default(false),
 
             TextInput::make('followup_reminder_minutes')
                 ->label('Задержка напоминания, минут')
