@@ -57,7 +57,9 @@ class TelegramScheduledControlSummaryFormatter
     {
         $text = '🧹 TRIS — Контроль уборок · '.CarbonImmutable::parse($summary['date'])->format('d.m.Y')."\n";
         if ($summary['controls'] === [] && ($summary['missing_deliveries'] ?? []) === []) {
-            return $text."\n✅ Контрольных сообщений за день не было.\n";
+            return $text.(($summary['configuration_history_uncertain'] ?? false)
+                ? "\n⚪ История настроек за этот период неполная.\n"
+                : "\n✅ Контрольных сообщений за день не было.\n");
         }
 
         $text .= "\n";
@@ -75,7 +77,12 @@ class TelegramScheduledControlSummaryFormatter
         }
         foreach ($summary['missing_deliveries'] ?? [] as $missing) {
             $label = ScheduledControlTypes::LABELS[$missing['control_type']] ?? $missing['name'];
-            $text .= '⚠️ '.$label.": отправка не зафиксирована\n";
+            $text .= ($missing['configuration_uncertain'] ?? false)
+                ? '⚪ '.$label.": исторические настройки не подтверждены\n"
+                : '⚠️ '.$label.": отправка не зафиксирована\n";
+        }
+        if ($summary['configuration_history_uncertain'] ?? false) {
+            $text .= "\n⚪ История настроек за этот период неполная; прежний расчёт приблизительный.\n";
         }
         if (($summary['totals']['response_messages'] ?? 0) === 0) {
             $text .= "\nℹ️ Ответы на контрольные сообщения за этот день не зафиксированы.\n";

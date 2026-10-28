@@ -29,6 +29,7 @@ use App\Services\Telegram\TelegramUpdateIngestService;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpFactory;
@@ -2411,4 +2412,133 @@ it('counts a sent repeat and its resolution inside the original daily control', 
         ->and($summary['totals']['delays_resolved'])->toBe(1)
         ->and($lodi['status'])->toBe('confirmed')
         ->and($lodi['followups'])->toHaveCount(1);
+});
+
+it('keeps historical expected deliveries stable across a later control type change', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-30 23:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed', 'bot_type' => 'work']);
+    $message = $delivery->scheduledMessage;
+    DB::table('telegram_scheduled_messages')->where('id', $message->id)->update([
+        'control_type' => 'cleanings_completed', 'send_time' => '17:30', 'weekdays' => json_encode([1, 2, 3, 4, 5, 6, 7]), 'created_at' => '2026-10-01 09:00:00',
+    ]);
+    Schema::create('telegram_scheduled_message_revisions', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('scheduled_message_id');
+        $table->dateTime('effective_at_utc');
+        $table->boolean('baseline')->default(false);
+        $table->string('control_type');
+        $table->string('send_time');
+        $table->text('weekdays');
+        $table->boolean('enabled');
+        $table->boolean('is_deleted');
+        $table->string('name');
+        $table->unsignedBigInteger('telegram_chat_record_id');
+        $table->unsignedBigInteger('telegram_topic_record_id')->nullable();
+    });
+    $common = ['scheduled_message_id' => $message->id, 'send_time' => '17:30', 'weekdays' => json_encode([1, 2, 3, 4, 5, 6, 7]), 'enabled' => true, 'is_deleted' => false, 'name' => $message->name, 'telegram_chat_record_id' => $message->telegram_chat_record_id, 'telegram_topic_record_id' => $message->telegram_topic_record_id];
+    DB::table('telegram_scheduled_message_revisions')->insert([
+        $common + ['effective_at_utc' => '2026-10-28 10:00:00', 'baseline' => true, 'control_type' => 'extra_payments_completed'],
+        $common + ['effective_at_utc' => '2026-10-28 11:00:00', 'baseline' => false, 'control_type' => 'cleanings_completed'],
+    ]);
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    foreach (['2026-10-13', '2026-10-21', '2026-10-25', '2026-10-27'] as $date) {
+        $summary = $builder->build($date, $message->id);
+        expect($summary['missing_deliveries'])->toBe([])
+            ->and($summary['configuration_history_uncertain'])->toBeTrue();
+    }
+    $after = $builder->build('2026-10-29', $message->id);
+    expect($after['missing_deliveries'])->toHaveCount(1)
+        ->and($after['missing_deliveries'][0]['control_type'])->toBe('cleanings_completed')
+        ->and($after['configuration_history_uncertain'])->toBeFalse();
+});
+
+it('records old and new schedule settings with their actual activation time', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-28 17:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed', 'bot_type' => 'work']);
+    $message = $delivery->scheduledMessage;
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $old = DB::table('telegram_scheduled_message_revisions')->where('scheduled_message_id', $message->id)->sole();
+    expect((int) $old->baseline)->toBe(1)->and($old->control_type)->toBe('extra_payments_completed')
+        ->and($old->effective_at_utc)->toBe('2026-10-28 16:00:00');
+    $this->travelTo(Carbon::parse('2026-10-28 18:00:00', 'Europe/Rome'));
+    $message->update(['control_type' => 'cleanings_completed', 'send_time' => '17:30']);
+    $rows = DB::table('telegram_scheduled_message_revisions')->where('scheduled_message_id', $message->id)->orderBy('id')->get();
+    expect($rows)->toHaveCount(2)->and($rows[1]->control_type)->toBe('cleanings_completed')
+        ->and($rows[1]->send_time)->toBe('17:30')->and((int) $rows[1]->baseline)->toBe(0)
+        ->and($rows[1]->effective_at_utc)->toBe('2026-10-28 17:00:00');
+    expect($delivery->fresh()->control_type)->toBe('extra_payments_completed');
+});
+
+it('rolls back a schedule change if its history cannot be saved', function (): void {
+    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed']);
+    $message = $delivery->scheduledMessage;
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    DB::statement("CREATE TRIGGER block_schedule_history BEFORE INSERT ON telegram_scheduled_message_revisions BEGIN SELECT RAISE(ABORT, 'history failed'); END");
+    expect(fn () => $message->update(['control_type' => 'cleanings_completed']))->toThrow(QueryException::class);
+    expect($message->fresh()->control_type)->toBe('extra_payments_completed');
+});
+
+it('uses the version in force for a changed schedule and weekday', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-26 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $message = $delivery->scheduledMessage;
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $message->update(['send_time' => '10:30', 'weekdays' => [1]]);
+    $this->travelTo(Carbon::parse('2026-10-28 08:00:00', 'Europe/Rome'));
+    $message->update(['send_time' => '11:15', 'weekdays' => [3]]);
+    $this->travelTo(Carbon::parse('2026-10-28 22:30:00', 'Europe/Rome'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    $before = $builder->build('2026-10-26', $message->id);
+    $after = $builder->build('2026-10-28', $message->id);
+    expect($before['missing_deliveries'])->toHaveCount(1)
+        ->and($before['missing_deliveries'][0]['scheduled_for'])->toContain('T10:30:00')
+        ->and($after['missing_deliveries'])->toHaveCount(1)
+        ->and($after['missing_deliveries'][0]['scheduled_for'])->toContain('T11:15:00');
+});
+
+it('preserves a historical expected control after its template is deleted', function (): void {
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $this->travelTo(Carbon::parse('2026-10-26 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $message = $delivery->scheduledMessage;
+    $message->update(['send_time' => '09:30', 'weekdays' => [1, 2, 3, 4, 5, 6, 7]]);
+    $this->travelTo(Carbon::parse('2026-10-28 08:00:00', 'Europe/Rome'));
+    $message->delete();
+    $this->travelTo(Carbon::parse('2026-10-29 22:30:00', 'Europe/Rome'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    expect($builder->build('2026-10-27', $message->id)['missing_deliveries'])->toHaveCount(1)
+        ->and($builder->build('2026-10-29', $message->id)['missing_deliveries'])->toBe([]);
+    $history = DB::table('telegram_scheduled_message_revisions')->where('scheduled_message_id', $message->id)->orderBy('id')->get();
+    expect((int) $history->last()->is_deleted)->toBe(1);
+});
+
+it('filters missing controls by the historical type rather than the current type', function (): void {
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $this->travelTo(Carbon::parse('2026-10-26 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $message = $delivery->scheduledMessage;
+    $message->update(['send_time' => '09:30', 'weekdays' => [1, 2, 3, 4, 5, 6, 7]]);
+    $this->travelTo(Carbon::parse('2026-10-28 08:00:00', 'Europe/Rome'));
+    $message->update(['control_type' => 'couriers_completed']);
+    $this->travelTo(Carbon::parse('2026-10-29 22:30:00', 'Europe/Rome'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    expect($builder->build('2026-10-27', $message->id, 'first_cleanings_started')['missing_deliveries'])->toHaveCount(1)
+        ->and($builder->build('2026-10-27', $message->id, 'couriers_completed')['missing_deliveries'])->toBe([])
+        ->and($builder->build('2026-10-29', $message->id, 'couriers_completed')['missing_deliveries'])->toHaveCount(1);
+});
+
+it('uses the historical destination when filtering expected controls', function (): void {
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $this->travelTo(Carbon::parse('2026-10-26 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $message = $delivery->scheduledMessage;
+    $message->update(['send_time' => '09:30', 'weekdays' => [1, 2, 3, 4, 5, 6, 7]]);
+    $newChat = TelegramChat::create(['telegram_chat_id' => '-1002', 'title' => 'Other test chat', 'type' => 'supergroup', 'is_enabled' => true]);
+    $this->travelTo(Carbon::parse('2026-10-28 08:00:00', 'Europe/Rome'));
+    $message->update(['telegram_chat_record_id' => $newChat->id]);
+    $this->travelTo(Carbon::parse('2026-10-29 22:30:00', 'Europe/Rome'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    expect($builder->build('2026-10-27', $message->id, null, '-1001')['missing_deliveries'])->toHaveCount(1)
+        ->and($builder->build('2026-10-27', $message->id, null, '-1002')['missing_deliveries'])->toBe([])
+        ->and($builder->build('2026-10-29', $message->id, null, '-1002')['missing_deliveries'])->toHaveCount(1);
 });
