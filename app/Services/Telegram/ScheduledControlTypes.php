@@ -48,7 +48,7 @@ class ScheduledControlTypes
 
     public static function triggersClosingPayments(string $controlType): bool
     {
-        return in_array($controlType, [self::CLOSING_CLEANINGS, self::SECOND_CLEANINGS_FINISHING], true);
+        return $controlType === self::CLOSING_CLEANINGS;
     }
 
     public static function districtKeyboard(int $deliveryId): array

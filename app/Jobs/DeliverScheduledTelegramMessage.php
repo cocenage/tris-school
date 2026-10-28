@@ -6,6 +6,7 @@ use App\Models\TelegramScheduledMessageDelivery;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOutboundMonitor;
+use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
@@ -13,6 +14,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -44,10 +46,43 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
     {
         $delivery = TelegramScheduledMessageDelivery::query()->find($this->deliveryId);
 
-        if ($delivery === null || in_array($delivery->status, ['sent', 'failed'], true)) {
+        if ($delivery === null || in_array($delivery->status, ['sent', 'failed', 'cancelled', 'uncertain'], true)) {
             return;
         }
 
+        if ($delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS && $delivery->trigger_delivery_id !== null) {
+            Cache::lock('scheduled_control_delivery:'.$delivery->trigger_delivery_id, 30)->block(5, function () use ($delivery, $telegram): void {
+                $delivery = $delivery->fresh();
+                if ($delivery === null || ! in_array($delivery->status, ['pending', 'retrying'], true)) {
+                    return;
+                }
+                $source = TelegramScheduledMessageDelivery::query()->find($delivery->trigger_delivery_id);
+                $message = $delivery->scheduledMessage;
+                $now = CarbonImmutable::now('UTC')->setTimezone('Europe/Rome');
+                $minimum = $now->startOfDay()->setTime(18, 0);
+                $configured = $message ? $now->startOfDay()->setTimeFromTimeString((string) $message->send_time) : $minimum;
+                if ($source === null || $source->status !== 'sent'
+                    || $source->control_type !== ScheduledControlTypes::CLOSING_CLEANINGS
+                    || $source->scheduledMessage === null || ! $source->scheduledMessage->enabled
+                    || ! CarbonImmutable::parse($source->getRawOriginal('scheduled_for'), 'Europe/Rome')->isSameDay($now)
+                    || $message === null || ! $message->enabled
+                    || $now->lt($minimum) || $now->lt($configured)
+                    || ! app(TelegramScheduledControlResponseService::class)->allDistrictsConfirmed($source)) {
+                    $delivery->update(['status' => 'cancelled', 'failure_reason' => 'confirmation_not_current']);
+
+                    return;
+                }
+                $this->deliver($delivery, $telegram);
+            });
+
+            return;
+        }
+
+        $this->deliver($delivery, $telegram);
+    }
+
+    private function deliver(TelegramScheduledMessageDelivery $delivery, TelegramBotService $telegram): void
+    {
         $message = $delivery->scheduledMessage;
 
         if ($message === null) {
@@ -95,6 +130,11 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
                 ] : null),
             ));
         } catch (ConnectionException $exception) {
+            if ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
+                $delivery->update(['status' => 'uncertain', 'failure_reason' => 'connection_exception']);
+
+                return;
+            }
             $this->markRetrying($delivery, 'connection_exception');
 
             throw $exception;
@@ -103,6 +143,12 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             $reason = 'telegram_http_'.$status;
 
             if ($this->isRetryableStatus($status)) {
+                if ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS
+                    && ($status >= 500 || $status === 408)) {
+                    $delivery->update(['status' => 'uncertain', 'failure_reason' => $reason]);
+
+                    return;
+                }
                 $this->markRetrying($delivery, $reason);
 
                 throw $exception;
@@ -126,14 +172,19 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         }
 
         if ($messageId === null) {
-            $this->failDelivery($delivery, 'telegram_response_missing_message_id');
+            if ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
+                $delivery->update(['status' => 'uncertain', 'failure_reason' => 'telegram_response_missing_message_id']);
+            } else {
+                $this->failDelivery($delivery, 'telegram_response_missing_message_id');
+            }
 
             return;
         }
 
         $delivery->update([
             'status' => 'sent',
-            'sent_at' => CarbonImmutable::now(config('app.timezone', 'Europe/Rome')),
+            'sent_at' => CarbonImmutable::now('UTC')->setTimezone(config('app.timezone', 'Europe/Rome')),
+            'sent_at_utc' => CarbonImmutable::now('UTC')->format('Y-m-d H:i:s'),
             'telegram_message_id' => $messageId,
             'failure_reason' => null,
         ]);

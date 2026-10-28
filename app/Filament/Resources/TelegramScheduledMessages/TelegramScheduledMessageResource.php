@@ -93,7 +93,7 @@ class TelegramScheduledMessageResource extends Resource
                 ->label('Время отправки (Europe/Rome)')
                 ->seconds(false)
                 ->helperText(fn (Get $get): ?string => match ($get('control_type')) {
-                    ScheduledControlTypes::CLOSING_PAYMENTS => 'Отправляется один раз после подтверждения завершения уборок.',
+                    ScheduledControlTypes::CLOSING_PAYMENTS => 'После подтверждения всех районов, не раньше настроенного времени и 18:00 Europe/Rome.',
                     default => null,
                 })
                 ->required(),
@@ -112,6 +112,30 @@ class TelegramScheduledMessageResource extends Resource
                 ->multiple()
                 ->required()
                 ->native(false),
+
+            Toggle::make('followup_repeat_enabled')
+                ->label('Повторять при отрицательном или частичном ответе')
+                ->default(true),
+
+            TextInput::make('followup_interval_minutes')
+                ->label('Интервал повтора, минут')
+                ->integer()->minValue(1)->maxValue(1440)->default(60)->required(),
+
+            TextInput::make('followup_max_repeats')
+                ->label('Максимум повторов')
+                ->integer()->minValue(0)->maxValue(2)->default(2)->required(),
+
+            Toggle::make('followup_reminder_enabled')
+                ->label('Напоминать при отсутствии ответа')
+                ->default(true),
+
+            TextInput::make('followup_reminder_minutes')
+                ->label('Задержка напоминания, минут')
+                ->integer()->minValue(1)->maxValue(1440)->default(20)->required(),
+
+            TimePicker::make('followup_cutoff')
+                ->label('Крайнее время повторов (Europe/Rome)')
+                ->seconds(false)->nullable(),
 
             Toggle::make('enabled')
                 ->label('Активно')

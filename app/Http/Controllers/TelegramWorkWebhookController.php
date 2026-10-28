@@ -148,7 +148,13 @@ class TelegramWorkWebhookController extends Controller
                 if ($isControlDestination || $isWorkAllowed) {
                     $controlResponse = $responses->capture($savedMessage, $message);
                     if ($controlResponse?->delivery?->bot_type === 'work') {
-                        $this->syncWorkControlMessage($controlResponse->delivery);
+                        $controlDelivery = $controlResponse->delivery;
+                        if ($controlDelivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+                            && $responses->allDistrictsConfirmed($controlDelivery)
+                            && ! app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($controlDelivery)) {
+                            Log::warning('Scheduled control payment follow-up could not be queued.', ['delivery_id' => $controlDelivery->id]);
+                        }
+                        $this->syncWorkControlMessage($controlDelivery);
                     }
                 }
             }
@@ -220,7 +226,7 @@ class TelegramWorkWebhookController extends Controller
                 return $this->handleDayOffDayCallback($callbackQuery);
             }
 
-            if (str_starts_with($data, 'sc:')) {
+            if (str_starts_with($data, 'sc:') || str_starts_with($data, 'scf:')) {
                 return $this->handleScheduledControlCallback($callbackQuery);
             }
         } catch (\Throwable $e) {
@@ -255,8 +261,10 @@ class TelegramWorkWebhookController extends Controller
     private function handleScheduledControlCallback(array $callbackQuery)
     {
         $data = (string) ($callbackQuery['data'] ?? '');
-        if (preg_match('/^sc:(\d+):(?:lambrate|lodi|certosa|navigli|como):(yes|no)$/', $data, $matches) !== 1
-            || ! TelegramScheduledMessageDelivery::query()->whereKey((int) $matches[1])->where('bot_type', 'work')->exists()) {
+        $districtCallback = preg_match('/^sc:(\d+):(?:lambrate|lodi|certosa|navigli|como):(yes|no)$/', $data, $matches) === 1;
+        $followupCallback = preg_match('/^scf:\d+:(yes|no)$/', $data) === 1;
+        if ((! $districtCallback && ! $followupCallback)
+            || ($districtCallback && ! TelegramScheduledMessageDelivery::query()->whereKey((int) $matches[1])->where('bot_type', 'work')->exists())) {
             $this->answerCallback($callbackQuery, 'Эта кнопка больше не действует.');
 
             return response()->json(['ok' => true, 'skipped' => 'unknown_control_callback']);

@@ -16,7 +16,7 @@ class TelegramScheduledMessageDeliveryService
     /** @return array{due: int, queued: int, failed: int, duplicate: int} */
     public function sendDue(): array
     {
-        $now = CarbonImmutable::now(config('app.timezone', 'Europe/Rome'));
+        $now = CarbonImmutable::now('UTC')->setTimezone(config('app.timezone', 'Europe/Rome'));
         $timezone = config('app.timezone', 'Europe/Rome');
         $graceMinutes = max(0, (int) config('services.telegram.scheduled_delivery_grace_minutes', 5));
         $result = ['due' => 0, 'queued' => 0, 'failed' => 0, 'duplicate' => 0];
@@ -106,13 +106,34 @@ class TelegramScheduledMessageDeliveryService
             }
         }
 
+        try {
+            app(TelegramScheduledControlFollowupService::class)->queueDue();
+        } catch (Throwable $exception) {
+            $result['failed']++;
+            Log::error('Scheduled control follow-up scheduling failed.', ['exception' => class_basename($exception)]);
+        }
+
+        try {
+            $this->queueReadyClosingPayments();
+        } catch (Throwable $exception) {
+            $result['failed']++;
+            Log::error('Scheduled closing payment scheduling failed.', ['exception' => class_basename($exception)]);
+        }
+
         return $result;
     }
 
     public function queueClosingPayments(TelegramScheduledMessageDelivery $cleaningsDelivery): bool
     {
-        $timezone = config('app.timezone', 'Europe/Rome');
+        $timezone = 'Europe/Rome';
         $scheduledFor = CarbonImmutable::parse($cleaningsDelivery->getRawOriginal('scheduled_for'), $timezone);
+        $now = CarbonImmutable::now('UTC')->setTimezone($timezone);
+        if ($cleaningsDelivery->control_type !== ScheduledControlTypes::CLOSING_CLEANINGS
+            || $cleaningsDelivery->status !== 'sent' || ! $scheduledFor->isSameDay($now)
+            || $cleaningsDelivery->scheduledMessage === null || ! $cleaningsDelivery->scheduledMessage->enabled
+            || ! app(TelegramScheduledControlResponseService::class)->allDistrictsConfirmed($cleaningsDelivery)) {
+            return true;
+        }
         $cleaningsThreadId = $cleaningsDelivery->message_thread_id === null ? null : (string) $cleaningsDelivery->message_thread_id;
 
         $matches = TelegramScheduledMessage::query()->enabled()
@@ -146,6 +167,12 @@ class TelegramScheduledMessageDeliveryService
         }
 
         $message = $matches->first();
+        $configuredAt = $scheduledFor->startOfDay()->setTimeFromTimeString((string) $message->send_time);
+        $minimumAt = $scheduledFor->startOfDay()->setTime(18, 0);
+        $scheduledFor = $configuredAt->greaterThan($minimumAt) ? $configuredAt : $minimumAt;
+        if ($now->lt($scheduledFor)) {
+            return true;
+        }
 
         $occurrences = TelegramScheduledMessageDelivery::query()
             ->where('scheduled_message_id', $message->getKey())
@@ -154,19 +181,18 @@ class TelegramScheduledMessageDeliveryService
             ->orderBy('id')
             ->get();
 
-        $alreadyHandled = $occurrences->first(fn (TelegramScheduledMessageDelivery $row): bool => in_array($row->status, ['sent', 'pending', 'retrying'], true));
-        if ($alreadyHandled !== null) {
-            return true;
-        }
-
         $delivery = $occurrences->first();
         if ($delivery !== null) {
-            $delivery->update([
-                'scheduled_for' => $scheduledFor,
-                'status' => 'pending',
-                'bot_type' => $cleaningsDelivery->bot_type,
-                'failure_reason' => null,
-            ]);
+            $claimed = TelegramScheduledMessageDelivery::query()->whereKey($delivery->id)
+                ->where('status', 'cancelled')->update([
+                    'status' => 'pending',
+                    'trigger_delivery_id' => $cleaningsDelivery->id,
+                    'failure_reason' => null,
+                ]);
+            if ($claimed !== 1) {
+                return true;
+            }
+            $delivery->refresh();
         } else {
             try {
                 $delivery = $this->reserveOccurrence($message, $scheduledFor);
@@ -178,7 +204,6 @@ class TelegramScheduledMessageDeliveryService
 
                 return false;
             }
-
             if ($delivery === null) {
                 return true;
             }
@@ -189,6 +214,7 @@ class TelegramScheduledMessageDeliveryService
         $delivery->update([
             'chat_id' => $cleaningsDelivery->chat_id,
             'message_thread_id' => $cleaningsDelivery->message_thread_id,
+            'trigger_delivery_id' => $cleaningsDelivery->id,
         ]);
 
         if (! $chat || ! $chat->is_enabled || ($message->telegram_topic_record_id !== null && (! $topic || ! $topic->is_enabled))) {
@@ -206,7 +232,7 @@ class TelegramScheduledMessageDeliveryService
         try {
             Bus::dispatch(new DeliverScheduledTelegramMessage(
                 (int) $delivery->getKey(),
-                CarbonImmutable::now($timezone)->addHour(),
+                CarbonImmutable::now('UTC')->setTimezone($timezone)->addHour(),
             ));
         } catch (Throwable $exception) {
             $this->fail($delivery, 'queue_dispatch_failed:'.class_basename($exception));
@@ -219,6 +245,16 @@ class TelegramScheduledMessageDeliveryService
         }
 
         return true;
+    }
+
+    private function queueReadyClosingPayments(): void
+    {
+        $now = CarbonImmutable::now('UTC')->setTimezone('Europe/Rome');
+        TelegramScheduledMessageDelivery::query()
+            ->where('control_type', ScheduledControlTypes::CLOSING_CLEANINGS)->where('status', 'sent')
+            ->where('scheduled_for', '>=', $now->startOfDay()->format('Y-m-d H:i:s'))
+            ->where('scheduled_for', '<', $now->addDay()->startOfDay()->format('Y-m-d H:i:s'))
+            ->each(fn (TelegramScheduledMessageDelivery $delivery) => $this->queueClosingPayments($delivery));
     }
 
     private function reserveOccurrence(

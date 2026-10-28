@@ -21,11 +21,22 @@ class TelegramScheduledMessage extends Model
         'send_time',
         'weekdays',
         'enabled',
+        'followup_repeat_enabled',
+        'followup_interval_minutes',
+        'followup_max_repeats',
+        'followup_reminder_enabled',
+        'followup_reminder_minutes',
+        'followup_cutoff',
     ];
 
     protected $casts = [
         'weekdays' => 'array',
         'enabled' => 'boolean',
+        'followup_repeat_enabled' => 'boolean',
+        'followup_reminder_enabled' => 'boolean',
+        'followup_interval_minutes' => 'integer',
+        'followup_max_repeats' => 'integer',
+        'followup_reminder_minutes' => 'integer',
     ];
 
     public function telegramChat(): BelongsTo

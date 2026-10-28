@@ -23,6 +23,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Validator;
 use Mockery\MockInterface;
 
 beforeEach(function (): void {
@@ -42,6 +43,7 @@ beforeEach(function (): void {
     $migration->up();
     (require base_path('database/migrations/2026_10_01_020000_create_scheduled_control_response_tables.php'))->up();
     (require base_path('database/migrations/2026_10_18_000000_add_district_answers_to_scheduled_controls.php'))->up();
+    (require database_path('migrations/2026_10_27_000000_add_scheduled_control_followups.php'))->up();
     $queueMigration = require base_path('database/migrations/0001_01_01_000002_create_jobs_table.php');
     $queueMigration->up();
 
@@ -643,4 +645,27 @@ it('keeps the sender every minute and schedules the scheduled poll every five mi
         ->and($poll->expression)->toBe('*/5 * * * *')
         ->and($poll->withoutOverlapping)->toBeTrue()
         ->and($worker)->toBeNull();
+});
+
+it('validates the existing control form follow-up settings and their defaults', function (): void {
+    $message = makeScheduledTelegramMessage();
+    $page = new CreateTelegramScheduledMessage;
+    $page->data = ['telegram_chat_record_id' => $message->telegram_chat_record_id];
+    $schema = TelegramScheduledMessageResource::form(FilamentSchema::make($page)->model($message)->statePath('data'));
+    $components = collect($schema->getComponents())->keyBy(fn ($component) => $component->getName());
+
+    expect($components['followup_repeat_enabled']->getDefaultState())->toBeTrue()
+        ->and($components['followup_interval_minutes']->getDefaultState())->toBe(60)
+        ->and($components['followup_max_repeats']->getDefaultState())->toBe(2)
+        ->and($components['followup_reminder_enabled']->getDefaultState())->toBeTrue()
+        ->and($components['followup_reminder_minutes']->getDefaultState())->toBe(20);
+    foreach ([
+        'followup_interval_minutes' => [0, 60],
+        'followup_max_repeats' => [3, 2],
+        'followup_reminder_minutes' => [0, 20],
+    ] as $field => [$invalid, $valid]) {
+        $rules = $components[$field]->getValidationRules();
+        expect(Validator::make(['value' => $invalid], ['value' => $rules])->fails())->toBeTrue()
+            ->and(Validator::make(['value' => $valid], ['value' => $rules])->passes())->toBeTrue();
+    }
 });
