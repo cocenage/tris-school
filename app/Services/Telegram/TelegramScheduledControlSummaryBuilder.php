@@ -2,10 +2,13 @@
 
 namespace App\Services\Telegram;
 
+use App\Models\TelegramChat;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramScheduledMessageResponse;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
@@ -14,6 +17,7 @@ class TelegramScheduledControlSummaryBuilder
     public function __construct(
         private TelegramScheduledControlStatistics $statistics,
         private ScheduledControlResponseInterpreter $interpreter,
+        private TelegramScheduledControlResponseService $responseService,
     ) {}
 
     public function build(string $date, ?int $scheduledMessageId = null, ?string $controlType = null, ?string $chatId = null, ?string $throughDate = null): array
@@ -27,7 +31,7 @@ class TelegramScheduledControlSummaryBuilder
         $cutoff = $this->day($throughDate ?? $date)
             ->setTimeFromTimeString((string) config('services.telegram.scheduled_summary_cutoff', '22:00'));
         $query = TelegramScheduledMessageDelivery::query()
-            ->with(['responses.telegramMessage.topic.apartment', 'scheduledMessage' => fn ($query) => $query->withTrashed()])
+            ->with(['responses.telegramMessage.topic.apartment', 'followups', 'scheduledMessage' => fn ($query) => $query->withTrashed()])
             ->whereNotNull('control_type')->where('control_type', '!=', '')->where('control_type', '!=', 'control_question')
             ->where('scheduled_for', '>=', $start->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->where('scheduled_for', '<', $end->setTimezone($timezone)->format('Y-m-d H:i:s'))
@@ -39,6 +43,34 @@ class TelegramScheduledControlSummaryBuilder
             $sentAt = $delivery->sent_at
                 ? CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone)
                 : null;
+            $historyDelivery = clone $delivery;
+            $historyResponses = $delivery->responses->map(function (TelegramScheduledMessageResponse $response) use ($cutoff, $sentAt, $delivery): ?TelegramScheduledMessageResponse {
+                if ($delivery->status !== 'sent' || $sentAt === null || $response->responded_at === null) {
+                    return null;
+                }
+                if ($response->responded_at->lessThanOrEqualTo($cutoff)) {
+                    return $response;
+                }
+                $versions = collect($response->response_history ?? [])
+                    ->filter(fn (array $version): bool => isset($version['responded_at'])
+                        && CarbonImmutable::parse($version['responded_at'])->lessThanOrEqualTo($cutoff))
+                    ->values();
+                if ($versions->isEmpty()) {
+                    return null;
+                }
+                $version = $versions->pop();
+                $copy = clone $response;
+                $at = CarbonImmutable::parse($version['responded_at']);
+                $copy->text = $version['text'] ?? '';
+                $copy->classification = $version['classification'] ?? 'unclear';
+                $copy->responded_at = $at->setTimezone(config('app.timezone', 'Europe/Rome'));
+                $copy->responded_at_utc = $at->setTimezone('UTC')->format('Y-m-d H:i:s');
+                $copy->response_kind = $copy->classification === 'unclear' ? 'comment' : 'text_answer';
+                $copy->response_history = $versions->all();
+
+                return $copy;
+            })->filter()->values();
+            $historyDelivery->setRelation('responses', $historyResponses);
             $delivery->setRelation('responses', $delivery->responses->filter(fn (TelegramScheduledMessageResponse $response): bool => $delivery->status === 'sent' && $sentAt !== null && $response->responded_at !== null
                 && $response->responded_at->greaterThanOrEqualTo($sentAt)
                 && $response->responded_at->lessThanOrEqualTo($cutoff)
@@ -107,18 +139,37 @@ class TelegramScheduledControlSummaryBuilder
 
             return $stats + [
                 'delivery_id' => $delivery->id, 'scheduled_message_id' => $delivery->scheduled_message_id,
+                'group_key' => $delivery->bot_type === 'work' && isset(ScheduledControlTypes::LABELS[$delivery->control_type])
+                    ? 'delivery:'.$delivery->id
+                    : hash('sha256', implode('|', [$delivery->control_type, $delivery->chat_id, $delivery->message_thread_id,
+                        CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString()])),
                 'control_type' => $delivery->control_type, 'name' => $delivery->scheduledMessage?->name ?? 'Удалённое сообщение',
                 'scheduled_for' => CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->setTimezone('Europe/Rome')->toIso8601String(),
                 'sent_at' => $delivery->sent_at ? CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone)->setTimezone('Europe/Rome')->toIso8601String() : null,
                 'delivery_status' => $delivery->status, 'eligible_for_statistics' => $delivery->status === 'sent' && $sentAt !== null && $sentAt->lessThanOrEqualTo($cutoff),
+                'district_history' => $delivery->bot_type === 'work' && $delivery->status === 'sent'
+                    ? $this->districtHistory($historyDelivery, $cutoff) : [],
+                'source_url' => str_starts_with((string) $delivery->chat_id, '-100') && $delivery->telegram_message_id
+                    ? 'https://t.me/c/'.substr((string) $delivery->chat_id, 4).'/'.$delivery->telegram_message_id : null,
                 'exceptions' => $exceptions, 'interpreted_responses' => $responses,
             ];
         })->all();
-        $missingDeliveries = $this->missingDeliveries($start, $end, $scheduledMessageId, $controlType, $chatId);
+        [$missingDeliveries, $historyUncertain] = $this->missingDeliveries($start, $end, $scheduledMessageId, $controlType, $chatId);
         $totals = $this->aggregate($deliveries, count($missingDeliveries));
+        $histories = collect($deliveries)->flatMap(fn (array $row) => $row['district_history']);
+        $totals['delays_identified'] = $histories->whereNotNull('first_problem_at')->count();
+        $totals['delays_resolved'] = $histories->whereNotNull('first_problem_at')->where('status', 'confirmed')->count();
+        $totals['delays_open'] = $histories->whereNotNull('first_problem_at')->where('status', '!=', 'confirmed')->count();
+        $totals['districts_without_answer'] = $histories->where('status', 'no_response')->count();
+        $totals['district_conflicts'] = $histories->where('status', 'conflict')->count();
+        $followupStatuses = $histories->flatMap(fn (array $history) => $history['followups']);
+        $totals['followup_delivery_failures'] = $followupStatuses->where('status', 'failed')->count();
+        $totals['followup_delivery_uncertain'] = $followupStatuses->whereIn('status', ['uncertain', 'sending'])->count();
         $groups = collect($deliveries)->groupBy('scheduled_message_id')->map(fn ($group) => $this->aggregate($group->all()))->all();
 
-        $controls = collect($deliveries)->groupBy('control_type')->map(function ($rows, string $type): array {
+        $controls = collect($deliveries)->groupBy('group_key')->map(function ($rows): array {
+            $type = (string) $rows->first()['control_type'];
+            $representative = $rows->firstWhere('delivery_status', 'sent') ?? $rows->first();
             $responses = collect($rows)->flatMap(fn (array $row) => $row['interpreted_responses']);
             $statuses = $responses->pluck('status')->countBy();
             $label = ScheduledControlTypes::LABELS[$type] ?? $rows->first()['name'];
@@ -135,6 +186,11 @@ class TelegramScheduledControlSummaryBuilder
                 'statistics' => $this->aggregate($rows->all()),
                 'status' => $status,
                 'district_results' => $districtResults,
+                'district_history' => $representative['district_history'],
+                'delivery_status' => $representative['delivery_status'],
+                'additional_delivery_statuses' => $rows->filter(fn (array $row): bool => $row['delivery_id'] !== $representative['delivery_id']
+                    && $row['delivery_status'] !== 'sent')->pluck('delivery_status')->values()->all(),
+                'source_url' => $representative['source_url'],
                 'responses' => $responses->all(),
             ];
         })->values()->all();
@@ -147,6 +203,8 @@ class TelegramScheduledControlSummaryBuilder
             ->all();
 
         return ['date' => $date, 'through_date' => $throughDate ?? $date, 'timezone' => 'Europe/Rome',
+            'configuration_history_uncertain' => $historyUncertain,
+            'has_district_history' => $histories->isNotEmpty(),
             'expected_responders' => null, 'no_response_available' => false, 'totals' => $totals,
             'by_scheduled_message' => $groups, 'controls' => $controls,
             'exceptions' => collect($this->mergeExceptions(collect($deliveries)->flatMap(fn (array $row) => $row['interpreted_responses'])->values()->all()))
@@ -154,6 +212,82 @@ class TelegramScheduledControlSummaryBuilder
                 ->filter(fn (array $exception): bool => isset($exception['latest_problem']))
                 ->values()->all(),
             'deliveries' => $deliveries, 'missing_deliveries' => $missingDeliveries];
+    }
+
+    private function districtHistory(TelegramScheduledMessageDelivery $delivery, CarbonImmutable $cutoff): array
+    {
+        $events = collect($this->responseService->districtAnswerEvents($delivery));
+        $scheduledAt = CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome');
+        $districts = [];
+
+        foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+            $states = [];
+            $firstProblem = null;
+            $resolvedAt = null;
+            $timeline = [];
+            $timeUncertain = false;
+
+            foreach ($events->where('district', $key) as $event) {
+                $at = CarbonImmutable::parse($event['responded_at']);
+                $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), 'Europe/Rome');
+                if ($at->lt($sentAt) || $at->gt($cutoff)) {
+                    continue;
+                }
+                $previous = $states[$event['identity']] ?? null;
+                if ($event['classification'] !== 'unclear' || ! in_array($previous, ['problem', 'partial'], true)) {
+                    $states[$event['identity']] = $event['classification'];
+                }
+                if ($event['response']->getAttribute('responded_at_utc') === null
+                    && app(TelegramScheduledControlFollowupService::class)->hasAmbiguousLocalTimestamp($event['response']->getRawOriginal('responded_at'))) {
+                    $timeUncertain = true;
+                }
+                if (in_array($event['classification'], ['problem', 'partial'], true)) {
+                    $firstProblem ??= $at;
+                    $resolvedAt = null;
+                } elseif ($firstProblem !== null && ! collect($states)->contains(fn (string $value): bool => $value !== 'confirmed')) {
+                    $resolvedAt = $at;
+                }
+                $timeline[] = [
+                    'status' => $event['classification'],
+                    'responded_at' => $event['responded_at'],
+                    'source_message_id' => $event['response']->telegram_message_id ?: $event['response']->reply_to_message_id,
+                ];
+            }
+
+            $values = collect($states)->unique();
+            $hasBad = $values->contains(fn (string $value): bool => in_array($value, ['problem', 'partial'], true));
+            $status = match (true) {
+                $values->isEmpty() => 'no_response',
+                $hasBad && $values->contains('confirmed') => 'conflict',
+                $values->contains('problem') => 'problem',
+                $values->contains('partial') => 'partial',
+                $values->contains('unclear') => 'no_response',
+                default => 'confirmed',
+            };
+            if ($status !== 'confirmed') {
+                $resolvedAt = null;
+            }
+
+            $districts[] = [
+                'district' => $label, 'district_key' => $key, 'status' => $status,
+                'scheduled_at' => $scheduledAt->toIso8601String(),
+                'first_problem_at' => $firstProblem?->toIso8601String(),
+                'resolved_at' => $resolvedAt?->toIso8601String(),
+                'time_uncertain' => $timeUncertain,
+                'delay_minutes' => $resolvedAt === null || $timeUncertain ? null : max(0, intdiv($resolvedAt->timestamp - $scheduledAt->timestamp, 60)),
+                'timeline' => $timeline,
+                'followups' => $delivery->followups->where('district_key', $key)
+                    ->filter(fn ($followup): bool => $followup->created_at !== null && $followup->created_at->lessThanOrEqualTo($cutoff)
+                        && ($followup->sent_at === null || $followup->sent_at->lessThanOrEqualTo($cutoff)))
+                    ->map(fn ($followup): array => [
+                        'kind' => $followup->kind, 'sequence' => $followup->sequence, 'status' => $followup->status,
+                        'sent_at' => $followup->sent_at?->toIso8601String(),
+                        'telegram_message_id' => $followup->telegram_message_id,
+                    ])->values()->all(),
+            ];
+        }
+
+        return $districts;
     }
 
     private function mergeDistrictResults($responses): array
@@ -295,6 +429,7 @@ class TelegramScheduledControlSummaryBuilder
         return $day;
     }
 
+    /** @return array{0: array, 1: bool} */
     private function missingDeliveries(CarbonImmutable $start, CarbonImmutable $end, ?int $scheduledMessageId, ?string $controlType, ?string $chatId): array
     {
         $timezone = config('app.timezone', 'Europe/Rome');
@@ -305,50 +440,101 @@ class TelegramScheduledControlSummaryBuilder
             ->mapWithKeys(fn (TelegramScheduledMessageDelivery $delivery): array => [
                 $delivery->scheduled_message_id.'|'.CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString() => true,
             ]);
-        $messages = TelegramScheduledMessage::query()->enabled()
-            ->whereNotNull('control_type')->where('control_type', '!=', '')->where('control_type', '!=', 'control_question')
+        $hasHistory = Schema::hasTable('telegram_scheduled_message_revisions');
+        $query = TelegramScheduledMessage::query()
             ->where('created_at', '<', $end->format('Y-m-d H:i:s'))
             ->when($scheduledMessageId !== null, fn ($query) => $query->whereKey($scheduledMessageId))
-            ->when(filled($controlType), fn ($query) => $query->where('control_type', $controlType))
-            ->with('telegramChat')->get();
+            ->with('telegramChat');
+        if ($hasHistory) {
+            $query->withTrashed();
+        } else {
+            $query->enabled()->whereNotNull('control_type')->where('control_type', '!=', '')->where('control_type', '!=', 'control_question')
+                ->when(filled($controlType), fn ($query) => $query->where('control_type', $controlType));
+        }
+        $messages = $query->get();
+        $revisions = $hasHistory
+            ? DB::table('telegram_scheduled_message_revisions')->whereIn('scheduled_message_id', $messages->pluck('id'))
+                ->orderBy('effective_at_utc')->orderBy('id')->get()->groupBy('scheduled_message_id')
+            : collect();
+        $chatIds = $hasHistory && filled($chatId)
+            ? TelegramChat::query()->whereIn('id', $revisions->flatten(1)->pluck('telegram_chat_record_id')->concat($messages->pluck('telegram_chat_record_id'))->unique())->pluck('telegram_chat_id', 'id')
+            : collect();
         $missing = [];
-        $now = CarbonImmutable::now($timezone);
+        $uncertain = false;
+        $now = CarbonImmutable::now('UTC')->setTimezone($timezone);
 
         for ($day = $start; $day->lt($end); $day = $day->addDay()) {
             $cutoff = $day->setTimeFromTimeString((string) config('services.telegram.scheduled_summary_cutoff', '22:00'));
             $dueThrough = $now->lt($cutoff) ? $now : $cutoff;
-
             foreach ($messages as $message) {
-                $scheduledTime = ScheduledControlTypes::scheduledTime((string) $message->control_type, (string) $message->send_time);
-                if ($scheduledTime === null) {
+                if ($message->created_at?->greaterThanOrEqualTo($day->addDay())) {
                     continue;
                 }
+                $history = $revisions->get($message->id, collect())->values();
+                if ($history->isEmpty()) {
+                    $history = collect([(object) [
+                        'control_type' => $message->control_type, 'send_time' => $message->send_time,
+                        'weekdays' => json_encode($message->weekdays ?? []), 'enabled' => $message->enabled,
+                        'is_deleted' => $message->trashed(), 'name' => $message->name,
+                        'telegram_chat_record_id' => $message->telegram_chat_record_id,
+                        'effective_at_utc' => null, 'baseline' => $hasHistory,
+                    ]]);
+                }
+                foreach ($history as $index => $revision) {
+                    $effective = $revision->effective_at_utc === null ? null : CarbonImmutable::parse($revision->effective_at_utc, 'UTC');
+                    $next = isset($history[$index + 1]) && $history[$index + 1]->effective_at_utc !== null
+                        ? CarbonImmutable::parse($history[$index + 1]->effective_at_utc, 'UTC') : null;
+                    $isBaseline = $index === 0 && (bool) $revision->baseline;
+                    if ($hasHistory && $isBaseline && ($effective === null || $day->startOfDay()->lt($effective))) {
+                        $uncertain = true;
+                    }
+                    if (! $revision->enabled || $revision->is_deleted || ! filled($revision->control_type)
+                        || $revision->control_type === 'control_question' || (filled($controlType) && $revision->control_type !== $controlType)) {
+                        continue;
+                    }
+                    $scheduledTime = ScheduledControlTypes::scheduledTime((string) $revision->control_type, (string) $revision->send_time);
+                    if ($scheduledTime === null) {
+                        continue;
+                    }
+                    if (filled($chatId)) {
+                        $destination = $hasHistory ? $chatIds->get($revision->telegram_chat_record_id) : $message->telegramChat?->telegram_chat_id;
+                        if ($destination === null && $hasHistory) {
+                            $uncertain = true;
 
-                if (filled($chatId) && (string) $message->telegramChat?->telegram_chat_id !== $chatId) {
-                    continue;
+                            continue;
+                        }
+                        if ((string) $destination !== $chatId) {
+                            continue;
+                        }
+                    }
+                    $weekdays = json_decode((string) $revision->weekdays, true) ?: [];
+                    if (! in_array($day->dayOfWeekIso, array_map('intval', $weekdays), true)) {
+                        continue;
+                    }
+                    $scheduledFor = $day->setTimeFromTimeString($scheduledTime);
+                    $assumed = $hasHistory && $isBaseline && ($effective === null || $scheduledFor->lt($effective));
+                    if ((! $isBaseline && $effective !== null && $scheduledFor->lt($effective))
+                        || ($next !== null && $scheduledFor->greaterThanOrEqualTo($next))
+                        || $scheduledFor->gt($dueThrough) || $message->created_at?->greaterThan($scheduledFor)
+                        || $existing->has($message->id.'|'.$day->toDateString())) {
+                        continue;
+                    }
+                    $entry = [
+                        'scheduled_message_id' => $message->id,
+                        'control_type' => $revision->control_type,
+                        'name' => $revision->name,
+                        'scheduled_for' => $scheduledFor->toIso8601String(),
+                    ];
+                    if ($assumed) {
+                        $entry['configuration_uncertain'] = true;
+                    }
+                    $missing[] = $entry;
+                    break;
                 }
-                if (! in_array($day->dayOfWeekIso, array_map('intval', $message->weekdays ?? []), true)) {
-                    continue;
-                }
-
-                $scheduledFor = $day->setTimeFromTimeString($scheduledTime);
-                if ($scheduledFor->gt($dueThrough) || $message->created_at?->greaterThan($scheduledFor)) {
-                    continue;
-                }
-                if ($existing->has($message->id.'|'.$day->toDateString())) {
-                    continue;
-                }
-
-                $missing[] = [
-                    'scheduled_message_id' => $message->id,
-                    'control_type' => $message->control_type,
-                    'name' => $message->name,
-                    'scheduled_for' => $scheduledFor->toIso8601String(),
-                ];
             }
         }
 
-        return $missing;
+        return [$missing, $uncertain];
     }
 
     private function aggregate(array $deliveries, int $missingCount = 0): array

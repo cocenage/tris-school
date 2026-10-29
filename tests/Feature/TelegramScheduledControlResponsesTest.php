@@ -1,10 +1,12 @@
 <?php
 
+use App\Jobs\DeliverScheduledControlFollowup;
 use App\Jobs\DeliverScheduledControlSummary;
 use App\Jobs\DeliverScheduledTelegramMessage;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
+use App\Models\TelegramScheduledControlFollowup;
 use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
@@ -15,6 +17,7 @@ use App\Services\Telegram\ScheduledControlResponseInterpreter;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramScheduledControlFollowupService;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramScheduledControlStatistics;
 use App\Services\Telegram\TelegramScheduledControlSummaryBuilder;
@@ -26,7 +29,9 @@ use App\Services\Telegram\TelegramUpdateIngestService;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\ResponseSequence;
 use Illuminate\Support\Facades\Artisan;
@@ -38,6 +43,7 @@ use Illuminate\Support\Facades\Schema;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function () {
+    Http::preventStrayRequests();
     config(['database.default' => 'sqlite', 'database.connections.sqlite.database' => ':memory:', 'queue.default' => 'database', 'queue.connections.database.connection' => null]);
     DB::purge('sqlite');
     TelegramOperationalTestDatabase::refresh();
@@ -46,6 +52,7 @@ beforeEach(function () {
     }
     (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
     (require database_path('migrations/2026_10_18_000000_add_district_answers_to_scheduled_controls.php'))->up();
+    (require database_path('migrations/2026_10_27_000000_add_scheduled_control_followups.php'))->up();
     config([
         'services.telegram.main_bot_auto_replies_enabled' => false,
         'services.telegram.work_webhook_secret' => 'work-test',
@@ -195,7 +202,7 @@ it('keeps the 17:30 closing cleanings and conditional payments as distinct types
     expect(ScheduledControlTypes::CLOSING_CLEANINGS)->not->toBe(ScheduledControlTypes::CLOSING_PAYMENTS)
         ->and(ScheduledControlTypes::CLOSING_CLEANINGS)->not->toBe('second_cleanings_finishing')
         ->and(ScheduledControlTypes::scheduledTime(ScheduledControlTypes::CLOSING_CLEANINGS, '17:30'))->toBe('17:30')
-        ->and(ScheduledControlTypes::scheduledTime('second_cleanings_finishing', '14:00'))->toBe('19:00:00')
+        ->and(ScheduledControlTypes::scheduledTime(ScheduledControlTypes::SECOND_CLEANINGS_FINISHING, '14:00'))->toBe('14:00')
         ->and(ScheduledControlTypes::scheduledTime(ScheduledControlTypes::CLOSING_PAYMENTS, '18:00'))->toBeNull();
 });
 
@@ -204,6 +211,12 @@ it('does not choose a wrong payment template while two active definitions share 
     $cleanings = controlDeliveryFixture(['control_type' => ScheduledControlTypes::CLOSING_CLEANINGS, 'bot_type' => 'work']);
     closingPaymentTemplateFor($cleanings);
     closingPaymentTemplateFor($cleanings);
+    $this->travelTo(Carbon::parse('2026-10-01 19:00:00', 'Europe/Rome'));
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        $callback = scheduledControlCallback($cleanings, 'ambiguous-'.$district, 'yes');
+        $callback['data'] = 'sc:'.$cleanings->id.':'.$district.':yes';
+        app(TelegramScheduledControlResponseService::class)->captureCallback($callback);
+    }
 
     expect(app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($cleanings))->toBeFalse()
         ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
@@ -380,7 +393,8 @@ it('keeps the previous text when a Work bot reply is edited', function () {
         ->and($response->response_history[0]['text'])->toBe('Como — нет');
 });
 
-it('queues the existing payment follow-up once all five district cleanings are confirmed', function () {
+it('queues the existing payment follow-up once all five district cleanings are confirmed after the threshold', function () {
+    $this->travelTo(Carbon::parse('2026-10-01 19:00:00', 'Europe/Rome'));
     config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.work_backlog_callback_guard_enabled' => false]);
     $cleanings = controlDeliveryFixture(['control_type' => ScheduledControlTypes::CLOSING_CLEANINGS, 'bot_type' => 'work']);
     closingPaymentTemplateFor($cleanings);
@@ -453,7 +467,7 @@ it('links an exact scheduled delivery reply and measures from actual send', func
         ->and($response->classification)->toBe('confirmed');
 });
 
-it('lets a cleaner change a saved negative closing answer to yes and queues the payment question once', function () {
+it('lets a cleaner change a legacy closing answer without treating it as five district confirmations', function () {
     Bus::fake();
     config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
     $cleanings = controlDeliveryFixture([
@@ -482,9 +496,9 @@ it('lets a cleaner change a saved negative closing answer to yes and queues the 
         ->and($answer->text)->toBe('Да')
         ->and($answer->classification)->toBe('confirmed')
         ->and($answer->telegram_callback_query_id)->toBe('callback-yes')
-        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->sole()->status)->toBe('pending');
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
 
-    Bus::assertDispatchedTimes(DeliverScheduledTelegramMessage::class, 1);
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
 });
 
 it('stores the closing payment button answer as final and ignores later edits', function () {
@@ -525,7 +539,7 @@ it('rejects closing control buttons from another chat or topic', function () {
         ->and(TelegramScheduledMessageResponse::query()->count())->toBe(0);
 });
 
-it('starts the closing payment question after an existing text yes answer', function () {
+it('does not treat an unassigned legacy text yes as five district confirmations', function () {
     Bus::fake();
     config(['services.telegram.scheduled_bot_token' => 'scheduled-test-token']);
     $cleanings = controlDeliveryFixture([
@@ -538,8 +552,8 @@ it('starts the closing payment question after an existing text yes answer', func
     app(TelegramScheduledInboundProcessor::class)->process($payload);
 
     expect(TelegramScheduledMessageResponse::query()->sole()->text)->toBe('Да')
-        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->sole()->status)->toBe('pending');
-    Bus::assertDispatchedTimes(DeliverScheduledTelegramMessage::class, 1);
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
 });
 
 it('lets the same duty user change a text no answer to yes from the original message buttons', function () {
@@ -564,8 +578,8 @@ it('lets the same duty user change a text no answer to yes from the original mes
         ->and($response->telegram_message_record_id)->toBe($originalMessageRecordId)
         ->and($response->text)->toBe('Да')
         ->and($response->classification)->toBe('confirmed')
-        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(1);
-    Bus::assertDispatchedTimes(DeliverScheduledTelegramMessage::class, 1);
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
 });
 
 it('captures explicit replies for future control types and keeps occurrences distinct', function () {
@@ -1156,7 +1170,7 @@ it('does not call failed delivery an unanswered staff control', function () {
     expect($summary['totals']['not_delivered'])->toBe(1)->and($summary['totals']['no_response'])->toBe(0);
 });
 
-it('counts a due control with no delivery as expected and not delivered without changing human output', function () {
+it('reports a due control with no recorded delivery as not delivered', function () {
     $this->travelTo(Carbon::parse('2026-10-01 08:00:00', 'Europe/Rome'));
     $missing = controlDeliveryFixture();
     $missing->delete();
@@ -1171,7 +1185,7 @@ it('counts a due control with no delivery as expected and not delivered without 
     ])->and($summary['missing_deliveries'])->toHaveCount(1)
         ->and($summary['missing_deliveries'][0]['scheduled_message_id'])->toBe($missing->scheduled_message_id)
         ->and($summary['deliveries'])->toBe([])
-        ->and($text)->toContain('✅ Контрольных сообщений за день не было.')
+        ->and($text)->toContain('отправка не зафиксирована')
         ->not->toContain('Контролей:', 'Не доставлено');
 });
 
@@ -1790,4 +1804,741 @@ it('registers automatic summary with overlap protection without changing schedul
             'services.telegram.work_polling_enabled' => $originalWorkPolling,
         ]);
     }
+});
+
+it('does not trigger closing payments when second cleanings are only approaching completion', function (): void {
+    expect(ScheduledControlTypes::triggersClosingPayments(ScheduledControlTypes::SECOND_CLEANINGS_FINISHING))->toBeFalse()
+        ->and(ScheduledControlTypes::triggersClosingPayments(ScheduledControlTypes::CLOSING_CLEANINGS))->toBeTrue();
+});
+it('queues one district follow-up one hour after a negative answer and never duplicates it', function (): void {
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_finishing', 'bot_type' => 'work']);
+    $topic = TelegramTopic::create(['telegram_chat_id' => $delivery->scheduledMessage->telegram_chat_record_id, 'telegram_thread_id' => '11', 'is_enabled' => true]);
+    $delivery->scheduledMessage->update(['telegram_topic_record_id' => $topic->id, 'followup_repeat_enabled' => true, 'followup_reminder_enabled' => true]);
+    $service = app(TelegramScheduledControlResponseService::class);
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        $callback = scheduledControlCallback($delivery, 'followup-'.$district, $district === 'lodi' ? 'no' : 'yes');
+        $callback['data'] = 'sc:'.$delivery->id.':'.$district.':'.($district === 'lodi' ? 'no' : 'yes');
+        $service->captureCallback($callback);
+    }
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 13:00:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+    $followup = TelegramScheduledControlFollowup::query()->sole();
+    expect($followup->district_key)->toBe('lodi')->and($followup->kind)->toBe('repeat');
+});
+it('keeps a follow-up answer in the original history and rejects stale original buttons', function (): void {
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_finishing', 'bot_type' => 'work']);
+    $service = app(TelegramScheduledControlResponseService::class);
+    $old = scheduledControlCallback($delivery, 'old-no', 'no');
+    $old['data'] = 'sc:'.$delivery->id.':lodi:no';
+    $service->captureCallback($old);
+
+    $followup = TelegramScheduledControlFollowup::create([
+        'delivery_id' => $delivery->id, 'district_key' => 'lodi', 'kind' => 'repeat',
+        'sequence' => 1, 'due_at' => now()->subMinute(), 'sent_at' => now(),
+        'status' => 'sent', 'telegram_message_id' => 75001,
+    ]);
+
+    $stale = scheduledControlCallback($delivery, 'stale-yes', 'yes');
+    $stale['data'] = 'sc:'.$delivery->id.':lodi:yes';
+    expect($service->captureCallback($stale)['status'])->toBe('unmatched');
+
+    $reply = scheduledControlCallback($delivery, 'followup-yes', 'yes');
+    $reply['message']['message_id'] = $followup->telegram_message_id;
+    $reply['data'] = 'scf:'.$followup->id.':yes';
+    $result = $service->captureCallback($reply);
+    expect($result['status'])->toBe('saved')
+        ->and($result['response']->delivery_id)->toBe($delivery->id)
+        ->and($result['response']->followup_id)->toBe($followup->id)
+        ->and($result['response']->district_key)->toBe('lodi')
+        ->and($delivery->responses()->count())->toBe(2);
+});
+it('waits until the configured payment time after all five districts confirm cleanings', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 17:50:00', 'Europe/Rome'));
+    $cleanings = controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS, 'bot_type' => 'work',
+        'scheduled_for' => '2026-10-01 17:30:00', 'sent_at' => '2026-10-01 17:30:00',
+    ]);
+    $payment = closingPaymentTemplateFor($cleanings);
+    $payment->update(['send_time' => '19:00:00']);
+    $answers = app(TelegramScheduledControlResponseService::class);
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        $callback = scheduledControlCallback($cleanings, 'payment-ready-'.$district, 'yes');
+        $callback['data'] = 'sc:'.$cleanings->id.':'.$district.':yes';
+        $answers->captureCallback($callback);
+    }
+
+    Bus::fake();
+    $service = app(TelegramScheduledMessageDeliveryService::class);
+    expect($service->queueClosingPayments($cleanings))->toBeTrue();
+    $this->travelTo(Carbon::parse('2026-10-01 18:15:00', 'Europe/Rome'));
+    expect($service->queueClosingPayments($cleanings))->toBeTrue();
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
+
+    $this->travelTo(Carbon::parse('2026-10-01 19:00:00', 'Europe/Rome'));
+    $service->sendDue();
+    $service->sendDue();
+    expect(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(1);
+    Bus::assertDispatched(DeliverScheduledTelegramMessage::class, 1);
+});
+it('reports a resolved district delay once in the original daily control', function (): void {
+    $delivery = controlDeliveryFixture([
+        'control_type' => 'first_cleanings_finishing', 'bot_type' => 'work',
+        'scheduled_for' => '2026-10-01 12:00:00', 'sent_at' => '2026-10-01 12:00:00',
+    ]);
+    $service = app(TelegramScheduledControlResponseService::class);
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+    $no = scheduledControlCallback($delivery, 'history-no', 'no');
+    $no['data'] = 'sc:'.$delivery->id.':lodi:no';
+    $service->captureCallback($no);
+    $this->travelTo(Carbon::parse('2026-10-01 14:00:00', 'Europe/Rome'));
+    $yes = scheduledControlCallback($delivery, 'history-yes', 'yes');
+    $yes['data'] = 'sc:'.$delivery->id.':lodi:yes';
+    $service->captureCallback($yes);
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $control = collect($summary['controls'])->firstWhere('control_type', 'first_cleanings_finishing');
+    $lodi = collect($control['district_history'])->firstWhere('district', 'Lodi');
+    expect($summary['totals']['controls'])->toBe(1)
+        ->and($summary['totals']['delays_identified'])->toBe(1)
+        ->and($summary['totals']['delays_resolved'])->toBe(1)
+        ->and($lodi['status'])->toBe('confirmed')
+        ->and($lodi['delay_minutes'])->toBe(120)
+        ->and($lodi['resolved_at'])->not->toBeNull();
+});
+function followupControlFixture(string $type = 'first_cleanings_finishing', string $at = '2026-10-01 12:00:00'): TelegramScheduledMessageDelivery
+{
+    $delivery = controlDeliveryFixture([
+        'control_type' => $type, 'bot_type' => 'work', 'scheduled_for' => $at, 'sent_at' => $at,
+    ]);
+    $topic = TelegramTopic::firstOrCreate([
+        'telegram_chat_id' => $delivery->scheduledMessage->telegram_chat_record_id, 'telegram_thread_id' => '11',
+    ], ['title' => 'Test topic', 'is_enabled' => true]);
+    $delivery->scheduledMessage->update(['telegram_topic_record_id' => $topic->id, 'followup_repeat_enabled' => true, 'followup_reminder_enabled' => true]);
+
+    return $delivery;
+}
+
+function answerFollowupDistrict(TelegramScheduledMessageDelivery $delivery, string $district, string $answer, string $id, int $user = 701): void
+{
+    $callback = scheduledControlCallback($delivery, $id, $answer, $user);
+    $callback['data'] = 'sc:'.$delivery->id.':'.$district.':'.$answer;
+    app(TelegramScheduledControlResponseService::class)->captureCallback($callback);
+}
+
+it('sends one reminder only for an unanswered district after twenty minutes', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+    $delivery = followupControlFixture();
+    foreach (array_diff(array_keys(ScheduledControlTypes::DISTRICTS), ['lodi']) as $district) {
+        answerFollowupDistrict($delivery, $district, 'yes', 'reminder-yes-'.$district);
+    }
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 12:19:59', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+    $this->travelTo(Carbon::parse('2026-10-01 12:20:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    $followup = TelegramScheduledControlFollowup::query()->sole();
+    expect($followup->district_key)->toBe('lodi')->and($followup->kind)->toBe('reminder');
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $lodi = collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi');
+    expect($lodi['status'])->toBe('no_response')->and($summary['totals']['delays_identified'])->toBe(0);
+});
+
+it('cancels a queued follow-up if the district confirms before the worker sends it', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+    $delivery = followupControlFixture();
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, $district === 'lodi' ? 'no' : 'yes', 'cancel-'.$district);
+    }
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 13:00:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    $job = Bus::dispatched(DeliverScheduledControlFollowup::class)->sole();
+    answerFollowupDistrict($delivery, 'lodi', 'yes', 'cancel-yes');
+    $telegram = Mockery::mock(TelegramBotService::class);
+    $telegram->shouldNotReceive('sendWorkControlMessage');
+    $job->handle($telegram, app(TelegramScheduledControlFollowupService::class));
+    expect(TelegramScheduledControlFollowup::query()->sole()->status)->toBe('cancelled');
+});
+
+it('permits only two repeats and requires a fresh negative answer before the second', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+    $delivery = followupControlFixture();
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, $district === 'lodi' ? 'no' : 'yes', 'limit-'.$district);
+    }
+    $first = TelegramScheduledControlFollowup::create([
+        'delivery_id' => $delivery->id, 'district_key' => 'lodi', 'kind' => 'repeat', 'sequence' => 1,
+        'due_at' => '2026-10-01 13:00:00', 'sent_at' => '2026-10-01 13:00:00',
+        'telegram_message_id' => 75010, 'status' => 'sent',
+    ]);
+    $this->travelTo(Carbon::parse('2026-10-01 14:00:00', 'Europe/Rome'));
+    Bus::fake();
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+
+    $callback = scheduledControlCallback($delivery, 'repeat-no-1', 'no');
+    $callback['message']['message_id'] = $first->telegram_message_id;
+    $callback['data'] = 'scf:'.$first->id.':no';
+    app(TelegramScheduledControlResponseService::class)->captureCallback($callback);
+    $this->travelTo(Carbon::parse('2026-10-01 15:00:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    $second = TelegramScheduledControlFollowup::query()->where('sequence', 2)->sole();
+    $second->update(['status' => 'sent', 'sent_at' => now(), 'telegram_message_id' => 75011]);
+    $callback['id'] = 'repeat-no-2';
+    $callback['message']['message_id'] = $second->telegram_message_id;
+    $callback['data'] = 'scf:'.$second->id.':no';
+    app(TelegramScheduledControlResponseService::class)->captureCallback($callback);
+    $this->travelTo(Carbon::parse('2026-10-01 16:00:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    expect(TelegramScheduledControlFollowup::query()->where('kind', 'repeat')->count())->toBe(2);
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+});
+
+it('does not repeat a previous cleaning stage after the configured next stage has begun', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 11:15:00', 'Europe/Rome'));
+    $delivery = followupControlFixture('first_cleanings_started', '2026-10-01 10:25:00');
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, $district === 'lodi' ? 'no' : 'yes', 'stage-'.$district);
+    }
+    TelegramScheduledMessage::create([
+        'name' => 'First finishing', 'control_type' => 'first_cleanings_finishing',
+        'telegram_chat_record_id' => $delivery->scheduledMessage->telegram_chat_record_id,
+        'telegram_topic_record_id' => $delivery->scheduledMessage->telegram_topic_record_id,
+        'message' => 'First cleanings finishing?', 'send_time' => '12:00:00', 'weekdays' => [4], 'enabled' => true,
+    ]);
+    $this->travelTo(Carbon::parse('2026-10-01 12:15:00', 'Europe/Rome'));
+    Bus::fake();
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+});
+
+it('uses elapsed time rather than the repeated wall clock hour for follow-ups on the autumn DST transition', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-25T02:30:00+02:00')->setTimezone('Europe/Rome'));
+    $delivery = followupControlFixture('first_cleanings_finishing', '2026-10-25 02:00:00');
+    $delivery->update(['sent_at_utc' => '2026-10-25 00:00:00']);
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, $district === 'lodi' ? 'no' : 'yes', 'dst-'.$district);
+    }
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-25T02:29:00+01:00')->setTimezone('Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+    $this->travelTo(Carbon::parse('2026-10-25T02:30:00+01:00')->setTimezone('Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+});
+it('routes a Work bot follow-up callback into the original control history', function (): void {
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.work_backlog_callback_guard_enabled' => false]);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true], 200)]);
+    $delivery = followupControlFixture();
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'work-followup-no');
+    $followup = TelegramScheduledControlFollowup::create([
+        'delivery_id' => $delivery->id, 'district_key' => 'lodi', 'kind' => 'repeat', 'sequence' => 1,
+        'due_at' => now(), 'sent_at' => now(), 'status' => 'sent', 'telegram_message_id' => 76001,
+    ]);
+    $callback = scheduledControlCallback($delivery, 'work-followup-yes', 'yes');
+    $callback['message']['message_id'] = $followup->telegram_message_id;
+    $callback['data'] = 'scf:'.$followup->id.':yes';
+
+    $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+    $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+    expect($delivery->responses()->count())->toBe(2)
+        ->and($delivery->responses()->latest('id')->first()->followup_id)->toBe($followup->id);
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), 'answerCallbackQuery'));
+});
+
+it('associates a text reply to a follow-up with its district and original control', function (): void {
+    $delivery = followupControlFixture();
+    $followup = TelegramScheduledControlFollowup::create([
+        'delivery_id' => $delivery->id, 'district_key' => 'como', 'kind' => 'reminder', 'sequence' => 1,
+        'due_at' => now(), 'sent_at' => now(), 'status' => 'sent', 'telegram_message_id' => 76002,
+    ]);
+    $payload = controlReplyPayload($delivery, 'Да', 76003);
+    $payload['message']['reply_to_message']['message_id'] = $followup->telegram_message_id;
+    $response = captureControlReply($payload);
+    expect($response->delivery_id)->toBe($delivery->id)
+        ->and($response->followup_id)->toBe($followup->id)
+        ->and($response->district_key)->toBe('como')
+        ->and($response->classification)->toBe('confirmed');
+});
+
+it('keeps conflicting district confirmations from triggering payment', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 18:30:00', 'Europe/Rome'));
+    $delivery = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
+    closingPaymentTemplateFor($delivery);
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, 'yes', 'conflict-yes-'.$district);
+    }
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'conflict-no', 702);
+    Bus::fake();
+    $service = app(TelegramScheduledMessageDeliveryService::class);
+    $service->queueClosingPayments($delivery);
+    expect(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    expect(collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi')['status'])->toBe('conflict');
+    answerFollowupDistrict($delivery, 'lodi', 'yes', 'conflict-resolved', 702);
+    $service->queueClosingPayments($delivery);
+    expect(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(1);
+    Bus::assertDispatched(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('accepts confirmed districts from a multi-line text response before scheduling payments', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 18:30:00', 'Europe/Rome'));
+    $delivery = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
+    closingPaymentTemplateFor($delivery);
+    $text = "Lambrate — да\nLodi — да\nCertosa — да\nNavigli — да\nComo — да";
+    $payload = controlReplyPayload($delivery, $text, 76004, 701, '2026-10-01 18:30:00');
+    $response = captureControlReply($payload);
+    expect($response)->not->toBeNull()
+        ->and(app(TelegramScheduledControlResponseService::class)->allDistrictsConfirmed($delivery))->toBeTrue();
+    Bus::fake();
+    app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($delivery);
+    Bus::assertDispatched(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('rechecks payment confirmation in the worker and does not repeat an uncertain send', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 18:30:00', 'Europe/Rome'));
+    $delivery = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
+    closingPaymentTemplateFor($delivery);
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, 'yes', 'worker-yes-'.$district);
+    }
+    Bus::fake();
+    $service = app(TelegramScheduledMessageDeliveryService::class);
+    $service->queueClosingPayments($delivery);
+    $job = Bus::dispatched(DeliverScheduledTelegramMessage::class)->sole();
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'worker-revoked');
+    $telegram = Mockery::mock(TelegramBotService::class);
+    $telegram->shouldNotReceive('sendWorkControlMessage');
+    $job->handle($telegram);
+    $payment = TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->sole();
+    expect($payment->status)->toBe('cancelled');
+
+    answerFollowupDistrict($delivery, 'lodi', 'yes', 'worker-restored');
+    $service->queueClosingPayments($delivery);
+    $retry = Bus::dispatched(DeliverScheduledTelegramMessage::class)->last();
+    $telegram = Mockery::mock(TelegramBotService::class);
+    $telegram->shouldReceive('sendWorkControlMessage')->once()->andThrow(new ConnectionException('test'));
+    $retry->handle($telegram);
+    $retry->handle($telegram);
+    $service->queueClosingPayments($delivery);
+    expect($payment->fresh()->status)->toBe('uncertain');
+    Bus::assertDispatched(DeliverScheduledTelegramMessage::class, 2);
+});
+
+it('uses elapsed time across the spring DST jump and never follows a control into the next day', function (): void {
+    $this->travelTo(Carbon::parse('2026-03-29T01:30:00+01:00')->setTimezone('Europe/Rome'));
+    $delivery = followupControlFixture('first_cleanings_finishing', '2026-03-29 01:30:00');
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, $district === 'lodi' ? 'no' : 'yes', 'spring-'.$district);
+    }
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-03-29T03:29:00+02:00')->setTimezone('Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+    $this->travelTo(Carbon::parse('2026-03-29T03:30:00+02:00')->setTimezone('Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+    $this->travelTo(Carbon::parse('2026-03-30T03:30:00+02:00')->setTimezone('Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+});
+it('recovers a stranded queued follow-up without sending it twice', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+    $delivery = followupControlFixture();
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, $district === 'lodi' ? 'no' : 'yes', 'recover-'.$district);
+    }
+    $followup = TelegramScheduledControlFollowup::create([
+        'delivery_id' => $delivery->id, 'district_key' => 'lodi', 'kind' => 'repeat', 'sequence' => 1,
+        'due_at' => '2026-10-01 13:00:00', 'status' => 'queued',
+        'dispatch_requested_at_utc' => '2026-10-01 10:50:00',
+    ]);
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 13:00:00', 'Europe/Rome'));
+    $service = app(TelegramScheduledMessageDeliveryService::class);
+    $service->sendDue();
+    $service->sendDue();
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+    $job = Bus::dispatched(DeliverScheduledControlFollowup::class)->sole();
+    $telegram = Mockery::mock(TelegramBotService::class);
+    $telegram->shouldReceive('sendWorkControlMessage')->once()->andReturn(77001);
+    $job->handle($telegram, app(TelegramScheduledControlFollowupService::class));
+    $job->handle($telegram, app(TelegramScheduledControlFollowupService::class));
+    expect($followup->fresh()->status)->toBe('sent')
+        ->and($followup->fresh()->telegram_message_id)->toBe(77001);
+});
+it('uses the response version available at the summary cutoff when a reply was edited later', function (): void {
+    $delivery = followupControlFixture();
+    $payload = controlReplyPayload($delivery, 'Lodi — нет', 76500, 701, '2026-10-01 12:10:00');
+    captureControlReply($payload);
+    $edited = $payload['message'];
+    $edited['text'] = 'Lodi — да';
+    $edited['edit_date'] = Carbon::parse('2026-10-01 23:00:00', 'Europe/Rome')->timestamp;
+    $update = ['update_id' => 76501, 'edited_message' => $edited];
+    $stored = app(TelegramUpdateIngestService::class)->ingest($update);
+    app(TelegramScheduledControlResponseService::class)->capture($stored, $edited);
+    $this->travelTo(Carbon::parse('2026-10-01 23:10:00', 'Europe/Rome'));
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $lodi = collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi');
+    expect($lodi['status'])->toBe('problem')->and($lodi['resolved_at'])->toBeNull();
+});
+it('classifies an explicit partial response without treating it as completion', function (): void {
+    expect(app(ScheduledControlResponseClassifier::class)->classify('Частично')['classification'])->toBe('partial');
+});
+
+it('keeps an uncertain follow-up send from being repeated', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+    $delivery = followupControlFixture();
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, $district === 'lodi' ? 'no' : 'yes', 'uncertain-'.$district);
+    }
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 13:00:00', 'Europe/Rome'));
+    $service = app(TelegramScheduledMessageDeliveryService::class);
+    $service->sendDue();
+    $job = Bus::dispatched(DeliverScheduledControlFollowup::class)->sole();
+    $telegram = Mockery::mock(TelegramBotService::class);
+    $telegram->shouldReceive('sendWorkControlMessage')->once()->andThrow(new ConnectionException('test'));
+    $job->handle($telegram, app(TelegramScheduledControlFollowupService::class));
+    $job->handle($telegram, app(TelegramScheduledControlFollowupService::class));
+    $this->travelTo(Carbon::parse('2026-10-01 13:10:00', 'Europe/Rome'));
+    $service->sendDue();
+    expect(TelegramScheduledControlFollowup::query()->sole()->status)->toBe('uncertain');
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+});
+it('orders district answers by the actual instant when the autumn clock repeats', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-25T02:30:00+02:00')->setTimezone('Europe/Rome'));
+    $delivery = followupControlFixture('first_cleanings_finishing', '2026-10-25 01:30:00');
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'dst-order-no');
+    $this->travelTo(Carbon::parse('2026-10-25T02:15:00+01:00')->setTimezone('Europe/Rome'));
+    answerFollowupDistrict($delivery, 'lodi', 'yes', 'dst-order-yes');
+    $state = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery)['lodi']['telegram:701'];
+    expect($state['classification'])->toBe('confirmed');
+});
+it('does not guess the repeat time for an old ambiguous local timestamp without UTC', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-25T02:30:00+02:00')->setTimezone('Europe/Rome'));
+    $delivery = followupControlFixture('first_cleanings_finishing', '2026-10-25 01:30:00');
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, $district === 'lodi' ? 'no' : 'yes', 'old-dst-'.$district);
+    }
+    $delivery->responses()->where('district_key', 'lodi')->update(['responded_at_utc' => null]);
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-25T03:30:00+01:00')->setTimezone('Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-25');
+    expect(collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi')['time_uncertain'])->toBeTrue();
+});
+it('honors disabled follow-ups, a custom interval, and the daily cutoff', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
+    $delivery = followupControlFixture();
+    $delivery->scheduledMessage->update([
+        'followup_interval_minutes' => 30, 'followup_reminder_enabled' => false, 'followup_cutoff' => '12:45:00',
+    ]);
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'settings-no');
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 12:29:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+    $this->travelTo(Carbon::parse('2026-10-01 12:30:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+    $delivery->scheduledMessage->update(['enabled' => false]);
+    $job = Bus::dispatched(DeliverScheduledControlFollowup::class)->sole();
+    $telegram = Mockery::mock(TelegramBotService::class);
+    $telegram->shouldNotReceive('sendWorkControlMessage');
+    $job->handle($telegram, app(TelegramScheduledControlFollowupService::class));
+    expect(TelegramScheduledControlFollowup::query()->sole()->status)->toBe('cancelled');
+
+    $this->travelTo(Carbon::parse('2026-10-01 13:00:00', 'Europe/Rome'));
+    $delivery->scheduledMessage->update(['enabled' => true]);
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
+});
+
+it('does not send payments before 18 even if the configured time is earlier', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 17:45:00', 'Europe/Rome'));
+    $delivery = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
+    closingPaymentTemplateFor($delivery)->update(['send_time' => '16:00:00']);
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, 'yes', 'floor-'.$district);
+    }
+    Bus::fake();
+    app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($delivery);
+    $this->travelTo(Carbon::parse('2026-10-01 17:59:59', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
+    $this->travelTo(Carbon::parse('2026-10-01 18:00:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertDispatched(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('does not queue payments after confirming all districts on the intermediate second-cleaning control', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 18:30:00', 'Europe/Rome'));
+    config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.work_backlog_callback_guard_enabled' => false]);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true], 200)]);
+    $delivery = followupControlFixture(ScheduledControlTypes::SECOND_CLEANINGS_FINISHING, '2026-10-01 14:00:00');
+    closingPaymentTemplateFor($delivery);
+    Bus::fake();
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        $callback = scheduledControlCallback($delivery, 'second-only-'.$district, 'yes');
+        $callback['data'] = 'sc:'.$delivery->id.':'.$district.':yes';
+        $this->postJson('/telegram/work-webhook/work-test', ['callback_query' => $callback])->assertOk();
+    }
+    expect(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
+});
+
+it('keeps an earlier negative answer unresolved when an edited reply becomes a question', function (): void {
+    $delivery = followupControlFixture();
+    $payload = controlReplyPayload($delivery, 'Lodi — нет', 76510, 701, '2026-10-01 12:10:00');
+    captureControlReply($payload);
+    $edited = $payload['message'];
+    $edited['text'] = 'Lodi — уточняю?';
+    $edited['edit_date'] = Carbon::parse('2026-10-01 12:30:00', 'Europe/Rome')->timestamp;
+    $update = ['update_id' => 76511, 'edited_message' => $edited];
+    $stored = app(TelegramUpdateIngestService::class)->ingest($update);
+    app(TelegramScheduledControlResponseService::class)->capture($stored, $edited);
+    $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
+    expect($states['lodi']['telegram:701']['classification'])->toBe('problem');
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    expect(collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi')['status'])->toBe('problem');
+});
+
+it('does not treat an edited question as a confirmed district answer', function (): void {
+    $delivery = followupControlFixture();
+    $payload = controlReplyPayload($delivery, 'Lodi — да', 76520, 702, '2026-10-01 12:10:00');
+    captureControlReply($payload);
+    $edited = $payload['message'];
+    $edited['text'] = 'Lodi — уточняю?';
+    $edited['edit_date'] = Carbon::parse('2026-10-01 12:30:00', 'Europe/Rome')->timestamp;
+    $stored = app(TelegramUpdateIngestService::class)->ingest(['update_id' => 76521, 'edited_message' => $edited]);
+    app(TelegramScheduledControlResponseService::class)->capture($stored, $edited);
+    $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
+    expect($states['lodi']['telegram:702']['classification'])->toBe('unclear');
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    expect(collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi')['status'])->toBe('no_response');
+});
+
+it('keeps existing controls disabled after migration until an administrator enables follow-ups', function (): void {
+    $migration = require database_path('migrations/2026_10_27_000000_add_scheduled_control_followups.php');
+    $migration->down();
+    $delivery = controlDeliveryFixture([
+        'control_type' => 'first_cleanings_finishing', 'bot_type' => 'work',
+        'scheduled_for' => '2026-10-01 12:00:00', 'sent_at' => '2026-10-01 12:00:00',
+    ]);
+    $topic = TelegramTopic::create([
+        'telegram_chat_id' => $delivery->scheduledMessage->telegram_chat_record_id,
+        'telegram_thread_id' => '11', 'is_enabled' => true,
+    ]);
+    $delivery->scheduledMessage->update(['telegram_topic_record_id' => $topic->id]);
+    $migration->up();
+    $control = $delivery->scheduledMessage->fresh();
+    expect($control->followup_repeat_enabled)->toBeFalse()
+        ->and($control->followup_reminder_enabled)->toBeFalse();
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'existing-control-no');
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 13:10:00', 'Europe/Rome'));
+    app(TelegramScheduledControlFollowupService::class)->queueDue();
+    expect(TelegramScheduledControlFollowup::query()->count())->toBe(0);
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+    expect($delivery->fresh()->status)->toBe('sent');
+    $control->update(['followup_repeat_enabled' => true, 'followup_reminder_enabled' => true]);
+    app(TelegramScheduledControlFollowupService::class)->queueDue();
+    expect(TelegramScheduledControlFollowup::query()->where('district_key', 'lodi')->where('kind', 'repeat')->count())->toBe(1);
+});
+
+it('does not schedule follow-ups when all five districts have confirmed', function (): void {
+    $delivery = followupControlFixture();
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, 'yes', 'all-confirmed-'.$district);
+    }
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 13:10:00', 'Europe/Rome'));
+    app(TelegramScheduledControlFollowupService::class)->queueDue();
+    expect(TelegramScheduledControlFollowup::query()->count())->toBe(0);
+    Bus::assertNotDispatched(DeliverScheduledControlFollowup::class);
+});
+
+it('sends the conditional payment control once through the fake Telegram API at the configured time', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 17:50:00', 'Europe/Rome'));
+    $delivery = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
+    closingPaymentTemplateFor($delivery)->update(['send_time' => '19:00:00']);
+    foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        answerFollowupDistrict($delivery, $district, 'yes', 'payment-send-'.$district);
+    }
+    Bus::fake();
+    Http::swap(new HttpFactory);
+    Http::preventStrayRequests();
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 87001]], 200)]);
+    $this->travelTo(Carbon::parse('2026-10-01 18:59:59', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
+    $this->travelTo(Carbon::parse('2026-10-01 19:00:00', 'Europe/Rome'));
+    app(TelegramScheduledMessageDeliveryService::class)->sendDue();
+    $job = Bus::dispatched(DeliverScheduledTelegramMessage::class)->sole();
+    $job->handle(app(TelegramBotService::class));
+    $job->handle(app(TelegramBotService::class));
+    $payment = TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->sole();
+    expect($payment->status)->toBe('sent')->and($payment->telegram_message_id)->toBe(87001);
+    Http::assertSentCount(1);
+});
+
+it('counts a sent repeat and its resolution inside the original daily control', function (): void {
+    $delivery = followupControlFixture();
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'summary-repeat-no');
+    $repeat = TelegramScheduledControlFollowup::create([
+        'delivery_id' => $delivery->id, 'district_key' => 'lodi', 'kind' => 'repeat', 'sequence' => 1,
+        'due_at' => '2026-10-01 13:00:00', 'sent_at' => '2026-10-01 13:00:00',
+        'status' => 'sent', 'telegram_message_id' => 87002,
+    ]);
+    $this->travelTo(Carbon::parse('2026-10-01 14:00:00', 'Europe/Rome'));
+    $callback = scheduledControlCallback($delivery, 'summary-repeat-yes', 'yes');
+    $callback['message']['message_id'] = $repeat->telegram_message_id;
+    $callback['data'] = 'scf:'.$repeat->id.':yes';
+    expect(app(TelegramScheduledControlResponseService::class)->captureCallback($callback)['status'])->toBe('saved');
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $lodi = collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi');
+    expect($summary['totals']['controls'])->toBe(1)
+        ->and($summary['totals']['delays_identified'])->toBe(1)
+        ->and($summary['totals']['delays_resolved'])->toBe(1)
+        ->and($lodi['status'])->toBe('confirmed')
+        ->and($lodi['followups'])->toHaveCount(1);
+});
+
+it('keeps historical expected deliveries stable across a later control type change', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-30 23:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed', 'bot_type' => 'work']);
+    $message = $delivery->scheduledMessage;
+    DB::table('telegram_scheduled_messages')->where('id', $message->id)->update([
+        'control_type' => 'cleanings_completed', 'send_time' => '17:30', 'weekdays' => json_encode([1, 2, 3, 4, 5, 6, 7]), 'created_at' => '2026-10-01 09:00:00',
+    ]);
+    Schema::create('telegram_scheduled_message_revisions', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('scheduled_message_id');
+        $table->dateTime('effective_at_utc');
+        $table->boolean('baseline')->default(false);
+        $table->string('control_type');
+        $table->string('send_time');
+        $table->text('weekdays');
+        $table->boolean('enabled');
+        $table->boolean('is_deleted');
+        $table->string('name');
+        $table->unsignedBigInteger('telegram_chat_record_id');
+        $table->unsignedBigInteger('telegram_topic_record_id')->nullable();
+    });
+    $common = ['scheduled_message_id' => $message->id, 'send_time' => '17:30', 'weekdays' => json_encode([1, 2, 3, 4, 5, 6, 7]), 'enabled' => true, 'is_deleted' => false, 'name' => $message->name, 'telegram_chat_record_id' => $message->telegram_chat_record_id, 'telegram_topic_record_id' => $message->telegram_topic_record_id];
+    DB::table('telegram_scheduled_message_revisions')->insert([
+        $common + ['effective_at_utc' => '2026-10-28 10:00:00', 'baseline' => true, 'control_type' => 'extra_payments_completed'],
+        $common + ['effective_at_utc' => '2026-10-28 11:00:00', 'baseline' => false, 'control_type' => 'cleanings_completed'],
+    ]);
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    foreach (['2026-10-13', '2026-10-21', '2026-10-25', '2026-10-27'] as $date) {
+        $summary = $builder->build($date, $message->id);
+        expect($summary['missing_deliveries'])->toBe([])
+            ->and($summary['configuration_history_uncertain'])->toBeTrue();
+    }
+    $after = $builder->build('2026-10-29', $message->id);
+    expect($after['missing_deliveries'])->toHaveCount(1)
+        ->and($after['missing_deliveries'][0]['control_type'])->toBe('cleanings_completed')
+        ->and($after['configuration_history_uncertain'])->toBeFalse();
+});
+
+it('records old and new schedule settings with their actual activation time', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-28 17:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed', 'bot_type' => 'work']);
+    $message = $delivery->scheduledMessage;
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $old = DB::table('telegram_scheduled_message_revisions')->where('scheduled_message_id', $message->id)->sole();
+    expect((int) $old->baseline)->toBe(1)->and($old->control_type)->toBe('extra_payments_completed')
+        ->and($old->effective_at_utc)->toBe('2026-10-28 16:00:00');
+    $this->travelTo(Carbon::parse('2026-10-28 18:00:00', 'Europe/Rome'));
+    $message->update(['control_type' => 'cleanings_completed', 'send_time' => '17:30']);
+    $rows = DB::table('telegram_scheduled_message_revisions')->where('scheduled_message_id', $message->id)->orderBy('id')->get();
+    expect($rows)->toHaveCount(2)->and($rows[1]->control_type)->toBe('cleanings_completed')
+        ->and($rows[1]->send_time)->toBe('17:30')->and((int) $rows[1]->baseline)->toBe(0)
+        ->and($rows[1]->effective_at_utc)->toBe('2026-10-28 17:00:00');
+    expect($delivery->fresh()->control_type)->toBe('extra_payments_completed');
+});
+
+it('rolls back a schedule change if its history cannot be saved', function (): void {
+    $delivery = controlDeliveryFixture(['control_type' => 'extra_payments_completed']);
+    $message = $delivery->scheduledMessage;
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    DB::statement("CREATE TRIGGER block_schedule_history BEFORE INSERT ON telegram_scheduled_message_revisions BEGIN SELECT RAISE(ABORT, 'history failed'); END");
+    expect(fn () => $message->update(['control_type' => 'cleanings_completed']))->toThrow(QueryException::class);
+    expect($message->fresh()->control_type)->toBe('extra_payments_completed');
+});
+
+it('uses the version in force for a changed schedule and weekday', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-26 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $message = $delivery->scheduledMessage;
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $message->update(['send_time' => '10:30', 'weekdays' => [1]]);
+    $this->travelTo(Carbon::parse('2026-10-28 08:00:00', 'Europe/Rome'));
+    $message->update(['send_time' => '11:15', 'weekdays' => [3]]);
+    $this->travelTo(Carbon::parse('2026-10-28 22:30:00', 'Europe/Rome'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    $before = $builder->build('2026-10-26', $message->id);
+    $after = $builder->build('2026-10-28', $message->id);
+    expect($before['missing_deliveries'])->toHaveCount(1)
+        ->and($before['missing_deliveries'][0]['scheduled_for'])->toContain('T10:30:00')
+        ->and($after['missing_deliveries'])->toHaveCount(1)
+        ->and($after['missing_deliveries'][0]['scheduled_for'])->toContain('T11:15:00');
+});
+
+it('preserves a historical expected control after its template is deleted', function (): void {
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $this->travelTo(Carbon::parse('2026-10-26 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $message = $delivery->scheduledMessage;
+    $message->update(['send_time' => '09:30', 'weekdays' => [1, 2, 3, 4, 5, 6, 7]]);
+    $this->travelTo(Carbon::parse('2026-10-28 08:00:00', 'Europe/Rome'));
+    $message->delete();
+    $this->travelTo(Carbon::parse('2026-10-29 22:30:00', 'Europe/Rome'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    expect($builder->build('2026-10-27', $message->id)['missing_deliveries'])->toHaveCount(1)
+        ->and($builder->build('2026-10-29', $message->id)['missing_deliveries'])->toBe([]);
+    $history = DB::table('telegram_scheduled_message_revisions')->where('scheduled_message_id', $message->id)->orderBy('id')->get();
+    expect((int) $history->last()->is_deleted)->toBe(1);
+});
+
+it('filters missing controls by the historical type rather than the current type', function (): void {
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $this->travelTo(Carbon::parse('2026-10-26 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $message = $delivery->scheduledMessage;
+    $message->update(['send_time' => '09:30', 'weekdays' => [1, 2, 3, 4, 5, 6, 7]]);
+    $this->travelTo(Carbon::parse('2026-10-28 08:00:00', 'Europe/Rome'));
+    $message->update(['control_type' => 'couriers_completed']);
+    $this->travelTo(Carbon::parse('2026-10-29 22:30:00', 'Europe/Rome'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    expect($builder->build('2026-10-27', $message->id, 'first_cleanings_started')['missing_deliveries'])->toHaveCount(1)
+        ->and($builder->build('2026-10-27', $message->id, 'couriers_completed')['missing_deliveries'])->toBe([])
+        ->and($builder->build('2026-10-29', $message->id, 'couriers_completed')['missing_deliveries'])->toHaveCount(1);
+});
+
+it('uses the historical destination when filtering expected controls', function (): void {
+    (require database_path('migrations/2026_10_28_000000_create_scheduled_message_revisions.php'))->up();
+    $this->travelTo(Carbon::parse('2026-10-26 08:00:00', 'Europe/Rome'));
+    $delivery = controlDeliveryFixture(['control_type' => 'first_cleanings_started']);
+    $message = $delivery->scheduledMessage;
+    $message->update(['send_time' => '09:30', 'weekdays' => [1, 2, 3, 4, 5, 6, 7]]);
+    $newChat = TelegramChat::create(['telegram_chat_id' => '-1002', 'title' => 'Other test chat', 'type' => 'supergroup', 'is_enabled' => true]);
+    $this->travelTo(Carbon::parse('2026-10-28 08:00:00', 'Europe/Rome'));
+    $message->update(['telegram_chat_record_id' => $newChat->id]);
+    $this->travelTo(Carbon::parse('2026-10-29 22:30:00', 'Europe/Rome'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    expect($builder->build('2026-10-27', $message->id, null, '-1001')['missing_deliveries'])->toHaveCount(1)
+        ->and($builder->build('2026-10-27', $message->id, null, '-1002')['missing_deliveries'])->toBe([])
+        ->and($builder->build('2026-10-29', $message->id, null, '-1002')['missing_deliveries'])->toHaveCount(1);
 });

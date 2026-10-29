@@ -47,7 +47,6 @@ class TelegramScheduledInboundProcessor
                     throw new \RuntimeException('Could not queue the scheduled closing payment question.');
                 }
 
-                $this->telegram->clearScheduledMessageButtons((string) $delivery->chat_id, (int) $delivery->telegram_message_id);
             } elseif ($delivery?->control_type === ScheduledControlTypes::CLOSING_PAYMENTS
                 && in_array($response?->classification, ['confirmed', 'problem'], true)) {
                 $this->telegram->clearScheduledMessageButtons((string) $delivery->chat_id, (int) $delivery->telegram_message_id);
@@ -87,8 +86,7 @@ class TelegramScheduledInboundProcessor
                     throw new \RuntimeException('Could not queue the scheduled closing payment question.');
                 }
 
-                $answer = 'Ответ сохранён. Вопрос о доплатах отправлен.';
-                $this->telegram->clearScheduledMessageButtons((string) $delivery->chat_id, (int) $delivery->telegram_message_id);
+                $answer = 'Ответ сохранён. Доплаты проверяются после подтверждения всех районов.';
             } elseif (ScheduledControlTypes::triggersClosingPayments((string) $delivery->control_type) && $result['action'] === 'no') {
                 $answer = 'Ответ сохранён. Его можно изменить на «Да». Зафиксирован дежурный ответ.';
             } elseif ($delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {

@@ -3,10 +3,12 @@
 namespace App\Services\Telegram;
 
 use App\Models\TelegramMessage;
+use App\Models\TelegramScheduledControlFollowup;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramScheduledMessageResponse;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -41,6 +43,17 @@ class TelegramScheduledControlResponseService
             ->whereNotNull('control_type')->where('control_type', '!=', '')
             ->where('chat_id', (string) $chatId)->where('telegram_message_id', $replyId)
             ->where('message_thread_id', $threadId)->limit(2)->get();
+
+        $followup = TelegramScheduledControlFollowup::query()->with('delivery')
+            ->where('status', 'sent')->where('telegram_message_id', $replyId)
+            ->whereHas('delivery', fn ($query) => $query->where('chat_id', (string) $chatId)->where('message_thread_id', $threadId))
+            ->first();
+        if ($followup !== null && $candidates->isEmpty()) {
+            return ['status' => 'matched', 'delivery' => $followup->delivery, 'followup' => $followup];
+        }
+        if ($followup !== null) {
+            return ['status' => 'ambiguous', 'delivery' => null];
+        }
 
         return match ($candidates->count()) {
             0 => ['status' => 'unmatched', 'delivery' => null],
@@ -123,6 +136,7 @@ class TelegramScheduledControlResponseService
             return null;
         }
         $delivery = $match['delivery'];
+        $followup = $match['followup'] ?? null;
         $replyId = data_get($message, 'reply_to_message.message_id');
         $chatId = data_get($message, 'chat.id');
         $messageId = $message['message_id'];
@@ -132,6 +146,23 @@ class TelegramScheduledControlResponseService
             ? ['classification' => 'unclear', 'reason' => 'question_not_confirmation']
             : $this->classify($text);
         $districtKey = $this->districtFromText($text);
+        if ($followup !== null) {
+            if ($districtKey !== null && $districtKey !== $followup->district_key) {
+                $result = ['classification' => 'unclear', 'reason' => 'followup_district_mismatch'];
+                $districtKey = null;
+            } else {
+                $districtKey = $followup->district_key;
+            }
+        }
+        if ($districtKey !== null && ! str_contains($text, '?')) {
+            $lines = $this->classifier->districtLines($text);
+            if (count($lines) === 1) {
+                $districtClassification = $this->classifier->districtClassification($lines[0]);
+                if ($districtClassification !== 'unclear') {
+                    $result = ['classification' => $districtClassification, 'reason' => 'district_answer'];
+                }
+            }
+        }
         if ($delivery->bot_type !== 'work' && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
             $finalResponse = $delivery->responses()->first();
             if ($finalResponse !== null) {
@@ -140,10 +171,10 @@ class TelegramScheduledControlResponseService
         }
         $timezone = config('app.timezone', 'Europe/Rome');
         $respondedAt = isset($message['date'])
-            ? CarbonImmutable::createFromTimestamp((int) $message['date'], 'UTC')->setTimezone($timezone)
+            ? CarbonImmutable::createFromTimestamp((int) ($message['edit_date'] ?? $message['date']), 'UTC')->setTimezone($timezone)
             : ($stored->sent_at
                 ? CarbonImmutable::instance($stored->sent_at)
-                : CarbonImmutable::now($timezone));
+                : CarbonImmutable::now('UTC')->setTimezone($timezone));
         $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone);
         $authorId = data_get($message, 'from.id');
         $telegramUser = $stored->telegramUser;
@@ -151,41 +182,49 @@ class TelegramScheduledControlResponseService
         if ($userId === null && $authorId !== null) {
             $userId = User::query()->where('telegram_id', (string) $authorId)->value('id');
         }
-        $existing = TelegramScheduledMessageResponse::query()->where('chat_id', (string) $chatId)->where('telegram_message_id', (string) $messageId)->first();
-        // Edited replies update the same record; ordinary duplicate updates are inert.
-        if ($existing && ! isset($message['edit_date'])) {
-            Log::debug('scheduled_control_response_duplicate', ['response_id' => $existing->id]);
+        $persist = function () use ($chatId, $messageId, $message, $delivery, $followup, $stored, $threadId, $replyId, $authorId, $userId, $telegramUser, $text, $respondedAt, $sentAt, $result, $districtKey): TelegramScheduledMessageResponse {
+            $existing = TelegramScheduledMessageResponse::query()->where('chat_id', (string) $chatId)->where('telegram_message_id', (string) $messageId)->first();
+            // Edited replies update the same record; ordinary duplicate updates are inert.
+            if ($existing && ! isset($message['edit_date'])) {
+                Log::debug('scheduled_control_response_duplicate', ['response_id' => $existing->id]);
 
-            return $existing;
-        }
-        $values = [
-            'delivery_id' => $delivery->id, 'telegram_message_record_id' => $stored->id,
-            'message_thread_id' => $threadId, 'reply_to_message_id' => $replyId === null ? null : (string) $replyId,
-            'telegram_user_id' => $authorId === null ? null : (string) $authorId, 'user_id' => $userId,
-            'author_name' => $telegramUser?->full_name ?: trim((string) data_get($message, 'from.first_name').' '.(string) data_get($message, 'from.last_name')) ?: null,
-            'username' => data_get($message, 'from.username'), 'text' => $text,
-            'responded_at' => $respondedAt,
-            'response_latency_seconds' => $respondedAt->lt($sentAt) ? null : (int) $sentAt->diffInSeconds($respondedAt),
-            'classification' => $result['classification'], 'classification_reason' => $result['reason'],
-            'district_key' => $districtKey,
-            'response_kind' => $result['classification'] === 'unclear' ? 'comment' : 'text_answer',
-        ];
-        $response = $existing ?: TelegramScheduledMessageResponse::firstOrCreate([
-            'chat_id' => (string) $chatId, 'telegram_message_id' => (string) $messageId,
-        ], $values);
-        if ($existing) {
-            if ($existing->text !== $text) {
-                $values['response_history'] = [...($existing->response_history ?? []), [
-                    'text' => $existing->text,
-                    'classification' => $existing->classification,
-                    'responded_at' => $existing->responded_at?->toIso8601String(),
-                ]];
+                return $existing;
             }
-            $response->update($values);
-        }
-        Log::info('scheduled_control_response_linked', ['response_id' => $response->id, 'delivery_id' => $delivery->id]);
+            $values = [
+                'delivery_id' => $delivery->id, 'followup_id' => $followup?->id, 'telegram_message_record_id' => $stored->id,
+                'message_thread_id' => $threadId, 'reply_to_message_id' => $replyId === null ? null : (string) $replyId,
+                'telegram_user_id' => $authorId === null ? null : (string) $authorId, 'user_id' => $userId,
+                'author_name' => $telegramUser?->full_name ?: trim((string) data_get($message, 'from.first_name').' '.(string) data_get($message, 'from.last_name')) ?: null,
+                'username' => data_get($message, 'from.username'), 'text' => $text,
+                'responded_at' => $respondedAt,
+                'responded_at_utc' => $respondedAt->setTimezone('UTC')->format('Y-m-d H:i:s'),
+                'response_latency_seconds' => $respondedAt->lt($sentAt) ? null : (int) $sentAt->diffInSeconds($respondedAt),
+                'classification' => $result['classification'], 'classification_reason' => $result['reason'],
+                'district_key' => $districtKey,
+                'response_kind' => $result['classification'] === 'unclear' ? 'comment' : 'text_answer',
+            ];
+            $response = $existing ?: TelegramScheduledMessageResponse::firstOrCreate([
+                'chat_id' => (string) $chatId, 'telegram_message_id' => (string) $messageId,
+            ], $values);
+            if ($existing) {
+                if ($existing->text !== $text) {
+                    $values['response_history'] = [...($existing->response_history ?? []), [
+                        'text' => $existing->text,
+                        'classification' => $existing->classification,
+                        'district_key' => $existing->district_key,
+                        'responded_at' => $existing->getRawOriginal('responded_at_utc') !== null
+                            ? CarbonImmutable::parse($existing->getRawOriginal('responded_at_utc'), 'UTC')->setTimezone('Europe/Rome')->toIso8601String()
+                            : $existing->responded_at?->toIso8601String(),
+                    ]];
+                }
+                $response->update($values);
+            }
+            Log::info('scheduled_control_response_linked', ['response_id' => $response->id, 'delivery_id' => $delivery->id]);
 
-        return $response;
+            return $response;
+        };
+
+        return Cache::lock('scheduled_control_delivery:'.$delivery->id, 30)->block(5, $persist);
     }
 
     /** @return array{status: 'saved'|'already_answered'|'unmatched'|'invalid', delivery: ?TelegramScheduledMessageDelivery, response: ?TelegramScheduledMessageResponse, action: ?string} */
@@ -201,11 +240,24 @@ class TelegramScheduledControlResponseService
 
         $districtAnswer = is_string($data) && preg_match('/^sc:(\d+):([a-z]+):(yes|no)$/', $data, $districtParts) === 1;
         $legacyAnswer = is_string($data) && preg_match('/^sc:(\d+):(yes|no)$/', $data, $parts) === 1;
-        if (! is_string($callbackId) || $callbackId === '' || (! $districtAnswer && ! $legacyAnswer)
+        $followupAnswer = is_string($data) && preg_match('/^scf:(\d+):(yes|no)$/', $data, $followupParts) === 1;
+        if (! is_string($callbackId) || $callbackId === '' || (! $districtAnswer && ! $legacyAnswer && ! $followupAnswer)
             || ! is_numeric($chatId) || ! is_numeric($messageId) || ! is_numeric($telegramUserId)
             || data_get($callbackQuery, 'from.is_bot', false)
             || ! in_array(data_get($message, 'chat.type'), ['group', 'supergroup'], true)) {
             return ['status' => 'invalid', 'delivery' => null, 'response' => null, 'action' => null];
+        }
+
+        if ($followupAnswer) {
+            $followup = TelegramScheduledControlFollowup::query()->whereKey((int) $followupParts[1])
+                ->where('status', 'sent')->where('telegram_message_id', (string) $messageId)->first();
+            if ($followup === null) {
+                return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $followupParts[2]];
+            }
+
+            return $this->captureDistrictCallback($callbackQuery, [
+                'sc', (string) $followup->delivery_id, $followup->district_key, $followupParts[2],
+            ], $followup);
         }
 
         if ($districtAnswer) {
@@ -229,7 +281,7 @@ class TelegramScheduledControlResponseService
 
         $text = $action === 'yes' ? 'Да' : 'Нет';
         $classification = $this->classify($text);
-        $respondedAt = CarbonImmutable::now(config('app.timezone', 'Europe/Rome'));
+        $respondedAt = CarbonImmutable::now('UTC')->setTimezone(config('app.timezone', 'Europe/Rome'));
         $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), config('app.timezone', 'Europe/Rome'));
         $user = User::query()->where('telegram_id', (string) $telegramUserId)->first();
         $authorName = trim((string) data_get($callbackQuery, 'from.first_name').' '.(string) data_get($callbackQuery, 'from.last_name'));
@@ -282,6 +334,7 @@ class TelegramScheduledControlResponseService
                 'username' => $username,
                 'text' => $text,
                 'responded_at' => $respondedAt,
+                'responded_at_utc' => $respondedAt->setTimezone('UTC')->format('Y-m-d H:i:s'),
                 'response_latency_seconds' => $respondedAt->lt($sentAt) ? null : (int) $sentAt->diffInSeconds($respondedAt),
                 'classification' => $classification['classification'],
                 'classification_reason' => 'inline_button_'.$classification['reason'],
@@ -313,14 +366,14 @@ class TelegramScheduledControlResponseService
     }
 
     /** @param array<int, string> $parts */
-    private function captureDistrictCallback(array $callbackQuery, array $parts): array
+    private function captureDistrictCallback(array $callbackQuery, array $parts, ?TelegramScheduledControlFollowup $followup = null): array
     {
         $delivery = TelegramScheduledMessageDelivery::query()
             ->whereKey((int) $parts[1])
             ->where('status', 'sent')
             ->where('bot_type', 'work')
             ->where('chat_id', (string) data_get($callbackQuery, 'message.chat.id'))
-            ->where('telegram_message_id', (string) data_get($callbackQuery, 'message.message_id'))
+            ->when($followup === null, fn ($query) => $query->where('telegram_message_id', (string) data_get($callbackQuery, 'message.message_id')))
             ->when(array_key_exists('message_thread_id', $callbackQuery['message'] ?? []), fn ($query) => $query->where('message_thread_id', (string) data_get($callbackQuery, 'message.message_thread_id')))
             ->first();
         $districtKey = $parts[2];
@@ -333,7 +386,7 @@ class TelegramScheduledControlResponseService
 
         $timezone = config('app.timezone', 'Europe/Rome');
         $scheduledDay = CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString();
-        if ($scheduledDay !== CarbonImmutable::now($timezone)->toDateString()) {
+        if ($scheduledDay !== CarbonImmutable::now('UTC')->setTimezone($timezone)->toDateString()) {
             return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
         }
 
@@ -341,35 +394,48 @@ class TelegramScheduledControlResponseService
         $callbackId = (string) $callbackQuery['id'];
         $user = User::query()->where('telegram_id', $telegramUserId)->first();
         $authorName = trim((string) data_get($callbackQuery, 'from.first_name').' '.(string) data_get($callbackQuery, 'from.last_name'));
-        $respondedAt = CarbonImmutable::now(config('app.timezone', 'Europe/Rome'));
+        $respondedAt = CarbonImmutable::now('UTC')->setTimezone(config('app.timezone', 'Europe/Rome'));
         $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), config('app.timezone', 'Europe/Rome'));
 
-        $response = DB::transaction(function () use ($delivery, $callbackId, $telegramUserId, $user, $authorName, $respondedAt, $sentAt, $districtKey, $action, $callbackQuery): TelegramScheduledMessageResponse {
-            TelegramScheduledMessageDelivery::query()->whereKey($delivery->id)->lockForUpdate()->first();
+        $response = Cache::lock('scheduled_control_delivery:'.$delivery->id, 30)->block(5, function () use ($delivery, $followup, $callbackId, $telegramUserId, $user, $authorName, $respondedAt, $sentAt, $districtKey, $action, $callbackQuery): ?TelegramScheduledMessageResponse {
+            return DB::transaction(function () use ($delivery, $followup, $callbackId, $telegramUserId, $user, $authorName, $respondedAt, $sentAt, $districtKey, $action, $callbackQuery): ?TelegramScheduledMessageResponse {
+                TelegramScheduledMessageDelivery::query()->whereKey($delivery->id)->lockForUpdate()->first();
+                $latest = TelegramScheduledControlFollowup::query()->where('delivery_id', $delivery->id)
+                    ->where('district_key', $districtKey)->where('status', 'sent')->orderByDesc('sent_at')->orderByDesc('id')->first();
+                if ($latest !== null && ($followup === null || $latest->id !== $followup->id)) {
+                    return null;
+                }
 
-            return TelegramScheduledMessageResponse::query()->firstOrCreate(
-                ['telegram_callback_query_id' => $callbackId],
-                [
-                    'delivery_id' => $delivery->id,
-                    'telegram_message_record_id' => null,
-                    'telegram_message_id' => null,
-                    'chat_id' => (string) $delivery->chat_id,
-                    'message_thread_id' => $delivery->message_thread_id,
-                    'reply_to_message_id' => (string) $delivery->telegram_message_id,
-                    'telegram_user_id' => $telegramUserId,
-                    'user_id' => $user?->id,
-                    'author_name' => $authorName !== '' ? $authorName : null,
-                    'username' => data_get($callbackQuery, 'from.username'),
-                    'text' => $action === 'yes' ? 'Да' : 'Нет',
-                    'responded_at' => $respondedAt,
-                    'response_latency_seconds' => $respondedAt->lt($sentAt) ? null : (int) $sentAt->diffInSeconds($respondedAt),
-                    'classification' => $action === 'yes' ? 'confirmed' : 'problem',
-                    'classification_reason' => 'district_button',
-                    'district_key' => $districtKey,
-                    'response_kind' => 'button',
-                ],
-            );
+                return TelegramScheduledMessageResponse::query()->firstOrCreate(
+                    ['telegram_callback_query_id' => $callbackId],
+                    [
+                        'delivery_id' => $delivery->id,
+                        'followup_id' => $followup?->id,
+                        'telegram_message_record_id' => null,
+                        'telegram_message_id' => null,
+                        'chat_id' => (string) $delivery->chat_id,
+                        'message_thread_id' => $delivery->message_thread_id,
+                        'reply_to_message_id' => (string) ($followup?->telegram_message_id ?? $delivery->telegram_message_id),
+                        'telegram_user_id' => $telegramUserId,
+                        'user_id' => $user?->id,
+                        'author_name' => $authorName !== '' ? $authorName : null,
+                        'username' => data_get($callbackQuery, 'from.username'),
+                        'text' => $action === 'yes' ? 'Да' : 'Нет',
+                        'responded_at' => $respondedAt,
+                        'responded_at_utc' => $respondedAt->setTimezone('UTC')->format('Y-m-d H:i:s'),
+                        'response_latency_seconds' => $respondedAt->lt($sentAt) ? null : (int) $sentAt->diffInSeconds($respondedAt),
+                        'classification' => $action === 'yes' ? 'confirmed' : 'problem',
+                        'classification_reason' => 'district_button',
+                        'district_key' => $districtKey,
+                        'response_kind' => 'button',
+                    ],
+                );
+            });
         });
+
+        if ($response === null) {
+            return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
+        }
 
         return [
             'status' => $response->wasRecentlyCreated ? 'saved' : 'already_answered',
@@ -394,16 +460,96 @@ class TelegramScheduledControlResponseService
         return count($matches) === 1 ? array_key_first($matches) : null;
     }
 
+    /** @return list<array{district: string, identity: string, classification: string, responded_at: string, response: TelegramScheduledMessageResponse}> */
+    public function districtAnswerEvents(TelegramScheduledMessageDelivery $delivery): array
+    {
+        $responses = $delivery->relationLoaded('responses')
+            ? $delivery->responses->whereIn('response_kind', ['button', 'text_answer', 'comment'])
+            : $delivery->responses()->whereIn('response_kind', ['button', 'text_answer', 'comment'])->get();
+        $events = [];
+
+        foreach ($responses as $response) {
+            $versions = $response->response_history ?? [];
+            $responseUtc = $response->getAttribute('responded_at_utc');
+            $versions[] = [
+                'text' => $response->text, 'classification' => $response->classification, 'district_key' => $response->district_key,
+                'responded_at' => $responseUtc !== null
+                    ? CarbonImmutable::parse($responseUtc, 'UTC')->setTimezone('Europe/Rome')->toIso8601String()
+                    : $response->responded_at?->toIso8601String(),
+            ];
+            foreach ($versions as $version) {
+                $text = (string) ($version['text'] ?? '');
+                $at = $version['responded_at'] ?? null;
+                if (! is_string($at)) {
+                    continue;
+                }
+                $entries = [];
+                $key = array_key_exists('district_key', $version) ? $version['district_key'] : ($this->districtFromText($text) ?? $response->district_key);
+                if ($key !== null && isset(ScheduledControlTypes::DISTRICTS[$key])) {
+                    $classification = str_contains($text, '?') ? 'unclear' : ($version['classification'] ?? 'unclear');
+                    $lines = str_contains($text, '?') ? [] : $this->classifier->districtLines($text);
+                    if (count($lines) === 1) {
+                        $lineClassification = $this->classifier->districtClassification($lines[0]);
+                        if ($lineClassification !== 'unclear') {
+                            $classification = $lineClassification;
+                        }
+                    }
+                    $entries[$key] = $classification;
+                } elseif ($response->response_kind !== 'comment' && ! str_contains($text, '?')) {
+                    foreach ($this->classifier->districtLines($text) as $line) {
+                        foreach (ScheduledControlTypes::DISTRICTS as $district => $label) {
+                            if (mb_strtolower($line['district']) === mb_strtolower($label)
+                                || ($district === 'como' && mb_strtolower($line['district']) === 'комо')) {
+                                $entries[$district] = $this->classifier->districtClassification($line);
+                            }
+                        }
+                    }
+                }
+                foreach ($entries as $district => $classification) {
+                    if (! in_array($classification, ['confirmed', 'problem', 'partial', 'unclear'], true)) {
+                        continue;
+                    }
+                    $identity = $response->telegram_user_id !== null ? 'telegram:'.$response->telegram_user_id
+                        : ($response->user_id !== null ? 'user:'.$response->user_id : 'response:'.$response->id);
+                    $events[] = [
+                        'district' => $district, 'identity' => $identity, 'classification' => $classification,
+                        'responded_at' => CarbonImmutable::parse($at)->setTimezone('Europe/Rome')->toIso8601String(),
+                        'response' => $response,
+                    ];
+                }
+            }
+        }
+
+        usort($events, fn (array $left, array $right): int => [CarbonImmutable::parse($left['responded_at'])->timestamp, $left['response']->id] <=> [CarbonImmutable::parse($right['responded_at'])->timestamp, $right['response']->id]);
+
+        return $events;
+    }
+
+    /** @return array<string, array<string, array{classification: string, responded_at: string, response: TelegramScheduledMessageResponse}>> */
+    public function districtAnswerStates(TelegramScheduledMessageDelivery $delivery): array
+    {
+        $states = [];
+        foreach ($this->districtAnswerEvents($delivery) as $event) {
+            $previous = $states[$event['district']][$event['identity']]['classification'] ?? null;
+            if ($event['classification'] === 'unclear' && in_array($previous, ['problem', 'partial'], true)) {
+                continue;
+            }
+            $states[$event['district']][$event['identity']] = [
+                'classification' => $event['classification'],
+                'responded_at' => $event['responded_at'],
+                'response' => $event['response'],
+            ];
+        }
+
+        return $states;
+    }
+
     public function allDistrictsConfirmed(TelegramScheduledMessageDelivery $delivery): bool
     {
-        $latest = $delivery->responses()->whereIn('response_kind', ['button', 'text_answer'])->whereNotNull('district_key')->orderBy('id')->get()
-            ->groupBy(fn (TelegramScheduledMessageResponse $response): string => $response->district_key.'|'.$response->telegram_user_id)
-            ->map(fn ($answers) => $answers->last())
-            ->groupBy('district_key');
-
+        $states = $this->districtAnswerStates($delivery);
         foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
-            $answers = $latest->get($district, collect());
-            if ($answers->isEmpty() || $answers->contains(fn (TelegramScheduledMessageResponse $answer): bool => $answer->classification !== 'confirmed')) {
+            $answers = $states[$district] ?? [];
+            if ($answers === [] || collect($answers)->contains(fn (array $answer): bool => $answer['classification'] !== 'confirmed')) {
                 return false;
             }
         }

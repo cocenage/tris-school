@@ -12,6 +12,7 @@ use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDestinationCatalog;
 use Carbon\Carbon;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TimePicker;
 use Filament\Schemas\Schema as FilamentSchema;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Database\Schema\Blueprint;
@@ -22,9 +23,11 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Validator;
 use Mockery\MockInterface;
 
 beforeEach(function (): void {
+    Http::preventStrayRequests();
     config([
         'app.timezone' => 'Europe/Rome',
         'queue.default' => 'database',
@@ -41,6 +44,7 @@ beforeEach(function (): void {
     $migration->up();
     (require base_path('database/migrations/2026_10_01_020000_create_scheduled_control_response_tables.php'))->up();
     (require base_path('database/migrations/2026_10_18_000000_add_district_answers_to_scheduled_controls.php'))->up();
+    (require database_path('migrations/2026_10_27_000000_add_scheduled_control_followups.php'))->up();
     $queueMigration = require base_path('database/migrations/0001_01_01_000002_create_jobs_table.php');
     $queueMigration->up();
 
@@ -145,7 +149,7 @@ it('respects configured weekdays when the message is due at the current minute',
     Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
 });
 
-it('sends closing cleanings at 17:30, preserves second cleanings at 19:00, and never schedules payments alone', function (): void {
+it('uses the configured second-cleaning time and never schedules closing payments by time', function (): void {
     makeScheduledTelegramMessage([
         'control_type' => ScheduledControlTypes::CLOSING_CLEANINGS,
         'name' => 'All cleanings finished', 'send_time' => '17:30:00', 'weekdays' => [1],
@@ -160,10 +164,33 @@ it('sends closing cleanings at 17:30, preserves second cleanings at 19:00, and n
     ]);
     Queue::fake();
 
+    Carbon::setTestNow(Carbon::parse('2026-09-28 13:59:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    expect(TelegramScheduledMessageDelivery::query()->count())->toBe(0);
+    Queue::assertNothingPushed();
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 14:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    $secondCleaning = TelegramScheduledMessageDelivery::query()->sole();
+    expect($secondCleaning->control_type)->toBe(ScheduledControlTypes::SECOND_CLEANINGS_FINISHING)
+        ->and($secondCleaning->scheduled_for->format('Y-m-d H:i:s'))->toBe('2026-09-28 14:00:00');
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 14:02:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 0; failed: 0; duplicate: 1')
+        ->assertExitCode(0);
+
     Carbon::setTestNow(Carbon::parse('2026-09-28 17:30:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
         ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
         ->assertExitCode(0);
+
     Carbon::setTestNow(Carbon::parse('2026-09-28 18:00:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
         ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
@@ -171,13 +198,61 @@ it('sends closing cleanings at 17:30, preserves second cleanings at 19:00, and n
 
     Carbon::setTestNow(Carbon::parse('2026-09-28 19:00:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')
-        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
         ->assertExitCode(0);
 
     expect(TelegramScheduledMessageDelivery::query()->pluck('control_type')->all())
-        ->toBe([ScheduledControlTypes::CLOSING_CLEANINGS, ScheduledControlTypes::SECOND_CLEANINGS_FINISHING]);
+        ->toBe([ScheduledControlTypes::SECOND_CLEANINGS_FINISHING, ScheduledControlTypes::CLOSING_CLEANINGS])
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
     Queue::assertPushed(DeliverScheduledTelegramMessage::class, 2);
 });
+
+it('applies the selected weekday to the configured second-cleaning time', function (): void {
+    makeScheduledTelegramMessage([
+        'control_type' => ScheduledControlTypes::SECOND_CLEANINGS_FINISHING,
+        'send_time' => '14:00:00',
+        'weekdays' => [2],
+    ]);
+    Queue::fake();
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 14:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 0; queued: 0; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    Carbon::setTestNow(Carbon::parse('2026-09-29 14:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    expect(TelegramScheduledMessageDelivery::query()->sole()->scheduled_for->format('Y-m-d H:i:s'))
+        ->toBe('2026-09-29 14:00:00');
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+});
+
+it('keeps a configured local delivery time across Europe Rome daylight saving transitions', function (string $date, string $offset): void {
+    makeScheduledTelegramMessage([
+        'control_type' => ScheduledControlTypes::SECOND_CLEANINGS_FINISHING,
+        'send_time' => '14:00:00',
+        'weekdays' => [7],
+    ]);
+    Carbon::setTestNow(Carbon::parse($date.' 14:00:20', 'Europe/Rome'));
+    Queue::fake();
+
+    $this->artisan('telegram:scheduled-messages-send')
+        ->expectsOutputToContain('Due: 1; queued: 1; failed: 0; duplicate: 0')
+        ->assertExitCode(0);
+
+    $delivery = TelegramScheduledMessageDelivery::query()->sole();
+    $scheduledAt = Carbon::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome');
+
+    expect($scheduledAt->format('Y-m-d H:i:s'))->toBe($date.' 14:00:00')
+        ->and($scheduledAt->format('P'))->toBe($offset);
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 1);
+})->with([
+    'spring clock change' => ['2026-03-29', '+02:00'],
+    'autumn clock change' => ['2026-10-25', '+01:00'],
+]);
 
 it('adds five district answer rows to a control and no buttons to an informational message', function (): void {
     makeScheduledTelegramMessage([
@@ -495,7 +570,9 @@ it('exposes searchable existing chat and topic selectors and persists the select
         ->and($components['telegram_topic_record_id']->isSearchable())->toBeTrue()
         ->and($components['telegram_topic_record_id']->getOptions())->toBe([
             $message->telegram_topic_record_id => 'Test topic · thread 42',
-        ]);
+        ])
+        ->and($components['send_time'])->toBeInstanceOf(TimePicker::class)
+        ->and($components['send_time']->getLabel())->toBe('Время отправки (Europe/Rome)');
 
     $reloaded = TelegramScheduledMessage::query()->findOrFail($message->getKey());
 
@@ -569,4 +646,27 @@ it('keeps the sender every minute and schedules the scheduled poll every five mi
         ->and($poll->expression)->toBe('*/5 * * * *')
         ->and($poll->withoutOverlapping)->toBeTrue()
         ->and($worker)->toBeNull();
+});
+
+it('validates the existing control form follow-up settings and their defaults', function (): void {
+    $message = makeScheduledTelegramMessage();
+    $page = new CreateTelegramScheduledMessage;
+    $page->data = ['telegram_chat_record_id' => $message->telegram_chat_record_id];
+    $schema = TelegramScheduledMessageResource::form(FilamentSchema::make($page)->model($message)->statePath('data'));
+    $components = collect($schema->getComponents())->keyBy(fn ($component) => $component->getName());
+
+    expect($components['followup_repeat_enabled']->getDefaultState())->toBeFalse()
+        ->and($components['followup_interval_minutes']->getDefaultState())->toBe(60)
+        ->and($components['followup_max_repeats']->getDefaultState())->toBe(2)
+        ->and($components['followup_reminder_enabled']->getDefaultState())->toBeFalse()
+        ->and($components['followup_reminder_minutes']->getDefaultState())->toBe(20);
+    foreach ([
+        'followup_interval_minutes' => [0, 60],
+        'followup_max_repeats' => [3, 2],
+        'followup_reminder_minutes' => [0, 20],
+    ] as $field => [$invalid, $valid]) {
+        $rules = $components[$field]->getValidationRules();
+        expect(Validator::make(['value' => $invalid], ['value' => $rules])->fails())->toBeTrue()
+            ->and(Validator::make(['value' => $valid], ['value' => $rules])->passes())->toBeTrue();
+    }
 });

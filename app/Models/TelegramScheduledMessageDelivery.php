@@ -10,12 +10,14 @@ class TelegramScheduledMessageDelivery extends Model
 {
     protected $fillable = [
         'scheduled_message_id',
+        'trigger_delivery_id',
         'control_type',
         'bot_type',
         'chat_id',
         'message_thread_id',
         'scheduled_for',
         'sent_at',
+        'sent_at_utc',
         'telegram_message_id',
         'status',
         'failure_reason',
@@ -30,6 +32,11 @@ class TelegramScheduledMessageDelivery extends Model
     public function responses(): HasMany
     {
         return $this->hasMany(TelegramScheduledMessageResponse::class, 'delivery_id');
+    }
+
+    public function followups(): HasMany
+    {
+        return $this->hasMany(TelegramScheduledControlFollowup::class, 'delivery_id');
     }
 
     public function scheduledMessage(): BelongsTo
