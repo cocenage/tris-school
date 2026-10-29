@@ -37,7 +37,10 @@ return [
 
         'database' => [
             'driver' => 'database',
-            'connection' => env('DB_QUEUE_CONNECTION'),
+            'connection' => env(
+                'DB_QUEUE_CONNECTION',
+                env('DB_CONNECTION', 'sqlite') === 'sqlite' ? 'sqlite_queue' : null,
+            ),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
             'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),

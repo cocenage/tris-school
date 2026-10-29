@@ -1,7 +1,9 @@
 <?php
 
+use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\Apartment;
 use App\Models\TelegramOperationalEvent;
+use App\Models\TelegramOperationalObservation;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
@@ -29,6 +31,23 @@ beforeEach(function () {
 afterEach(function () {
     TelegramOperationalTestDatabase::purge();
     DB::purge('sqlite');
+});
+
+it('reprocesses a queued operational message without duplicating its observation or event', function () {
+    $message = TelegramOperationalTestDatabase::message(
+        'В квартире протечка под раковиной.',
+        '2026-06-17 08:00:00',
+        '901',
+    );
+    $job = new ProcessTelegramOperationalMessage($message->id);
+    $observer = app(TelegramOperationalEventObserver::class);
+
+    $job->handle($observer);
+    $job->handle($observer);
+
+    expect(TelegramOperationalObservation::query()->where('telegram_message_id', $message->id)->count())->toBe(1)
+        ->and(TelegramOperationalObservation::query()->where('telegram_message_id', $message->id)->value('state'))->toBe('completed')
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1);
 });
 
 it('merges one employees delay updates and retains its duration, apartment and every source', function () {
