@@ -41,14 +41,26 @@ class MobilityStrikesSummaryBuilder
         $items = $alerts->map(fn (MobilityAlert $alert): array => $this->item($alert))
             ->sortBy(fn (array $item): int => $item['source'] === 'mit' ? 0 : 1)
             ->values();
+        $items = $items->reject(function (array $item) use ($items): bool {
+            if ($item['source'] !== 'mit' || ! in_array($item['status'], ['scheduled', 'updated'], true)) {
+                return false;
+            }
+
+            return $items->contains(fn (array $notice): bool => $notice['source'] !== 'mit'
+                && in_array($notice['status'], ['postponed', 'cancelled'], true)
+                && $this->sameOfficialEvent($item, $notice));
+        })->values();
         $mitByOperator = $items->filter(fn (array $item): bool => $item['source'] === 'mit')
             ->groupBy('operator_key');
         $seen = [];
         $strikes = [];
 
         foreach ($items as $item) {
-            if ($item['source'] !== 'mit' && ($mitByOperator[$item['operator_key']] ?? collect())->count() === 1) {
-                $item['duplicate_of'] = $mitByOperator[$item['operator_key']]->first()['identity'];
+            $candidate = ($mitByOperator[$item['operator_key']] ?? collect())->first();
+            if ($item['source'] !== 'mit' && $candidate !== null
+                && ($mitByOperator[$item['operator_key']] ?? collect())->count() === 1
+                && $this->sameReportedEvent($candidate, $item)) {
+                $item['duplicate_of'] = $candidate['identity'];
             }
 
             $key = $item['duplicate_of'] ?? $item['identity'];
@@ -148,6 +160,10 @@ class MobilityStrikesSummaryBuilder
 
         $source = mb_strtolower((string) $alert->source);
         $metadata = $alert->strike_metadata;
+        $status = (string) data_get($metadata, 'status', 'unknown');
+        if ($status === 'unknown') {
+            return false;
+        }
         if ($source === 'mit' && is_array($metadata)) {
             if (! $this->mit->relevant($metadata)) {
                 return false;
@@ -160,12 +176,64 @@ class MobilityStrikesSummaryBuilder
             return preg_match('/ferroviar|trasporto pubblico locale|\batm\b|trenord/iu', $transport) === 1;
         }
 
-        if (! in_array($source, ['atm', 'trenord', 'luceverde'], true) || ! $this->mentionsDate($text, $date)) {
+        if (! in_array($source, ['atm', 'trenord', 'luceverde'], true) || ! $this->mentionsDate($text, $date)
+            && ! in_array($status, ['scheduled', 'updated', 'postponed', 'cancelled'], true)) {
             return false;
         }
 
         return $source !== 'luceverde'
             || preg_match('/milano|lombardia|\batm\b|trenord|ferroviar|trasporto pubblico/iu', $text) === 1;
+    }
+
+    private function sameOfficialEvent(array $mit, array $notice): bool
+    {
+        if (($mit['starts_at'] ?? null) !== ($notice['starts_at'] ?? null)) {
+            return false;
+        }
+
+        $mitSector = mb_strtolower((string) ($mit['sector'] ?? ''));
+        $noticeSource = mb_strtolower((string) ($notice['source'] ?? ''));
+        if ($noticeSource === 'atm' && ! str_contains($mitSector, 'trasporto pubblico')) {
+            return false;
+        }
+        if ($noticeSource === 'trenord' && ! str_contains($mitSector, 'ferroviar')) {
+            return false;
+        }
+
+        $unions = array_filter(array_map('trim', preg_split('/[,;\/]+/u', (string) ($mit['unions'] ?? '')) ?: []));
+        $noticeText = mb_strtolower((string) ($notice['detail'] ?? '').' '.(string) ($notice['notes'] ?? ''));
+        foreach ($unions as $union) {
+            if (mb_strlen($union) >= 3 && preg_match('/(?<![\pL\pN])'.preg_quote(mb_strtolower($union), '/').'(?![\pL\pN])/u', $noticeText) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function sameReportedEvent(array $mit, array $notice): bool
+    {
+        if (($mit['starts_at'] ?? null) !== ($notice['starts_at'] ?? null)
+            || ! in_array($mit['status'], ['scheduled', 'updated'], true)
+            || ! in_array($notice['status'], ['scheduled', 'updated'], true)) {
+            return false;
+        }
+
+        $mitSector = mb_strtolower((string) ($mit['sector'] ?? ''));
+        $noticeSector = mb_strtolower((string) ($notice['sector'] ?? ''));
+        $mitMode = str_contains($mitSector, 'ferroviar') || $mit['source'] === 'trenord' ? 'rail' : 'local_transit';
+        $noticeMode = str_contains($noticeSector, 'ferroviar') || $notice['source'] === 'trenord' ? 'rail' : 'local_transit';
+        if ($mitMode !== $noticeMode) {
+            return false;
+        }
+
+        $mitUnions = array_filter(array_map('trim', preg_split('/[,;\/]+/u', (string) ($mit['unions'] ?? '')) ?: []));
+        $noticeUnions = array_filter(array_map('trim', preg_split('/[,;\/]+/u', (string) ($notice['unions'] ?? '')) ?: []));
+        if ($mitUnions !== [] && $noticeUnions !== []) {
+            return array_intersect(array_map('mb_strtolower', $mitUnions), array_map('mb_strtolower', $noticeUnions)) !== [];
+        }
+
+        return true;
     }
 
     private function mentionsDate(string $text, string $date): bool
@@ -205,6 +273,7 @@ class MobilityStrikesSummaryBuilder
         $statusText = mb_strtolower($title.' '.$description.' '.($metadata['notes'] ?? ''));
         $cancelled = ($metadata['status'] ?? null) === 'cancelled'
             || preg_match('/revocat|annullat|cancellat|отменен|отменён/iu', $statusText) === 1;
+        $status = (string) ($metadata['status'] ?? ($cancelled ? 'cancelled' : 'unknown'));
         $duration = trim((string) ($metadata['duration'] ?? ''));
         if ($duration === '' && preg_match('/\b\d{1,2}:\d{2}\s*[-–—]\s*\d{1,2}:\d{2}\b/u', $title.' '.$description, $match)) {
             $duration = $match[0];
@@ -236,7 +305,12 @@ class MobilityStrikesSummaryBuilder
                 default => $source,
             },
             'cancelled' => $cancelled,
-            'updated' => ($metadata['notification_kind'] ?? null) === 'updated',
+            'status' => $status,
+            'updated' => in_array($status, ['updated', 'scheduled'], true)
+                && ($metadata['notification_kind'] ?? null) === 'updated',
+            'postponed' => $status === 'postponed',
+            'unions' => (string) ($metadata['unions'] ?? ''),
+            'notes' => $notes,
             'duration' => $duration !== '' ? $duration : null,
             'guarantee' => $guarantee,
             'starts_at' => $alert->starts_at?->toDateString(),

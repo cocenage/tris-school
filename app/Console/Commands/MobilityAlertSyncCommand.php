@@ -3,7 +3,6 @@
 namespace App\Console\Commands;
 
 use App\Services\Mobility\MobilityAlertSyncService;
-use App\Services\Mobility\MobilityStrikeSyncService;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
@@ -17,10 +16,18 @@ class MobilityAlertSyncCommand extends Command
     public function handle(MobilityAlertSyncService $service): int
     {
         if ($this->option('dry-run')) {
-            $counts = app(MobilityStrikeSyncService::class)->sync(dryRun: true);
-            $this->line(json_encode($counts, JSON_THROW_ON_ERROR));
+            $service->sync(dryRun: true);
+            $this->line(json_encode([
+                'checked_at' => data_get($service->sourcePreview, 'checked_at'),
+                'sources' => data_get($service->sourcePreview, 'sources', []),
+                'events' => data_get($service->sourcePreview, 'events', []),
+                'mit' => $service->strikeReport,
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
-            return $counts['failed'] > 0 ? self::FAILURE : self::SUCCESS;
+            return ($service->strikeReport['failed'] ?? 1) > 0
+                || collect(data_get($service->sourcePreview, 'sources', []))->contains(fn (array $source): bool => in_array($source['status'] ?? null, ['unavailable', 'unrecognized'], true))
+                ? self::FAILURE
+                : self::SUCCESS;
         }
 
         $startedAt = Carbon::now();

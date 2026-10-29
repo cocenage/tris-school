@@ -10,7 +10,8 @@ class MobilityStrikesSummaryFormatter
     {
         $start = CarbonImmutable::parse($summary['date'], 'Europe/Rome');
         $strikes = collect($summary['strikes'] ?? [])
-            ->reject(fn (array $strike): bool => (bool) ($strike['cancelled'] ?? false))
+            ->filter(fn (array $strike): bool => in_array($strike['status'] ?? null, ['scheduled', 'updated'], true)
+                && ! (bool) ($strike['cancelled'] ?? false))
             ->take(6)
             ->values();
 
@@ -51,16 +52,24 @@ class MobilityStrikesSummaryFormatter
                 ? '✅ На сегодня подтверждённых забастовок, влияющих на работу TRIS, не найдено.'
                 : $this->incompleteMorningStatus($status)
                     ?? '⚠️ Свежий статус источников неизвестен; отсутствие забастовок не подтверждено.';
+            $lines = array_merge($lines, $this->sourceDiagnostics($status));
 
             return implode("\n", $lines);
         }
 
         foreach (array_slice($strikes, 0, 6) as $strike) {
             $lines[] = '';
-            $lines[] = ($strike['cancelled'] ? '✅ ' : '⚠️ ').$this->clean($strike['operator'])
-                .($strike['cancelled'] ? ' — забастовка отменена.' : ($strike['updated'] ? ' — данные обновлены.' : ''));
+            $lines[] = match ($strike['status'] ?? null) {
+                'cancelled' => '✅ '.$this->clean($strike['operator']).' — забастовка отменена.',
+                'postponed' => '📅 '.$this->clean($strike['operator']).' — забастовка перенесена; новая дата не подтверждена.',
+                default => '⚠️ '.$this->clean($strike['operator']).(($strike['updated'] ?? false) ? ' — данные обновлены.' : ''),
+            };
 
-            if (! $strike['cancelled']) {
+            if (($strike['status'] ?? null) === 'postponed') {
+                if ($strike['starts_at'] !== null) {
+                    $lines[] = 'Первоначальная дата: '.$this->strikeDate($strike);
+                }
+            } elseif (! $strike['cancelled']) {
                 if ($strike['duration'] !== null) {
                     $lines[] = 'Время: '.$this->clean($strike['duration']);
                 }
@@ -93,6 +102,7 @@ class MobilityStrikesSummaryFormatter
             $lines[] = '';
             $lines[] = $warning;
         }
+        $lines = array_merge($lines, $this->sourceDiagnostics($summary['source_status'] ?? []));
 
         return implode("\n", $lines);
     }
@@ -201,5 +211,53 @@ class MobilityStrikesSummaryFormatter
             default => '⚠️ Нет свежего статуса источников ('
                 .implode(', ', $status['unavailable'] ?? []).'); отсутствие забастовок не подтверждено.',
         };
+    }
+
+    private function sourceDiagnostics(array $status): array
+    {
+        $lines = [];
+        if (filled($status['checked_at'] ?? null)) {
+            try {
+                $checkedAt = CarbonImmutable::parse($status['checked_at'])->setTimezone('Europe/Rome');
+                $lines[] = '';
+                $lines[] = 'Источники проверены: '.$checkedAt->format('d.m.Y H:i').' Europe/Rome.';
+            } catch (\Throwable) {
+                // Invalid cached timestamps are represented as unknown above.
+            }
+        }
+
+        $lastSuccess = collect($status['sources'] ?? [])
+            ->filter(fn (array $source): bool => filled($source['last_successful_at'] ?? null))
+            ->map(function (array $source): ?string {
+                try {
+                    return ($source['label'] ?? 'Источник').': '.CarbonImmutable::parse($source['last_successful_at'])
+                        ->setTimezone('Europe/Rome')->format('d.m.Y H:i');
+                } catch (\Throwable) {
+                    return null;
+                }
+            })
+            ->filter()
+            ->values()
+            ->all();
+        if ($lastSuccess !== []) {
+            $lines[] = 'Последняя успешная проверка Europe/Rome: '.implode('; ', $lastSuccess).'.';
+        }
+
+        $problems = collect($status['sources'] ?? [])
+            ->filter(fn (array $source): bool => in_array($source['status'] ?? null, ['unavailable', 'unrecognized', 'stale', 'unknown'], true))
+            ->map(fn (array $source): string => ($source['label'] ?? 'Источник').' — '.match ($source['status'] ?? 'unknown') {
+                'unavailable' => 'недоступен',
+                'unrecognized' => 'формат не распознан',
+                'stale' => 'данные устарели',
+                default => 'нет данных',
+            })
+            ->values()
+            ->all();
+
+        if ($problems !== []) {
+            $lines[] = 'Проблемы источников: '.implode('; ', $problems).'.';
+        }
+
+        return $lines;
     }
 }

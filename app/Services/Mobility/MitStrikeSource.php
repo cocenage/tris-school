@@ -42,6 +42,7 @@ class MitStrikeSource
                 if (in_array('Inizio', $values, true) && in_array('Categoria', $values, true)) {
                     $headers = $values;
                     $recognized = true;
+
                     continue;
                 }
                 if ($headers === [] || count($values) !== count($headers)) {
@@ -68,8 +69,11 @@ class MitStrikeSource
                         'region' => $fields['Regione'] ?? '',
                         'province' => $fields['Provincia'] ?? '',
                     ];
-                    $item['status'] = preg_match('/^(?:sciopero\s+)?(?:revocat[oa]|annullat[oa]|cancellat[oa])\b/iu',
-                        trim(($fields['Stato'] ?? '').' '.$item['notes'])) ? 'cancelled' : 'scheduled';
+                    $item['status'] = app(MobilityStrikeAnnouncementParser::class)->classifyStatus(
+                        'Sciopero '.$fields['Inizio'],
+                        trim(($fields['Stato'] ?? '').' '.$item['notes']),
+                        hasEventDate: true,
+                    );
                     $sourceId = $fields['ID'] ?? '';
                     // Public MIT table has no ID: proclamation + parties + category
                     // remain stable when occurrence dates or duration are amended.
