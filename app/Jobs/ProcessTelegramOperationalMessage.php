@@ -13,9 +13,14 @@ class ProcessTelegramOperationalMessage implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 2;
+    public int $tries = 8;
 
     public int $timeout = 20;
+
+    public function backoff(): array
+    {
+        return [30, 60, 120, 300, 600, 600, 600];
+    }
 
     public function __construct(
         public int $telegramMessageId,
