@@ -146,7 +146,9 @@ class TelegramScheduledControlSummaryBuilder
                 'control_type' => $delivery->control_type, 'name' => $delivery->scheduledMessage?->name ?? 'Удалённое сообщение',
                 'scheduled_for' => CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->setTimezone('Europe/Rome')->toIso8601String(),
                 'sent_at' => $delivery->sent_at ? CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone)->setTimezone('Europe/Rome')->toIso8601String() : null,
-                'delivery_status' => $delivery->status, 'eligible_for_statistics' => $delivery->status === 'sent' && $sentAt !== null && $sentAt->lessThanOrEqualTo($cutoff),
+                'delivery_status' => $delivery->status,
+                'condition_not_met' => $delivery->status === 'cancelled' && $delivery->failure_reason === 'confirmation_not_current',
+                'eligible_for_statistics' => $delivery->status === 'sent' && $sentAt !== null && $sentAt->lessThanOrEqualTo($cutoff),
                 'district_history' => $delivery->bot_type === 'work' && $delivery->status === 'sent'
                     ? $this->districtHistory($historyDelivery, $cutoff) : [],
                 'source_url' => str_starts_with((string) $delivery->chat_id, '-100') && $delivery->telegram_message_id
@@ -161,6 +163,7 @@ class TelegramScheduledControlSummaryBuilder
         $totals['delays_resolved'] = $histories->whereNotNull('first_problem_at')->where('status', 'confirmed')->count();
         $totals['delays_open'] = $histories->whereNotNull('first_problem_at')->where('status', '!=', 'confirmed')->count();
         $totals['districts_without_answer'] = $histories->where('status', 'no_response')->count();
+        $totals['districts_unclear'] = $histories->where('status', 'unclear')->count();
         $totals['district_conflicts'] = $histories->where('status', 'conflict')->count();
         $followupStatuses = $histories->flatMap(fn (array $history) => $history['followups']);
         $totals['followup_delivery_failures'] = $followupStatuses->where('status', 'failed')->count();
@@ -188,6 +191,7 @@ class TelegramScheduledControlSummaryBuilder
                 'district_results' => $districtResults,
                 'district_history' => $representative['district_history'],
                 'delivery_status' => $representative['delivery_status'],
+                'condition_not_met' => $representative['condition_not_met'],
                 'additional_delivery_statuses' => $rows->filter(fn (array $row): bool => $row['delivery_id'] !== $representative['delivery_id']
                     && $row['delivery_status'] !== 'sent')->pluck('delivery_status')->values()->all(),
                 'source_url' => $representative['source_url'],
@@ -261,7 +265,7 @@ class TelegramScheduledControlSummaryBuilder
                 $hasBad && $values->contains('confirmed') => 'conflict',
                 $values->contains('problem') => 'problem',
                 $values->contains('partial') => 'partial',
-                $values->contains('unclear') => 'no_response',
+                $values->contains('unclear') => 'unclear',
                 default => 'confirmed',
             };
             if ($status !== 'confirmed') {
@@ -547,7 +551,11 @@ class TelegramScheduledControlSummaryBuilder
             'response_rate_percent' => $sent->isEmpty() ? null : (int) round($responded->count() * 100 / $sent->count()),
             'no_response' => $sent->where('result', 'no_response')->count(),
             'pending' => $sent->where('result', 'pending')->count(),
-            'not_delivered' => $rows->count() - $sent->count() + $missingCount,
+            'not_delivered' => $rows->where('delivery_status', 'failed')->count() + $missingCount,
+            'cancelled_deliveries' => $rows->where('delivery_status', 'cancelled')->count(),
+            'skipped_deliveries' => $rows->where('delivery_status', 'skipped')->count(),
+            'pending_deliveries' => $rows->whereIn('delivery_status', ['pending', 'retrying'])->count(),
+            'uncertain_deliveries' => $rows->whereIn('delivery_status', ['sending', 'uncertain'])->count(),
             'response_messages' => $sent->sum('response_count'),
             'median_response_latency_seconds' => $this->statistics->median($responded->pluck('first_response_latency_seconds')->filter(fn ($value) => $value !== null)->all()),
         ];
