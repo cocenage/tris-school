@@ -265,14 +265,14 @@ it('renders conflicting current district answers and linked comments without los
     expect(collect($districts)->firstWhere('district', 'Como')['status'])->toBe('conflict');
 });
 
-it('shows a linked question without turning it into a district yes or no', function () {
+it('shows a linked question as an unclear response without turning it into a district yes or no', function () {
     $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work']);
     captureControlReply(controlReplyPayload($delivery, 'Курьеров на Комо не было, закрывать уборки или ещё будут?', 501));
 
     $text = app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery);
 
-    expect($text)->toContain('Como — нет ответа', 'Курьеров на Комо не было', 't.me/c/')
-        ->not->toContain('Como — ❌ Нет');
+    expect($text)->toContain('Como — ❔ Неясно', 'Курьеров на Комо не было', 't.me/c/')
+        ->not->toContain('Como — нет ответа', 'Como — ❌ Нет');
 });
 
 it('routes a Work bot district callback through polling and updates its original message', function () {
@@ -1167,7 +1167,9 @@ it('does not call failed delivery an unanswered staff control', function () {
     $delivery = controlDeliveryFixture(['status' => 'failed', 'sent_at' => null, 'telegram_message_id' => null]);
     expect(app(TelegramScheduledControlStatistics::class)->delivery($delivery)['result'])->toBe('pending');
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
-    expect($summary['totals']['not_delivered'])->toBe(1)->and($summary['totals']['no_response'])->toBe(0);
+    expect($summary['totals']['not_delivered'])->toBe(1)
+        ->and($summary['totals']['pending_deliveries'])->toBe(0)
+        ->and($summary['totals']['no_response'])->toBe(0);
 });
 
 it('reports a due control with no recorded delivery as not delivered', function () {
@@ -1883,6 +1885,29 @@ it('waits until the configured payment time after all five districts confirm cle
     expect(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(1);
     Bus::assertDispatched(DeliverScheduledTelegramMessage::class, 1);
 });
+it('queues the conditional payment control after the last district confirms after 18 without duplicating it', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 17:59:00', 'Europe/Rome'));
+    $cleanings = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
+    closingPaymentTemplateFor($cleanings);
+    foreach (array_diff(array_keys(ScheduledControlTypes::DISTRICTS), ['lodi']) as $district) {
+        answerFollowupDistrict($cleanings, $district, 'yes', 'late-confirm-early-'.$district);
+    }
+    Bus::fake();
+    $this->travelTo(Carbon::parse('2026-10-01 18:05:00', 'Europe/Rome'));
+    answerFollowupDistrict($cleanings, 'lodi', 'yes', 'late-confirm-lodi');
+
+    $service = app(TelegramScheduledMessageDeliveryService::class);
+    $service->sendDue();
+    $service->sendDue();
+
+    $payment = TelegramScheduledMessageDelivery::query()
+        ->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->sole();
+    expect($payment->status)->toBe('pending')
+        ->and($payment->scheduled_for->format('Y-m-d H:i:s'))->toBe('2026-10-01 18:00:00')
+        ->and($payment->trigger_delivery_id)->toBe($cleanings->id);
+    Bus::assertDispatched(DeliverScheduledTelegramMessage::class, 1);
+});
+
 it('reports a resolved district delay once in the original daily control', function (): void {
     $delivery = controlDeliveryFixture([
         'control_type' => 'first_cleanings_finishing', 'bot_type' => 'work',
@@ -2313,7 +2338,7 @@ it('keeps an earlier negative answer unresolved when an edited reply becomes a q
     expect(collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi')['status'])->toBe('problem');
 });
 
-it('does not treat an edited question as a confirmed district answer', function (): void {
+it('does not treat an edited question as a confirmed district answer or as no response', function (): void {
     $delivery = followupControlFixture();
     $payload = controlReplyPayload($delivery, 'Lodi — да', 76520, 702, '2026-10-01 12:10:00');
     captureControlReply($payload);
@@ -2325,9 +2350,97 @@ it('does not treat an edited question as a confirmed district answer', function 
     $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
     expect($states['lodi']['telegram:702']['classification'])->toBe('unclear');
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
-    expect(collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi')['status'])->toBe('no_response');
+    $lodi = collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi');
+    $formatter = app(TelegramScheduledControlSummaryFormatter::class);
+    $text = $formatter->format($summary);
+    $interactive = $formatter->formatInteractive($delivery);
+    expect($lodi['status'])->toBe('unclear')
+        ->and($summary['totals']['districts_without_answer'])->toBe(4)
+        ->and($summary['totals']['districts_unclear'])->toBe(1)
+        ->and($text)->toContain('Lodi — ❔ получен неясный ответ')
+        ->not->toContain('Lodi — нет ответа')
+        ->and($interactive)->toContain('Lodi — ❔ Неясно')
+        ->not->toContain('Lodi — нет ответа');
 });
 
+it('keeps an unclear Lodi reply distinct through unclear problem problem confirmed unclear and blocks conditional payments', function (): void {
+    $delivery = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
+    closingPaymentTemplateFor($delivery);
+    Bus::fake();
+
+    $this->travelTo(Carbon::parse('2026-10-01 17:45:00', 'Europe/Rome'));
+    captureControlReply(controlReplyPayload($delivery, 'Lodi — пока не могу подтвердить', 76528, 701, '2026-10-01 17:45:00'));
+    foreach (array_diff(array_keys(ScheduledControlTypes::DISTRICTS), ['lodi']) as $district) {
+        answerFollowupDistrict($delivery, $district, 'yes', 'lodi-other-'.$district);
+    }
+    $this->travelTo(Carbon::parse('2026-10-01 17:47:00', 'Europe/Rome'));
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'lodi-problem-1');
+    $this->travelTo(Carbon::parse('2026-10-01 17:48:00', 'Europe/Rome'));
+    answerFollowupDistrict($delivery, 'lodi', 'no', 'lodi-problem-2');
+    $this->travelTo(Carbon::parse('2026-10-01 18:56:00', 'Europe/Rome'));
+    answerFollowupDistrict($delivery, 'lodi', 'yes', 'lodi-confirmed');
+    $this->travelTo(Carbon::parse('2026-10-01 18:57:00', 'Europe/Rome'));
+    $comment = captureControlReply(controlReplyPayload($delivery, 'Lodi — пока не могу подтвердить', 76530, 701, '2026-10-01 18:57:00'));
+
+    expect($comment->response_kind)->toBe('comment')
+        ->and($comment->classification)->toBe('unclear')
+        ->and($comment->classification_reason)->toBe('no_bounded_pattern')
+        ->and(app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery)['lodi']['telegram:701']['classification'])->toBe('unclear')
+        ->and(app(TelegramScheduledControlResponseService::class)->allDistrictsConfirmed($delivery))->toBeFalse()
+        ->and(app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($delivery))->toBeTrue()
+        ->and(TelegramScheduledMessageDelivery::query()->where('control_type', ScheduledControlTypes::CLOSING_PAYMENTS)->count())->toBe(0);
+    Bus::assertNotDispatched(DeliverScheduledTelegramMessage::class);
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $lodi = collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi');
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+    expect($lodi['status'])->toBe('unclear')
+        ->and($lodi['first_problem_at'])->not->toBeNull()
+        ->and($summary['totals']['delays_identified'])->toBe(1)
+        ->and($summary['totals']['delays_open'])->toBe(1)
+        ->and($summary['totals']['delays_resolved'])->toBe(0)
+        ->and($summary['totals']['districts_without_answer'])->toBe(0)
+        ->and($summary['totals']['districts_unclear'])->toBe(1)
+        ->and($text)->toContain('Районов с неясным ответом: 1');
+});
+
+it('reports cancelled and skipped controls separately from actual delivery failures', function (): void {
+    controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS, 'bot_type' => 'work',
+        'scheduled_for' => '2026-10-01 18:00:00', 'status' => 'cancelled', 'sent_at' => null,
+        'telegram_message_id' => null, 'failure_reason' => 'confirmation_not_current',
+    ]);
+    controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS, 'bot_type' => 'work',
+        'scheduled_for' => '2026-10-01 18:01:00', 'status' => 'skipped', 'sent_at' => null,
+        'telegram_message_id' => null, 'failure_reason' => null,
+    ]);
+    controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS, 'bot_type' => 'work',
+        'scheduled_for' => '2026-10-01 18:02:00', 'status' => 'failed', 'sent_at' => null,
+        'telegram_message_id' => null, 'failure_reason' => 'telegram_http_error',
+    ]);
+    controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS, 'bot_type' => 'work',
+        'scheduled_for' => '2026-10-01 18:03:00', 'status' => 'pending', 'sent_at' => null,
+        'telegram_message_id' => null,
+    ]);
+    controlDeliveryFixture([
+        'control_type' => ScheduledControlTypes::CLOSING_PAYMENTS, 'bot_type' => 'work',
+        'scheduled_for' => '2026-10-01 18:04:00', 'status' => 'uncertain', 'sent_at' => null,
+        'telegram_message_id' => null,
+    ]);
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+    $text = app(TelegramScheduledControlSummaryFormatter::class)->format($summary);
+
+    expect($summary['totals']['not_delivered'])->toBe(1)
+        ->and($summary['totals']['pending_deliveries'])->toBe(1)
+        ->and($summary['totals']['uncertain_deliveries'])->toBe(1)
+        ->and($summary['totals']['cancelled_deliveries'])->toBe(1)
+        ->and($summary['totals']['skipped_deliveries'])->toBe(1)
+        ->and($text)->toContain('условие подтверждения не выполнено', 'отправка пропущена', 'ошибка доставки', 'отправка ожидается', 'результат отправки неизвестен');
+});
 it('keeps existing controls disabled after migration until an administrator enables follow-ups', function (): void {
     $migration = require database_path('migrations/2026_10_27_000000_add_scheduled_control_followups.php');
     $migration->down();

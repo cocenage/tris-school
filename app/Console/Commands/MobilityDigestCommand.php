@@ -4,8 +4,6 @@ namespace App\Console\Commands;
 
 use App\Models\MobilityAlert;
 use App\Services\Mobility\MobilityAlertSyncService;
-use App\Services\Mobility\MobilityStrikesSummaryBuilder;
-use App\Services\Mobility\MobilityStrikesSummaryFormatter;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramOutboundMonitor;
@@ -162,11 +160,6 @@ class MobilityDigestCommand extends Command
 
     protected function buildMessage(Carbon $date, $alerts, ?array $route = null): string
     {
-        $strikeSummary = app(MobilityStrikesSummaryBuilder::class)->build(
-            $date->toDateString(),
-            $route['key'] ?? null,
-            7,
-        );
         $weather = app(MilanWeatherService::class)->today(
             (float) ($route['latitude'] ?? 45.4642),
             (float) ($route['longitude'] ?? 9.1900),
@@ -175,7 +168,6 @@ class MobilityDigestCommand extends Command
 
         $alerts = $this->deduplicateAlerts($alerts)
             ->filter(fn (array $alert): bool => $this->isImportantWorkerAlert($alert))
-            ->reject(fn (array $alert): bool => $this->representedByStrikeSummary($alert, $strikeSummary['strikes']))
             ->values();
         $label = trim((string) ($route['label'] ?? ''));
         $text = Arr::random($this->greetings).($label !== '' ? ' · <b>'.e($label).'</b>' : '')."\n\n";
@@ -192,8 +184,6 @@ class MobilityDigestCommand extends Command
                 $text .= '• '.$this->workerAlertLine($alert)."\n";
             }
         }
-
-        $text .= "\n\n".app(MobilityStrikesSummaryFormatter::class)->formatMorningSection($strikeSummary);
 
         $text .= "\n".Arr::random($this->endings);
 
@@ -387,7 +377,7 @@ class MobilityDigestCommand extends Command
         $type = mb_strtolower((string) ($alert['type'] ?? ''));
 
         if (str_contains($type, 'strike') || preg_match('/sciopero|забаст|\bstrike\b/iu', $text)) {
-            return true;
+            return false;
         }
 
         if (($alert['risk'] ?? null) !== 'critical'
@@ -399,26 +389,6 @@ class MobilityDigestCommand extends Command
         }
 
         return preg_match('/interruzione totale|sospensione totale|blocco (?:totale|della circolazione)|servizio (?:completamente )?sospeso|полная остановка движения/iu', $text) === 1;
-    }
-
-    protected function representedByStrikeSummary(array $alert, array $strikes): bool
-    {
-        $title = mb_strtolower(trim((string) ($alert['title'] ?? '')));
-        $source = mb_strtolower((string) ($alert['source'] ?? ''));
-
-        foreach ($strikes as $strike) {
-            if ($source !== ($strike['source'] ?? null)) {
-                continue;
-            }
-            $representedTitle = $source === 'mit'
-                ? 'sciopero '.mb_strtolower((string) ($strike['operator'] ?? ''))
-                : mb_strtolower((string) ($strike['detail'] ?? ''));
-            if ($title !== '' && $title === $representedTitle) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     protected function normalizedText(?string $value): string

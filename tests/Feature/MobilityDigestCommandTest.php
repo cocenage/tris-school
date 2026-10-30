@@ -3,6 +3,8 @@
 use App\Console\Commands\MobilityDigestCommand;
 use App\Models\MobilityAlert;
 use App\Services\Mobility\MobilityAlertSyncService;
+use App\Services\Mobility\MobilityStrikesSummaryBuilder;
+use App\Services\Mobility\MobilityStrikesSummaryFormatter;
 use App\Services\Operations\OperationalContextBuilder;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Weather\MilanWeatherService;
@@ -30,6 +32,7 @@ beforeEach(function () {
         $table->date('starts_at')->nullable();
         $table->date('ends_at')->nullable();
         $table->timestamp('sent_at')->nullable();
+        $table->json('strike_metadata')->nullable();
         $table->string('external_hash')->unique();
         $table->timestamps();
     });
@@ -39,17 +42,52 @@ afterEach(function () {
     Schema::dropIfExists('mobility_alerts');
 });
 
-it('suppresses only the same strike already represented in the seven day overview', function () {
-    $method = new ReflectionMethod(MobilityDigestCommand::class, 'representedByStrikeSummary');
-    $command = app(MobilityDigestCommand::class);
-    $strikes = [[
-        'source' => 'mit',
-        'operator' => 'GRUPPO ATM DI MILANO',
-        'detail' => null,
-    ]];
+it('omits strikes from the morning digest while preserving weather and other important mobility alerts', function () {
+    $strikeBuilder = Mockery::mock(MobilityStrikesSummaryBuilder::class);
+    $strikeBuilder->shouldReceive('build')->zeroOrMoreTimes()->andReturn(['strikes' => [[
+        'source' => 'atm', 'status' => 'scheduled', 'operator' => 'ATM Milano',
+    ]]]);
+    $strikeFormatter = Mockery::mock(MobilityStrikesSummaryFormatter::class);
+    $strikeFormatter->shouldReceive('formatMorningSection')->zeroOrMoreTimes()->andReturn('SYNTHETIC_STRIKE_SECTION');
+    app()->instance(MobilityStrikesSummaryBuilder::class, $strikeBuilder);
+    app()->instance(MobilityStrikesSummaryFormatter::class, $strikeFormatter);
 
-    expect($method->invoke($command, ['source' => 'mit', 'title' => 'Sciopero GRUPPO ATM DI MILANO'], $strikes))->toBeTrue()
-        ->and($method->invoke($command, ['source' => 'mit', 'title' => 'Sciopero TRENORD'], $strikes))->toBeFalse();
+    MobilityAlert::create([
+        'source' => 'atm',
+        'title' => 'Sciopero ATM confermato il 30 ottobre',
+        'description' => 'Sciopero del trasporto pubblico.',
+        'type' => 'strike',
+        'risk' => 'high',
+        'district' => 'Milano',
+        'starts_at' => '2026-10-30',
+        'ends_at' => '2026-10-30',
+        'strike_metadata' => ['status' => 'scheduled'],
+        'external_hash' => 'strike-morning-digest',
+    ]);
+    MobilityAlert::create([
+        'source' => 'atm',
+        'title' => 'Blocco totale della circolazione in zona Navigli',
+        'description' => 'Deviazione attiva per lavori.',
+        'type' => 'critical_closure',
+        'risk' => 'critical',
+        'district' => 'Navigli',
+        'starts_at' => '2026-10-30',
+        'external_hash' => 'non-strike-morning-alert',
+    ]);
+
+    $command = app(MobilityDigestCommand::class);
+    $method = new ReflectionMethod($command, 'buildMessage');
+    $message = $method->invoke(
+        $command,
+        Carbon::parse('2026-10-30', 'Europe/Rome'),
+        MobilityAlert::query()->get(),
+    );
+
+    expect($message)
+        ->toContain('Погода', 'Сегодня важно', 'Blocco totale della circolazione in zona Navigli')
+        ->not->toContain('Sciopero', 'Забастовка транспорта', 'trasporto pubblico.', 'SYNTHETIC_STRIKE_SECTION');
+    $strikeBuilder->shouldNotHaveReceived('build');
+    $strikeFormatter->shouldNotHaveReceived('formatMorningSection');
 });
 
 it('keeps routine metro closures out of the human morning digest', function () {
@@ -241,12 +279,12 @@ it('builds two regional dry-runs with distinct weather coordinates and evidence-
         ],
     ])]);
     foreach ([
-        ['district' => 'Navigli', 'title' => 'Sciopero Navigli', 'description' => 'Sciopero del trasporto dalle 18:00'],
-        ['district' => 'Lodi', 'title' => 'Sciopero Lodi', 'description' => 'Sciopero del trasporto dalle 19:00'],
+        ['district' => 'Navigli', 'title' => 'Interruzione totale viabilità Navigli', 'description' => 'Interruzione totale della circolazione dalle 18:00'],
+        ['district' => 'Lodi', 'title' => 'Interruzione totale viabilità Lodi', 'description' => 'Interruzione totale della circolazione dalle 19:00'],
         ['district' => 'M2', 'title' => 'M2 chiusura', 'description' => 'M2 shared'],
     ] as $index => $item) {
         MobilityAlert::create($item + [
-            'source' => 'test', 'type' => 'closure', 'risk' => 'high',
+            'source' => 'test', 'type' => 'closure', 'risk' => 'critical',
             'starts_at' => '2026-08-03', 'external_hash' => 'regional-'.$index,
         ]);
     }
@@ -257,8 +295,8 @@ it('builds two regional dry-runs with distinct weather coordinates and evidence-
     $output = mb_strtolower(Artisan::output());
 
     expect($output)->toContain('navigli')->toContain('lodi')
-        ->and(substr_count($output, 'sciopero del trasporto dalle 18:00'))->toBe(1)
-        ->and(substr_count($output, 'sciopero del trasporto dalle 19:00'))->toBe(1)
+        ->and(substr_count($output, 'interruzione totale della circolazione dalle 18:00'))->toBe(1)
+        ->and(substr_count($output, 'interruzione totale della circolazione dalle 19:00'))->toBe(1)
         ->and(substr_count($output, 'сегодня важно'))->toBe(2)
         ->and($output)->not->toContain('m2 chiusura');
     Http::assertSentCount(2);
@@ -304,7 +342,7 @@ it('renders severe weather with a concrete district travel impact and no generic
         ->not->toContain('Возможны задержки из-за погоды', 'Будьте осторожны из-за погоды');
 });
 
-it('shows a city-wide strike once in each district and omits routine M1-M5 statuses', function () {
+it('omits strike announcements and routine M1-M5 statuses from every district morning digest', function () {
     config(['services.telegram.digest_districts' => [
         'navigli' => [
             'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11',
@@ -334,8 +372,8 @@ it('shows a city-wide strike once in each district and omits routine M1-M5 statu
     expect(Artisan::call('mobility:digest', ['--date' => '2026-09-18', '--dry-run' => true]))->toBe(0);
     $output = Artisan::output();
 
-    expect(substr_count($output, 'Забастовка общественного транспорта с 18:00 до конца движения.'))->toBe(2)
-        ->and(substr_count($output, 'Сегодня важно'))->toBe(2)
+    expect(substr_count($output, 'Забастовка общественного транспорта с 18:00 до конца движения.'))->toBe(0)
+        ->and(substr_count($output, 'Сегодня важно'))->toBe(0)
         ->and($output)->not->toContain('M1 chiusura')->not->toContain('M5 chiusura');
 });
 
