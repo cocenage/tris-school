@@ -9,6 +9,7 @@ use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Weather\MilanWeatherService;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Arr;
 use Throwable;
@@ -45,6 +46,16 @@ class MobilityDigestCommand extends Command
         $date = $this->option('date')
             ? Carbon::parse($this->option('date'))->startOfDay()
             : now()->startOfDay();
+
+        if ($this->option('date') && ! $this->option('dry-run')
+            && ! app(MilanWeatherService::class)->supportsForecastDate(
+                CarbonImmutable::instance($date),
+                config('app.timezone', 'Europe/Rome'),
+            )) {
+            $this->error('WeatherAPI Free forecasts are available only for today and the next two days; no digest was sent.');
+
+            return self::FAILURE;
+        }
 
         $alerts = MobilityAlert::query()
             ->whereDate('starts_at', $date)
@@ -160,7 +171,8 @@ class MobilityDigestCommand extends Command
 
     protected function buildMessage(Carbon $date, $alerts, ?array $route = null): string
     {
-        $weather = app(MilanWeatherService::class)->today(
+        $weather = app(MilanWeatherService::class)->morningForecast(
+            CarbonImmutable::instance($date),
             (float) ($route['latitude'] ?? 45.4642),
             (float) ($route['longitude'] ?? 9.1900),
             config('app.timezone', 'Europe/Rome'),
@@ -171,11 +183,31 @@ class MobilityDigestCommand extends Command
             ->values();
         $label = trim((string) ($route['label'] ?? ''));
         $text = Arr::random($this->greetings).($label !== '' ? ' · <b>'.e($label).'</b>' : '')."\n\n";
-        $text .= "🌤 <b>Погода</b>\n";
-        $text .= e((string) ($weather['emoji'] ?? '🌤')).' '.e((string) ($weather['summary'] ?? 'погода временно недоступна'))."\n";
+        $weatherDate = $date->copy()->setTimezone(config('app.timezone', 'Europe/Rome'));
+        $weatherHeading = $weatherDate->isToday() ? 'Погода на сегодня' : 'Погода на '.$weatherDate->format('d.m.Y');
+        $text .= '🌤 <b>'.e($weatherHeading)."</b>\n";
+        $points = $weather['points'] ?? [];
+        $hasForecast = collect($points)->contains(fn (?array $point): bool => $point !== null);
+
+        if (! $hasForecast) {
+            if (($weather['unavailable_reason'] ?? null) === 'date_out_of_range') {
+                $text .= "Прогноз недоступен: бесплатный сервис охватывает сегодня и следующие два дня.\n";
+            } else {
+                $text .= "Прогноз временно недоступен.\n";
+            }
+        } else {
+            foreach (['08:00', '13:00', '15:00'] as $time) {
+                $text .= $this->formatWeatherPoint($time, $points[$time] ?? null);
+            }
+        }
 
         if (! empty($weather['advice'])) {
             $text .= e((string) $weather['advice'])."\n";
+        }
+
+        if ($hasForecast) {
+            $text .= '<a href="https://www.weatherapi.com/">WeatherAPI.com</a> · перевод и округление.'."\n";
+            $text .= 'ℹ️ Прогноз вероятностный и может быть неточным для места и времени. Не используйте его как единственную основу решений о безопасности; сверяйтесь с официальными метеослужбами.'."\n";
         }
 
         if ($alerts->isNotEmpty()) {
@@ -188,6 +220,56 @@ class MobilityDigestCommand extends Command
         $text .= "\n".Arr::random($this->endings);
 
         return trim($text);
+    }
+
+    protected function formatWeatherPoint(string $time, ?array $point): string
+    {
+        if ($point === null) {
+            return '<b>'.e($time).' — Прогноз временно недоступен</b>'."\n";
+        }
+
+        $condition = trim(implode(' ', array_filter([
+            $point['emoji'] ?? null,
+            $point['condition'] ?? null,
+        ], fn (?string $value): bool => filled($value))));
+        $line = '<b>'.e($time).($condition !== '' ? ' — '.e($condition) : '')."</b>\n";
+
+        $temperature = $point['temperature_c'] ?? null;
+        $apparent = $point['apparent_temperature_c'] ?? null;
+        if ($temperature !== null || $apparent !== null) {
+            $temperatureText = $temperature !== null ? $this->formatTemperature((float) $temperature) : null;
+            $apparentText = $apparent !== null ? $this->formatTemperature((float) $apparent) : null;
+            $line .= 'Температура: '.($temperatureText ?? '—')
+                .($apparentText !== null ? ' (ощущается '.$apparentText.')' : '')."\n";
+        }
+
+        if (($point['relative_humidity_pct'] ?? null) !== null) {
+            $line .= '💧 Влажность: '.(int) $point['relative_humidity_pct'].'%'."\n";
+        }
+
+        $windSpeed = $point['wind_speed_kmh'] ?? null;
+        $windDirection = $point['wind_direction'] ?? null;
+        if ($windSpeed !== null || $windDirection !== null) {
+            $line .= '💨 Ветер: '.($windSpeed !== null ? (int) round((float) $windSpeed).' км/ч' : '—')
+                .($windDirection !== null ? ', '.e((string) $windDirection) : '')."\n";
+        }
+
+        if (($point['precipitation_probability_pct'] ?? null) !== null) {
+            $line .= '🌧 Осадки: '.(int) $point['precipitation_probability_pct'].'%';
+            if (($point['rain_mm'] ?? null) !== null) {
+                $line .= ' ('.number_format((float) $point['rain_mm'], 1, ',', '').' мм)';
+            }
+            $line .= "\n";
+        } elseif (($point['rain_mm'] ?? null) !== null) {
+            $line .= '🌧 Осадки: '.number_format((float) $point['rain_mm'], 1, ',', '')." мм\n";
+        }
+
+        return $line;
+    }
+
+    protected function formatTemperature(float $temperature): string
+    {
+        return sprintf('%+d°C', (int) round($temperature));
     }
 
     protected function alertsForDistrict($alerts, array $route, $routes)
