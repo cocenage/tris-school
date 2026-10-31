@@ -47,6 +47,16 @@ class MobilityDigestCommand extends Command
             ? Carbon::parse($this->option('date'))->startOfDay()
             : now()->startOfDay();
 
+        if ($this->option('date') && ! $this->option('dry-run')
+            && ! app(MilanWeatherService::class)->supportsForecastDate(
+                CarbonImmutable::instance($date),
+                config('app.timezone', 'Europe/Rome'),
+            )) {
+            $this->error('WeatherAPI Free forecasts are available only for today and the next two days; no digest was sent.');
+
+            return self::FAILURE;
+        }
+
         $alerts = MobilityAlert::query()
             ->whereDate('starts_at', $date)
             ->whereIn('risk', ['critical', 'high', 'medium'])
@@ -180,7 +190,11 @@ class MobilityDigestCommand extends Command
         $hasForecast = collect($points)->contains(fn (?array $point): bool => $point !== null);
 
         if (! $hasForecast) {
-            $text .= "Прогноз временно недоступен.\n";
+            if (($weather['unavailable_reason'] ?? null) === 'date_out_of_range') {
+                $text .= "Прогноз недоступен: бесплатный сервис охватывает сегодня и следующие два дня.\n";
+            } else {
+                $text .= "Прогноз временно недоступен.\n";
+            }
         } else {
             foreach (['08:00', '13:00', '15:00'] as $time) {
                 $text .= $this->formatWeatherPoint($time, $points[$time] ?? null);
@@ -192,7 +206,8 @@ class MobilityDigestCommand extends Command
         }
 
         if ($hasForecast) {
-            $text .= '<a href="https://open-meteo.com/">Источник: Open-Meteo</a> · CC BY 4.0 · перевод и округление.'."\n";
+            $text .= '<a href="https://www.weatherapi.com/">WeatherAPI.com</a> · перевод и округление.'."\n";
+            $text .= 'ℹ️ Прогноз вероятностный и может быть неточным для места и времени. Не используйте его как единственную основу решений о безопасности; сверяйтесь с официальными метеослужбами.'."\n";
         }
 
         if ($alerts->isNotEmpty()) {
@@ -240,7 +255,13 @@ class MobilityDigestCommand extends Command
         }
 
         if (($point['precipitation_probability_pct'] ?? null) !== null) {
-            $line .= '🌧 Осадки: '.(int) $point['precipitation_probability_pct'].'%'."\n";
+            $line .= '🌧 Осадки: '.(int) $point['precipitation_probability_pct'].'%';
+            if (($point['rain_mm'] ?? null) !== null) {
+                $line .= ' ('.number_format((float) $point['rain_mm'], 1, ',', '').' мм)';
+            }
+            $line .= "\n";
+        } elseif (($point['rain_mm'] ?? null) !== null) {
+            $line .= '🌧 Осадки: '.number_format((float) $point['rain_mm'], 1, ',', '')." мм\n";
         }
 
         return $line;

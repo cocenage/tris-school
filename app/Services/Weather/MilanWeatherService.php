@@ -8,6 +8,10 @@ use Illuminate\Support\Facades\Log;
 
 class MilanWeatherService
 {
+    private const FORECAST_DAYS = 3;
+
+    private const MORNING_TIMES = ['08:00', '13:00', '15:00'];
+
     protected int $shiftStartHour = 8;
 
     protected int $shiftEndHour = 17;
@@ -17,7 +21,8 @@ class MilanWeatherService
         float $longitude = 9.1900,
         string $timezone = 'Europe/Rome',
     ): array {
-        return $this->forecast($latitude, $longitude, $timezone, ['forecast_days' => 1]);
+        return $this->forecastForDate(CarbonImmutable::now($timezone), $latitude, $longitude, $timezone)
+            ?? $this->fallback();
     }
 
     public function forDate(
@@ -26,20 +31,16 @@ class MilanWeatherService
         float $longitude = 9.1900,
         string $timezone = 'Europe/Rome',
     ): ?array {
+        return $this->forecastForDate($date, $latitude, $longitude, $timezone);
+    }
+
+    public function supportsForecastDate(CarbonImmutable $date, string $timezone = 'Europe/Rome'): bool
+    {
         $today = CarbonImmutable::now($timezone)->startOfDay();
         $target = $date->setTimezone($timezone)->startOfDay();
-        $daysAhead = $today->diffInDays($target, false);
 
-        if ($daysAhead < 0 || $daysAhead > 15) {
-            return null;
-        }
-
-        $result = $this->forecast($latitude, $longitude, $timezone, [
-            'start_date' => $target->toDateString(),
-            'end_date' => $target->toDateString(),
-        ]);
-
-        return $result['summary'] === 'погода временно недоступна' ? null : $result;
+        return $target->greaterThanOrEqualTo($today)
+            && $target->lessThanOrEqualTo($today->addDays(self::FORECAST_DAYS - 1));
     }
 
     public function morningForecast(
@@ -49,37 +50,26 @@ class MilanWeatherService
         string $timezone = 'Europe/Rome',
     ): array {
         $target = $date->setTimezone($timezone)->startOfDay();
-        $points = ['08:00' => null, '13:00' => null, '15:00' => null];
+        $points = array_fill_keys(self::MORNING_TIMES, null);
 
-        $data = $this->requestHourly($latitude, $longitude, $timezone, [
-            'hourly' => implode(',', [
-                'temperature_2m',
-                'apparent_temperature',
-                'relative_humidity_2m',
-                'precipitation_probability',
-                'weather_code',
-                'wind_speed_10m',
-                'wind_direction_10m',
-                'rain',
-            ]),
-            'temperature_unit' => 'celsius',
-            'wind_speed_unit' => 'kmh',
-            'timeformat' => 'unixtime',
-            'start_date' => $target->toDateString(),
-            'end_date' => $target->toDateString(),
-        ]);
-
-        $timestamps = $data['hourly']['time'] ?? null;
-        if (! is_array($timestamps)) {
-            if ($data !== null) {
-                Log::warning('Weather provider returned no usable hourly timestamps.');
-            }
-
-            return ['points' => $points, 'advice' => null];
+        if (! $this->supportsForecastDate($target, $timezone)) {
+            return $this->unavailableMorning($points, 'date_out_of_range');
         }
 
-        $hourly = $data['hourly'];
-        foreach ($timestamps as $index => $timestamp) {
+        $forecast = $this->requestForecast($latitude, $longitude, $timezone);
+        if ($forecast['data'] === null) {
+            return $this->unavailableMorning($points, $forecast['unavailable_reason']);
+        }
+
+        $hours = $this->hoursForDate($forecast['data'], $target);
+        if ($hours === null) {
+            Log::warning('WeatherAPI forecast did not contain a usable target day.');
+
+            return $this->unavailableMorning($points, 'malformed_response');
+        }
+
+        foreach ($hours as $hour) {
+            $timestamp = $hour['time_epoch'] ?? null;
             if (! is_numeric($timestamp)) {
                 continue;
             }
@@ -89,26 +79,12 @@ class MilanWeatherService
                 continue;
             }
 
-            $key = $localTime->format('H:00');
+            $key = $localTime->format('H:i');
             if (! array_key_exists($key, $points) || $points[$key] !== null) {
                 continue;
             }
 
-            $code = $this->nullableInteger($this->hourlyValue($hourly, 'weather_code', $index));
-            [$condition, $emoji] = $this->weatherCondition($code);
-            $point = [
-                'condition' => $condition,
-                'emoji' => $emoji,
-                'weather_code' => $code,
-                'temperature_c' => $this->nullableFloat($this->hourlyValue($hourly, 'temperature_2m', $index)),
-                'apparent_temperature_c' => $this->nullableFloat($this->hourlyValue($hourly, 'apparent_temperature', $index)),
-                'relative_humidity_pct' => $this->nullableInteger($this->hourlyValue($hourly, 'relative_humidity_2m', $index)),
-                'wind_speed_kmh' => $this->nullableFloat($this->hourlyValue($hourly, 'wind_speed_10m', $index)),
-                'wind_direction' => $this->windDirection($this->nullableFloat($this->hourlyValue($hourly, 'wind_direction_10m', $index))),
-                'precipitation_probability_pct' => $this->nullableInteger($this->hourlyValue($hourly, 'precipitation_probability', $index)),
-                'rain_mm' => $this->nullableFloat($this->hourlyValue($hourly, 'rain', $index)),
-            ];
-
+            $point = $this->mapHour($hour);
             if (count(array_filter($point, fn (mixed $value): bool => $value !== null)) > 0) {
                 $points[$key] = $point;
             }
@@ -117,58 +93,135 @@ class MilanWeatherService
         return [
             'points' => $points,
             'advice' => $this->morningAdvice($points),
+            'unavailable_reason' => null,
         ];
     }
 
-    private function forecast(float $latitude, float $longitude, string $timezone, array $period): array
-    {
-        $data = $this->requestHourly($latitude, $longitude, $timezone, array_merge([
-            'hourly' => 'temperature_2m,precipitation_probability,rain,weather_code,wind_speed_10m',
-        ], $period));
+    private function forecastForDate(
+        CarbonImmutable $date,
+        float $latitude,
+        float $longitude,
+        string $timezone,
+    ): ?array {
+        $target = $date->setTimezone($timezone)->startOfDay();
+        if (! $this->supportsForecastDate($target, $timezone)) {
+            return null;
+        }
 
-        return $data === null ? $this->fallback() : $this->formatShiftWeather($data);
-    }
+        $forecast = $this->requestForecast($latitude, $longitude, $timezone);
+        if ($forecast['data'] === null) {
+            return null;
+        }
 
-    private function requestHourly(float $latitude, float $longitude, string $timezone, array $parameters): ?array
-    {
-        if ($latitude < -90 || $latitude > 90 || $longitude < -180 || $longitude > 180) {
-            Log::warning('Weather request skipped: invalid coordinates.');
+        $hours = $this->hoursForDate($forecast['data'], $target);
+        if ($hours === null) {
+            Log::warning('WeatherAPI forecast did not contain a usable target day.');
 
             return null;
+        }
+
+        return $this->formatShiftWeather($hours, $target, $timezone);
+    }
+
+    /** @return array{data: array|null, unavailable_reason: string|null} */
+    private function requestForecast(float $latitude, float $longitude, string $timezone): array
+    {
+        if ($latitude < -90 || $latitude > 90 || $longitude < -180 || $longitude > 180) {
+            Log::warning('WeatherAPI request skipped: invalid coordinates.');
+
+            return ['data' => null, 'unavailable_reason' => 'invalid_coordinates'];
+        }
+
+        $key = config('services.weatherapi.key');
+        if (! is_string($key) || trim($key) === '') {
+            Log::warning('WeatherAPI request skipped: API key is not configured.');
+
+            return ['data' => null, 'unavailable_reason' => 'missing_api_key'];
         }
 
         try {
-            $response = Http::timeout(15)
-                ->retry(2, 1000)
-                ->get('https://api.open-meteo.com/v1/forecast', array_merge([
-                    'latitude' => $latitude,
-                    'longitude' => $longitude,
-                    'timezone' => $timezone,
-                ], $parameters));
+            $response = Http::timeout(15)->get('https://api.weatherapi.com/v1/forecast.json', [
+                'key' => $key,
+                'q' => $latitude.','.$longitude,
+                'days' => self::FORECAST_DAYS,
+                'aqi' => 'no',
+                'alerts' => 'no',
+                'lang' => 'ru',
+            ]);
         } catch (\Throwable $e) {
-            Log::warning('Weather request failed', [
+            Log::warning('WeatherAPI request failed.', [
                 'exception' => class_basename($e),
             ]);
 
-            return null;
+            return ['data' => null, 'unavailable_reason' => 'provider_unavailable'];
         }
 
         if (! $response->successful()) {
-            Log::warning('Weather provider returned an unsuccessful response.', [
+            $providerCode = data_get($response->json(), 'error.code');
+            Log::warning('WeatherAPI returned an unsuccessful response.', [
                 'status' => $response->status(),
+                'provider_error_code' => is_numeric($providerCode) ? (int) $providerCode : null,
             ]);
 
-            return null;
+            return ['data' => null, 'unavailable_reason' => 'provider_unavailable'];
         }
 
         $data = $response->json();
-        if (! is_array($data) || ! is_array($data['hourly'] ?? null)) {
-            Log::warning('Weather provider returned an unusable hourly forecast.');
+        if (! is_array($data) || ! is_array(data_get($data, 'forecast.forecastday'))) {
+            Log::warning('WeatherAPI returned an unusable forecast response.');
 
-            return null;
+            return ['data' => null, 'unavailable_reason' => 'malformed_response'];
         }
 
-        return $data;
+        return ['data' => $data, 'unavailable_reason' => null];
+    }
+
+    private function hoursForDate(array $data, CarbonImmutable $target): ?array
+    {
+        foreach (data_get($data, 'forecast.forecastday', []) as $day) {
+            if (($day['date'] ?? null) !== $target->toDateString()) {
+                continue;
+            }
+
+            return is_array($day['hour'] ?? null) ? $day['hour'] : null;
+        }
+
+        return null;
+    }
+
+    private function mapHour(array $hour): array
+    {
+        $condition = is_array($hour['condition'] ?? null) ? $hour['condition'] : [];
+        $code = $this->nullableInteger($condition['code'] ?? null);
+        [$fallbackCondition, $emoji] = $this->weatherCondition($code);
+        $providerCondition = $condition['text'] ?? null;
+
+        return [
+            'condition' => is_string($providerCondition) && trim($providerCondition) !== ''
+                ? trim($providerCondition)
+                : $fallbackCondition,
+            'emoji' => $emoji,
+            'weather_code' => $code,
+            'temperature_c' => $this->nullableFloat($hour['temp_c'] ?? null),
+            'apparent_temperature_c' => $this->nullableFloat($hour['feelslike_c'] ?? null),
+            'relative_humidity_pct' => $this->nullableInteger($hour['humidity'] ?? null),
+            'wind_speed_kmh' => $this->nullableFloat($hour['wind_kph'] ?? null),
+            'wind_direction' => $this->windDirection(
+                $this->nullableFloat($hour['wind_degree'] ?? null),
+                is_string($hour['wind_dir'] ?? null) ? $hour['wind_dir'] : null,
+            ),
+            'precipitation_probability_pct' => $this->nullableInteger($hour['chance_of_rain'] ?? null),
+            'rain_mm' => $this->nullableFloat($hour['precip_mm'] ?? null),
+        ];
+    }
+
+    private function unavailableMorning(array $points, string $reason): array
+    {
+        return [
+            'points' => $points,
+            'advice' => null,
+            'unavailable_reason' => $reason,
+        ];
     }
 
     private function nullableFloat(mixed $value): ?float
@@ -176,66 +229,63 @@ class MilanWeatherService
         return is_numeric($value) ? (float) $value : null;
     }
 
-    private function hourlyValue(array $hourly, string $field, int|string $index): mixed
-    {
-        $values = $hourly[$field] ?? null;
-
-        return is_array($values) ? ($values[$index] ?? null) : null;
-    }
-
     private function nullableInteger(mixed $value): ?int
     {
         return is_numeric($value) ? (int) round((float) $value) : null;
     }
 
-    private function windDirection(?float $degrees): ?string
+    private function windDirection(?float $degrees, ?string $direction): ?string
     {
-        if ($degrees === null) {
-            return null;
+        if ($degrees !== null) {
+            $directions = ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ'];
+            $sector = (int) floor((fmod(($degrees + 360), 360) + 22.5) / 45) % 8;
+
+            return $directions[$sector];
         }
 
-        $directions = ['С', 'СВ', 'В', 'ЮВ', 'Ю', 'ЮЗ', 'З', 'СЗ'];
-        $sector = (int) floor((fmod(($degrees + 360), 360) + 22.5) / 45) % 8;
-
-        return $directions[$sector];
+        return match (strtoupper(trim((string) $direction))) {
+            'N' => 'С', 'NNE', 'NE' => 'СВ', 'ENE', 'E' => 'В', 'ESE', 'SE' => 'ЮВ',
+            'SSE', 'S' => 'Ю', 'SSW', 'SW' => 'ЮЗ', 'WSW', 'W' => 'З', 'WNW', 'NW', 'NNW' => 'СЗ',
+            default => null,
+        };
     }
 
     private function weatherCondition(?int $code): array
     {
         return match ($code) {
-            0 => ['Ясно', '☀️'],
-            1 => ['Преимущественно ясно', '🌤'],
-            2 => ['Облачно', '🌥'],
-            3 => ['Пасмурно', '☁️'],
-            45, 48 => ['Туман', '🌫'],
-            51, 53, 55 => ['Морось', '🌦'],
-            56, 57 => ['Ледяная морось', '🌧'],
-            61, 63 => ['Дождь', '🌧'],
-            65 => ['Сильный дождь', '🌧'],
-            66, 67 => ['Ледяной дождь', '🌧'],
-            71, 73, 75, 77 => ['Снег', '❄️'],
-            80, 81 => ['Кратковременный дождь', '🌦'],
-            82 => ['Сильный ливень', '🌧'],
-            85, 86 => ['Снегопад', '🌨'],
-            95 => ['Гроза', '⛈'],
-            96, 99 => ['Гроза с градом', '⛈'],
+            1000 => ['Ясно', '☀️'],
+            1003 => ['Переменная облачность', '🌤'],
+            1006 => ['Облачно', '🌥'],
+            1009 => ['Пасмурно', '☁️'],
+            1030, 1135, 1147 => ['Туман', '🌫'],
+            1063, 1150, 1153, 1168, 1171, 1180, 1183, 1186, 1189, 1192, 1195,
+            1198, 1201, 1240, 1243, 1246 => ['Дождь', '🌧'],
+            1066, 1072, 1114, 1117, 1210, 1213, 1216, 1219, 1222, 1225, 1255, 1258 => ['Снег', '❄️'],
+            1069, 1072, 1168, 1171, 1198, 1201, 1204, 1207, 1249, 1252 => ['Снег с дождём', '🌨'],
+            1087, 1273, 1276, 1279, 1282 => ['Гроза', '⛈'],
+            1237, 1261, 1264 => ['Ледяные осадки', '🧊'],
             default => [null, null],
         };
     }
 
     private function morningAdvice(array $points): ?string
     {
+        $thunder = [1087, 1273, 1276, 1279, 1282];
+        $snowOrIce = [1066, 1069, 1072, 1114, 1117, 1168, 1171, 1198, 1201, 1204, 1207, 1210, 1213, 1216, 1219, 1222, 1225, 1237, 1249, 1252, 1255, 1258, 1261, 1264, 1279, 1282];
+        $rain = [1063, 1069, 1072, 1150, 1153, 1168, 1171, 1180, 1183, 1186, 1189, 1192, 1195, 1198, 1201, 1204, 1207, 1240, 1243, 1246, 1249, 1252, 1273, 1276];
+        $heavyRain = [1192, 1195, 1243, 1246, 1276];
+
         foreach ($points as $time => $point) {
             if ($point === null) {
                 continue;
             }
 
             $code = $point['weather_code'];
-            if (in_array($code, [95, 96, 99], true)) {
+            if ($code !== null && in_array($code, $thunder, true)) {
                 return "⚠️ Прогноз указывает на грозу около {$time}; учитывайте это при перемещении между квартирами.";
             }
 
-            if (in_array($code, [56, 57, 66, 67, 71, 73, 75, 77, 85, 86], true)) {
+            if ($code !== null && in_array($code, $snowOrIce, true)) {
                 return "⚠️ Прогноз снега или гололёда около {$time}; планируйте перемещения осторожно.";
             }
 
@@ -243,14 +293,14 @@ class MilanWeatherService
                 return "⚠️ Около {$time} ожидается очень сильный ветер (от 50 км/ч); учитывайте условия на улице.";
             }
 
-            $isRain = in_array($code, [51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82], true);
-            if (in_array($code, [65, 82], true)) {
+            if ($code !== null && in_array($code, $heavyRain, true)) {
                 return "⚠️ Около {$time} прогнозируется сильный дождь; возможны задержки в пути.";
             }
             if ($point['rain_mm'] !== null && $point['rain_mm'] >= 4) {
                 return "⚠️ Около {$time} прогнозируется интенсивный дождь; возможны задержки в пути.";
             }
-            if ($isRain && $point['precipitation_probability_pct'] !== null
+            if ($code !== null && in_array($code, $rain, true)
+                && $point['precipitation_probability_pct'] !== null
                 && $point['precipitation_probability_pct'] >= 75) {
                 return "⚠️ Около {$time} высока вероятность дождя; учитывайте возможные задержки в пути.";
             }
@@ -266,68 +316,67 @@ class MilanWeatherService
         return null;
     }
 
-    protected function formatShiftWeather(array $data): array
+    protected function formatShiftWeather(array $hours, CarbonImmutable $target, string $timezone): array
     {
-        $hours = $data['hourly']['time'] ?? [];
-        $temps = $data['hourly']['temperature_2m'] ?? [];
-        $rain = $data['hourly']['rain'] ?? [];
-        $probability = $data['hourly']['precipitation_probability'] ?? [];
-        $codes = $data['hourly']['weather_code'] ?? [];
-        $wind = $data['hourly']['wind_speed_10m'] ?? [];
-
         $shiftTemps = [];
         $shiftCodes = [];
         $maxRainProbability = 0;
-        $totalRain = 0;
-        $maxWind = 0;
+        $totalRain = 0.0;
+        $maxWind = 0.0;
         $rainStartHour = null;
 
-        foreach ($hours as $index => $time) {
-            $hour = (int) date('H', strtotime($time));
-
-            if ($hour < $this->shiftStartHour || $hour > $this->shiftEndHour) {
+        foreach ($hours as $hour) {
+            $timestamp = $hour['time_epoch'] ?? null;
+            if (! is_numeric($timestamp)) {
                 continue;
             }
 
-            $temp = $temps[$index] ?? null;
-
-            if ($temp !== null) {
-                $shiftTemps[] = (float) $temp;
+            $localTime = CarbonImmutable::createFromTimestampUTC((int) $timestamp)->setTimezone($timezone);
+            $hourOfDay = (int) $localTime->format('G');
+            if ($localTime->toDateString() !== $target->toDateString()
+                || $hourOfDay < $this->shiftStartHour || $hourOfDay > $this->shiftEndHour) {
+                continue;
             }
 
-            $rainValue = (float) ($rain[$index] ?? 0);
-            $probabilityValue = (int) ($probability[$index] ?? 0);
-            $windValue = (float) ($wind[$index] ?? 0);
-
-            $totalRain += $rainValue;
-            $maxRainProbability = max($maxRainProbability, $probabilityValue);
-            $maxWind = max($maxWind, $windValue);
-
-            if ($rainStartHour === null && ($rainValue > 0 || $probabilityValue >= 50)) {
-                $rainStartHour = $hour;
+            $temperature = $this->nullableFloat($hour['temp_c'] ?? null);
+            if ($temperature !== null) {
+                $shiftTemps[] = $temperature;
             }
 
-            if (isset($codes[$index])) {
-                $shiftCodes[] = (int) $codes[$index];
+            $rain = $this->nullableFloat($hour['precip_mm'] ?? null);
+            $probability = $this->nullableInteger($hour['chance_of_rain'] ?? null);
+            $wind = $this->nullableFloat($hour['wind_kph'] ?? null);
+            if ($rain !== null) {
+                $totalRain += $rain;
+            }
+            if ($probability !== null) {
+                $maxRainProbability = max($maxRainProbability, $probability);
+            }
+            if ($wind !== null) {
+                $maxWind = max($maxWind, $wind);
+            }
+            if ($rainStartHour === null && (($rain ?? 0) > 0 || ($probability ?? 0) >= 50)) {
+                $rainStartHour = $hourOfDay;
+            }
+
+            $code = $this->nullableInteger(data_get($hour, 'condition.code'));
+            if ($code !== null) {
+                $shiftCodes[] = $code;
             }
         }
 
-        if (empty($shiftTemps)) {
+        if ($shiftTemps === []) {
             return $this->fallback();
         }
 
-        $minTemp = (int) round(min($shiftTemps));
-        $maxTemp = (int) round(max($shiftTemps));
-        $mainCode = $this->mainWeatherCode($shiftCodes);
-
         return $this->buildResult(
-            minTemp: $minTemp,
-            maxTemp: $maxTemp,
-            mainCode: $mainCode,
+            minTemp: (int) round(min($shiftTemps)),
+            maxTemp: (int) round(max($shiftTemps)),
+            mainCode: $this->mainWeatherCode($shiftCodes),
             maxRainProbability: $maxRainProbability,
             totalRain: $totalRain,
             maxWind: $maxWind,
-            rainStartHour: $rainStartHour
+            rainStartHour: $rainStartHour,
         );
     }
 
@@ -338,7 +387,7 @@ class MilanWeatherService
         int $maxRainProbability,
         float $totalRain,
         float $maxWind,
-        ?int $rainStartHour
+        ?int $rainStartHour,
     ): array {
         $tempText = $minTemp === $maxTemp
             ? sprintf('%+d°C', $maxTemp)
@@ -349,11 +398,12 @@ class MilanWeatherService
         $isHot = $maxTemp >= 30;
         $isColdMorning = $minTemp <= 8;
         $isWindy = $maxWind >= 30;
+        $isIcy = in_array($mainCode, [1069, 1072, 1168, 1171, 1198, 1201, 1204, 1207, 1237, 1249, 1252, 1261, 1264], true);
+        $isSnow = in_array($mainCode, [1066, 1114, 1117, 1210, 1213, 1216, 1219, 1222, 1225, 1255, 1258], true);
 
-        $isIcy = in_array($mainCode, [56, 57, 66, 67], true);
-        if ($isIcy || in_array($mainCode, [71, 73, 75, 77, 85, 86], true)) {
+        if ($isIcy || $isSnow) {
             return [
-                'emoji' => '❄️',
+                'emoji' => $isIcy ? '🧊' : '❄️',
                 'summary' => $tempText.($isIcy ? ', гололёд' : ', снег'),
                 'advice' => '❄️ На дорогу между квартирами лучше заложить дополнительное время.',
             ];
@@ -390,58 +440,35 @@ class MilanWeatherService
         }
 
         if ($isHot) {
-            return [
-                'emoji' => '☀️',
-                'summary' => "{$tempText}, жарко",
-                'advice' => null,
-            ];
+            return ['emoji' => '☀️', 'summary' => "{$tempText}, жарко", 'advice' => null];
         }
-
         if ($isColdMorning) {
-            return [
-                'emoji' => '🥶',
-                'summary' => "{$tempText}, прохладно утром",
-                'advice' => null,
-            ];
+            return ['emoji' => '🥶', 'summary' => "{$tempText}, прохладно утром", 'advice' => null];
+        }
+        if (in_array($mainCode, [1000], true)) {
+            return ['emoji' => '☀️', 'summary' => "{$tempText}, солнечно", 'advice' => null];
+        }
+        if (in_array($mainCode, [1003, 1006, 1009], true)) {
+            return ['emoji' => '🌤', 'summary' => "{$tempText}, облачно", 'advice' => null];
         }
 
-        if (in_array($mainCode, [0, 1], true)) {
-            return [
-                'emoji' => '☀️',
-                'summary' => "{$tempText}, солнечно",
-                'advice' => null,
-            ];
-        }
-
-        if (in_array($mainCode, [2, 3], true)) {
-            return [
-                'emoji' => '🌤',
-                'summary' => "{$tempText}, облачно",
-                'advice' => null,
-            ];
-        }
-
-        return [
-            'emoji' => '🌤',
-            'summary' => $tempText,
-            'advice' => null,
-        ];
+        return ['emoji' => '🌤', 'summary' => $tempText, 'advice' => null];
     }
 
     protected function mainWeatherCode(array $codes): ?int
     {
-        if (empty($codes)) {
+        if ($codes === []) {
             return null;
         }
 
         $priority = [
-            95, 96, 99,
-            56, 57, 66, 67, 71, 73, 75, 77, 85, 86,
-            80, 81, 82,
-            61, 63, 65,
-            51, 53, 55,
-            45, 48,
-            3, 2, 1, 0,
+            1087, 1273, 1276, 1279, 1282,
+            1069, 1072, 1168, 1171, 1198, 1201, 1204, 1207, 1237, 1249, 1252, 1261, 1264,
+            1066, 1114, 1117, 1210, 1213, 1216, 1219, 1222, 1225, 1255, 1258,
+            1192, 1195, 1243, 1246,
+            1063, 1150, 1153, 1180, 1183, 1186, 1189, 1240,
+            1030, 1135, 1147,
+            1009, 1006, 1003, 1000,
         ];
 
         foreach ($priority as $code) {

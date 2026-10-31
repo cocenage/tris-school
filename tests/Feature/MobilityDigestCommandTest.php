@@ -22,6 +22,9 @@ uses(TestCase::class);
 
 beforeEach(function () {
     config(['cache.default' => 'array']);
+    config(['services.weatherapi.key' => 'feature-test-key']);
+    Carbon::setTestNow(Carbon::parse('2026-10-07 06:00', 'Europe/Rome'));
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-07 06:00', 'Europe/Rome'));
     Http::preventStrayRequests();
     config(['services.telegram.digest_districts' => []]);
     Schema::dropIfExists('mobility_alerts');
@@ -45,10 +48,12 @@ beforeEach(function () {
 
 afterEach(function () {
     Schema::dropIfExists('mobility_alerts');
+    Carbon::setTestNow();
+    CarbonImmutable::setTestNow();
 });
 
 it('omits strikes from the morning digest while preserving weather and other important mobility alerts', function () {
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     $strikeBuilder = Mockery::mock(MobilityStrikesSummaryBuilder::class);
     $strikeBuilder->shouldReceive('build')->zeroOrMoreTimes()->andReturn(['strikes' => [[
         'source' => 'atm', 'status' => 'scheduled', 'operator' => 'ATM Milano',
@@ -97,7 +102,7 @@ it('omits strikes from the morning digest while preserving weather and other imp
 });
 
 it('keeps routine metro closures out of the human morning digest', function () {
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     config([
         'services.telegram.mobility_targets' => null,
         'services.telegram.analytics_bot_token' => null,
@@ -265,6 +270,8 @@ it('suppresses raw M1-M5 and Crescenzago source rows when normalized events exis
 });
 
 it('builds two regional dry-runs with distinct weather coordinates and evidence-based mobility scope', function () {
+    Carbon::setTestNow(Carbon::parse('2026-08-03 06:00', 'Europe/Rome'));
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-08-03 06:00', 'Europe/Rome'));
     config(['services.telegram.digest_districts' => [
         'navigli' => [
             'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11',
@@ -275,16 +282,17 @@ it('builds two regional dry-runs with distinct weather coordinates and evidence-
             'latitude' => 45.44, 'longitude' => 9.21,
         ],
     ]]);
-    Http::fake(['api.open-meteo.com/*' => Http::response([
-        'hourly' => [
-            'time' => ['2026-08-03T08:00'],
-            'temperature_2m' => [22],
-            'precipitation_probability' => [0],
-            'rain' => [0],
-            'weather_code' => [1],
-            'wind_speed_10m' => [5],
-        ],
-    ])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [[
+        'date' => '2026-08-03',
+        'hour' => [[
+            'time' => '2026-08-03 08:00',
+            'time_epoch' => CarbonImmutable::parse('2026-08-03 08:00', 'Europe/Rome')->getTimestamp(),
+            'temp_c' => 22, 'feelslike_c' => 22, 'humidity' => 50,
+            'wind_kph' => 5, 'wind_degree' => 90, 'wind_dir' => 'E',
+            'chance_of_rain' => 0, 'precip_mm' => 0,
+            'condition' => ['text' => 'Преимущественно ясно', 'code' => 1003],
+        ]],
+    ]]]])]);
     foreach ([
         ['district' => 'Navigli', 'title' => 'Interruzione totale viabilità Navigli', 'description' => 'Interruzione totale della circolazione dalle 18:00'],
         ['district' => 'Lodi', 'title' => 'Interruzione totale viabilità Lodi', 'description' => 'Interruzione totale della circolazione dalle 19:00'],
@@ -307,13 +315,14 @@ it('builds two regional dry-runs with distinct weather coordinates and evidence-
         ->and(substr_count($output, 'сегодня важно'))->toBe(2)
         ->and($output)->not->toContain('m2 chiusura');
     Http::assertSentCount(2);
-    $coordinates = collect(Http::recorded())->map(fn (array $pair): string => $pair[0]['latitude'].'|'.$pair[0]['longitude']
-    )->sort()->values()->all();
-    expect($coordinates)->toBe(['45.44|9.21', '45.45|9.17']);
+    $coordinates = collect(Http::recorded())->map(fn (array $pair): string => $pair[0]['q'])->sort()->values()->all();
+    expect($coordinates)->toBe(['45.44,9.21', '45.45,9.17']);
 });
 
 it('keeps a regional morning digest useful when weather is unavailable', function () {
-    Http::fake(['api.open-meteo.com/*' => Http::response([], 503)]);
+    Carbon::setTestNow(Carbon::parse('2026-08-03 06:00', 'Europe/Rome'));
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-08-03 06:00', 'Europe/Rome'));
+    Http::fake(['api.weatherapi.com/*' => Http::response([], 503)]);
     $alert = MobilityAlert::make([
         'source' => 'test', 'title' => 'Chiusura viabilità', 'description' => 'City-wide restriction',
         'type' => 'closure', 'risk' => 'high', 'starts_at' => '2026-08-03',
@@ -371,20 +380,21 @@ it('renders all three forecast hours for all five configured districts for the r
         ]])->all();
     config(['services.telegram.digest_districts' => $districts]);
 
-    $times = collect(['08:00', '13:00', '15:00'])
-        ->map(fn (string $time): int => CarbonImmutable::parse('2026-10-07 '.$time, 'Europe/Rome')->getTimestamp())
-        ->all();
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => [
-        'time' => $times,
-        'temperature_2m' => [12, 18, 16],
-        'apparent_temperature' => [10, 17, 14],
-        'relative_humidity_2m' => [82, 60, 75],
-        'precipitation_probability' => [20, 10, 65],
-        'weather_code' => [2, 0, 61],
-        'wind_speed_10m' => [8, 12, 19],
-        'wind_direction_10m' => [315, 270, 225],
-        'rain' => [0, 0, 1],
-    ]])]);
+    $hours = collect([
+        ['08:00', 12, 10, 82, 8, 315, 20, 0, 'Облачно', 1006],
+        ['13:00', 18, 17, 60, 12, 270, 10, 0, 'Ясно', 1000],
+        ['15:00', 16, 14, 75, 19, 225, 65, 1.2, 'Дождь', 1183],
+    ])->map(fn (array $values): array => [
+        'time' => '2026-10-07 '.$values[0],
+        'time_epoch' => CarbonImmutable::parse('2026-10-07 '.$values[0], 'Europe/Rome')->getTimestamp(),
+        'temp_c' => $values[1], 'feelslike_c' => $values[2], 'humidity' => $values[3],
+        'wind_kph' => $values[4], 'wind_degree' => $values[5], 'wind_dir' => 'NW',
+        'chance_of_rain' => $values[6], 'precip_mm' => $values[7],
+        'condition' => ['text' => $values[8], 'code' => $values[9]],
+    ])->all();
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [[
+        'date' => '2026-10-07', 'hour' => $hours,
+    ]]]])]);
     $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
         ->shouldNotReceive('sendAnalyticsMessage'));
 
@@ -397,18 +407,20 @@ it('renders all three forecast hours for all five configured districts for the r
     expect(substr_count($output, '08:00 —'))->toBe(5)
         ->and(substr_count($output, '13:00 —'))->toBe(5)
         ->and(substr_count($output, '15:00 —'))->toBe(5)
-        ->and(substr_count($output, 'Источник: Open-Meteo'))->toBe(5);
+        ->and(substr_count($output, 'WeatherAPI.com'))->toBe(5)
+        ->and(substr_count($output, 'официальными метеослужбами'))->toBe(5)
+        ->and(substr_count($output, '1,2 мм'))->toBe(5);
 
     $requests = collect(Http::recorded())->map(fn (array $pair) => $pair[0]);
     expect($requests)->toHaveCount(5)
-        ->and($requests->every(fn (Request $request): bool => $request['start_date'] === '2026-10-07'
-            && $request['end_date'] === '2026-10-07'
-            && $request['timezone'] === 'Europe/Rome'
-            && $request['timeformat'] === 'unixtime'))->toBeTrue();
+        ->and($requests->every(fn (Request $request): bool => (int) $request['days'] === 3
+            && $request['aqi'] === 'no' && $request['alerts'] === 'no'
+            && $request['lang'] === 'ru'))->toBeTrue()
+        ->and($requests->pluck('q')->all())->toBe(['45.4,9.1', '45.41,9.11', '45.42,9.12', '45.43,9.13', '45.44,9.14']);
 });
 
 it('omits strike announcements and routine M1-M5 statuses from every district morning digest', function () {
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     config(['services.telegram.digest_districts' => [
         'navigli' => [
             'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11',
@@ -444,7 +456,7 @@ it('omits strike announcements and routine M1-M5 statuses from every district mo
 });
 
 it('shows a confirmed critical network disruption but not a critical single-line closure', function () {
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     $command = app(MobilityDigestCommand::class);
     $method = new ReflectionMethod($command, 'buildMessage');
     $method->setAccessible(true);
@@ -483,19 +495,19 @@ it('uses the analytics sender and matching duty topics for regional morning deli
             'latitude' => 45.44, 'longitude' => 9.21,
         ],
     ]]);
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     $this->mock(TelegramBotService::class, function (MockInterface $mock): void {
         $mock->shouldReceive('sendAnalyticsMessage')->once()->with('-1001', Mockery::type('string'), '11')->andReturn(101);
         $mock->shouldReceive('sendAnalyticsMessage')->once()->with('-1002', Mockery::type('string'), '22')->andReturn(102);
     });
 
-    $this->artisan('mobility:digest', ['--date' => '2026-08-03'])
+    $this->artisan('mobility:digest', ['--date' => '2026-10-07'])
         ->expectsOutputToContain('District morning digests sent')
         ->assertExitCode(0);
 });
 
 it('attempts the morning summary for every configured district', function () {
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     config(['services.telegram.digest_districts' => collect(['navigli', 'lodi', 'certosa', 'lambrate', 'como'])
         ->mapWithKeys(fn (string $key, int $index): array => [$key => [
             'label' => ucfirst($key), 'chat_id' => (string) (-1001 - $index),
@@ -519,7 +531,7 @@ it('attempts the morning summary for every configured district', function () {
 });
 
 it('continues to later districts when an earlier morning send fails', function () {
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     config(['services.telegram.digest_districts' => [
         'navigli' => ['label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11', 'latitude' => 45.45, 'longitude' => 9.17],
         'lodi' => ['label' => 'Lodi', 'chat_id' => '-1002', 'duty_thread_id' => '22', 'latitude' => 45.45, 'longitude' => 9.17],
@@ -544,7 +556,7 @@ it('continues to later districts when an earlier morning send fails', function (
 });
 
 it('reports incomplete district routes instead of silently sending only the first valid route', function () {
-    Http::fake(['api.open-meteo.com/*' => Http::response(['hourly' => []])]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     config(['services.telegram.digest_districts' => [
         'navigli' => ['label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11', 'latitude' => 45.45, 'longitude' => 9.17],
         'lodi' => ['label' => 'Lodi', 'chat_id' => '-1002', 'latitude' => 45.45, 'longitude' => 9.17],
@@ -555,4 +567,19 @@ it('reports incomplete district routes instead of silently sending only the firs
     $this->artisan('mobility:digest', ['--date' => '2026-10-07'])
         ->expectsOutputToContain('District lodi skipped: missing_duty_thread_id')
         ->assertExitCode(1);
+});
+
+it('does not send a requested date outside the WeatherAPI Free forecast window', function () {
+    config(['services.telegram.digest_districts' => [
+        'navigli' => ['label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11', 'latitude' => 45.45, 'longitude' => 9.17],
+    ]]);
+    Http::fake();
+    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
+        ->shouldNotReceive('sendAnalyticsMessage'));
+
+    $this->artisan('mobility:digest', ['--date' => '2026-11-03'])
+        ->expectsOutputToContain('no digest was sent')
+        ->assertExitCode(1);
+
+    Http::assertNothingSent();
 });
