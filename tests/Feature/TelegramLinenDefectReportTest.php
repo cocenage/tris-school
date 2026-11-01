@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\TelegramOperationalEvent;
+use App\Models\TelegramOutboundOperation;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramLinenDefectReportBuilder;
 use App\Services\Telegram\TelegramLinenDefectReportFormatter;
@@ -8,6 +9,7 @@ use App\Services\Telegram\TelegramOperationalEventObserver;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 use Mockery\MockInterface;
 use Tests\Support\TelegramOperationalTestDatabase;
 
@@ -29,8 +31,18 @@ beforeEach(function () {
 
 afterEach(function () {
     Carbon::setTestNow();
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
     TelegramOperationalTestDatabase::purge();
 });
+
+function enableOutboundJournalForLinenTest(): void
+{
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
+    (require database_path('migrations/2026_10_21_000000_create_telegram_outbound_operations_table.php'))->up();
+    (require database_path('migrations/2026_11_01_000000_create_telegram_outbound_operation_events_table.php'))->up();
+}
 
 function linenMessage(string $text, string $id, string $chat = '-1001', string $topic = '12'): void
 {
@@ -192,4 +204,86 @@ it('keeps district reports on their configured routes in per-district mode', fun
         ->and($sent[1]['thread'])->toBe('22')
         ->and($sent[1]['text'])->toContain('3 × простыня')
         ->not->toContain('2 × полотенце');
+});
+
+it('journals the standalone linen send on its own existing outbound operation', function () {
+    enableOutboundJournalForLinenTest();
+    $report = [
+        'cases' => [['district' => 'navigli']], 'incomplete' => false,
+        'districts' => ['navigli' => ['source_status' => 'available', 'source_messages' => 2, 'observed_messages' => 2]],
+    ];
+    $builder = Mockery::mock(TelegramLinenDefectReportBuilder::class);
+    $builder->shouldReceive('build')->once()->andReturn($report);
+    app()->instance(TelegramLinenDefectReportBuilder::class, $builder);
+    $formatter = Mockery::mock(TelegramLinenDefectReportFormatter::class);
+    $formatter->shouldReceive('format')->once()->andReturn('synthetic private linen details');
+    app()->instance(TelegramLinenDefectReportFormatter::class, $formatter);
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldReceive('sendMessage')->once()->with('-9000', 'synthetic private linen details', '99')->andReturn(881);
+    app()->instance(TelegramBotService::class, $bot);
+
+    expect(Artisan::call('telegram:linen-defects-report', ['--date' => '2026-10-15', '--json' => true]))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'linen_defect:2026-10-15:central')->sole();
+    expect($operation->notification_type)->toBe('linen_defect')
+        ->and($operation->events->where('stage', 'linen_source')->first()?->outcome)->toBe('loaded')
+        ->and($operation->events->where('stage', 'linen_filter')->first()?->outcome)->toBe('complete')
+        ->and($operation->events->where('stage', 'linen_format')->first()?->metrics)->toBe(['message_present' => true])
+        ->and($operation->events->where('stage', 'linen_guard')->first()?->outcome)->toBe('complete')
+        ->and(json_encode($operation->events->toArray()))->not->toContain('synthetic private linen details');
+});
+
+it('keeps standalone linen dry-runs out of the outbound build journal', function () {
+    enableOutboundJournalForLinenTest();
+    $builder = Mockery::mock(TelegramLinenDefectReportBuilder::class);
+    $builder->shouldReceive('build')->once()->andReturn(['cases' => [], 'incomplete' => false, 'districts' => []]);
+    app()->instance(TelegramLinenDefectReportBuilder::class, $builder);
+    $formatter = Mockery::mock(TelegramLinenDefectReportFormatter::class);
+    $formatter->shouldReceive('format')->once()->andReturn('preview only');
+    app()->instance(TelegramLinenDefectReportFormatter::class, $formatter);
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldNotReceive('sendMessage');
+    $bot->shouldNotReceive('sendAnalyticsMessage');
+    app()->instance(TelegramBotService::class, $bot);
+
+    expect(Artisan::call('telegram:linen-defects-report', ['--date' => '2026-10-15', '--dry-run' => true, '--json' => true]))->toBe(0)
+        ->and(TelegramOutboundOperation::count())->toBe(0);
+});
+
+it('records an unclassified linen source failure without saving exception details', function () {
+    enableOutboundJournalForLinenTest();
+    $builder = Mockery::mock(TelegramLinenDefectReportBuilder::class);
+    $builder->shouldReceive('build')->once()->andThrow(new RuntimeException('private linen source detail'));
+    app()->instance(TelegramLinenDefectReportBuilder::class, $builder);
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldNotReceive('sendMessage');
+    $bot->shouldNotReceive('sendAnalyticsMessage');
+    app()->instance(TelegramBotService::class, $bot);
+
+    expect(Artisan::call('telegram:linen-defects-report', ['--date' => '2026-10-15', '--json' => true]))->toBe(1);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'linen_defect:2026-10-15:central')->sole();
+    expect($operation->events->pluck('outcome')->all())->toBe(['started', 'failure_unclassified'])
+        ->and(json_encode($operation->events->toArray()))->not->toContain('private linen source detail');
+});
+
+it('records an absent standalone linen message and skips delivery', function () {
+    enableOutboundJournalForLinenTest();
+    $builder = Mockery::mock(TelegramLinenDefectReportBuilder::class);
+    $builder->shouldReceive('build')->once()->andReturn(['cases' => [], 'incomplete' => false, 'districts' => []]);
+    app()->instance(TelegramLinenDefectReportBuilder::class, $builder);
+    $formatter = Mockery::mock(TelegramLinenDefectReportFormatter::class);
+    $formatter->shouldReceive('format')->once()->andReturn('');
+    app()->instance(TelegramLinenDefectReportFormatter::class, $formatter);
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldNotReceive('sendMessage');
+    $bot->shouldNotReceive('sendAnalyticsMessage');
+    app()->instance(TelegramBotService::class, $bot);
+
+    expect(Artisan::call('telegram:linen-defects-report', ['--date' => '2026-10-15', '--json' => true]))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'linen_defect:2026-10-15:central')->sole();
+    expect($operation->events->where('stage', 'linen_format')->first()?->outcome)->toBe('no_message')
+        ->and($operation->events->where('stage', 'linen_format')->first()?->metrics)->toBe(['message_present' => false])
+        ->and($operation->events->where('stage', 'linen_guard'))->toBeEmpty();
 });

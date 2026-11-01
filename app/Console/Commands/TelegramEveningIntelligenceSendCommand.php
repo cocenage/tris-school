@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramDigestBuildJournal;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
@@ -77,8 +78,33 @@ class TelegramEveningIntelligenceSendCommand extends Command
             return self::FAILURE;
         }
 
+        $journal = app(TelegramDigestBuildJournal::class);
+        $journalContexts = [];
+        if (! $dryRun) {
+            foreach ($routes as $route) {
+                $targetChatId = $deliveryMode === 'centralized' ? $centralChatId : (string) $route['chat_id'];
+                $targetThreadId = $deliveryMode === 'centralized' ? $centralThreadId : (string) $route['duty_thread_id'];
+                $context = [
+                    'operation_key' => 'evening_intelligence:'.$date->toDateString().':'.$route['key'],
+                    'notification_type' => 'evening_intelligence',
+                    'bot' => $deliveryMode === 'centralized' ? 'work' : 'analytics',
+                    'chat_id' => $targetChatId,
+                    'message_thread_id' => $targetThreadId,
+                    'district' => $route['key'],
+                    'source_type' => 'TelegramOperationalEvent',
+                    'source_id' => $date->toDateString(),
+                    'scheduled_for' => $date->copy()->setTime(20, 30),
+                ];
+                $journalContexts[$route['key']] = $context;
+                $journal->reserve($context);
+            }
+        }
+
         if (! $dryRun && $date->isSameDay(now(config('app.timezone', 'Europe/Rome')))
             && Artisan::call('telegram:operational-replay', ['--through-now' => true, '--json' => true]) !== self::SUCCESS) {
+            foreach ($journalContexts as $context) {
+                $journal->record($context, 'evening_source', 'failure_unclassified');
+            }
             $this->error('Current-day operational catch-up failed; evening delivery was not attempted.');
 
             return self::FAILURE;
@@ -99,16 +125,54 @@ class TelegramEveningIntelligenceSendCommand extends Command
                 }
             }
         }
+        $linenSourceFailed = false;
         try {
             $linenReport = $linen->build($date);
         } catch (Throwable) {
             $linenReport = ['cases' => [], 'incomplete' => true];
+            $linenSourceFailed = true;
+        }
+
+        $linenDistricts = collect($linenReport['districts'] ?? []);
+        if ($linenSourceFailed) {
+            foreach ($journalContexts as $context) {
+                $journal->record($context, 'evening_linen_source', 'failure_unclassified');
+            }
+        } else {
+            foreach ($journalContexts as $context) {
+                $districtKey = (string) $context['district'];
+                $linenDistrict = $linenDistricts->get($districtKey);
+                $linenSourceMessages = (int) ($linenDistrict['source_messages'] ?? 0);
+                $linenObservedMessages = (int) ($linenDistrict['observed_messages'] ?? 0);
+                $linenCases = collect($linenReport['cases'] ?? [])->where('district', $districtKey)->count();
+                $linenSourceOutcome = $linenDistrict === null
+                    ? 'failure_unclassified'
+                    : (($linenDistrict['source_status'] ?? null) === 'unavailable' && $linenSourceMessages === 0
+                        ? 'no_input'
+                        : (($linenDistrict['source_status'] ?? null) !== 'available'
+                            || $linenObservedMessages < $linenSourceMessages
+                            ? 'source_error' : 'loaded'));
+
+                $journal->record($context, 'evening_linen_source', $linenSourceOutcome, [
+                    'input_count' => $linenSourceMessages,
+                    'source_messages' => $linenSourceMessages,
+                    'observed_messages' => $linenObservedMessages,
+                ]);
+                $journal->record($context, 'linen_filter', $linenCases > 0 ? 'complete' : 'no_significant_events', [
+                    'input_count' => $linenSourceMessages,
+                    'events_included' => $linenCases,
+                ]);
+            }
         }
 
         foreach ($routes as $route) {
+            $context = $journalContexts[$route['key']] ?? null;
             try {
                 $preview = $builder->build($date, ['district' => $route]);
             } catch (Throwable) {
+                if ($context !== null) {
+                    $journal->record($context, 'evening_source', 'failure_unclassified');
+                }
                 $results[] = $this->result($route, $date, 'failed', 0, 0, 'ledger_unavailable');
 
                 continue;
@@ -116,8 +180,45 @@ class TelegramEveningIntelligenceSendCommand extends Command
 
             $preview['linen_report'] = $linenReport;
 
-            $text = $formatter->eveningIntelligence($preview);
+            if ($context !== null) {
+                $quality = $preview['data_quality'] ?? [];
+                $sourceMessages = (int) ($quality['source_messages'] ?? 0);
+                $observedMessages = (int) ($quality['observed_messages'] ?? 0);
+                $eventsConsidered = (int) ($preview['events_considered'] ?? 0);
+                $sourceOutcome = ($quality['ledger'] ?? 'unavailable') !== 'available'
+                    ? 'failure_unclassified'
+                    : (($quality['source_status'] ?? null) === 'incomplete'
+                        ? 'source_error'
+                        : ($sourceMessages === 0 && $eventsConsidered === 0 ? 'no_input' : 'loaded'));
+                $journal->record($context, 'evening_source', $sourceOutcome, [
+                    'source_messages' => $sourceMessages,
+                    'observed_messages' => $observedMessages,
+                    'events_considered' => $eventsConsidered,
+                ]);
+                $journal->record($context, 'evening_filter', (int) ($preview['events_included'] ?? 0) > 0 ? 'complete' : 'no_significant_events', [
+                    'events_considered' => $eventsConsidered,
+                    'events_included' => (int) ($preview['events_included'] ?? 0),
+                    'events_omitted' => (int) ($preview['events_omitted'] ?? 0),
+                ]);
+            }
+
+            try {
+                $text = $formatter->eveningIntelligence($preview);
+            } catch (Throwable $exception) {
+                if ($context !== null) {
+                    $journal->record($context, 'evening_format', 'calculation_error');
+                }
+
+                throw $exception;
+            }
             $materialEvents = (int) $preview['events_included'];
+
+            if ($context !== null) {
+                $messagePresent = trim($text) !== '';
+                $journal->record($context, 'evening_format', $messagePresent ? 'built' : 'no_message', [
+                    'message_present' => $messagePresent,
+                ]);
+            }
 
             if ($dryRun) {
                 $results[] = $this->result($route, $date, 'previewed', $materialEvents, 0);
@@ -133,6 +234,12 @@ class TelegramEveningIntelligenceSendCommand extends Command
                 continue;
             }
 
+            if ($context !== null && trim($text) === '') {
+                $results[] = $this->result($route, $date, 'no_message', $materialEvents, 0);
+
+                continue;
+            }
+
             $targetChatId = $deliveryMode === 'centralized' ? $centralChatId : (string) $route['chat_id'];
             $targetThreadId = $deliveryMode === 'centralized' ? $centralThreadId : (string) $route['duty_thread_id'];
             $deliveryKey = 'telegram_evening_intelligence_v1:'.hash('sha256', implode('|', [
@@ -143,23 +250,31 @@ class TelegramEveningIntelligenceSendCommand extends Command
                 $reserved = Cache::add($deliveryKey, 'attempted', now()->addDays(self::DELIVERY_GUARD_DAYS));
                 $previous = $reserved ? null : Cache::get($deliveryKey);
             } catch (Throwable) {
+                if ($context !== null) {
+                    $journal->record($context, 'evening_guard', 'failure_unclassified');
+                }
                 $results[] = $this->result($route, $date, 'failed', $materialEvents, 0, 'idempotency_store_unavailable');
 
                 continue;
             }
 
             if (! $reserved) {
+                if ($context !== null) {
+                    $journal->record($context, 'evening_guard', 'skipped');
+                }
                 $status = $previous === 'sent' ? 'skipped_duplicate' : 'blocked_uncertain';
                 $results[] = $this->result($route, $date, $status, $materialEvents, 0);
 
                 continue;
             }
 
+            if ($context !== null) {
+                $journal->record($context, 'evening_guard', 'complete');
+            }
+
             try {
-                $messageId = app(TelegramOutboundMonitor::class)->withContext([
-                    'operation_key' => 'evening_intelligence:'.$date->toDateString().':'.$route['key'],
-                    'notification_type' => 'evening_intelligence',
-                    'district' => $route['key'],
+                $messageId = app(TelegramOutboundMonitor::class)->withContext($context ?? [
+                    'notification_type' => 'evening_intelligence', 'district' => $route['key'],
                     'scheduled_for' => $date->copy()->setTime(20, 30),
                 ], fn () => $deliveryMode === 'centralized'
                     ? $bot->sendMessage($targetChatId, $text, $targetThreadId)
@@ -173,6 +288,9 @@ class TelegramEveningIntelligenceSendCommand extends Command
                     Cache::put($deliveryKey, 'sent', now()->addDays(self::DELIVERY_GUARD_DAYS));
                 } catch (Throwable) {
                     // The reserved attempt still prevents an automatic retry after an uncertain cache update.
+                    if ($context !== null) {
+                        $journal->record($context, 'evening_guard', 'uncertain');
+                    }
                 }
             }
 

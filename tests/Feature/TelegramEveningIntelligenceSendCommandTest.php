@@ -1,12 +1,17 @@
 <?php
 
 use App\Models\TelegramOperationalObservation;
+use App\Models\TelegramOutboundOperation;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramDigestFormatter;
+use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
+use App\Services\Telegram\TelegramLinenDefectReportBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Mockery\MockInterface;
 use Tests\Support\TelegramOperationalTestDatabase;
 
@@ -33,8 +38,18 @@ beforeEach(function () {
 
 afterEach(function () {
     Carbon::setTestNow();
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
     TelegramOperationalTestDatabase::purge();
 });
+
+function enableOutboundJournalForEveningTest(): void
+{
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
+    (require database_path('migrations/2026_10_21_000000_create_telegram_outbound_operations_table.php'))->up();
+    (require database_path('migrations/2026_11_01_000000_create_telegram_outbound_operation_events_table.php'))->up();
+}
 
 it('dry-runs one district without calling telegram or leaking another forum', function () {
     config([
@@ -59,6 +74,107 @@ it('dry-runs one district without calling telegram or leaking another forum', fu
         ->and($output)->toContain('Navigli')
         ->toContain('Не работает замок в Navigli')
         ->not->toContain('Не работает замок в Lodi');
+});
+
+it('journals unavailable evening sources and preserves the existing single combined send', function () {
+    enableOutboundJournalForEveningTest();
+    config(['services.telegram.evening_intelligence_delivery_enabled' => true]);
+    $builder = Mockery::mock(TelegramEveningIntelligenceBuilder::class);
+    $builder->shouldReceive('build')->once()->andReturn([
+        'events_considered' => 0, 'events_included' => 0, 'events_omitted' => 0,
+        'data_quality' => ['ledger' => 'available', 'source_status' => 'unavailable', 'source_messages' => 0, 'observed_messages' => 0],
+    ]);
+    $linen = Mockery::mock(TelegramLinenDefectReportBuilder::class);
+    $linen->shouldReceive('build')->once()->andReturn([
+        'cases' => [], 'incomplete' => true,
+        'districts' => ['navigli' => ['source_status' => 'unavailable', 'source_messages' => 0, 'observed_messages' => 0]],
+    ]);
+    $formatter = Mockery::mock(TelegramDigestFormatter::class);
+    $formatter->shouldReceive('eveningIntelligence')->once()->andReturn('synthetic combined report');
+    app()->instance(TelegramEveningIntelligenceBuilder::class, $builder);
+    app()->instance(TelegramLinenDefectReportBuilder::class, $linen);
+    app()->instance(TelegramDigestFormatter::class, $formatter);
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldReceive('sendMessage')->once()->with('-9000', 'synthetic combined report', '99')->andReturn(321);
+    $bot->shouldNotReceive('sendAnalyticsMessage');
+    app()->instance(TelegramBotService::class, $bot);
+
+    expect(Artisan::call('telegram:evening-intelligence-send', [
+        '--date' => '2026-06-17', '--district' => 'navigli', '--json' => true,
+    ]))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'evening_intelligence:2026-06-17:navigli')->sole();
+    expect($operation->notification_type)->toBe('evening_intelligence')
+        ->and($operation->events->where('stage', 'evening_source')->first()?->outcome)->toBe('no_input')
+        ->and($operation->events->where('stage', 'evening_filter')->first()?->outcome)->toBe('no_significant_events')
+        ->and($operation->events->where('stage', 'evening_linen_source')->first()?->outcome)->toBe('no_input')
+        ->and($operation->events->where('stage', 'evening_format')->first()?->metrics)->toBe(['message_present' => true])
+        ->and($operation->events->where('stage', 'evening_guard')->first()?->outcome)->toBe('complete')
+        ->and(TelegramOutboundOperation::count())->toBe(1)
+        ->and(json_encode($operation->events->toArray()))->not->toContain('synthetic combined report');
+});
+
+it('journals incomplete source, filtered-to-zero events, and an evening format failure', function () {
+    enableOutboundJournalForEveningTest();
+    config(['services.telegram.evening_intelligence_delivery_enabled' => true]);
+    $builder = Mockery::mock(TelegramEveningIntelligenceBuilder::class);
+    $builder->shouldReceive('build')->once()->andReturn([
+        'events_considered' => 3, 'events_included' => 0, 'events_omitted' => 3,
+        'data_quality' => ['ledger' => 'available', 'source_status' => 'incomplete', 'source_messages' => 3, 'observed_messages' => 2],
+    ]);
+    $linen = Mockery::mock(TelegramLinenDefectReportBuilder::class);
+    $linen->shouldReceive('build')->once()->andReturn([
+        'cases' => [], 'incomplete' => false,
+        'districts' => ['navigli' => ['source_status' => 'available', 'source_messages' => 3, 'observed_messages' => 3]],
+    ]);
+    $formatter = Mockery::mock(TelegramDigestFormatter::class);
+    $formatter->shouldReceive('eveningIntelligence')->once()->andThrow(new RuntimeException('private formatter detail'));
+    app()->instance(TelegramEveningIntelligenceBuilder::class, $builder);
+    app()->instance(TelegramLinenDefectReportBuilder::class, $linen);
+    app()->instance(TelegramDigestFormatter::class, $formatter);
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldNotReceive('sendMessage');
+    app()->instance(TelegramBotService::class, $bot);
+
+    expect(fn () => Artisan::call('telegram:evening-intelligence-send', [
+        '--date' => '2026-06-17', '--district' => 'navigli', '--json' => true,
+    ]))->toThrow(RuntimeException::class);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'evening_intelligence:2026-06-17:navigli')->sole();
+    expect($operation->events->where('stage', 'evening_source')->first()?->outcome)->toBe('source_error')
+        ->and($operation->events->where('stage', 'evening_filter')->first()?->metrics)
+        ->toBe(['events_considered' => 3, 'events_included' => 0, 'events_omitted' => 3])
+        ->and($operation->events->where('stage', 'evening_format')->first()?->outcome)->toBe('calculation_error')
+        ->and(json_encode($operation->events->toArray()))->not->toContain('private formatter detail');
+});
+
+it('records an absent evening message and does not enter the delivery guard', function () {
+    enableOutboundJournalForEveningTest();
+    config(['services.telegram.evening_intelligence_delivery_enabled' => true]);
+    $builder = Mockery::mock(TelegramEveningIntelligenceBuilder::class);
+    $builder->shouldReceive('build')->once()->andReturn([
+        'events_considered' => 0, 'events_included' => 0, 'events_omitted' => 0,
+        'data_quality' => ['ledger' => 'available', 'source_status' => 'unavailable', 'source_messages' => 0, 'observed_messages' => 0],
+    ]);
+    $linen = Mockery::mock(TelegramLinenDefectReportBuilder::class);
+    $linen->shouldReceive('build')->once()->andReturn(['cases' => [], 'incomplete' => false, 'districts' => []]);
+    $formatter = Mockery::mock(TelegramDigestFormatter::class);
+    $formatter->shouldReceive('eveningIntelligence')->once()->andReturn('  ');
+    app()->instance(TelegramEveningIntelligenceBuilder::class, $builder);
+    app()->instance(TelegramLinenDefectReportBuilder::class, $linen);
+    app()->instance(TelegramDigestFormatter::class, $formatter);
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldNotReceive('sendMessage');
+    app()->instance(TelegramBotService::class, $bot);
+
+    expect(Artisan::call('telegram:evening-intelligence-send', [
+        '--date' => '2026-06-17', '--district' => 'navigli', '--json' => true,
+    ]))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'evening_intelligence:2026-06-17:navigli')->sole();
+    expect($operation->events->where('stage', 'evening_format')->first()?->outcome)->toBe('no_message')
+        ->and($operation->events->where('stage', 'evening_format')->first()?->metrics)->toBe(['message_present' => false])
+        ->and($operation->events->where('stage', 'evening_guard'))->toBeEmpty();
 });
 
 it('blocks real delivery while the feature flag is off', function () {

@@ -13,8 +13,8 @@ class TelegramDigestBuildJournal
         'build', 'calendar_source', 'calendar_filter', 'calendar_format',
         'morning_alert_source', 'morning_strike_source', 'morning_weather_source', 'morning_filter', 'morning_format',
         'controls_source', 'controls_filter', 'controls_format', 'controls_queue',
-        'evening_source', 'evening_filter', 'evening_linen_source', 'evening_format',
-        'linen_source', 'linen_filter', 'linen_format',
+        'evening_source', 'evening_filter', 'evening_linen_source', 'evening_format', 'evening_guard',
+        'linen_source', 'linen_filter', 'linen_format', 'linen_guard',
         'send_attempt', 'telegram_response',
     ];
 
