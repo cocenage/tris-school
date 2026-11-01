@@ -442,9 +442,9 @@ it('renders severe weather with a concrete district travel impact and no generic
         'key' => 'navigli', 'label' => 'Navigli', 'latitude' => 45.45, 'longitude' => 9.17,
     ]);
 
-    expect($message)->toContain('08:00', '13:00', '+16°C', '+18°C', '78%', '90%')
+    expect($message)->toContain('08:00 · Ясно — +16°C', '13:00 · Дождь — +18°C', 'Ощущается +15°', 'Ощущается +16°')
         ->toContain('🌧 После обеда лучше заложить больше времени на дорогу между квартирами.')
-        ->not->toContain('Возможны задержки из-за погоды', 'Будьте осторожны из-за погоды');
+        ->not->toContain('78%', '90%', 'Влажность', 'км/ч', 'Возможны задержки из-за погоды', 'Будьте осторожны из-за погоды');
 });
 
 it('renders all three forecast hours for all five configured districts for the requested dry-run date', function () {
@@ -483,9 +483,9 @@ it('renders all three forecast hours for all five configured districts for the r
     expect(substr_count($output, '08:00 ·'))->toBe(5)
         ->and(substr_count($output, '13:00 ·'))->toBe(5)
         ->and(substr_count($output, '15:00 ·'))->toBe(5)
-        ->and(substr_count($output, 'WeatherAPI.com'))->toBe(5)
-        ->and(substr_count($output, 'официальными метеослужбами'))->toBe(5)
-        ->and(substr_count($output, '1,2 мм'))->toBe(5);
+        ->and(substr_count($output, 'WeatherAPI.com'))->toBe(0)
+        ->and(substr_count($output, 'официальными метеослужбами'))->toBe(0)
+        ->and(substr_count($output, '1,2 мм'))->toBe(0);
 
     preg_match_all('/===== DRY RUN MORNING DIGEST · .+? =====\r?\n(.*?)\r?\n===================================/s', $output, $messages);
     expect($messages[1])->toHaveCount(5);
@@ -495,7 +495,7 @@ it('renders all three forecast hours for all five configured districts for the r
         $visibleText = html_entity_decode(strip_tags($message), ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
         expect(mb_strlen($visibleText, 'UTF-8'))->toBeLessThanOrEqual(4096)
-            ->and(array_values(array_unique(array_map('strtolower', $tags[1]))))->toBe(['b', 'code'])
+            ->and(array_values(array_unique(array_map('strtolower', $tags[1]))))->toBe(['b'])
             ->and(substr_count($message, '<b>'))->toBe(substr_count($message, '</b>'));
     }
     $requests = collect(Http::recorded())->map(fn (array $pair) => $pair[0]);
@@ -582,15 +582,42 @@ it('uses the analytics sender and matching duty topics for regional morning deli
             'latitude' => 45.44, 'longitude' => 9.21,
         ],
     ]]);
-    Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
-    $this->mock(TelegramBotService::class, function (MockInterface $mock): void {
-        $mock->shouldReceive('sendAnalyticsMessage')->once()->with('-1001', Mockery::type('string'), '11')->andReturn(101);
-        $mock->shouldReceive('sendAnalyticsMessage')->once()->with('-1002', Mockery::type('string'), '22')->andReturn(102);
+    $weather = [
+        'points' => [
+            '08:00' => ['emoji' => '🌤', 'condition' => 'Ясно', 'temperature_c' => 12, 'apparent_temperature_c' => 10],
+            '13:00' => ['emoji' => '🌤', 'condition' => 'Ясно', 'temperature_c' => 18, 'apparent_temperature_c' => 17],
+            '15:00' => ['emoji' => '🌤', 'condition' => 'Ясно', 'temperature_c' => 16, 'apparent_temperature_c' => 15],
+        ],
+        'advice' => null,
+        'unavailable_reason' => null,
+    ];
+    $this->mock(MilanWeatherService::class, fn (MockInterface $mock) => $mock
+        ->shouldReceive('supportsForecastDate')->once()->andReturnTrue()
+        ->shouldReceive('morningForecast')->twice()->andReturn($weather));
+    $sent = [];
+    $this->mock(TelegramBotService::class, function (MockInterface $mock) use (&$sent): void {
+        $mock->shouldReceive('sendAnalyticsMessage')->once()->with('-1001', Mockery::type('string'), '11')
+            ->andReturnUsing(function (string $chatId, string $text) use (&$sent): int {
+                $sent[] = $text;
+
+                return 101;
+            });
+        $mock->shouldReceive('sendAnalyticsMessage')->once()->with('-1002', Mockery::type('string'), '22')
+            ->andReturnUsing(function (string $chatId, string $text) use (&$sent): int {
+                $sent[] = $text;
+
+                return 102;
+            });
     });
 
     $this->artisan('mobility:digest', ['--date' => '2026-10-07'])
         ->expectsOutputToContain('District morning digests sent')
         ->assertExitCode(0);
+
+    expect($sent)->toHaveCount(2);
+    foreach ($sent as $message) {
+        expect($message)->toContain('Источник: <code>WeatherAPI.com</code> · перевод и округление.');
+    }
 });
 
 it('attempts the morning summary for every configured district', function () {
@@ -705,14 +732,11 @@ it('renders compact blank-separated forecast blocks with source attribution, saf
     ]);
 
     $expectedBlocks = "🌤 <b>08:00 · Переменная облачность — +22°C</b>\n"
-        ."Ощущается +22° · Влажность 50%\n"
-        ."💨 5 км/ч, СВ · 🌧 0% (0,0 мм)\n\n"
+        ."Ощущается +22°\n\n"
         ."🌧 <b>13:00 · Морось — +10°C</b>\n"
-        ."Ощущается +7° · Влажность 78%\n"
-        ."💨 19 км/ч, В · 🌧 46% (0,3 мм)\n\n"
+        ."Ощущается +7°\n\n"
         ."⛈ <b>15:00 · Гроза — +15°C</b>\n"
-        ."Ощущается +14° · Влажность 82%\n"
-        .'💨 25 км/ч, Ю · 🌧 65% (1,5 мм)';
+        .'Ощущается +14°';
 
     preg_match_all('/<\/?([a-z][a-z0-9]*)\b[^>]*>/i', $message, $tags);
     $visibleText = html_entity_decode(strip_tags($message), ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -729,6 +753,7 @@ it('renders compact blank-separated forecast blocks with source attribution, saf
         ->toContain('экстренном планировании')
         ->toContain('официальными метеослужбами')
         ->toContain('предупреждениями компетентных органов')
+        ->not->toContain('Влажность', 'км/ч', '1,5 мм')
         ->not->toMatch('/<a\b|href=/i')
         ->and(array_values(array_unique(array_map('strtolower', $tags[1]))))->toBe(['b', 'code'])
         ->and(substr_count($message, '<b>'))->toBe(substr_count($message, '</b>'))

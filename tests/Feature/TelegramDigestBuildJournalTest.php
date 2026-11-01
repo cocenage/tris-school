@@ -2,6 +2,8 @@
 
 use App\Models\TelegramOutboundOperation;
 use App\Services\Telegram\TelegramDigestBuildJournal;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function (): void {
@@ -94,4 +96,50 @@ it('fails open when the build event table is unavailable', function (): void {
     ], 'calendar_source', 'source_error');
 
     expect(Schema::hasTable('telegram_outbound_operations'))->toBeTrue();
+});
+
+it('reserves the existing operation when the build event table is unavailable', function (): void {
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    $context = [
+        'operation_key' => 'calendar:tomorrow:2026-11-02',
+        'notification_type' => 'calendar',
+        'bot' => 'work',
+    ];
+
+    app(TelegramDigestBuildJournal::class)->reserve($context);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', $context['operation_key'])->sole();
+    expect($operation->status)->toBe('expected')
+        ->and(Schema::hasTable('telegram_outbound_operation_events'))->toBeFalse();
+});
+
+it('caps appended event rows for a repeatedly reserved logical operation', function (): void {
+    $context = [
+        'operation_key' => 'calendar:tomorrow:2026-11-02',
+        'notification_type' => 'calendar',
+        'bot' => 'work',
+    ];
+    $journal = app(TelegramDigestBuildJournal::class);
+    $eventInsertWasTransactional = false;
+    DB::listen(function (QueryExecuted $query) use (&$eventInsertWasTransactional): void {
+        if (str_starts_with(strtolower(ltrim($query->sql)), 'insert')
+            && str_contains($query->sql, 'telegram_outbound_operation_events')) {
+            $eventInsertWasTransactional = DB::transactionLevel() > 0;
+        }
+    });
+
+    $journal->reserve($context);
+
+    foreach (range(1, 100) as $repeat) {
+        $journal->record($context, 'calendar_filter', 'complete', ['input_count' => $repeat]);
+    }
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', $context['operation_key'])->sole();
+    expect($operation->events()->count())->toBe(60);
+
+    $journal->reserve($context);
+
+    expect(TelegramOutboundOperation::query()->count())->toBe(1)
+        ->and($operation->events()->count())->toBe(60)
+        ->and($eventInsertWasTransactional)->toBeTrue();
 });

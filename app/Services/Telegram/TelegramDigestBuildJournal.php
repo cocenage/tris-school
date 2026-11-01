@@ -3,12 +3,15 @@
 namespace App\Services\Telegram;
 
 use App\Models\TelegramOutboundOperation;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 
 class TelegramDigestBuildJournal
 {
+    private const MAX_EVENTS_PER_OPERATION = 60;
+
     private const STAGES = [
         'build', 'calendar_source', 'calendar_filter', 'calendar_format',
         'morning_alert_source', 'morning_strike_source', 'morning_weather_source', 'morning_filter', 'morning_format',
@@ -35,7 +38,12 @@ class TelegramDigestBuildJournal
     /** Reserve the existing outbound operation before any digest source is read. */
     public function reserve(array $context): void
     {
-        $this->monitor->expect($context);
+        try {
+            $this->monitor->expect($context);
+        } catch (Throwable) {
+            // A failed journal reservation must not prevent the digest from continuing.
+        }
+
         $this->record($context, 'build', 'started');
     }
 
@@ -57,13 +65,6 @@ class TelegramDigestBuildJournal
                 return;
             }
 
-            $operation = TelegramOutboundOperation::query()
-                ->where('operation_key', $operationKey)
-                ->first();
-            if ($operation === null) {
-                return;
-            }
-
             $safeMetrics = [];
             foreach ($metrics as $key => $value) {
                 if (! in_array($key, self::METRICS, true)) {
@@ -75,14 +76,28 @@ class TelegramDigestBuildJournal
                 }
             }
 
-            $operation->events()->create([
-                'stage' => $stage,
-                'outcome' => $outcome,
-                'metrics' => $safeMetrics === [] ? null : $safeMetrics,
-            ]);
+            DB::transaction(function () use ($operationKey, $stage, $outcome, $safeMetrics): void {
+                $operation = TelegramOutboundOperation::query()
+                    ->where('operation_key', $operationKey)
+                    ->lockForUpdate()
+                    ->first();
+                if ($operation === null || $operation->events()->count() >= self::MAX_EVENTS_PER_OPERATION) {
+                    return;
+                }
+
+                $operation->events()->create([
+                    'stage' => $stage,
+                    'outcome' => $outcome,
+                    'metrics' => $safeMetrics === [] ? null : $safeMetrics,
+                ]);
+            });
         } catch (Throwable $exception) {
             // Diagnostic writes must never block a digest or expose exception text.
-            Log::warning('Telegram digest build journal unavailable.', ['error' => class_basename($exception)]);
+            try {
+                Log::warning('Telegram digest build journal unavailable.', ['error' => class_basename($exception)]);
+            } catch (Throwable) {
+                // A logging backend failure is also diagnostic-only.
+            }
         }
     }
 }

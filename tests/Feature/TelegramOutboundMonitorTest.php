@@ -202,6 +202,26 @@ it('never blocks sending if the journal is unavailable', function (): void {
         fn () => app(TelegramBotService::class)->sendMessage('test-chat', 'private')))->toBe(25);
 });
 
+it('sends a digest when the event table is unavailable', function (): void {
+    Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 25]])]);
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    $context = [
+        'operation_key' => 'calendar:tomorrow:2026-11-02',
+        'notification_type' => 'calendar',
+    ];
+
+    $messageId = app(TelegramOutboundMonitor::class)->withContext(
+        $context,
+        fn () => app(TelegramBotService::class)->sendMessage('test-chat', 'private summary'),
+    );
+
+    expect($messageId)->toBe(25)
+        ->and(Schema::hasTable('telegram_outbound_operation_events'))->toBeFalse()
+        ->and(TelegramOutboundOperation::query()->sole()->status)->toBe('sent')
+        ->and(TelegramOutboundOperation::query()->sole()->attempts)->toBe(1);
+    Http::assertSent(fn ($request): bool => str_contains($request->url(), '/sendMessage'));
+});
+
 it('marks a lost HTTP response as uncertain rather than failed or sent', function (): void {
     Http::fake(['api.telegram.org/*' => Http::failedConnection()]);
     $monitor = app(TelegramOutboundMonitor::class);
