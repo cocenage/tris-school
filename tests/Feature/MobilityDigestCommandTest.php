@@ -2,6 +2,7 @@
 
 use App\Console\Commands\MobilityDigestCommand;
 use App\Models\MobilityAlert;
+use App\Models\TelegramOutboundOperation;
 use App\Services\Mobility\MobilityAlertSyncService;
 use App\Services\Mobility\MobilityStrikesSummaryBuilder;
 use App\Services\Mobility\MobilityStrikesSummaryFormatter;
@@ -23,6 +24,10 @@ beforeEach(function () {
     Carbon::setTestNow(Carbon::parse('2026-10-07 06:00', 'Europe/Rome'));
     CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-07 06:00', 'Europe/Rome'));
     Http::preventStrayRequests();
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
+    (require database_path('migrations/2026_10_21_000000_create_telegram_outbound_operations_table.php'))->up();
+    (require database_path('migrations/2026_11_01_000000_create_telegram_outbound_operation_events_table.php'))->up();
     config(['services.telegram.digest_districts' => []]);
     Schema::dropIfExists('mobility_alerts');
     Schema::create('mobility_alerts', function (Blueprint $table): void {
@@ -45,8 +50,82 @@ beforeEach(function () {
 
 afterEach(function () {
     Schema::dropIfExists('mobility_alerts');
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
     Carbon::setTestNow();
     CarbonImmutable::setTestNow();
+});
+
+it('journals empty morning mobility and weather sources before the inline delivery', function () {
+    config([
+        'services.telegram.digest_districts' => [
+            'lodi' => ['label' => 'Lodi', 'chat_id' => 'test-chat', 'duty_thread_id' => '11', 'latitude' => 45.45, 'longitude' => 9.17],
+        ],
+        'services.telegram.analytics_bot_token' => 'analytics-test-token',
+    ]);
+    Http::fake([
+        'api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]]),
+        'api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 71]], 200),
+    ]);
+
+    expect(Artisan::call('mobility:digest', ['--date' => '2026-10-07']))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'morning_digest:2026-10-07:lodi')->sole();
+    expect($operation->events->where('stage', 'morning_alert_source')->first()?->outcome)->toBe('no_input')
+        ->and($operation->events->where('stage', 'morning_filter')->first()?->outcome)->toBe('no_significant_events')
+        ->and($operation->events->where('stage', 'morning_filter')->first()?->metrics)
+        ->toBe(['input_count' => 0, 'filtered_count' => 0, 'included_count' => 0])
+        ->and($operation->events->where('stage', 'morning_weather_source')->first()?->outcome)->toBe('no_input')
+        ->and($operation->events->where('stage', 'morning_format')->first()?->metrics)->toBe(['message_present' => true])
+        ->and($operation->events->pluck('stage')->last())->toBe('telegram_response');
+});
+
+it('journals source alerts removed by the existing morning relevance filter', function () {
+    config([
+        'services.telegram.digest_districts' => [
+            'lodi' => ['label' => 'Lodi', 'chat_id' => 'test-chat', 'duty_thread_id' => '11', 'latitude' => 45.45, 'longitude' => 9.17],
+        ],
+        'services.telegram.analytics_bot_token' => 'analytics-test-token',
+    ]);
+    MobilityAlert::create([
+        'source' => 'test', 'title' => 'private irrelevant event', 'description' => 'staff comment must not be logged',
+        'type' => 'info', 'risk' => 'high', 'starts_at' => '2026-10-07', 'external_hash' => 'filtered-event',
+    ]);
+    Http::fake([
+        'api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]]),
+        'api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 72]], 200),
+    ]);
+
+    expect(Artisan::call('mobility:digest', ['--date' => '2026-10-07']))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'morning_digest:2026-10-07:lodi')->sole();
+    $source = $operation->events->where('stage', 'morning_alert_source')->first();
+    $filter = $operation->events->where('stage', 'morning_filter')->first();
+    expect($source?->outcome)->toBe('loaded')
+        ->and($source?->metrics)->toBe(['input_count' => 1])
+        ->and($filter?->outcome)->toBe('no_significant_events')
+        ->and($filter?->metrics)->toBe(['input_count' => 1, 'filtered_count' => 1, 'included_count' => 0])
+        ->and(json_encode($operation->events->toArray()))->not->toContain('private irrelevant event', 'staff comment must not be logged');
+});
+
+it('records a morning weather source error while preserving the existing fallback message path', function () {
+    config([
+        'services.telegram.digest_districts' => [
+            'lodi' => ['label' => 'Lodi', 'chat_id' => 'test-chat', 'duty_thread_id' => '11', 'latitude' => 45.45, 'longitude' => 9.17],
+        ],
+        'services.telegram.analytics_bot_token' => 'analytics-test-token',
+    ]);
+    Http::fake([
+        'api.weatherapi.com/*' => Http::response(['error' => ['code' => 1006]], 503),
+        'api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 73]], 200),
+    ]);
+
+    expect(Artisan::call('mobility:digest', ['--date' => '2026-10-07']))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'morning_digest:2026-10-07:lodi')->sole();
+    expect($operation->events->where('stage', 'morning_weather_source')->first()?->outcome)->toBe('source_error')
+        ->and($operation->events->where('stage', 'morning_format')->first()?->outcome)->toBe('built')
+        ->and(json_encode($operation->events->toArray()))->not->toContain('1006', 'error', 'WeatherAPI');
 });
 
 it('omits strikes from the morning digest while preserving weather and other important mobility alerts', function () {

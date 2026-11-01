@@ -5,10 +5,12 @@ namespace App\Console\Commands;
 use App\Services\Calendar\CalendarEventsService;
 use App\Services\Calendar\CalendarSummaryService;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramDigestBuildJournal;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
+use Throwable;
 
 class SendTomorrowCalendarEventsNotification extends Command
 {
@@ -20,6 +22,7 @@ class SendTomorrowCalendarEventsNotification extends Command
         CalendarEventsService $calendarEventsService,
         CalendarSummaryService $calendarSummaryService,
         TelegramBotService $telegramBotService,
+        TelegramDigestBuildJournal $journal,
     ): int {
         $timezone = config('app.timezone', 'Europe/Rome');
 
@@ -27,12 +30,75 @@ class SendTomorrowCalendarEventsNotification extends Command
 
         $tomorrow = now($timezone)->addDay()->startOfDay();
 
-        $events = collect($calendarEventsService->getEventsForDay($tomorrow, 'peak'))
-            ->where('type', 'peak')
-            ->values();
-        $summary = $calendarSummaryService->build($tomorrow);
+        $chatId = config('services.telegram.chat_id_calendar');
+        $threadId = config('services.telegram.thread_id_calendar');
+        $context = [
+            'operation_key' => 'calendar:tomorrow:'.$tomorrow->toDateString(),
+            'notification_type' => 'calendar', 'bot' => 'work',
+            'chat_id' => $chatId ? (string) $chatId : null, 'message_thread_id' => $threadId,
+            'source_type' => 'CalendarDate', 'source_id' => $tomorrow->toDateString(),
+        ];
+        $journalContext = $this->option('dry-run') ? null : $context;
 
-        $message = $this->buildMessage($tomorrow, $events, $summary);
+        if ($journalContext !== null) {
+            $journal->reserve($journalContext);
+        }
+
+        try {
+            $sourceEvents = collect($calendarEventsService->getEventsForDay($tomorrow, 'peak'));
+        } catch (Throwable $exception) {
+            if ($journalContext !== null) {
+                $journal->record($journalContext, 'calendar_source', 'source_error');
+            }
+
+            throw $exception;
+        }
+
+        if ($journalContext !== null) {
+            $journal->record(
+                $journalContext,
+                'calendar_source',
+                $sourceEvents->isEmpty() ? 'no_input' : 'loaded',
+                ['input_count' => $sourceEvents->count()],
+            );
+        }
+
+        $events = $sourceEvents->where('type', 'peak')->values();
+        if ($journalContext !== null) {
+            $includedCount = $events->count();
+            $journal->record($journalContext, 'calendar_filter', $includedCount > 0 ? 'complete' : 'no_significant_events', [
+                'input_count' => $sourceEvents->count(),
+                'filtered_count' => $sourceEvents->count() - $includedCount,
+                'included_count' => $includedCount,
+            ]);
+        }
+
+        try {
+            $summary = $calendarSummaryService->build($tomorrow);
+        } catch (Throwable $exception) {
+            if ($journalContext !== null) {
+                $journal->record($journalContext, 'calendar_source', 'source_error');
+            }
+
+            throw $exception;
+        }
+
+        try {
+            $message = $this->buildMessage($tomorrow, $events, $summary);
+        } catch (Throwable $exception) {
+            if ($journalContext !== null) {
+                $journal->record($journalContext, 'calendar_format', 'calculation_error');
+            }
+
+            throw $exception;
+        }
+
+        if ($journalContext !== null) {
+            $messagePresent = trim($message) !== '';
+            $journal->record($journalContext, 'calendar_format', $messagePresent ? 'built' : 'no_message', [
+                'message_present' => $messagePresent,
+            ]);
+        }
 
         if ($this->option('dry-run')) {
             $this->line($message);
@@ -40,23 +106,13 @@ class SendTomorrowCalendarEventsNotification extends Command
             return self::SUCCESS;
         }
 
-        $chatId = config('services.telegram.chat_id_calendar');
-        $threadId = config('services.telegram.thread_id_calendar');
-
         if (! $chatId) {
             $this->error('Не настроен services.telegram.chat_id_calendar');
 
             return self::FAILURE;
         }
 
-        $context = [
-            'operation_key' => 'calendar:tomorrow:'.$tomorrow->toDateString(),
-            'notification_type' => 'calendar', 'bot' => 'work',
-            'chat_id' => (string) $chatId, 'message_thread_id' => $threadId,
-            'source_type' => 'CalendarDate', 'source_id' => $tomorrow->toDateString(),
-        ];
         $monitor = app(TelegramOutboundMonitor::class);
-        $monitor->expect($context);
         $monitor->withContext($context, fn () => $telegramBotService->sendMessage(
             chatId: $chatId,
             text: $message,

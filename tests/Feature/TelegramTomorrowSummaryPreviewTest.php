@@ -1,6 +1,7 @@
 <?php
 
 use App\Console\Commands\SendTomorrowCalendarEventsNotification;
+use App\Models\TelegramOutboundOperation;
 use App\Models\User;
 use App\Services\Calendar\CalendarEventsService;
 use App\Services\Calendar\CalendarSummaryService;
@@ -17,7 +18,9 @@ use Illuminate\Support\Facades\Schema;
 beforeEach(function () {
     Carbon::setTestNow(Carbon::parse('2026-10-08 12:00:00', 'Europe/Rome'));
     CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-08 12:00:00', 'Europe/Rome'));
-    Http::fake();
+    Http::preventStrayRequests();
+    (require database_path('migrations/2026_10_21_000000_create_telegram_outbound_operations_table.php'))->up();
+    (require database_path('migrations/2026_11_01_000000_create_telegram_outbound_operation_events_table.php'))->up();
     Schema::create('users', function (Blueprint $table) {
         $table->id();
         $table->string('name');
@@ -54,6 +57,8 @@ afterEach(function () {
     }
     Carbon::setTestNow();
     CarbonImmutable::setTestNow();
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
 });
 
 function tomorrowStaff(string $name, string $role = 'cleaner', bool $active = true, string $status = 'approved', array $weekends = []): User
@@ -209,6 +214,68 @@ it('requests only peak events for a dry-run and never sends unrelated calendar e
         ->and(Artisan::output())->toContain('Нагрузка на район')
         ->not->toContain('День рождения сотрудника', 'Финансовое событие');
     Http::assertNothingSent();
+});
+
+it('journals an empty calendar source and a built inline message on the existing operation', function () {
+    config([
+        'services.telegram.chat_id_calendar' => 'test-calendar-chat',
+        'services.telegram.bot_token' => 'calendar-test-token',
+    ]);
+    Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 52]], 200)]);
+    $events = Mockery::mock(CalendarEventsService::class);
+    $events->shouldReceive('getEventsForDay')->once()->andReturn(collect());
+    app()->instance(CalendarEventsService::class, $events);
+    $summary = Mockery::mock(CalendarSummaryService::class);
+    $summary->shouldReceive('build')->once()->andReturn(['workers' => ['by_role' => []]]);
+    app()->instance(CalendarSummaryService::class, $summary);
+
+    expect(Artisan::call('calendar:notify-tomorrow'))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'calendar:tomorrow:2026-10-09')->sole();
+    expect($operation->events->pluck('stage')->all())->toBe([
+        'build', 'calendar_source', 'calendar_filter', 'calendar_format', 'send_attempt', 'telegram_response',
+    ])->and($operation->events->pluck('outcome')->all())->toBe([
+        'started', 'no_input', 'no_significant_events', 'built', 'attempted', 'accepted',
+    ])->and($operation->events[1]->metrics)->toBe(['input_count' => 0])
+        ->and($operation->events[2]->metrics)->toBe(['input_count' => 0, 'filtered_count' => 0, 'included_count' => 0])
+        ->and($operation->events[3]->metrics)->toBe(['message_present' => true]);
+});
+
+it('journals calendar events removed by the existing peak filter without retaining event content', function () {
+    config([
+        'services.telegram.chat_id_calendar' => 'test-calendar-chat',
+        'services.telegram.bot_token' => 'calendar-test-token',
+    ]);
+    Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 53]], 200)]);
+    $events = Mockery::mock(CalendarEventsService::class);
+    $events->shouldReceive('getEventsForDay')->once()->andReturn(collect([
+        ['type' => 'holiday', 'title' => 'private event title'],
+    ]));
+    app()->instance(CalendarEventsService::class, $events);
+    $summary = Mockery::mock(CalendarSummaryService::class);
+    $summary->shouldReceive('build')->once()->andReturn(['workers' => ['by_role' => []]]);
+    app()->instance(CalendarSummaryService::class, $summary);
+
+    expect(Artisan::call('calendar:notify-tomorrow'))->toBe(0);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'calendar:tomorrow:2026-10-09')->sole();
+    expect($operation->events->where('stage', 'calendar_source')->first()->outcome)->toBe('loaded')
+        ->and($operation->events->where('stage', 'calendar_filter')->first()->outcome)->toBe('no_significant_events')
+        ->and($operation->events->where('stage', 'calendar_filter')->first()->metrics)
+        ->toBe(['input_count' => 1, 'filtered_count' => 1, 'included_count' => 0])
+        ->and(json_encode($operation->events->toArray()))->not->toContain('private event title');
+});
+
+it('records a calendar source error before propagating the existing failure', function () {
+    $events = Mockery::mock(CalendarEventsService::class);
+    $events->shouldReceive('getEventsForDay')->once()->andThrow(new RuntimeException('private source detail'));
+    app()->instance(CalendarEventsService::class, $events);
+
+    expect(fn () => Artisan::call('calendar:notify-tomorrow'))->toThrow(RuntimeException::class);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', 'calendar:tomorrow:2026-10-09')->sole();
+    expect($operation->events->pluck('outcome')->all())->toBe(['started', 'source_error'])
+        ->and(json_encode($operation->events->toArray()))->not->toContain('private source detail');
 });
 
 it('uses Rome calendar dates for tomorrow across both daylight-saving transitions', function () {
