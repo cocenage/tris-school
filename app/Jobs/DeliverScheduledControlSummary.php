@@ -20,6 +20,7 @@ class DeliverScheduledControlSummary implements ShouldQueue
 
     public function __construct(
         public int $deliveryId,
+        public ?string $operationKey = null,
     ) {}
 
     public function backoff(): array
@@ -47,10 +48,14 @@ class DeliverScheduledControlSummary implements ShouldQueue
 
         try {
             $messageId = app(TelegramOutboundMonitor::class)->withContext([
-                'operation_key' => 'scheduled_control_summary:'.$delivery->id,
+                'operation_key' => $this->operationKey ?? 'scheduled_control_summary:'.$delivery->id,
                 'notification_type' => 'scheduled_control_summary',
+                'bot' => 'analytics',
+                'chat_id' => $delivery->chat_id,
+                'message_thread_id' => $delivery->message_thread_id,
                 'source_type' => 'telegram_scheduled_control_summary_delivery',
                 'source_id' => $delivery->id,
+                'scheduled_for' => $delivery->summary_date,
             ], fn () => $telegram->sendAnalyticsMessage(
                 $delivery->chat_id,
                 $delivery->text,

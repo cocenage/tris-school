@@ -6,6 +6,7 @@ use App\Jobs\DeliverScheduledTelegramMessage;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
+use App\Models\TelegramOutboundOperation;
 use App\Models\TelegramScheduledControlFollowup;
 use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Models\TelegramScheduledMessage;
@@ -29,6 +30,7 @@ use App\Services\Telegram\TelegramUpdateIngestService;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\ConnectionException;
@@ -84,6 +86,8 @@ beforeEach(function () {
 
 afterEach(function () {
     $this->travelBack();
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
     DB::purge('sqlite');
     DB::purge('analytics');
 });
@@ -121,6 +125,14 @@ function controlReplyPayload(TelegramScheduledMessageDelivery $delivery, string 
         'from' => ['id' => $author, 'first_name' => 'Test staff', 'username' => 'test_staff', 'is_bot' => false],
         'text' => $text,
     ]];
+}
+
+function enableOutboundJournalForScheduledTest(): void
+{
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    Schema::dropIfExists('telegram_outbound_operations');
+    (require database_path('migrations/2026_10_21_000000_create_telegram_outbound_operations_table.php'))->up();
+    (require database_path('migrations/2026_11_01_000000_create_telegram_outbound_operation_events_table.php'))->up();
 }
 
 function captureControlReply(array $payload): ?TelegramScheduledMessageResponse
@@ -226,7 +238,7 @@ it('does not choose a wrong payment template while two active definitions share 
 it('sends a new control through Work bot with five district answer rows', function () {
     config(['services.telegram.bot_token' => 'work-test-token', 'services.telegram.scheduled_bot_token' => null]);
     $delivery = controlDeliveryFixture(['control_type' => 'couriers_completed', 'bot_type' => 'work', 'status' => 'pending', 'telegram_message_id' => null]);
-    Http::swap(new HttpFactory);
+    Http::swap(new HttpFactory(app(Dispatcher::class)));
     Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 991]], 200)]);
 
     (new DeliverScheduledTelegramMessage($delivery->id, CarbonImmutable::now()->addHour()))->handle(app(TelegramBotService::class));
@@ -1419,6 +1431,90 @@ it('reserves only one summary per date and destination even after responses chan
     expect($sender->queue('2026-10-01')['queued'])->toBe(0);
     expect(TelegramScheduledControlSummaryDelivery::count())->toBe(1);
     Bus::assertDispatchedTimes(DeliverScheduledControlSummary::class, 1);
+});
+
+it('journals a source-zero scheduled controls summary without creating a delivery or job', function () {
+    enableOutboundJournalForScheduledTest();
+    $operationKey = 'scheduled_control_summary:2026-10-01:'.hash('sha256', '2026-10-01|-2001|17');
+
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01'))
+        ->toMatchArray(['queued' => 0, 'skipped' => 'no_deliveries']);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', $operationKey)->sole();
+    expect($operation->events->pluck('outcome')->all())->toBe([
+        'started', 'no_input', 'no_significant_events', 'no_message', 'skipped',
+    ])->and(TelegramScheduledControlSummaryDelivery::count())->toBe(0);
+    Bus::assertNotDispatched(DeliverScheduledControlSummary::class);
+});
+
+it('correlates the queued scheduled controls job and Telegram receipt to the pre-build operation', function () {
+    enableOutboundJournalForScheduledTest();
+    stubControlSummaryFormatter();
+    $delivery = controlDeliveryFixture();
+    $operationKey = 'scheduled_control_summary:2026-10-01:'.hash('sha256', '2026-10-01|-2001|17');
+
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01')['queued'])->toBe(1);
+    Bus::assertDispatched(DeliverScheduledControlSummary::class, fn (DeliverScheduledControlSummary $job): bool => $job->deliveryId === $delivery->id && $job->operationKey === $operationKey
+    );
+
+    $job = Bus::dispatched(DeliverScheduledControlSummary::class)->sole();
+    config(['services.telegram.analytics_bot_token' => 'scheduled-summary-test-token']);
+    Http::swap(new HttpFactory(app(Dispatcher::class)));
+    Http::preventStrayRequests();
+    Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 744]], 200)]);
+    $job->handle(app(TelegramBotService::class));
+    Http::assertSentCount(1);
+    expect($delivery->fresh()->status)->toBe('sent');
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', $operationKey)->sole();
+    expect($operation->source_type)->toBe('telegram_scheduled_control_summary_delivery')
+        ->and($operation->source_id)->toBe((string) $delivery->id)
+        ->and(TelegramOutboundOperation::count())->toBe(1)
+        ->and($operation->attempts)->toBe(1)
+        ->and($operation->events->where('stage', 'controls_source')->first()?->outcome)->toBe('loaded')
+        ->and($operation->events->where('stage', 'controls_format')->first()?->outcome)->toBe('built')
+        ->and($operation->events->where('stage', 'controls_format')->first()?->metrics)->toBe(['message_present' => true])
+        ->and($operation->events->where('stage', 'controls_queue')->first()?->outcome)->toBe('queued')
+        ->and($operation->events->where('stage', 'send_attempt')->first()?->outcome)->toBe('attempted')
+        ->and($operation->events->where('stage', 'telegram_response')->first()?->outcome)->toBe('accepted')
+        ->and($job->tries)->toBe(8)
+        ->and($job->backoff())->toBe([30, 60, 120, 300, 600, 600, 600]);
+});
+
+it('records a formatted-empty Scheduled Controls message separately from source-zero', function () {
+    enableOutboundJournalForScheduledTest();
+    $formatter = Mockery::mock(TelegramScheduledControlSummaryFormatter::class);
+    $formatter->shouldReceive('format')->once()->andReturn('');
+    app()->instance(TelegramScheduledControlSummaryFormatter::class, $formatter);
+    controlDeliveryFixture();
+    $operationKey = 'scheduled_control_summary:2026-10-01:'.hash('sha256', '2026-10-01|-2001|17');
+
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01')['queued'])->toBe(1);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', $operationKey)->sole();
+    expect($operation->events->where('stage', 'controls_source')->first()?->outcome)->toBe('loaded')
+        ->and($operation->events->where('stage', 'controls_format')->first()?->outcome)->toBe('no_message')
+        ->and($operation->events->where('stage', 'controls_format')->first()?->metrics)->toBe(['message_present' => false])
+        ->and($operation->events->where('stage', 'controls_queue')->first()?->outcome)->toBe('queued')
+        ->and(TelegramScheduledControlSummaryDelivery::sole()->text)->toBe('');
+});
+
+it('records a scheduled controls dispatch failure without persisting diagnostics in the rolled-back transaction', function () {
+    enableOutboundJournalForScheduledTest();
+    $dispatcher = Mockery::mock(Illuminate\Contracts\Bus\Dispatcher::class);
+    $dispatcher->shouldReceive('dispatch')->once()->andThrow(new RuntimeException('private dispatch detail'));
+    Bus::swap($dispatcher);
+    stubControlSummaryFormatter();
+    controlDeliveryFixture();
+    $operationKey = 'scheduled_control_summary:2026-10-01:'.hash('sha256', '2026-10-01|-2001|17');
+
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01'))
+        ->toMatchArray(['queued' => 0, 'failed' => 1]);
+
+    $operation = TelegramOutboundOperation::query()->where('operation_key', $operationKey)->sole();
+    expect($operation->events->where('stage', 'controls_queue')->first()?->outcome)->toBe('queue_failed')
+        ->and(TelegramScheduledControlSummaryDelivery::count())->toBe(0)
+        ->and(json_encode($operation->events->toArray()))->not->toContain('private dispatch detail');
 });
 
 it('keeps ingestion and existing observation available with main auto replies disabled', function () {
