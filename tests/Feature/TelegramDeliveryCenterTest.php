@@ -234,6 +234,25 @@ it('renders bounded ordered digest build history with safe labels and no side ef
     auth()->logout();
 });
 
+it('does not count a no-input Scheduled Controls build as a missed delivery slot', function (): void {
+    enableOutboundOperationEventsForDeliveryCenterTest();
+    $operation = TelegramOutboundOperation::query()->create([
+        'operation_key' => 'scheduled_control_summary:2026-10-22:destination-hash',
+        'notification_type' => 'scheduled_control_summary', 'method' => 'sendMessage', 'bot' => 'analytics',
+        'chat_id' => 'summary-chat', 'message_thread_id' => '7', 'status' => 'expected',
+        'attempts' => 0, 'created_at' => '2026-10-22 22:00:00',
+    ]);
+    $operation->events()->create(['stage' => 'controls_source', 'outcome' => 'no_input']);
+    $operation->events()->create(['stage' => 'controls_format', 'outcome' => 'no_message', 'metrics' => ['message_present' => false]]);
+    $operation->events()->create(['stage' => 'controls_queue', 'outcome' => 'skipped', 'metrics' => ['queued_count' => 0]]);
+
+    $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 23:00', 'Europe/Rome'));
+
+    expect($snapshot['counts']['pending'])->toBe(0)
+        ->and($snapshot['counts']['missed'])->toBe(0)
+        ->and($snapshot['counts']['unmonitored'])->toBe(11);
+});
+
 it('renders the delivery center on the admin panel without calling Telegram', function (): void {
     auth()->setUser((new User)->forceFill(['role' => 'admin']));
     Filament::setCurrentPanel(Filament::getPanel('admin'));

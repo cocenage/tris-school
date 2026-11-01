@@ -107,7 +107,8 @@ class TelegramDeliveryCenter
 
             $staleExpected = TelegramOutboundOperation::query()
                 ->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
-                ->where('notification_type', '!=', 'calendar')
+                // Calendar is counted by its slot; summary builds are not delivery slots until queued.
+                ->whereNotIn('notification_type', ['calendar', 'scheduled_control_summary'])
                 ->where('status', 'expected')
                 ->where('created_at', '<', $now->subMinutes(10)->format('Y-m-d H:i:s'))
                 ->count();
