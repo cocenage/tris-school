@@ -9,13 +9,55 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function (): void {
+    Schema::dropIfExists('telegram_outbound_operation_events');
     Schema::dropIfExists('telegram_outbound_operations');
     (require database_path('migrations/2026_10_21_000000_create_telegram_outbound_operations_table.php'))->up();
+    (require database_path('migrations/2026_11_01_000000_create_telegram_outbound_operation_events_table.php'))->up();
     config(['services.telegram.bot_token' => 'work-test-token']);
 });
 
 afterEach(function (): void {
+    Schema::dropIfExists('telegram_outbound_operation_events');
     Schema::dropIfExists('telegram_outbound_operations');
+});
+
+it('records a digest send attempt and Telegram acceptance without request content', function (): void {
+    Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 52]], 200)]);
+    $monitor = app(TelegramOutboundMonitor::class);
+    $context = [
+        'operation_key' => 'calendar:tomorrow:2026-11-02',
+        'notification_type' => 'calendar',
+    ];
+
+    $monitor->withContext($context, fn () => app(TelegramBotService::class)->sendMessage('test-chat', 'private summary text'));
+
+    $operation = TelegramOutboundOperation::query()->sole();
+    expect($operation->events->pluck('stage')->all())->toBe(['send_attempt', 'telegram_response'])
+        ->and($operation->events->pluck('outcome')->all())->toBe(['attempted', 'accepted'])
+        ->and($operation->events[0]->metrics)->toBe(['attempt' => 1])
+        ->and($operation->events[1]->metrics)->toBe(['http_status' => 200])
+        ->and(json_encode($operation->events->toArray()))->not->toContain('private summary text', 'work-test-token');
+});
+
+it('records Telegram rejection without retaining its description', function (): void {
+    Http::fake(['api.telegram.org/*' => Http::response([
+        'ok' => false,
+        'error_code' => 403,
+        'description' => 'private response detail',
+    ], 403)]);
+    $monitor = app(TelegramOutboundMonitor::class);
+    $context = [
+        'operation_key' => 'morning_digest:2026-11-01:lodi',
+        'notification_type' => 'morning_digest',
+    ];
+
+    $monitor->withContext($context, fn () => app(TelegramBotService::class)->sendMessage('test-chat', 'private weather text'));
+
+    $operation = TelegramOutboundOperation::query()->sole();
+    expect($operation->status)->toBe('failed')
+        ->and($operation->events->pluck('outcome')->all())->toBe(['attempted', 'rejected'])
+        ->and($operation->events[1]->metrics)->toBe(['http_status' => 403, 'error_code' => 403])
+        ->and(json_encode($operation->events->toArray()))->not->toContain('private weather text', 'private response detail');
 });
 
 it('records API acceptance without retaining message text or token', function (): void {
@@ -67,7 +109,8 @@ it('associates an event-driven send with its business object', function (): void
     $row = TelegramOutboundOperation::query()->sole();
     expect($row->notification_type)->toBe('task')
         ->and($row->source_type)->toBe('DayOffRequest')
-        ->and($row->source_id)->toBe('42');
+        ->and($row->source_id)->toBe('42')
+        ->and($row->events)->toBeEmpty();
 });
 
 it('keeps a single logical record for a keyed retry', function (): void {
@@ -161,18 +204,36 @@ it('never blocks sending if the journal is unavailable', function (): void {
 
 it('marks a lost HTTP response as uncertain rather than failed or sent', function (): void {
     Http::fake(['api.telegram.org/*' => Http::failedConnection()]);
+    $monitor = app(TelegramOutboundMonitor::class);
+    $context = [
+        'operation_key' => 'evening_intelligence:2026-11-01:navigli',
+        'notification_type' => 'evening_intelligence',
+    ];
 
-    expect(fn () => app(TelegramBotService::class)->sendMessage('test-chat', 'text'))
+    expect(fn () => $monitor->withContext($context,
+        fn () => app(TelegramBotService::class)->sendMessage('test-chat', 'text')))
         ->toThrow(ConnectionException::class);
 
-    expect(TelegramOutboundOperation::query()->sole()->status)->toBe('uncertain');
+    $operation = TelegramOutboundOperation::query()->sole();
+    expect($operation->status)->toBe('uncertain')
+        ->and($operation->events->pluck('outcome')->all())->toBe(['attempted', 'uncertain']);
 });
 
 it('does not call a successful HTTP response with no receipt delivered', function (): void {
     Http::fake(['api.telegram.org/*' => Http::response(['ok' => true], 200)]);
+    $monitor = app(TelegramOutboundMonitor::class);
+    $context = [
+        'operation_key' => 'linen_defect:2026-11-01:central',
+        'notification_type' => 'linen_defect',
+    ];
 
-    expect(app(TelegramBotService::class)->sendMessage('test-chat', 'text'))->toBeNull()
-        ->and(TelegramOutboundOperation::query()->sole()->status)->toBe('uncertain');
+    expect($monitor->withContext($context,
+        fn () => app(TelegramBotService::class)->sendMessage('test-chat', 'text')))->toBeNull();
+
+    $operation = TelegramOutboundOperation::query()->sole();
+    expect($operation->status)->toBe('uncertain')
+        ->and($operation->events->pluck('outcome')->all())->toBe(['attempted', 'uncertain'])
+        ->and($operation->events[1]->metrics)->toBe(['http_status' => 200]);
 });
 
 it('records media groups and edits while ignoring non-notification Telegram methods', function (): void {
