@@ -120,6 +120,10 @@ class TelegramScheduledControlSummaryDeliveryService
                 ]);
                 $delivery = TelegramScheduledControlSummaryDelivery::query()->lockForUpdate()->findOrFail($delivery->id);
 
+                if (trim((string) $delivery->text) === '') {
+                    return 0;
+                }
+
                 return $this->enqueue($delivery, $context['operation_key'], $dispatchFailed);
             });
             $this->linkOperationToDelivery($context, $delivery);
@@ -132,7 +136,7 @@ class TelegramScheduledControlSummaryDeliveryService
             ]);
             Log::info('scheduled_control_summary_queued', ['queued' => $queued, 'date' => $date]);
 
-            return ['queued' => $queued, 'skipped' => $queued ? null : 'already_reserved_or_sent'];
+            return ['queued' => $queued, 'skipped' => $queued ? null : ($messagePresent ? 'already_reserved_or_sent' : 'no_message')];
         } catch (\Throwable $error) {
             if ($dispatchFailed) {
                 $journal->record($context, 'controls_queue', 'queue_failed');

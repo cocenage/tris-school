@@ -1489,14 +1489,17 @@ it('records a formatted-empty Scheduled Controls message separately from source-
     controlDeliveryFixture();
     $operationKey = 'scheduled_control_summary:2026-10-01:'.hash('sha256', '2026-10-01|-2001|17');
 
-    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01')['queued'])->toBe(1);
+    expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01'))
+        ->toMatchArray(['queued' => 0, 'skipped' => 'no_message']);
 
     $operation = TelegramOutboundOperation::query()->where('operation_key', $operationKey)->sole();
     expect($operation->events->where('stage', 'controls_source')->first()?->outcome)->toBe('loaded')
         ->and($operation->events->where('stage', 'controls_format')->first()?->outcome)->toBe('no_message')
         ->and($operation->events->where('stage', 'controls_format')->first()?->metrics)->toBe(['message_present' => false])
-        ->and($operation->events->where('stage', 'controls_queue')->first()?->outcome)->toBe('queued')
+        ->and($operation->events->where('stage', 'controls_queue')->first()?->outcome)->toBe('skipped')
+        ->and($operation->events->where('stage', 'controls_queue')->first()?->metrics)->toBe(['queued_count' => 0])
         ->and(TelegramScheduledControlSummaryDelivery::sole()->text)->toBe('');
+    Bus::assertNotDispatched(DeliverScheduledControlSummary::class);
 });
 
 it('records a scheduled controls dispatch failure without persisting diagnostics in the rolled-back transaction', function () {
