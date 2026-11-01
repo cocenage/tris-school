@@ -10,6 +10,7 @@ use App\Services\Telegram\TelegramDeliveryCenter;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use Carbon\CarbonImmutable;
 use Filament\Facades\Filament;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
@@ -35,6 +36,7 @@ beforeEach(function (): void {
 
 afterEach(function (): void {
     CarbonImmutable::setTestNow();
+    Schema::dropIfExists('telegram_scheduled_control_summary_deliveries');
     Schema::dropIfExists('telegram_outbound_operation_events');
     Schema::dropIfExists('telegram_outbound_operations');
 });
@@ -250,6 +252,33 @@ it('does not count a no-input Scheduled Controls build as a missed delivery slot
 
     expect($snapshot['counts']['pending'])->toBe(0)
         ->and($snapshot['counts']['missed'])->toBe(0)
+        ->and($snapshot['counts']['unmonitored'])->toBe(11);
+});
+
+it('continues to age a queued Scheduled Controls delivery into missed after its grace period', function (): void {
+    Schema::create('telegram_scheduled_control_summary_deliveries', function ($table): void {
+        $table->id();
+        $table->date('summary_date');
+        $table->string('chat_id');
+        $table->string('message_thread_id')->nullable();
+        $table->string('status');
+        $table->dateTime('sent_at')->nullable();
+    });
+    $deliveryId = DB::table('telegram_scheduled_control_summary_deliveries')->insertGetId([
+        'summary_date' => '2026-10-22', 'chat_id' => 'summary-chat', 'message_thread_id' => '7',
+        'status' => 'queued', 'sent_at' => null,
+    ]);
+    TelegramOutboundOperation::query()->create([
+        'operation_key' => 'scheduled_control_summary:2026-10-22:destination-hash',
+        'notification_type' => 'scheduled_control_summary', 'method' => 'sendMessage', 'bot' => 'analytics',
+        'chat_id' => 'summary-chat', 'message_thread_id' => '7', 'source_id' => (string) $deliveryId,
+        'status' => 'expected', 'attempts' => 0, 'created_at' => '2026-10-22 22:00:00',
+    ]);
+
+    $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 23:00', 'Europe/Rome'));
+
+    expect($snapshot['counts']['pending'])->toBe(0)
+        ->and($snapshot['counts']['missed'])->toBe(1)
         ->and($snapshot['counts']['unmonitored'])->toBe(11);
 });
 
