@@ -23,11 +23,11 @@ class TelegramOperationalTestDatabase
         '-1009',
     ];
 
-    public static function refresh(): void
+    public static function refresh(string $analyticsDatabase = ':memory:'): void
     {
         config([
             'app.timezone' => 'Europe/Rome',
-            'database.connections.analytics.database' => ':memory:',
+            'database.connections.analytics.database' => $analyticsDatabase,
             'services.telegram.work_allowed_chat_ids' => [],
             'services.telegram.operational_observer_enabled' => false,
             'services.telegram.operational_chat_ids' => self::SYNTHETIC_OPERATIONAL_CHAT_IDS,
@@ -111,6 +111,9 @@ class TelegramOperationalTestDatabase
 
         $migration = require base_path('database/migrations/2026_09_16_000000_create_telegram_operational_event_ledger.php');
         $migration->up();
+
+        $botIdentityMigration = require base_path('database/migrations/2026_11_01_000000_add_source_bot_to_telegram_operational_observations.php');
+        $botIdentityMigration->up();
 
         $apartmentContextMigration = require base_path('database/migrations/2026_09_20_000000_add_apartment_context_to_telegram_operational_events.php');
         $apartmentContextMigration->up();

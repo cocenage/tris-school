@@ -161,8 +161,8 @@ class TelegramWorkWebhookController extends Controller
 
             if ($savedMessage && ($isOperationalChat || $isWorkAllowed) && config('services.telegram.operational_observer_enabled', false)
                 && ($savedMessage->raw === null
-                    || ! app(TelegramOperationalEventObserver::class)->hasCompletedCurrentRevision($savedMessage))) {
-                ProcessTelegramOperationalMessage::dispatch($savedMessage->id);
+                    || ! app(TelegramOperationalEventObserver::class)->hasCompletedCurrentRevision($savedMessage, 'work'))) {
+                ProcessTelegramOperationalMessage::dispatch($savedMessage->id, 'message', 'work');
             }
 
             if ($savedMessage && $isWorkAllowed && $activated && $currentForActions) {

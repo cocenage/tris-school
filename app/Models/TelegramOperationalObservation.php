@@ -13,6 +13,7 @@ class TelegramOperationalObservation extends Model
 
     protected $fillable = [
         'telegram_message_id',
+        'source_bot',
         'source_revision_hash',
         'evaluation_kind',
         'state',

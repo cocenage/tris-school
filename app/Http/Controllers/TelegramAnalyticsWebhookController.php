@@ -8,6 +8,7 @@ use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
 use App\Models\TelegramTopic;
 use App\Models\TelegramUser;
+use App\Services\Telegram\TelegramOperationalEventObserver;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramTopicTitleResolver;
 use Carbon\Carbon;
@@ -111,8 +112,9 @@ class TelegramAnalyticsWebhookController extends Controller
             ]);
         }
 
-        if (config('services.telegram.operational_observer_enabled', false)) {
-            ProcessTelegramOperationalMessage::dispatch($telegramMessage->id);
+        if (config('services.telegram.operational_observer_enabled', false)
+            && ! app(TelegramOperationalEventObserver::class)->hasCompletedCurrentRevision($telegramMessage, 'analytics')) {
+            ProcessTelegramOperationalMessage::dispatch($telegramMessage->id, 'message', 'analytics');
         }
 
         return response()->json(['ok' => true]);

@@ -4,10 +4,15 @@ use App\Http\Controllers\TelegramAnalyticsWebhookController;
 use App\Jobs\ProcessTelegramOperationalMessage;
 use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
+use App\Models\TelegramOperationalEvent;
+use App\Models\TelegramOperationalObservation;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramScheduledMessageResponse;
 use App\Models\TelegramTopic;
+use App\Services\Telegram\TelegramDistrictRouteRegistry;
+use App\Services\Telegram\TelegramOperationalEventObserver;
+use App\Services\Telegram\TelegramOperationalInterpreter;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ResponseSequence;
 use Illuminate\Support\Facades\Artisan;
@@ -69,6 +74,7 @@ it('dispatches the reusable observer job after analytics persistence and attachm
         ->assertOk();
 
     Queue::assertPushed(ProcessTelegramOperationalMessage::class, fn ($job) => $job->mode === 'message'
+        && $job->sourceBot === 'analytics'
     );
     expect(TelegramMessage::count())->toBe(1)->and(Http::recorded())->toHaveCount(0);
 });
@@ -141,9 +147,112 @@ it('keeps duplicate analytics webhook delivery safe by dispatching the same stor
         ->map(fn ($job) => $job->telegramMessageId)
         ->unique();
 
-    expect(Queue::pushed(ProcessTelegramOperationalMessage::class))->toHaveCount(2)
+    expect(Queue::pushed(ProcessTelegramOperationalMessage::class)
+        ->map(fn ($job) => [$job->mode, $job->sourceBot])
+        ->all())->toBe([['message', 'analytics'], ['message', 'analytics']])
         ->and($ids)->toHaveCount(1)
         ->and(Http::recorded())->toHaveCount(0);
+});
+
+it('does not dispatch a completed analytics revision again after duplicate delivery', function () {
+    $payload = analyticsWebhookPayload('604');
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+
+    $message = TelegramMessage::query()->where('message_id', '604')->sole();
+    (new ProcessTelegramOperationalMessage($message->id, 'message', 'analytics'))
+        ->handle(app(TelegramOperationalEventObserver::class));
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+
+    expect(Queue::pushed(ProcessTelegramOperationalMessage::class))->toHaveCount(1)
+        ->and(TelegramOperationalObservation::query()->where('telegram_message_id', $message->id)->sole())
+        ->toMatchArray(['source_bot' => 'analytics', 'state' => 'completed'])
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1);
+});
+
+it('dispatches an analytics retry after processing failed and the prior job was only queued', function () {
+    $payload = analyticsWebhookPayload('606');
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+    $message = TelegramMessage::query()->where('message_id', '606')->sole();
+
+    $interpreter = Mockery::mock(TelegramOperationalInterpreter::class);
+    $interpreter->shouldReceive('interpret')->once()->andThrow(new RuntimeException('synthetic observer failure'));
+    $failingObserver = new TelegramOperationalEventObserver(
+        $interpreter,
+        app(TelegramDistrictRouteRegistry::class),
+    );
+
+    expect(fn () => (new ProcessTelegramOperationalMessage($message->id, 'message', 'analytics'))
+        ->handle($failingObserver))->toThrow(RuntimeException::class);
+
+    expect(TelegramOperationalObservation::query()->sole()->state)->toBe('failed');
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+
+    expect(Queue::pushed(ProcessTelegramOperationalMessage::class))->toHaveCount(2);
+
+    (new ProcessTelegramOperationalMessage($message->id, 'message', 'analytics'))
+        ->handle(app(TelegramOperationalEventObserver::class));
+
+    expect(TelegramOperationalObservation::query()->sole()->state)->toBe('completed')
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1);
+});
+
+it('reuses a matching completed legacy observation during bot-source rollout', function () {
+    $payload = analyticsWebhookPayload('607');
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+    $message = TelegramMessage::query()->where('message_id', '607')->sole();
+
+    (new ProcessTelegramOperationalMessage($message->id))
+        ->handle(app(TelegramOperationalEventObserver::class));
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+
+    expect(Queue::pushed(ProcessTelegramOperationalMessage::class))->toHaveCount(1)
+        ->and(TelegramOperationalObservation::query()->where('telegram_message_id', $message->id)->sole())
+        ->toMatchArray(['source_bot' => 'legacy', 'state' => 'completed'])
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1);
+});
+
+it('records edited analytics content as a new revision and suppresses its completed replay', function () {
+    $payload = analyticsWebhookPayload('605');
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $payload)->assertOk();
+
+    $message = TelegramMessage::query()->where('message_id', '605')->sole();
+    (new ProcessTelegramOperationalMessage($message->id, 'message', 'analytics'))
+        ->handle(app(TelegramOperationalEventObserver::class));
+
+    $editedPayload = $payload;
+    $editedPayload['update_id']++;
+    $editedPayload['edited_message'] = $editedPayload['message'];
+    $editedPayload['edited_message']['edit_date'] = now()->timestamp;
+    $editedPayload['edited_message']['text'] = 'Дверь снова заедает.';
+    unset($editedPayload['message']);
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $editedPayload)->assertOk();
+
+    expect(Queue::pushed(ProcessTelegramOperationalMessage::class))->toHaveCount(2);
+
+    (new ProcessTelegramOperationalMessage($message->id, 'message', 'analytics'))
+        ->handle(app(TelegramOperationalEventObserver::class));
+
+    $this->postJson('/telegram/analytics-webhook/analytics-test-secret', $editedPayload)->assertOk();
+
+    $observations = TelegramOperationalObservation::query()
+        ->where('telegram_message_id', $message->id)
+        ->orderBy('id')
+        ->get();
+
+    expect(Queue::pushed(ProcessTelegramOperationalMessage::class))->toHaveCount(2)
+        ->and($observations)->toHaveCount(2)
+        ->and($observations->pluck('source_bot')->unique()->all())->toBe(['analytics'])
+        ->and($observations->pluck('source_revision_hash')->unique())->toHaveCount(2)
+        ->and($observations->pluck('state')->unique()->all())->toBe(['completed'])
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1);
 });
 
 it('does not dispatch analytics observation when the independent flag is disabled', function () {
@@ -239,7 +348,7 @@ it('returns cleanly for an empty analytics poll', function () {
         ->and(TelegramMessage::count())->toBe(0);
 });
 
-it('keeps duplicate analytics polling idempotent', function () {
+it('keeps an analytics polling replay after offset failure logically idempotent', function () {
     $payload = analyticsWebhookPayload('622');
     $payload['update_id'] = 102;
 
@@ -249,9 +358,17 @@ it('keeps duplicate analytics polling idempotent', function () {
         ->push(['ok' => true, 'result' => [$payload]])
         ->push(['ok' => true, 'result' => []]);
 
+    expect(Artisan::call('telegram:analytics-poll'))->toBe(0);
+
+    $message = TelegramMessage::query()->where('message_id', '622')->sole();
+    (new ProcessTelegramOperationalMessage($message->id, 'message', 'analytics'))
+        ->handle(app(TelegramOperationalEventObserver::class));
+
     expect(Artisan::call('telegram:analytics-poll'))->toBe(0)
-        ->and(Artisan::call('telegram:analytics-poll'))->toBe(0)
-        ->and(TelegramMessage::query()->where('message_id', '622')->count())->toBe(1);
+        ->and(TelegramMessage::query()->where('message_id', '622')->count())->toBe(1)
+        ->and(Queue::pushed(ProcessTelegramOperationalMessage::class))->toHaveCount(1)
+        ->and(TelegramOperationalObservation::query()->where('telegram_message_id', $message->id)->count())->toBe(1)
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1);
 });
 
 it('does not acknowledge past a failed analytics update', function () {

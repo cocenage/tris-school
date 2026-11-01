@@ -13,6 +13,8 @@ class ProcessTelegramOperationalMessage implements ShouldQueue
 {
     use Queueable;
 
+    public string $sourceBot = 'legacy';
+
     public int $tries = 8;
 
     public int $timeout = 20;
@@ -25,7 +27,10 @@ class ProcessTelegramOperationalMessage implements ShouldQueue
     public function __construct(
         public int $telegramMessageId,
         public string $mode = 'message',
-    ) {}
+        string $sourceBot = 'legacy',
+    ) {
+        $this->sourceBot = $sourceBot;
+    }
 
     public function handle(TelegramOperationalEventObserver $observer): void
     {
@@ -42,10 +47,10 @@ class ProcessTelegramOperationalMessage implements ShouldQueue
             return;
         }
 
-        $result = $observer->observe($message, $this->mode);
+        $result = $observer->observe($message, $this->mode, sourceBot: $this->sourceBot);
 
         if ($this->mode === 'message' && filled($result['unanswered_due_at'] ?? null)) {
-            self::dispatch($message->id, 'unanswered')
+            self::dispatch($message->id, 'unanswered', $this->sourceBot)
                 ->delay(Carbon::parse($result['unanswered_due_at']));
         }
     }

@@ -3,8 +3,10 @@
 use App\Models\TelegramOperationalEvent;
 use App\Models\TelegramOperationalEventEvidence;
 use App\Models\TelegramOperationalObservation;
+use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
+use App\Services\Telegram\TelegramOperationalInterpreter;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\TelegramOperationalTestDatabase;
@@ -28,6 +30,33 @@ it('creates one traceable event and reuses an unchanged observation', function (
         ->and(TelegramOperationalObservation::query()->count())->toBe(1)
         ->and($event->evidence)->toHaveCount(1)
         ->and($event->evidence->first()->observation->telegram_message_id)->toBe($message->id);
+});
+
+it('keeps a failed observation retryable without duplicating its logical event', function () {
+    $message = TelegramOperationalTestDatabase::message('Не работает замок в квартире', messageId: '2');
+    $interpreter = Mockery::mock(TelegramOperationalInterpreter::class);
+    $interpreter->shouldReceive('interpret')->once()->andThrow(new RuntimeException('synthetic observer failure'));
+    $failingObserver = new TelegramOperationalEventObserver($interpreter, app(TelegramDistrictRouteRegistry::class));
+
+    expect(fn () => $failingObserver->observe($message, sourceBot: 'analytics'))
+        ->toThrow(RuntimeException::class);
+
+    $failed = TelegramOperationalObservation::query()->sole();
+    expect($failed->source_bot)->toBe('analytics')
+        ->and($failed->state)->toBe('failed')
+        ->and(TelegramOperationalEvent::query()->count())->toBe(0);
+
+    $retryObserver = new TelegramOperationalEventObserver(
+        app(TelegramOperationalInterpreter::class),
+        app(TelegramDistrictRouteRegistry::class),
+    );
+    $result = $retryObserver->observe($message->fresh(['chat', 'topic', 'telegramUser', 'attachments']), sourceBot: 'analytics');
+
+    expect($result['outcome'])->toBe('created')
+        ->and(TelegramOperationalObservation::query()->count())->toBe(1)
+        ->and(TelegramOperationalObservation::query()->sole()->state)->toBe('completed')
+        ->and(TelegramOperationalObservation::query()->sole()->source_bot)->toBe('analytics')
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1);
 });
 
 it('stores explainable no-event decisions without an event', function () {
