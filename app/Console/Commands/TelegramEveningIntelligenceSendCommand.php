@@ -234,12 +234,6 @@ class TelegramEveningIntelligenceSendCommand extends Command
                 continue;
             }
 
-            if ($context !== null && trim($text) === '') {
-                $results[] = $this->result($route, $date, 'no_message', $materialEvents, 0);
-
-                continue;
-            }
-
             $targetChatId = $deliveryMode === 'centralized' ? $centralChatId : (string) $route['chat_id'];
             $targetThreadId = $deliveryMode === 'centralized' ? $centralThreadId : (string) $route['duty_thread_id'];
             $deliveryKey = 'telegram_evening_intelligence_v1:'.hash('sha256', implode('|', [

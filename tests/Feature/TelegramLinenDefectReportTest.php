@@ -267,7 +267,7 @@ it('records an unclassified linen source failure without saving exception detail
         ->and(json_encode($operation->events->toArray()))->not->toContain('private linen source detail');
 });
 
-it('records an absent standalone linen message and skips delivery', function () {
+it('records an absent standalone linen message while preserving the existing send path', function () {
     enableOutboundJournalForLinenTest();
     $builder = Mockery::mock(TelegramLinenDefectReportBuilder::class);
     $builder->shouldReceive('build')->once()->andReturn(['cases' => [], 'incomplete' => false, 'districts' => []]);
@@ -276,7 +276,7 @@ it('records an absent standalone linen message and skips delivery', function () 
     $formatter->shouldReceive('format')->once()->andReturn('');
     app()->instance(TelegramLinenDefectReportFormatter::class, $formatter);
     $bot = Mockery::mock(TelegramBotService::class);
-    $bot->shouldNotReceive('sendMessage');
+    $bot->shouldReceive('sendMessage')->once()->with('-9000', '', '99')->andReturn(882);
     $bot->shouldNotReceive('sendAnalyticsMessage');
     app()->instance(TelegramBotService::class, $bot);
 
@@ -285,5 +285,5 @@ it('records an absent standalone linen message and skips delivery', function () 
     $operation = TelegramOutboundOperation::query()->where('operation_key', 'linen_defect:2026-10-15:central')->sole();
     expect($operation->events->where('stage', 'linen_format')->first()?->outcome)->toBe('no_message')
         ->and($operation->events->where('stage', 'linen_format')->first()?->metrics)->toBe(['message_present' => false])
-        ->and($operation->events->where('stage', 'linen_guard'))->toBeEmpty();
+        ->and($operation->events->where('stage', 'linen_guard')->first()?->outcome)->toBe('complete');
 });

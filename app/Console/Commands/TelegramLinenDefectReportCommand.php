@@ -166,12 +166,6 @@ class TelegramLinenDefectReportCommand extends Command
                 continue;
             }
 
-            if ($context !== null && trim($text) === '') {
-                $results[] = ['target' => $target['key'], 'status' => 'no_message'];
-
-                continue;
-            }
-
             $guard = 'telegram_linen_defects_v1:'.hash('sha256', implode('|', [
                 $value, $mode, $target['key'], $target['chat'], $target['thread'],
             ]));

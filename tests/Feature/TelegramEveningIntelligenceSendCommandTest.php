@@ -148,7 +148,7 @@ it('journals incomplete source, filtered-to-zero events, and an evening format f
         ->and(json_encode($operation->events->toArray()))->not->toContain('private formatter detail');
 });
 
-it('records an absent evening message and does not enter the delivery guard', function () {
+it('records an absent evening message while preserving the existing send path', function () {
     enableOutboundJournalForEveningTest();
     config(['services.telegram.evening_intelligence_delivery_enabled' => true]);
     $builder = Mockery::mock(TelegramEveningIntelligenceBuilder::class);
@@ -164,7 +164,7 @@ it('records an absent evening message and does not enter the delivery guard', fu
     app()->instance(TelegramLinenDefectReportBuilder::class, $linen);
     app()->instance(TelegramDigestFormatter::class, $formatter);
     $bot = Mockery::mock(TelegramBotService::class);
-    $bot->shouldNotReceive('sendMessage');
+    $bot->shouldReceive('sendMessage')->once()->with('-9000', '  ', '99')->andReturn(322);
     app()->instance(TelegramBotService::class, $bot);
 
     expect(Artisan::call('telegram:evening-intelligence-send', [
@@ -174,7 +174,7 @@ it('records an absent evening message and does not enter the delivery guard', fu
     $operation = TelegramOutboundOperation::query()->where('operation_key', 'evening_intelligence:2026-06-17:navigli')->sole();
     expect($operation->events->where('stage', 'evening_format')->first()?->outcome)->toBe('no_message')
         ->and($operation->events->where('stage', 'evening_format')->first()?->metrics)->toBe(['message_present' => false])
-        ->and($operation->events->where('stage', 'evening_guard'))->toBeEmpty();
+        ->and($operation->events->where('stage', 'evening_guard')->first()?->outcome)->toBe('complete');
 });
 
 it('blocks real delivery while the feature flag is off', function () {
