@@ -1,5 +1,15 @@
 <?php
 
+$databaseQueueConnection = env(
+    'DB_QUEUE_CONNECTION',
+    env('DB_CONNECTION', 'sqlite') === 'sqlite' ? 'sqlite_queue' : null,
+);
+$queueDatabasePath = env('DB_QUEUE_DATABASE');
+$isolatedSqliteQueue = is_string($queueDatabasePath)
+    && trim($queueDatabasePath) !== ''
+    && $databaseQueueConnection === 'sqlite_queue';
+$queueDatabaseConnection = $databaseQueueConnection ?: env('DB_CONNECTION', 'sqlite');
+
 return [
 
     /*
@@ -37,14 +47,11 @@ return [
 
         'database' => [
             'driver' => 'database',
-            'connection' => env(
-                'DB_QUEUE_CONNECTION',
-                env('DB_CONNECTION', 'sqlite') === 'sqlite' ? 'sqlite_queue' : null,
-            ),
+            'connection' => $databaseQueueConnection,
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
             'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
-            'after_commit' => false,
+            'after_commit' => $isolatedSqliteQueue ? true : env('DB_QUEUE_AFTER_COMMIT', false),
         ],
 
         'beanstalkd' => [
@@ -106,7 +113,7 @@ return [
     */
 
     'batching' => [
-        'database' => env('DB_QUEUE_BATCH_CONNECTION', env('DB_QUEUE_CONNECTION', env('DB_CONNECTION', 'sqlite'))),
+        'database' => $isolatedSqliteQueue ? 'sqlite_queue' : env('DB_QUEUE_BATCH_CONNECTION', $queueDatabaseConnection),
         'table' => 'job_batches',
     ],
 
@@ -125,7 +132,7 @@ return [
 
     'failed' => [
         'driver' => env('QUEUE_FAILED_DRIVER', 'database-uuids'),
-        'database' => env('DB_QUEUE_FAILED_CONNECTION', env('DB_QUEUE_CONNECTION', env('DB_CONNECTION', 'sqlite'))),
+        'database' => $isolatedSqliteQueue ? 'sqlite_queue' : env('DB_QUEUE_FAILED_CONNECTION', $queueDatabaseConnection),
         'table' => 'failed_jobs',
     ],
 
