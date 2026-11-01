@@ -287,3 +287,31 @@ it('returns a severe weather warning only when forecast fields support it', func
     expect(app(MilanWeatherService::class)->morningForecast(CarbonImmutable::parse('2026-10-31', 'Europe/Rome'))['advice'])
         ->toContain('грозу около 13:00');
 });
+
+it('uses concise Russian conditions from WeatherAPI codes instead of poor provider translations', function () {
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-31 06:00', 'Europe/Rome'));
+    Http::fake(['api.weatherapi.com/*' => Http::response(weatherApiUnitResponse('2026-10-31', [
+        weatherApiUnitHour('2026-10-31 08:00', [
+            'condition' => ['text' => 'Переменная облачность', 'code' => 1003],
+        ]),
+        weatherApiUnitHour('2026-10-31 13:00', [
+            'condition' => ['text' => 'Местами дождь поблизости', 'code' => 1153],
+        ]),
+        weatherApiUnitHour('2026-10-31 15:00', [
+            'condition' => ['text' => 'Возможны грозы поблизости', 'code' => 1276],
+        ]),
+    ]))]);
+
+    $forecast = app(MilanWeatherService::class)->morningForecast(CarbonImmutable::parse('2026-10-31', 'Europe/Rome'));
+
+    expect($forecast['points']['08:00'])->toMatchArray([
+        'condition' => 'Переменная облачность', 'emoji' => '🌤',
+    ])
+        ->and($forecast['points']['13:00'])->toMatchArray([
+            'condition' => 'Морось', 'emoji' => '🌧',
+        ])
+        ->and($forecast['points']['15:00'])->toMatchArray([
+            'condition' => 'Гроза', 'emoji' => '⛈',
+        ])
+        ->and($forecast['points']['13:00']['condition'])->not->toContain('поблизости');
+});

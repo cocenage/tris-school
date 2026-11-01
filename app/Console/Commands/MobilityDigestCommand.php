@@ -191,25 +191,23 @@ class MobilityDigestCommand extends Command
 
         if (! $hasForecast) {
             if (($weather['unavailable_reason'] ?? null) === 'date_out_of_range') {
-                $text .= "Прогноз недоступен: бесплатный сервис охватывает сегодня и следующие два дня.\n";
+                $text .= "Прогноз недоступен для 08:00, 13:00 и 15:00: бесплатный план охватывает сегодня и следующие два дня.\n";
             } else {
-                $text .= "Прогноз временно недоступен.\n";
+                $text .= "Прогноз временно недоступен для 08:00, 13:00 и 15:00.\n";
             }
         } else {
             foreach (['08:00', '13:00', '15:00'] as $time) {
                 $text .= $this->formatWeatherPoint($time, $points[$time] ?? null);
             }
         }
-
         if (! empty($weather['advice'])) {
             $text .= e((string) $weather['advice'])."\n";
         }
 
         if ($hasForecast) {
-            $text .= '<a href="https://www.weatherapi.com/">WeatherAPI.com</a> · перевод и округление.'."\n";
-            $text .= 'ℹ️ Прогноз вероятностный и может быть неточным для места и времени. Не используйте его как единственную основу решений о безопасности; сверяйтесь с официальными метеослужбами.'."\n";
+            $text .= "Источник: <code>WeatherAPI.com</code> · перевод и округление.\n";
+            $text .= 'ℹ️ Погодные данные приведены только для общего сведения. Прогноз вероятностный и может быть неточным для конкретного места и времени. Не используйте его как единственный источник решений о личной безопасности, авиации, морской навигации, экстренном планировании и иных вопросах, критичных для безопасности. Для таких решений сверяйтесь с официальными метеослужбами и предупреждениями компетентных органов.'."\n";
         }
-
         if ($alerts->isNotEmpty()) {
             $text .= "\n⚠️ <b>Сегодня важно</b>\n";
             foreach ($alerts->take(3) as $alert) {
@@ -225,46 +223,78 @@ class MobilityDigestCommand extends Command
     protected function formatWeatherPoint(string $time, ?array $point): string
     {
         if ($point === null) {
-            return '<b>'.e($time).' — Прогноз временно недоступен</b>'."\n";
+            return '🌤 <b>'.e($time).' · Прогноз временно недоступен</b>'."\n\n";
         }
 
-        $condition = trim(implode(' ', array_filter([
-            $point['emoji'] ?? null,
-            $point['condition'] ?? null,
-        ], fn (?string $value): bool => filled($value))));
-        $line = '<b>'.e($time).($condition !== '' ? ' — '.e($condition) : '')."</b>\n";
+        $condition = is_string($point['condition'] ?? null) ? trim($point['condition']) : '';
+        $emoji = is_string($point['emoji'] ?? null) && filled($point['emoji'])
+            ? $point['emoji']
+            : '🌤';
+        $heading = e($time);
+
+        if ($condition !== '') {
+            $heading .= ' · '.e($condition);
+        }
 
         $temperature = $point['temperature_c'] ?? null;
+        if ($temperature !== null) {
+            $heading .= ' — '.e($this->formatTemperature((float) $temperature));
+        }
+
+        $line = e($emoji).' <b>'.$heading.'</b>'."\n";
+        $details = [];
         $apparent = $point['apparent_temperature_c'] ?? null;
-        if ($temperature !== null || $apparent !== null) {
-            $temperatureText = $temperature !== null ? $this->formatTemperature((float) $temperature) : null;
-            $apparentText = $apparent !== null ? $this->formatTemperature((float) $apparent) : null;
-            $line .= 'Температура: '.($temperatureText ?? '—')
-                .($apparentText !== null ? ' (ощущается '.$apparentText.')' : '')."\n";
+
+        if ($apparent !== null) {
+            $details[] = 'Ощущается '.sprintf('%+d°', (int) round((float) $apparent));
         }
 
         if (($point['relative_humidity_pct'] ?? null) !== null) {
-            $line .= '💧 Влажность: '.(int) $point['relative_humidity_pct'].'%'."\n";
+            $details[] = 'Влажность '.(int) $point['relative_humidity_pct'].'%';
         }
 
+        if ($details !== []) {
+            $line .= implode(' · ', $details)."\n";
+        }
+
+        $details = [];
         $windSpeed = $point['wind_speed_kmh'] ?? null;
         $windDirection = $point['wind_direction'] ?? null;
+
         if ($windSpeed !== null || $windDirection !== null) {
-            $line .= '💨 Ветер: '.($windSpeed !== null ? (int) round((float) $windSpeed).' км/ч' : '—')
-                .($windDirection !== null ? ', '.e((string) $windDirection) : '')."\n";
-        }
+            $wind = [];
 
-        if (($point['precipitation_probability_pct'] ?? null) !== null) {
-            $line .= '🌧 Осадки: '.(int) $point['precipitation_probability_pct'].'%';
-            if (($point['rain_mm'] ?? null) !== null) {
-                $line .= ' ('.number_format((float) $point['rain_mm'], 1, ',', '').' мм)';
+            if ($windSpeed !== null) {
+                $wind[] = (int) round((float) $windSpeed).' км/ч';
             }
-            $line .= "\n";
-        } elseif (($point['rain_mm'] ?? null) !== null) {
-            $line .= '🌧 Осадки: '.number_format((float) $point['rain_mm'], 1, ',', '')." мм\n";
+
+            if ($windDirection !== null) {
+                $wind[] = e((string) $windDirection);
+            }
+
+            $details[] = '💨 '.implode(', ', $wind);
         }
 
-        return $line;
+        $rainProbability = $point['precipitation_probability_pct'] ?? null;
+        $rain = $point['rain_mm'] ?? null;
+
+        if ($rainProbability !== null) {
+            $precipitation = '🌧 '.(int) $rainProbability.'%';
+
+            if ($rain !== null) {
+                $precipitation .= ' ('.number_format((float) $rain, 1, ',', '').' мм)';
+            }
+
+            $details[] = $precipitation;
+        } elseif ($rain !== null) {
+            $details[] = '🌧 '.number_format((float) $rain, 1, ',', '').' мм';
+        }
+
+        if ($details !== []) {
+            $line .= implode(' · ', $details)."\n";
+        }
+
+        return $line."\n";
     }
 
     protected function formatTemperature(float $temperature): string

@@ -16,9 +16,6 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Mockery\MockInterface;
-use Tests\TestCase;
-
-uses(TestCase::class);
 
 beforeEach(function () {
     config(['cache.default' => 'array']);
@@ -404,13 +401,24 @@ it('renders all three forecast hours for all five configured districts for the r
     foreach (['Navigli', 'Lodi', 'Certosa', 'Lambrate', 'Como'] as $district) {
         expect($output)->toContain('DRY RUN MORNING DIGEST · '.$district);
     }
-    expect(substr_count($output, '08:00 —'))->toBe(5)
-        ->and(substr_count($output, '13:00 —'))->toBe(5)
-        ->and(substr_count($output, '15:00 —'))->toBe(5)
+    expect(substr_count($output, '08:00 ·'))->toBe(5)
+        ->and(substr_count($output, '13:00 ·'))->toBe(5)
+        ->and(substr_count($output, '15:00 ·'))->toBe(5)
         ->and(substr_count($output, 'WeatherAPI.com'))->toBe(5)
         ->and(substr_count($output, 'официальными метеослужбами'))->toBe(5)
         ->and(substr_count($output, '1,2 мм'))->toBe(5);
 
+    preg_match_all('/===== DRY RUN MORNING DIGEST · .+? =====\r?\n(.*?)\r?\n===================================/s', $output, $messages);
+    expect($messages[1])->toHaveCount(5);
+
+    foreach ($messages[1] as $message) {
+        preg_match_all('/<\/?([a-z][a-z0-9]*)\b[^>]*>/i', $message, $tags);
+        $visibleText = html_entity_decode(strip_tags($message), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        expect(mb_strlen($visibleText, 'UTF-8'))->toBeLessThanOrEqual(4096)
+            ->and(array_values(array_unique(array_map('strtolower', $tags[1]))))->toBe(['b', 'code'])
+            ->and(substr_count($message, '<b>'))->toBe(substr_count($message, '</b>'));
+    }
     $requests = collect(Http::recorded())->map(fn (array $pair) => $pair[0]);
     expect($requests)->toHaveCount(5)
         ->and($requests->every(fn (Request $request): bool => (int) $request['days'] === 3
@@ -582,4 +590,111 @@ it('does not send a requested date outside the WeatherAPI Free forecast window',
         ->assertExitCode(1);
 
     Http::assertNothingSent();
+});
+
+it('renders compact blank-separated forecast blocks with source attribution, safe HTML and Telegram length', function () {
+    $this->mock(MilanWeatherService::class, fn (MockInterface $mock) => $mock
+        ->shouldReceive('morningForecast')->once()->andReturn([
+            'points' => [
+                '08:00' => [
+                    'emoji' => '🌤', 'condition' => 'Переменная облачность', 'temperature_c' => 22,
+                    'apparent_temperature_c' => 22, 'relative_humidity_pct' => 50,
+                    'wind_speed_kmh' => 5, 'wind_direction' => 'СВ',
+                    'precipitation_probability_pct' => 0, 'rain_mm' => 0,
+                ],
+                '13:00' => [
+                    'emoji' => '🌧', 'condition' => 'Морось', 'temperature_c' => 10,
+                    'apparent_temperature_c' => 7, 'relative_humidity_pct' => 78,
+                    'wind_speed_kmh' => 19, 'wind_direction' => 'В',
+                    'precipitation_probability_pct' => 46, 'rain_mm' => 0.3,
+                ],
+                '15:00' => [
+                    'emoji' => '⛈', 'condition' => 'Гроза', 'temperature_c' => 15,
+                    'apparent_temperature_c' => 14, 'relative_humidity_pct' => 82,
+                    'wind_speed_kmh' => 25, 'wind_direction' => 'Ю',
+                    'precipitation_probability_pct' => 65, 'rain_mm' => 1.5,
+                ],
+            ],
+            'advice' => null,
+            'unavailable_reason' => null,
+        ]));
+
+    $command = app(MobilityDigestCommand::class);
+    $method = new ReflectionMethod($command, 'buildMessage');
+    $message = $method->invoke($command, Carbon::parse('2026-10-07'), collect(), [
+        'key' => 'navigli', 'label' => '<Navigli & Co>', 'latitude' => 45.45, 'longitude' => 9.17,
+    ]);
+
+    $expectedBlocks = "🌤 <b>08:00 · Переменная облачность — +22°C</b>\n"
+        ."Ощущается +22° · Влажность 50%\n"
+        ."💨 5 км/ч, СВ · 🌧 0% (0,0 мм)\n\n"
+        ."🌧 <b>13:00 · Морось — +10°C</b>\n"
+        ."Ощущается +7° · Влажность 78%\n"
+        ."💨 19 км/ч, В · 🌧 46% (0,3 мм)\n\n"
+        ."⛈ <b>15:00 · Гроза — +15°C</b>\n"
+        ."Ощущается +14° · Влажность 82%\n"
+        .'💨 25 км/ч, Ю · 🌧 65% (1,5 мм)';
+
+    preg_match_all('/<\/?([a-z][a-z0-9]*)\b[^>]*>/i', $message, $tags);
+    $visibleText = html_entity_decode(strip_tags($message), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+    expect($message)
+        ->toContain($expectedBlocks)
+        ->toContain('&lt;Navigli &amp; Co&gt;')
+        ->toContain('Источник: <code>WeatherAPI.com</code> · перевод и округление.')
+        ->toContain('только для общего сведения')
+        ->toContain('может быть неточным для конкретного места и времени')
+        ->toContain('личной безопасности')
+        ->toContain('авиации')
+        ->toContain('морской навигации')
+        ->toContain('экстренном планировании')
+        ->toContain('официальными метеослужбами')
+        ->toContain('предупреждениями компетентных органов')
+        ->not->toMatch('/<a\b|href=/i')
+        ->and(array_values(array_unique(array_map('strtolower', $tags[1]))))->toBe(['b', 'code'])
+        ->and(substr_count($message, '<b>'))->toBe(substr_count($message, '</b>'))
+        ->and(mb_strlen($visibleText, 'UTF-8'))->toBeLessThanOrEqual(4096);
+});
+
+it('omits unavailable forecast measures instead of formatting them as zeroes', function () {
+    $this->mock(MilanWeatherService::class, fn (MockInterface $mock) => $mock
+        ->shouldReceive('morningForecast')->once()->andReturn([
+            'points' => [
+                '08:00' => null,
+                '13:00' => [
+                    'emoji' => '☀️', 'condition' => 'Ясно', 'temperature_c' => 17,
+                    'apparent_temperature_c' => null, 'relative_humidity_pct' => null,
+                    'wind_speed_kmh' => null, 'wind_direction' => null,
+                    'precipitation_probability_pct' => null, 'rain_mm' => null,
+                ],
+                '15:00' => null,
+            ],
+            'advice' => null,
+            'unavailable_reason' => null,
+        ]));
+
+    $command = app(MobilityDigestCommand::class);
+    $method = new ReflectionMethod($command, 'buildMessage');
+    $message = $method->invoke($command, Carbon::parse('2026-10-07'), collect(), [
+        'key' => 'navigli', 'label' => 'Navigli', 'latitude' => 45.45, 'longitude' => 9.17,
+    ]);
+
+    expect($message)
+        ->toContain('08:00', '13:00', '15:00', '13:00 · Ясно — +17°C')
+        ->toContain('08:00 · Прогноз временно недоступен', '15:00 · Прогноз временно недоступен')
+        ->not->toContain('0 км/ч', '0%', '0,0 мм');
+});
+
+it('names all forecast times when WeatherAPI is unavailable', function () {
+    Http::fake(['api.weatherapi.com/*' => Http::response([], 503)]);
+
+    $command = app(MobilityDigestCommand::class);
+    $method = new ReflectionMethod($command, 'buildMessage');
+    $message = $method->invoke($command, Carbon::parse('2026-10-07'), collect(), [
+        'key' => 'navigli', 'label' => 'Navigli', 'latitude' => 45.45, 'longitude' => 9.17,
+    ]);
+
+    expect($message)
+        ->toContain('Прогноз временно недоступен', '08:00, 13:00 и 15:00')
+        ->not->toContain('WeatherAPI.com', 'href=');
 });
