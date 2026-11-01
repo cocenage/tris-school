@@ -17,6 +17,38 @@
                 'failed' => 'ошибка', 'missed' => 'пропущено', 'uncertain' => 'результат неизвестен',
                 'retrying' => 'повторная попытка', 'unmonitored' => 'нет достоверного учёта',
             ];
+            $historyStageLabels = [
+                'build' => 'Формирование', 'calendar_source' => 'Источник календаря',
+                'calendar_filter' => 'Фильтр событий календаря', 'calendar_format' => 'Текст календаря',
+                'morning_alert_source' => 'Источник оповещений', 'morning_strike_source' => 'Источник забастовок',
+                'morning_weather_source' => 'Источник погоды', 'morning_filter' => 'Фильтр транспорта',
+                'morning_format' => 'Текст утренней сводки', 'controls_source' => 'Источник контролей',
+                'controls_filter' => 'Фильтр контролей', 'controls_format' => 'Текст итогов контролей',
+                'controls_queue' => 'Очередь отправки', 'evening_source' => 'Оперативные события',
+                'evening_filter' => 'Фильтр оперативных событий', 'evening_linen_source' => 'Источник брака белья',
+                'evening_format' => 'Текст вечерней сводки', 'evening_guard' => 'Защита от дубля',
+                'linen_source' => 'Источник брака белья', 'linen_filter' => 'Фильтр случаев брака',
+                'linen_format' => 'Текст отчёта о браке', 'linen_guard' => 'Защита от дубля',
+                'send_attempt' => 'Попытка отправки', 'telegram_response' => 'Ответ Telegram',
+            ];
+            $historyOutcomeLabels = [
+                'started' => 'начато', 'loaded' => 'источник загружен', 'complete' => 'завершено',
+                'no_input' => 'нет входящих данных', 'no_significant_events' => 'значимых событий нет',
+                'source_error' => 'ошибка источника', 'calculation_error' => 'ошибка расчёта',
+                'failure_unclassified' => 'неуточнённый сбой', 'no_message' => 'сообщение не сформировано',
+                'built' => 'сообщение сформировано', 'inline' => 'выполнено сразу', 'queued' => 'поставлено в очередь',
+                'queue_failed' => 'ошибка постановки в очередь', 'skipped' => 'пропущено', 'attempted' => 'попытка выполнена',
+                'accepted' => 'принято Telegram', 'rejected' => 'отказ Telegram', 'uncertain' => 'результат неизвестен',
+            ];
+            $historyMetricLabels = [
+                'input_count' => 'Входных записей', 'filtered_count' => 'Отфильтровано',
+                'included_count' => 'Включено', 'message_present' => 'Сообщение',
+                'source_messages' => 'Входящих сообщений', 'observed_messages' => 'Обработанных сообщений',
+                'events_considered' => 'Рассмотрено событий', 'events_included' => 'Включено событий',
+                'events_omitted' => 'Исключено событий', 'controls_count' => 'Контролей',
+                'responses_count' => 'Ответов', 'queued_count' => 'Заданий в очереди',
+                'attempt' => 'Попытка', 'http_status' => 'HTTP статус', 'error_code' => 'Код ошибки',
+            ];
         @endphp
         <x-slot name="heading">Telegram · Центр доставки</x-slot>
         <x-slot name="description">{{ $delivery['date'] }} · Europe/Rome · Telegram API подтверждает приём, но не прочтение сообщений</x-slot>
@@ -76,6 +108,27 @@
                             @if ($operation->error_reason) · {{ $operation->error_reason }} @endif
                             @if ($operation->error_code) ({{ $operation->error_code }}) @endif
                         </div>
+                        @if ($operation->relationLoaded('events') && $operation->events->isNotEmpty())
+                            <div class="mt-2 border-t border-gray-200 pt-2 dark:border-gray-700">
+                                <div class="mb-1 text-xs font-medium text-gray-600 dark:text-gray-300">История построения</div>
+                                <div class="max-h-48 space-y-1 overflow-y-auto">
+                                    @foreach ($operation->events as $event)
+                                        @if (isset($historyStageLabels[$event->stage], $historyOutcomeLabels[$event->outcome]))
+                                            <div class="text-xs text-gray-600 dark:text-gray-300">
+                                                <span class="font-medium">{{ $event->created_at?->setTimezone('Europe/Rome')->format('H:i:s') }}</span>
+                                                · {{ $historyStageLabels[$event->stage] }} · {{ $historyOutcomeLabels[$event->outcome] }}
+                                                @php($metrics = is_array($event->metrics) ? $event->metrics : [])
+                                                @foreach ($metrics as $metric => $value)
+                                                    @if (isset($historyMetricLabels[$metric]) && (is_bool($value) || (is_int($value) && $value >= 0)))
+                                                        · {{ $historyMetricLabels[$metric] }}: {{ is_bool($value) ? ($value ? 'да' : 'нет') : $value }}
+                                                    @endif
+                                                @endforeach
+                                            </div>
+                                        @endif
+                                    @endforeach
+                                </div>
+                            </div>
+                        @endif
                     </div>
                 @empty
                     <p class="text-gray-500">Пока нет записанных операций. Историческая доставка не подтверждена этим журналом.</p>
