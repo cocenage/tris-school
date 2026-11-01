@@ -107,6 +107,7 @@ class CalendarEventsService
                             'description' => null,
                             'short' => mb_strimwidth("🎂 {$user->name}", 0, 12, '...'),
                             'type' => 'holiday',
+                            'subtype' => 'birthday',
                             'priority' => 100,
                             'start' => $date->copy()->startOfDay(),
                             'end' => $date->copy()->startOfDay(),
@@ -131,6 +132,7 @@ class CalendarEventsService
                             'description' => null,
                             'short' => mb_strimwidth("🏢 {$user->name}", 0, 12, '...'),
                             'type' => 'holiday',
+                            'subtype' => 'work_anniversary',
                             'priority' => 90,
                             'start' => $date->copy()->startOfDay(),
                             'end' => $date->copy()->startOfDay(),
@@ -371,7 +373,7 @@ class CalendarEventsService
             $title .= ' — '.$user->name.$this->formatUserDip($user);
         }
 
-        return [
+        $occurrence = [
             'id' => $event->id.'_'.$start->format('Ymd'),
             'title' => $title,
             'description' => $event->description,
@@ -382,6 +384,12 @@ class CalendarEventsService
             'end' => $end,
             'style' => $this->eventStyle($event->type),
         ];
+
+        if ($event->type === CalendarEvent::TYPE_HOLIDAY) {
+            $occurrence['subtype'] = 'calendar_holiday';
+        }
+
+        return $occurrence;
     }
 
     protected function eventStyle(string $type): string

@@ -104,6 +104,50 @@ it('records an expected event before HTTP and reuses it for the actual attempt',
         ->and(TelegramOutboundOperation::query()->sole()->attempts)->toBe(1);
 });
 
+it('atomically claims an expected delivery once before transport', function (): void {
+    $monitor = app(TelegramOutboundMonitor::class);
+    $context = [
+        'operation_key' => 'celebration:birthday:42:2026-10-21:test-chat',
+        'notification_type' => 'team_celebration',
+        'method' => 'sendMessage',
+        'bot' => 'work',
+        'chat_id' => 'test-chat',
+        'message_thread_id' => '9',
+        'source_type' => 'User',
+        'source_id' => '42',
+    ];
+
+    expect($monitor->reserveExpected($context))->toBeTrue()
+        ->and($monitor->reserveExpected($context))->toBeFalse();
+
+    $row = TelegramOutboundOperation::query()->sole();
+    expect($row->operation_key)->toBe($context['operation_key'])
+        ->and($row->status)->toBe('pending')
+        ->and($row->attempts)->toBe(0)
+        ->and($row->chat_id)->toBe('test-chat')
+        ->and($row->message_thread_id)->toBe('9');
+});
+
+it('fails closed for missing keys, missing journal storage and non-expected statuses', function (): void {
+    $monitor = app(TelegramOutboundMonitor::class);
+    expect($monitor->reserveExpected([]))->toBeFalse();
+
+    foreach (['sent', 'pending', 'failed', 'uncertain'] as $status) {
+        $key = 'celebration:'.$status.':42';
+        $monitor->expect(['operation_key' => $key, 'notification_type' => 'team_celebration']);
+        TelegramOutboundOperation::query()->where('operation_key', $key)->update(['status' => $status]);
+
+        expect($monitor->reserveExpected(['operation_key' => $key, 'notification_type' => 'team_celebration']))
+            ->toBeFalse();
+    }
+
+    Schema::dropIfExists('telegram_outbound_operations');
+    expect($monitor->reserveExpected([
+        'operation_key' => 'celebration:no-journal:42',
+        'notification_type' => 'team_celebration',
+    ]))->toBeFalse();
+});
+
 it('never blocks sending if the journal is unavailable', function (): void {
     Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 25]])]);
     Schema::dropIfExists('telegram_outbound_operations');

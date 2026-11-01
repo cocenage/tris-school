@@ -72,6 +72,8 @@ return [
 
         'chat_id_calendar' => env('TELEGRAM_CHAT_ID_CALENDAR'),
         'thread_id_calendar' => env('TELEGRAM_THREAD_ID_CALENDAR'),
+        'chat_id_celebrations' => env('TELEGRAM_CHAT_ID_CELEBRATIONS'),
+        'thread_id_celebrations' => env('TELEGRAM_THREAD_ID_CELEBRATIONS'),
 
         'work_webhook_secret' => env('TELEGRAM_WORK_WEBHOOK_SECRET'),
         'work_polling_enabled' => env('TELEGRAM_WORK_POLLING_ENABLED', false),
