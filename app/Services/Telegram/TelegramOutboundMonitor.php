@@ -53,6 +53,36 @@ class TelegramOutboundMonitor
         });
     }
 
+    /** Atomically claim an expected operation before its first transport attempt. */
+    public function reserveExpected(array $context): bool
+    {
+        $operationKey = $context['operation_key'] ?? null;
+
+        if (! is_string($operationKey) || trim($operationKey) === '') {
+            return false;
+        }
+
+        try {
+            if (! Schema::hasTable('telegram_outbound_operations')) {
+                return false;
+            }
+
+            $this->expect($context);
+
+            return TelegramOutboundOperation::query()
+                ->where('operation_key', $operationKey)
+                ->where('status', 'expected')
+                ->update([
+                    'status' => 'pending',
+                    'updated_at' => now(),
+                ]) === 1;
+        } catch (Throwable $exception) {
+            Log::warning('Telegram outbound reservation unavailable.', ['error' => class_basename($exception)]);
+
+            return false;
+        }
+    }
+
     /** @template T */
     public function withContext(array $context, callable $send): mixed
     {
@@ -78,13 +108,17 @@ class TelegramOutboundMonitor
             $context = $this->context ?? [];
             $source = $this->sourceReference();
             $key = $context['operation_key'] ?? null;
+            $chatId = isset($data['chat_id']) ? (string) $data['chat_id'] : ($context['chat_id'] ?? null);
+            $threadId = isset($data['message_thread_id'])
+                ? (string) $data['message_thread_id']
+                : ($context['message_thread_id'] ?? null);
             $attributes = [
                 'notification_type' => $context['notification_type'] ?? $this->notificationType(),
                 'method' => $method,
                 'bot' => $this->bot($event->request),
-                'chat_id' => isset($data['chat_id']) ? (string) $data['chat_id'] : null,
-                'message_thread_id' => isset($data['message_thread_id']) ? (string) $data['message_thread_id'] : null,
-                'district' => $context['district'] ?? $this->districtForChat(isset($data['chat_id']) ? (string) $data['chat_id'] : null),
+                'chat_id' => $chatId,
+                'message_thread_id' => $threadId,
+                'district' => $context['district'] ?? $this->districtForChat($chatId),
                 'source_type' => $context['source_type'] ?? $source['type'] ?? null,
                 'source_id' => isset($context['source_id']) ? (string) $context['source_id'] : ($source['id'] ?? null),
                 'scheduled_for' => $context['scheduled_for'] ?? null,

@@ -10,7 +10,13 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('calendar:notify-tomorrow')
-    ->dailyAt('6:00');
+    ->dailyAt('6:00')
+    ->timezone('Europe/Rome');
+
+Schedule::command('calendar:notify-celebrations')
+    ->dailyAt('09:00')
+    ->timezone('Europe/Rome')
+    ->withoutOverlapping();
 
 Schedule::command('tasks:check-deadlines')->everyFifteenMinutes();
 

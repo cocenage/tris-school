@@ -27,6 +27,67 @@ class TelegramBotService
         );
     }
 
+    public function sendPhoto(string $chatId, string $path, string $caption, ?string $threadId = null): ?int
+    {
+        $token = config('services.telegram.bot_token');
+
+        if (! filled($token)) {
+            Log::warning('Telegram bot token is not configured.');
+
+            return null;
+        }
+
+        if (! is_file($path) || ! is_readable($path)) {
+            Log::warning('Telegram photo attachment is not readable.');
+
+            return null;
+        }
+
+        $photo = @fopen($path, 'rb');
+        if (! is_resource($photo)) {
+            Log::warning('Telegram photo attachment could not be opened.');
+
+            return null;
+        }
+
+        try {
+            $request = $this->telegramApiRequest(10, 3)
+                ->attach('photo', $photo, basename($path));
+            $payload = [
+                'chat_id' => $chatId,
+                'caption' => $caption,
+                'parse_mode' => 'HTML',
+            ];
+
+            if (filled($threadId)) {
+                $payload['message_thread_id'] = (int) $threadId;
+            }
+
+            $response = $request->post("https://api.telegram.org/bot{$token}/sendPhoto", $payload);
+        } catch (ConnectionException) {
+            throw new ConnectionException('Telegram API connection failed for sendPhoto.');
+        } finally {
+            fclose($photo);
+        }
+
+        $telegramResult = $response->json();
+        $messageId = data_get($telegramResult, 'result.message_id');
+        $apiOk = data_get($telegramResult, 'ok');
+        $apiErrorCode = data_get($telegramResult, 'error_code');
+
+        Log::info('Telegram sendPhoto response', [
+            'status' => $response->status(),
+            'successful' => $response->successful(),
+            'api_ok' => is_bool($apiOk) ? $apiOk : null,
+            'api_error_code' => is_numeric($apiErrorCode) ? (int) $apiErrorCode : null,
+            'receipt_present' => is_numeric($messageId),
+        ]);
+
+        return $response->successful() && $apiOk === true && is_numeric($messageId)
+            ? (int) $messageId
+            : null;
+    }
+
     public function sendAnalyticsMessage(string $chatId, string $text, string $threadId): ?int
     {
         return $this->sendMessageUsingToken(

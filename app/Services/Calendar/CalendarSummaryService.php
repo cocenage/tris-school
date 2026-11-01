@@ -32,13 +32,14 @@ class CalendarSummaryService
 
     protected function getWorkersForDay(Carbon $day): array
     {
-        $users = User::query()
+        $staff = User::query()
             ->activeStaff()
-            ->where('role', 'cleaner')
+            ->whereIn('role', ['cleaner', 'supervisor'])
             ->orderBy('name')
             ->get();
 
-        $userIds = $users->pluck('id');
+        $users = $staff->where('role', 'cleaner')->values();
+        $userIds = $staff->pluck('id');
 
         $dayOffDays = DayOffRequestDay::query()
             ->with(['request'])
@@ -60,13 +61,13 @@ class CalendarSummaryService
             return $this->isRegularWeekend($user, $day)
                 || $dayOffDays->has($user->id)
                 || $vacationDays->has($user->id);
-        })->map(function (User $user) use ($day, $dayOffDays, $vacationDays) {
+        })->map(function (User $user) use ($dayOffDays, $vacationDays) {
             if ($vacationDays->has($user->id)) {
                 $vacationDay = $vacationDays->get($user->id);
                 $request = $vacationDay?->request;
 
                 $user->not_working_reason = filled($request?->reason)
-                    ? 'Отпуск: ' . $request->reason
+                    ? 'Отпуск: '.$request->reason
                     : 'Отпуск';
 
                 return $user;
@@ -76,7 +77,7 @@ class CalendarSummaryService
                 $dayOff = $dayOffDays->get($user->id);
 
                 $user->not_working_reason = filled($dayOff?->request?->reason)
-                    ? 'Выходной: ' . $dayOff->request->reason
+                    ? 'Выходной: '.$dayOff->request->reason
                     : 'Выходной';
 
                 return $user;
@@ -91,12 +92,56 @@ class CalendarSummaryService
             ->whereNotIn('id', $notWorking->pluck('id'))
             ->values();
 
+        $byRole = collect(['cleaner', 'supervisor'])
+            ->mapWithKeys(function (string $role) use ($staff, $day, $dayOffDays, $vacationDays) {
+                $roleUsers = $staff->where('role', $role)->values();
+
+                return [$role => $this->makeRoleSummary($roleUsers, $day, $dayOffDays, $vacationDays)];
+            })
+            ->all();
+
         return [
             'total' => $users->count(),
             'working_count' => $working->count(),
             'not_working_count' => $notWorking->count(),
             'working' => $working,
             'not_working' => $notWorking,
+            'by_role' => $byRole,
+        ];
+    }
+
+    protected function makeRoleSummary(Collection $users, Carbon $day, Collection $dayOffDays, Collection $vacationDays): array
+    {
+        $absentUsers = $users
+            ->filter(fn (User $user) => $vacationDays->has($user->id)
+                || $dayOffDays->has($user->id)
+                || $this->isRegularWeekend($user, $day))
+            ->values();
+
+        $absent = $absentUsers
+            ->map(function (User $user) use ($dayOffDays, $vacationDays) {
+                $reason = match (true) {
+                    $vacationDays->has($user->id) => 'vacation',
+                    $dayOffDays->has($user->id) => 'day_off',
+                    default => 'regular_weekend',
+                };
+
+                return ['name' => $user->name, 'reason' => $reason];
+            })
+            ->values();
+
+        $absentIds = $absentUsers->pluck('id');
+        $available = $users
+            ->reject(fn (User $user) => $absentIds->contains($user->id))
+            ->map(fn (User $user) => ['name' => $user->name])
+            ->values();
+
+        return [
+            'total' => $users->count(),
+            'available_count' => $available->count(),
+            'absent_count' => $absent->count(),
+            'available' => $available->all(),
+            'absent' => $absent->all(),
         ];
     }
 
