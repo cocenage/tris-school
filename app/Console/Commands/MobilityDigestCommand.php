@@ -74,12 +74,19 @@ class MobilityDigestCommand extends Command
             ->values();
 
         $configured = $districts->diagnostics();
+
         if (filled($this->option('district'))) {
             $selectedDistrict = mb_strtolower(trim((string) $this->option('district')));
-            $configured = $configured->filter(fn (array $route): bool => $route['key'] === $selectedDistrict);
+
+            $configured = $configured->filter(
+                fn (array $route): bool => $route['key'] === $selectedDistrict
+            );
         }
 
-        $invalidRoutes = $configured->reject(fn (array $route): bool => $route['valid']);
+        $invalidRoutes = $configured->reject(
+            fn (array $route): bool => $route['valid']
+        );
+
         foreach ($invalidRoutes as $route) {
             $this->error('District '.$route['key'].' skipped: '.implode(', ', $route['errors']));
         }
@@ -125,6 +132,7 @@ class MobilityDigestCommand extends Command
                         $message,
                         (string) $route['duty_thread_id'],
                     ));
+
                     if ($messageId === null) {
                         $failed = true;
                         $this->error('District '.$route['key'].' morning digest was not sent.');
@@ -139,7 +147,9 @@ class MobilityDigestCommand extends Command
                 return $failed ? self::FAILURE : self::SUCCESS;
             }
 
-            $failed ? $this->error('One or more district morning digests failed.') : $this->info('District morning digests sent.');
+            $failed
+                ? $this->error('One or more district morning digests failed.')
+                : $this->info('District morning digests sent.');
 
             return $failed ? self::FAILURE : self::SUCCESS;
         }
@@ -181,13 +191,28 @@ class MobilityDigestCommand extends Command
         $alerts = $this->deduplicateAlerts($alerts)
             ->filter(fn (array $alert): bool => $this->isImportantWorkerAlert($alert))
             ->values();
+
         $label = trim((string) ($route['label'] ?? ''));
-        $text = Arr::random($this->greetings).($label !== '' ? ' · <b>'.e($label).'</b>' : '')."\n\n";
-        $weatherDate = $date->copy()->setTimezone(config('app.timezone', 'Europe/Rome'));
-        $weatherHeading = $weatherDate->isToday() ? 'Погода на сегодня' : 'Погода на '.$weatherDate->format('d.m.Y');
+
+        $text = Arr::random($this->greetings)
+            .($label !== '' ? ' · <b>'.e($label).'</b>' : '')
+            ."\n\n";
+
+        $weatherDate = $date->copy()->setTimezone(
+            config('app.timezone', 'Europe/Rome')
+        );
+
+        $weatherHeading = $weatherDate->isToday()
+            ? 'Погода на сегодня'
+            : 'Погода на '.$weatherDate->format('d.m.Y');
+
         $text .= '🌤 <b>'.e($weatherHeading)."</b>\n";
+
         $points = $weather['points'] ?? [];
-        $hasForecast = collect($points)->contains(fn (?array $point): bool => $point !== null);
+
+        $hasForecast = collect($points)->contains(
+            fn (?array $point): bool => $point !== null
+        );
 
         if (! $hasForecast) {
             if (($weather['unavailable_reason'] ?? null) === 'date_out_of_range') {
@@ -197,25 +222,46 @@ class MobilityDigestCommand extends Command
             }
         } else {
             foreach (['08:00', '13:00', '15:00'] as $time) {
-                $text .= $this->formatWeatherPoint($time, $points[$time] ?? null);
+                $text .= $this->formatWeatherPoint(
+                    $time,
+                    $points[$time] ?? null
+                );
             }
         }
+
+        $text = rtrim($text);
+
+        // Сначала предупреждения об опасной погоде.
         if (! empty($weather['advice'])) {
-            $text .= e((string) $weather['advice'])."\n";
+            $text .= "\n\n".e((string) $weather['advice']);
+        } elseif ($hasForecast) {
+            // Если серьёзных рисков нет, предлагаем зонт при вероятности дождя >= 40%.
+            $umbrellaAdvice = $this->friendlyWeatherAdvice(
+    $points,
+    $date->toDateString().'|'.($route['key'] ?? 'milan')
+);
+
+            if ($umbrellaAdvice !== null) {
+                $text .= "\n\n".e($umbrellaAdvice);
+            }
         }
 
-        if ($hasForecast) {
-            $text .= "Источник: <code>WeatherAPI.com</code> · перевод и округление.\n";
-            $text .= 'ℹ️ Погодные данные приведены только для общего сведения. Прогноз вероятностный и может быть неточным для конкретного места и времени. Не используйте его как единственный источник решений о личной безопасности, авиации, морской навигации, экстренном планировании и иных вопросах, критичных для безопасности. Для таких решений сверяйтесь с официальными метеослужбами и предупреждениями компетентных органов.'."\n";
+        // Для тестового dry-run скрываем юридический блок.
+        // В настоящей рассылке атрибуция и предупреждение сохраняются.
+        if ($hasForecast && ! $this->option('dry-run')) {
+            $text .= "\n\nИсточник: <code>WeatherAPI.com</code> · перевод и округление.";
+            $text .= "\n".'ℹ️ Погодные данные приведены только для общего сведения. Прогноз вероятностный и может быть неточным для конкретного места и времени. Не используйте его как единственный источник решений о личной безопасности, авиации, морской навигации, экстренном планировании и иных вопросах, критичных для безопасности. Для таких решений сверяйтесь с официальными метеослужбами и предупреждениями компетентных органов.';
         }
+
         if ($alerts->isNotEmpty()) {
-            $text .= "\n⚠️ <b>Сегодня важно</b>\n";
+            $text .= "\n\n⚠️ <b>Сегодня важно</b>\n";
+
             foreach ($alerts->take(3) as $alert) {
                 $text .= '• '.$this->workerAlertLine($alert)."\n";
             }
         }
 
-        $text .= "\n".Arr::random($this->endings);
+        $text .= "\n\n".Arr::random($this->endings);
 
         return trim($text);
     }
@@ -226,10 +272,14 @@ class MobilityDigestCommand extends Command
             return '🌤 <b>'.e($time).' · Прогноз временно недоступен</b>'."\n\n";
         }
 
-        $condition = is_string($point['condition'] ?? null) ? trim($point['condition']) : '';
+        $condition = is_string($point['condition'] ?? null)
+            ? trim($point['condition'])
+            : '';
+
         $emoji = is_string($point['emoji'] ?? null) && filled($point['emoji'])
             ? $point['emoji']
             : '🌤';
+
         $heading = e($time);
 
         if ($condition !== '') {
@@ -237,65 +287,169 @@ class MobilityDigestCommand extends Command
         }
 
         $temperature = $point['temperature_c'] ?? null;
+
         if ($temperature !== null) {
             $heading .= ' — '.e($this->formatTemperature((float) $temperature));
         }
 
-        $line = e($emoji).' <b>'.$heading.'</b>'."\n";
-        $details = [];
+        $line = e($emoji).' <b>'.$heading."</b>\n";
+
+        // Только ощущаемая температура.
+        // Влажность, ветер и осадки из сообщения убраны.
         $apparent = $point['apparent_temperature_c'] ?? null;
 
         if ($apparent !== null) {
-            $details[] = 'Ощущается '.sprintf('%+d°', (int) round((float) $apparent));
-        }
-
-        if (($point['relative_humidity_pct'] ?? null) !== null) {
-            $details[] = 'Влажность '.(int) $point['relative_humidity_pct'].'%';
-        }
-
-        if ($details !== []) {
-            $line .= implode(' · ', $details)."\n";
-        }
-
-        $details = [];
-        $windSpeed = $point['wind_speed_kmh'] ?? null;
-        $windDirection = $point['wind_direction'] ?? null;
-
-        if ($windSpeed !== null || $windDirection !== null) {
-            $wind = [];
-
-            if ($windSpeed !== null) {
-                $wind[] = (int) round((float) $windSpeed).' км/ч';
-            }
-
-            if ($windDirection !== null) {
-                $wind[] = e((string) $windDirection);
-            }
-
-            $details[] = '💨 '.implode(', ', $wind);
-        }
-
-        $rainProbability = $point['precipitation_probability_pct'] ?? null;
-        $rain = $point['rain_mm'] ?? null;
-
-        if ($rainProbability !== null) {
-            $precipitation = '🌧 '.(int) $rainProbability.'%';
-
-            if ($rain !== null) {
-                $precipitation .= ' ('.number_format((float) $rain, 1, ',', '').' мм)';
-            }
-
-            $details[] = $precipitation;
-        } elseif ($rain !== null) {
-            $details[] = '🌧 '.number_format((float) $rain, 1, ',', '').' мм';
-        }
-
-        if ($details !== []) {
-            $line .= implode(' · ', $details)."\n";
+            $line .= 'Ощущается '
+                .sprintf('%+d°', (int) round((float) $apparent))
+                ."\n";
         }
 
         return $line."\n";
     }
+
+
+protected function friendlyWeatherAdvice(array $points, string $seed): ?string
+{
+    $rainTime = null;
+    $fog = false;
+    $wind = false;
+    $cold = false;
+    $veryCold = false;
+    $hot = false;
+    $sunnyCount = 0;
+
+    foreach (['08:00', '13:00', '15:00'] as $time) {
+        $point = $points[$time] ?? null;
+
+        if (! is_array($point)) {
+            continue;
+        }
+
+        $code = $point['weather_code'] ?? null;
+        $chance = $point['precipitation_probability_pct'] ?? null;
+        $rain = $point['rain_mm'] ?? null;
+        $windSpeed = $point['wind_speed_kmh'] ?? null;
+        $feels = $point['apparent_temperature_c'] ?? null;
+
+        $rainCodes = [
+            1063, 1150, 1153, 1180, 1183,
+            1186, 1189, 1192, 1195, 1240,
+            1243, 1246, 1273, 1276,
+        ];
+
+        if (
+            $rainTime === null
+            && (
+                in_array($code, $rainCodes, true)
+                || (is_numeric($chance) && $chance >= 40)
+                || (is_numeric($rain) && $rain >= 0.3)
+            )
+        ) {
+            $rainTime = $time;
+        }
+
+        if (in_array($code, [1030, 1135, 1147], true)) {
+            $fog = true;
+        }
+
+        if (is_numeric($windSpeed) && $windSpeed >= 30) {
+            $wind = true;
+        }
+
+        if (is_numeric($feels)) {
+            if ($feels <= 2) {
+                $veryCold = true;
+            } elseif ($feels <= 9) {
+                $cold = true;
+            }
+
+            if ($feels >= 28) {
+                $hot = true;
+            }
+        }
+
+        if (in_array($code, [1000, 1003], true)) {
+            $sunnyCount++;
+        }
+    }
+
+    if ($fog) {
+        $type = 'fog';
+        $variants = [
+            '🌫 Сегодня туманно — будьте внимательнее по дороге.',
+            '🌫 Туман за окном! Не торопитесь на переходах.',
+            '👀 Видимость может быть хуже обычного — берегите себя в пути.',
+        ];
+    } elseif ($rainTime !== null && $wind) {
+        $type = 'rain-wind';
+        $variants = [
+            '🌂 Сегодня дождливо и ветрено — куртка с капюшоном пригодится!',
+            '☂️ Дождь и ветер в прогнозе. Одевайтесь так, чтобы было комфортно в дороге.',
+            '🌧 Погода немного капризничает — захватите непромокаемую куртку.',
+        ];
+    } elseif ($rainTime !== null) {
+        $type = 'rain';
+
+        $period = $rainTime === '08:00' ? 'Утром' : 'Днём';
+
+        $variants = [
+            '☂️ Кажется, сегодня пригодится зонтик. Не забудьте его дома!',
+            '🌧 '.$period.' возможен дождик — захватите зонт.',
+            '☔ Небо сегодня может покапризничать. Зонтик будет кстати!',
+            '🌦 Возможен дождь — пусть он не застанет вас врасплох.',
+        ];
+    } elseif ($veryCold) {
+        $type = 'very-cold';
+        $variants = [
+            '🧤 На улице холодно — не забудьте перчатки!',
+            '🧣 Сегодня лучше одеться потеплее. Берегите себя!',
+            '❄️ Холодновато! Тёплая куртка сегодня точно пригодится.',
+        ];
+    } elseif ($hot) {
+        $type = 'hot';
+        $variants = [
+            '💧 Сегодня жарковато — не забывайте пить воду между уборками!',
+            '☀️ Будет тепло! Держите бутылочку воды под рукой.',
+            '🥤 В жару особенно важно пить воду. Не забывайте про себя!',
+        ];
+    } elseif ($wind) {
+        $type = 'wind';
+        $variants = [
+            '🍃 Сегодня ветрено — придерживайте двери при входе и выходе.',
+            '💨 Ветер разгулялся! Будьте внимательнее на улице.',
+            '🧥 Сегодня ветрено — лёгкая ветровка может пригодиться.',
+        ];
+    } elseif ($cold) {
+        $type = 'cold';
+        $variants = [
+            '🧥 Утром свежо! Прихватите что-нибудь тёплое.',
+            '☕ Сегодня прохладно — одевайтесь уютнее!',
+            '🧣 На улице свежо. Дополнительный слой одежды не помешает.',
+        ];
+    } elseif ($sunnyCount >= 2) {
+        $type = 'sunny';
+        $variants = [
+            '😎 Кажется, сегодня солнце на нашей стороне! Очки пригодятся.',
+            '☀️ Похоже, день будет солнечным — отличной вам смены!',
+            '🌤 Погода обещает быть приятной. Пусть и работа идёт легко!',
+        ];
+    } else {
+        return null;
+    }
+
+    return $this->pickWeatherAdvice($variants, $seed.'|'.$type);
+}
+
+protected function pickWeatherAdvice(array $variants, string $seed): string
+{
+    // Одна и та же фраза для района в течение дня.
+    // На следующий день вариант может измениться.
+    $hash = hash('sha256', $seed);
+    $index = hexdec(substr($hash, 0, 8)) % count($variants);
+
+    return $variants[$index];
+}
+
 
     protected function formatTemperature(float $temperature): string
     {
@@ -329,9 +483,11 @@ class MobilityDigestCommand extends Command
     {
         $this->newLine();
         $this->line('===== DRY RUN MORNING DIGEST · '.$label.' =====');
+
         foreach (explode("\n", $message) as $line) {
             $this->line($line);
         }
+
         $this->line('===================================');
         $this->newLine();
     }
@@ -368,7 +524,10 @@ class MobilityDigestCommand extends Command
                     'starts_at' => optional($alert->starts_at)->toDateString(),
                 ])->all();
             })
-            ->reject(fn (array $alert): bool => str_contains(mb_strtolower(($alert['title'] ?? '').' '.($alert['description'] ?? '')), 'regolare'))
+            ->reject(fn (array $alert): bool => str_contains(
+                mb_strtolower(($alert['title'] ?? '').' '.($alert['description'] ?? '')),
+                'regolare'
+            ))
             ->unique(fn (array $alert): string => $normalizer->canonicalFingerprint(
                 $alert['source'] ?? 'mobility',
                 $alert['title'] ?? '',
@@ -474,6 +633,7 @@ class MobilityDigestCommand extends Command
         $summary = $description !== '' && mb_strlen($description) > mb_strlen($title)
             ? $description
             : $title;
+
         $summary = preg_replace('/https?:\/\/\S+/iu', '', strip_tags($summary)) ?: '';
         $summary = preg_replace('/\s+/u', ' ', $summary) ?: '';
 
@@ -486,9 +646,11 @@ class MobilityDigestCommand extends Command
             (string) ($alert['title'] ?? ''),
             (string) ($alert['description'] ?? ''),
         ]));
+
         $type = mb_strtolower((string) ($alert['type'] ?? ''));
 
-        if (str_contains($type, 'strike') || preg_match('/sciopero|забаст|\bstrike\b/iu', $text)) {
+        if (str_contains($type, 'strike')
+            || preg_match('/sciopero|забаст|\bstrike\b/iu', $text)) {
             return false;
         }
 
@@ -500,7 +662,10 @@ class MobilityDigestCommand extends Command
             return false;
         }
 
-        return preg_match('/interruzione totale|sospensione totale|blocco (?:totale|della circolazione)|servizio (?:completamente )?sospeso|полная остановка движения/iu', $text) === 1;
+        return preg_match(
+            '/interruzione totale|sospensione totale|blocco (?:totale|della circolazione)|servizio (?:completamente )?sospeso|полная остановка движения/iu',
+            $text
+        ) === 1;
     }
 
     protected function normalizedText(?string $value): string
@@ -516,7 +681,8 @@ class MobilityDigestCommand extends Command
         $value = $this->normalizedText($value);
         $value = preg_replace('/milanmetrost[a-z.\s]*[èe] anche su chatgpt/iu', '', $value);
 
-        return trim(mb_strimwidth($value, 0, 240, '…')) ?: 'Подробности уточняются в официальном источнике.';
+        return trim(mb_strimwidth($value, 0, 240, '…'))
+            ?: 'Подробности уточняются в официальном источнике.';
     }
 
     protected function telegramTargets(): array
