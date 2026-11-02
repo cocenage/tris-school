@@ -75,4 +75,4 @@
 
 - [x] Run the requested Pest suite, Pint, and `git diff --check`; inspect full diff and status.
 - [x] Generate a clearly synthetic preview for 2026-11-02 using safe fixtures; do not read production data.
-- [x] Commit, push, and create the PR; confirm PR URL and pushed SHA.
+- [ ] Commit, push, and create the PR; confirm PR URL and pushed SHA.
