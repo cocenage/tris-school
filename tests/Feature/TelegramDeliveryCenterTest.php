@@ -10,6 +10,9 @@ use App\Services\Telegram\TelegramDeliveryCenter;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use Carbon\CarbonImmutable;
 use Filament\Facades\Filament;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Livewire\Livewire;
 
@@ -32,8 +35,17 @@ beforeEach(function (): void {
 });
 
 afterEach(function (): void {
+    CarbonImmutable::setTestNow();
+    Schema::dropIfExists('telegram_scheduled_control_summary_deliveries');
+    Schema::dropIfExists('telegram_outbound_operation_events');
     Schema::dropIfExists('telegram_outbound_operations');
 });
+
+function enableOutboundOperationEventsForDeliveryCenterTest(): void
+{
+    Schema::dropIfExists('telegram_outbound_operation_events');
+    (require database_path('migrations/2026_11_01_000000_create_telegram_outbound_operation_events_table.php'))->up();
+}
 
 it('shows five district slots plus the calendar summary and distinguishes missed and accepted', function (): void {
     TelegramOutboundOperation::query()->create([
@@ -159,10 +171,115 @@ it('keeps five district slots across both Europe Rome daylight-saving transition
 it('limits the delivery center to administrators', function (): void {
     auth()->setUser((new User)->forceFill(['role' => 'supervisor']));
     expect(TelegramDeliveryCenterWidget::canView())->toBeFalse();
+    Filament::setCurrentPanel(Filament::getPanel('admin'));
+    Livewire::test(TelegramDeliveryCenterWidget::class)->assertForbidden();
 
     auth()->setUser((new User)->forceFill(['role' => 'admin']));
     expect(TelegramDeliveryCenterWidget::canView())->toBeTrue();
     auth()->logout();
+});
+
+it('renders bounded ordered digest build history with safe labels and no side effects', function (): void {
+    enableOutboundOperationEventsForDeliveryCenterTest();
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-22 21:00', 'Europe/Rome'));
+    $operation = TelegramOutboundOperation::query()->create([
+        'operation_key' => 'calendar:tomorrow:2026-10-23',
+        'notification_type' => 'calendar', 'method' => 'sendMessage', 'bot' => 'work',
+        'chat_id' => 'calendar-chat', 'message_thread_id' => '7', 'status' => 'sent',
+        'attempts' => 1, 'created_at' => '2026-10-22 11:59:00',
+    ]);
+    foreach (range(0, 34) as $index) {
+        $operation->events()->create([
+            'stage' => $index === 34 ? 'telegram_response' : 'calendar_source',
+            'outcome' => $index === 0 ? 'started' : ($index === 34 ? 'accepted' : 'loaded'),
+            'metrics' => $index === 34 ? ['http_status' => 200, 'employee_comment' => 'private staff comment'] : null,
+            'created_at' => CarbonImmutable::parse('2026-10-22 12:00:00')->addSeconds($index),
+        ]);
+    }
+    $unrelated = TelegramOutboundOperation::query()->create([
+        'operation_key' => 'task:123', 'notification_type' => 'task', 'method' => 'sendMessage',
+        'bot' => 'work', 'chat_id' => 'test-chat', 'status' => 'sent', 'attempts' => 1,
+        'created_at' => '2026-10-22 11:58:00',
+    ]);
+    $unrelated->events()->create([
+        'stage' => 'private_internal_stage', 'outcome' => 'private_internal_outcome',
+        'metrics' => ['employee_comment' => 'private staff comment'], 'created_at' => '2026-10-22 12:00:00',
+    ]);
+    Http::fake();
+    Queue::fake();
+    auth()->setUser((new User)->forceFill(['role' => 'admin']));
+    Filament::setCurrentPanel(Filament::getPanel('admin'));
+
+    $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 21:00', 'Europe/Rome'));
+    $historyOperation = collect($snapshot['operations'])->firstWhere('operation_key', 'calendar:tomorrow:2026-10-23');
+    $unrelatedOperation = collect($snapshot['operations'])->firstWhere('operation_key', 'task:123');
+    expect($historyOperation->events)->toHaveCount(30)
+        ->and($historyOperation->events->first()->outcome)->toBe('loaded')
+        ->and($historyOperation->events->last()->outcome)->toBe('accepted')
+        ->and($unrelatedOperation->events)->toBeEmpty();
+
+    Livewire::test(TelegramDeliveryCenterWidget::class)
+        ->assertSee('История построения')
+        ->assertSee('Источник календаря')
+        ->assertSee('Ответ Telegram')
+        ->assertSee('принято Telegram')
+        ->assertSee('HTTP статус: 200')
+        ->assertSeeTextInOrder(['12:00:05', '12:00:34'])
+        ->assertDontSee('12:00:00')
+        ->assertDontSee('employee_comment')
+        ->assertDontSee('private staff comment')
+        ->assertDontSee('private_internal_stage')
+        ->assertDontSee('private_internal_outcome');
+
+    Http::assertNothingSent();
+    Queue::assertNothingPushed();
+    auth()->logout();
+});
+
+it('does not count a no-input Scheduled Controls build as a missed delivery slot', function (): void {
+    enableOutboundOperationEventsForDeliveryCenterTest();
+    $operation = TelegramOutboundOperation::query()->create([
+        'operation_key' => 'scheduled_control_summary:2026-10-22:destination-hash',
+        'notification_type' => 'scheduled_control_summary', 'method' => 'sendMessage', 'bot' => 'analytics',
+        'chat_id' => 'summary-chat', 'message_thread_id' => '7', 'status' => 'expected',
+        'attempts' => 0, 'created_at' => '2026-10-22 22:00:00',
+    ]);
+    $operation->events()->create(['stage' => 'controls_source', 'outcome' => 'no_input']);
+    $operation->events()->create(['stage' => 'controls_format', 'outcome' => 'no_message', 'metrics' => ['message_present' => false]]);
+    $operation->events()->create(['stage' => 'controls_queue', 'outcome' => 'skipped', 'metrics' => ['queued_count' => 0]]);
+
+    $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 23:00', 'Europe/Rome'));
+
+    expect($snapshot['counts']['pending'])->toBe(0)
+        ->and($snapshot['counts']['missed'])->toBe(0)
+        ->and($snapshot['counts']['unmonitored'])->toBe(11);
+});
+
+it('continues to age a queued Scheduled Controls delivery into missed after its grace period', function (): void {
+    Schema::create('telegram_scheduled_control_summary_deliveries', function ($table): void {
+        $table->id();
+        $table->date('summary_date');
+        $table->string('chat_id');
+        $table->string('message_thread_id')->nullable();
+        $table->string('status');
+        $table->dateTime('sent_at')->nullable();
+    });
+    $deliveryId = DB::table('telegram_scheduled_control_summary_deliveries')->insertGetId([
+        'summary_date' => '2026-10-22', 'chat_id' => 'summary-chat', 'message_thread_id' => '7',
+        'status' => 'queued', 'sent_at' => null,
+    ]);
+    TelegramOutboundOperation::query()->create([
+        'operation_key' => 'scheduled_control_summary:2026-10-22:destination-hash',
+        'notification_type' => 'scheduled_control_summary', 'method' => 'sendMessage', 'bot' => 'analytics',
+        'chat_id' => 'summary-chat', 'message_thread_id' => '7', 'source_id' => (string) $deliveryId,
+        'status' => 'expected', 'attempts' => 0, 'created_at' => '2026-10-22 22:00:00',
+    ]);
+
+    $snapshot = app(TelegramDeliveryCenter::class)->snapshot(CarbonImmutable::parse('2026-10-22 23:00', 'Europe/Rome'));
+
+    expect($snapshot['counts']['pending'])->toBe(0)
+        ->and($snapshot['counts']['missed'])->toBe(1)
+        ->and($snapshot['counts']['unmonitored'])->toBe(11);
 });
 
 it('renders the delivery center on the admin panel without calling Telegram', function (): void {

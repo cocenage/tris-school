@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\MobilityAlert;
 use App\Services\Mobility\MobilityAlertSyncService;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramDigestBuildJournal;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Weather\MilanWeatherService;
@@ -57,22 +58,6 @@ class MobilityDigestCommand extends Command
             return self::FAILURE;
         }
 
-        $alerts = MobilityAlert::query()
-            ->whereDate('starts_at', $date)
-            ->whereIn('risk', ['critical', 'high', 'medium'])
-            ->orderByRaw("
-                CASE risk
-                    WHEN 'critical' THEN 1
-                    WHEN 'high' THEN 2
-                    WHEN 'medium' THEN 3
-                    ELSE 4
-                END
-            ")
-            ->orderBy('starts_at')
-            ->get()
-            ->filter(fn (MobilityAlert $alert) => $this->shouldShowInWorkerDigest($alert))
-            ->values();
-
         $configured = $districts->diagnostics();
 
         if (filled($this->option('district'))) {
@@ -92,29 +77,117 @@ class MobilityDigestCommand extends Command
         }
 
         $routes = $districts->routes();
+        if (filled($this->option('district')) && $routes->isNotEmpty()) {
+            $route = $districts->find((string) $this->option('district'));
+            if ($route === null) {
+                $this->error('District route is not configured or is incomplete.');
 
-        if ($routes->isNotEmpty()) {
-            if (filled($this->option('district'))) {
-                $route = $districts->find((string) $this->option('district'));
-
-                if ($route === null) {
-                    $this->error('District route is not configured or is incomplete.');
-
-                    return self::FAILURE;
-                }
-
-                $routes = collect([$route]);
+                return self::FAILURE;
             }
 
+            $routes = collect([$route]);
+        }
+
+        $journal = app(TelegramDigestBuildJournal::class);
+        $journalContexts = [];
+        if ($routes->isNotEmpty()) {
+            foreach ($routes as $route) {
+                $journalContexts[$route['key']] = [
+                    'operation_key' => 'morning_digest:'.$date->toDateString().':'.$route['key'],
+                    'notification_type' => 'morning_digest',
+                    'bot' => 'analytics',
+                    'chat_id' => (string) $route['chat_id'],
+                    'message_thread_id' => (string) $route['duty_thread_id'],
+                    'district' => $route['key'],
+                    'scheduled_for' => $date->copy()->setTime(8, 0),
+                ];
+            }
+        } elseif ($configured->isEmpty() && ! filled($this->option('district'))) {
+            foreach ($this->telegramTargets() as $index => $target) {
+                $journalContexts[$index] = [
+                    'operation_key' => 'morning_digest:'.$date->toDateString().':milan:'.($index + 1),
+                    'notification_type' => 'morning_digest',
+                    'bot' => 'work',
+                    'chat_id' => (string) $target['chat_id'],
+                    'message_thread_id' => filled($target['thread_id'] ?? null) ? (string) $target['thread_id'] : null,
+                    'scheduled_for' => $date->copy()->setTime(8, 0),
+                ];
+            }
+        }
+
+        $journalContexts = $this->option('dry-run') ? [] : $journalContexts;
+        foreach ($journalContexts as $context) {
+            $journal->reserve($context);
+        }
+
+        try {
+            $sourceAlerts = MobilityAlert::query()
+                ->whereDate('starts_at', $date)
+                ->whereIn('risk', ['critical', 'high', 'medium'])
+                ->orderByRaw("
+                CASE risk
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    ELSE 4
+                END
+            ")
+                ->orderBy('starts_at')
+                ->get();
+        } catch (Throwable $exception) {
+            foreach ($journalContexts as $context) {
+                $journal->record($context, 'morning_alert_source', 'source_error');
+            }
+
+            throw $exception;
+        }
+
+        $alerts = $sourceAlerts
+            ->filter(fn (MobilityAlert $alert) => $this->shouldShowInWorkerDigest($alert))
+            ->values();
+
+        foreach ($journalContexts as $context) {
+            $journal->record(
+                $context,
+                'morning_alert_source',
+                $sourceAlerts->isEmpty() ? 'no_input' : 'loaded',
+                ['input_count' => $sourceAlerts->count()],
+            );
+            $includedCount = $alerts->count();
+            $journal->record($context, 'morning_filter', $includedCount > 0 ? 'complete' : 'no_significant_events', [
+                'input_count' => $sourceAlerts->count(),
+                'filtered_count' => $sourceAlerts->count() - $includedCount,
+                'included_count' => $includedCount,
+            ]);
+        }
+
+        if ($routes->isNotEmpty()) {
             $failed = $invalidRoutes->isNotEmpty();
 
             foreach ($routes as $route) {
+                $context = $journalContexts[$route['key']] ?? null;
                 try {
+                    $routeAlerts = $this->alertsForDistrict($alerts, $route, $routes);
+                    if ($context !== null) {
+                        $journal->record($context, 'morning_filter', $routeAlerts->count() > 0 ? 'complete' : 'no_significant_events', [
+                            'input_count' => $alerts->count(),
+                            'filtered_count' => $alerts->count() - $routeAlerts->count(),
+                            'included_count' => $routeAlerts->count(),
+                        ]);
+                    }
                     $message = $this->buildMessage(
                         $date,
-                        $this->alertsForDistrict($alerts, $route, $routes),
+                        $routeAlerts,
                         $route,
+                        $context === null ? [] : [$context],
                     );
+
+                    if ($context !== null) {
+                        $messagePresent = trim($message) !== '';
+                        $journal->record($context, 'morning_format', $messagePresent ? 'built' : 'no_message', [
+                            'message_present' => $messagePresent,
+                        ]);
+                    }
 
                     if ($this->option('dry-run')) {
                         $this->renderDryRun($route['label'], $message);
@@ -122,8 +195,7 @@ class MobilityDigestCommand extends Command
                         continue;
                     }
 
-                    $messageId = app(TelegramOutboundMonitor::class)->withContext([
-                        'operation_key' => 'morning_digest:'.$date->toDateString().':'.$route['key'],
+                    $messageId = app(TelegramOutboundMonitor::class)->withContext($context ?? [
                         'notification_type' => 'morning_digest',
                         'district' => $route['key'],
                         'scheduled_for' => $date->copy()->setTime(8, 0),
@@ -164,7 +236,15 @@ class MobilityDigestCommand extends Command
             return self::FAILURE;
         }
 
-        $message = $this->buildMessage($date, $alerts);
+        $contexts = array_values($journalContexts);
+        $message = $this->buildMessage($date, $alerts, null, $contexts);
+
+        foreach ($contexts as $context) {
+            $messagePresent = trim($message) !== '';
+            $journal->record($context, 'morning_format', $messagePresent ? 'built' : 'no_message', [
+                'message_present' => $messagePresent,
+            ]);
+        }
 
         if ($this->option('dry-run')) {
             $this->renderDryRun('Milan', $message);
@@ -172,98 +252,143 @@ class MobilityDigestCommand extends Command
             return self::SUCCESS;
         }
 
-        $this->sendTelegram($message, $bot);
+        $this->sendTelegram($message, $bot, $contexts);
 
         $this->info('Daily shift digest sent.');
 
         return self::SUCCESS;
     }
 
-    protected function buildMessage(Carbon $date, $alerts, ?array $route = null): string
+    protected function buildMessage(Carbon $date, $alerts, ?array $route = null, array $journalContexts = []): string
     {
-        $weather = app(MilanWeatherService::class)->morningForecast(
-            CarbonImmutable::instance($date),
-            (float) ($route['latitude'] ?? 45.4642),
-            (float) ($route['longitude'] ?? 9.1900),
-            config('app.timezone', 'Europe/Rome'),
-        );
-
-        $alerts = $this->deduplicateAlerts($alerts)
-            ->filter(fn (array $alert): bool => $this->isImportantWorkerAlert($alert))
-            ->values();
-
-        $label = trim((string) ($route['label'] ?? ''));
-
-        $text = Arr::random($this->greetings)
-            .($label !== '' ? ' · <b>'.e($label).'</b>' : '')
-            ."\n\n";
-
-        $weatherDate = $date->copy()->setTimezone(
-            config('app.timezone', 'Europe/Rome')
-        );
-
-        $weatherHeading = $weatherDate->isToday()
-            ? 'Погода на сегодня'
-            : 'Погода на '.$weatherDate->format('d.m.Y');
-
-        $text .= '🌤 <b>'.e($weatherHeading)."</b>\n";
-
-        $points = $weather['points'] ?? [];
-
-        $hasForecast = collect($points)->contains(
-            fn (?array $point): bool => $point !== null
-        );
-
-        if (! $hasForecast) {
-            if (($weather['unavailable_reason'] ?? null) === 'date_out_of_range') {
-                $text .= "Прогноз недоступен для 08:00, 13:00 и 15:00: бесплатный план охватывает сегодня и следующие два дня.\n";
-            } else {
-                $text .= "Прогноз временно недоступен для 08:00, 13:00 и 15:00.\n";
+        $journal = app(TelegramDigestBuildJournal::class);
+        try {
+            $weather = app(MilanWeatherService::class)->morningForecast(
+                CarbonImmutable::instance($date),
+                (float) ($route['latitude'] ?? 45.4642),
+                (float) ($route['longitude'] ?? 9.1900),
+                config('app.timezone', 'Europe/Rome'),
+            );
+        } catch (Throwable $exception) {
+            foreach ($journalContexts as $context) {
+                $journal->record($context, 'morning_weather_source', 'source_error');
             }
-        } else {
-            foreach (['08:00', '13:00', '15:00'] as $time) {
-                $text .= $this->formatWeatherPoint(
-                    $time,
-                    $points[$time] ?? null
-                );
-            }
+
+            throw $exception;
         }
 
-        $text = rtrim($text);
+        $weatherReason = $weather['unavailable_reason'] ?? null;
+        $forecastPoints = collect($weather['points'] ?? [])->filter(fn (?array $point): bool => $point !== null)->count();
+        $weatherOutcome = $weatherReason !== null && $weatherReason !== 'date_out_of_range'
+            ? 'source_error'
+            : ($forecastPoints > 0 ? 'loaded' : 'no_input');
+        foreach ($journalContexts as $context) {
+            $journal->record($context, 'morning_weather_source', $weatherOutcome, ['source_messages' => $forecastPoints]);
+        }
 
-        // Сначала предупреждения об опасной погоде.
-        if (! empty($weather['advice'])) {
-            $text .= "\n\n".e((string) $weather['advice']);
-        } elseif ($hasForecast) {
-            // Если серьёзных рисков нет, предлагаем зонт при вероятности дождя >= 40%.
-            $umbrellaAdvice = $this->friendlyWeatherAdvice(
+        $alertInputCount = collect($alerts)->count();
+        try {
+            $alerts = $this->deduplicateAlerts($alerts)
+                ->filter(fn (array $alert): bool => $this->isImportantWorkerAlert($alert))
+                ->values();
+        } catch (Throwable $exception) {
+            foreach ($journalContexts as $context) {
+                $journal->record($context, 'morning_filter', 'calculation_error', ['input_count' => $alertInputCount]);
+            }
+
+            throw $exception;
+        }
+
+        foreach ($journalContexts as $context) {
+            $includedCount = $alerts->count();
+            $journal->record($context, 'morning_filter', $includedCount > 0 ? 'complete' : 'no_significant_events', [
+                'input_count' => $alertInputCount,
+                'filtered_count' => max(0, $alertInputCount - $includedCount),
+                'included_count' => $includedCount,
+            ]);
+        }
+
+        try {
+            $label = trim((string) ($route['label'] ?? ''));
+
+            $text = Arr::random($this->greetings)
+                .($label !== '' ? ' · <b>'.e($label).'</b>' : '')
+                ."\n\n";
+
+            $weatherDate = $date->copy()->setTimezone(
+                config('app.timezone', 'Europe/Rome')
+            );
+
+            $weatherHeading = $weatherDate->isToday()
+                ? 'Погода на сегодня'
+                : 'Погода на '.$weatherDate->format('d.m.Y');
+
+            $text .= '🌤 <b>'.e($weatherHeading)."</b>\n";
+
+            $points = $weather['points'] ?? [];
+
+            $hasForecast = collect($points)->contains(
+                fn (?array $point): bool => $point !== null
+            );
+
+            if (! $hasForecast) {
+                if (($weather['unavailable_reason'] ?? null) === 'date_out_of_range') {
+                    $text .= "Прогноз недоступен для 08:00, 13:00 и 15:00: бесплатный план охватывает сегодня и следующие два дня.\n";
+                } else {
+                    $text .= "Прогноз временно недоступен для 08:00, 13:00 и 15:00.\n";
+                }
+            } else {
+                foreach (['08:00', '13:00', '15:00'] as $time) {
+                    $text .= $this->formatWeatherPoint(
+                        $time,
+                        $points[$time] ?? null
+                    );
+                }
+            }
+
+            $text = rtrim($text);
+
+            // Сначала предупреждения об опасной погоде.
+            if (! empty($weather['advice'])) {
+                $text .= "\n\n".e((string) $weather['advice']);
+            } elseif ($hasForecast) {
+                // Если серьёзных рисков нет, предлагаем зонт при вероятности дождя >= 40%.
+                $umbrellaAdvice = $this->friendlyWeatherAdvice(
     $points,
     $date->toDateString().'|'.($route['key'] ?? 'milan')
 );
 
-            if ($umbrellaAdvice !== null) {
-                $text .= "\n\n".e($umbrellaAdvice);
+                if ($umbrellaAdvice !== null) {
+                    $text .= "\n\n".e($umbrellaAdvice);
+                }
             }
-        }
 
-        // Для тестового dry-run скрываем юридический блок.
-        // В настоящей рассылке атрибуция и предупреждение сохраняются.
-        if ($hasForecast && ! $this->option('dry-run')) {
-            $text .= "\n\nИсточник: <code>WeatherAPI.com</code> · перевод и округление.";
-            $text .= "\n".'ℹ️ Погодные данные приведены только для общего сведения. Прогноз вероятностный и может быть неточным для конкретного места и времени. Не используйте его как единственный источник решений о личной безопасности, авиации, морской навигации, экстренном планировании и иных вопросах, критичных для безопасности. Для таких решений сверяйтесь с официальными метеослужбами и предупреждениями компетентных органов.';
-        }
-
-        if ($alerts->isNotEmpty()) {
-            $text .= "\n\n⚠️ <b>Сегодня важно</b>\n";
-
-            foreach ($alerts->take(3) as $alert) {
-                $text .= '• '.$this->workerAlertLine($alert)."\n";
+            // Для тестового dry-run скрываем юридический блок.
+            // В настоящей рассылке атрибуция и предупреждение сохраняются.
+            $dryRun = $this->input?->getOption('dry-run') ?? false;
+            if ($hasForecast && ! $dryRun) {
+                $text .= "\n\nИсточник: <code>WeatherAPI.com</code> · перевод и округление.";
+                $text .= "\n".'ℹ️ Погодные данные приведены только для общего сведения. Прогноз вероятностный и может быть неточным для конкретного места и времени. Не используйте его как единственный источник решений о личной безопасности, авиации, морской навигации, экстренном планировании и иных вопросах, критичных для безопасности. Для таких решений сверяйтесь с официальными метеослужбами и предупреждениями компетентных органов.';
             }
+
+            if ($alerts->isNotEmpty()) {
+                $text .= "\n\n⚠️ <b>Сегодня важно</b>\n";
+
+                foreach ($alerts->take(3) as $alert) {
+                    $text .= '• '.$this->workerAlertLine($alert)."\n";
+                }
+            }
+
+            $text .= "\n\n".Arr::random($this->endings);
+
+            return trim($text);
+        } catch (Throwable $exception) {
+            foreach ($journalContexts as $context) {
+                $journal->record($context, 'morning_format', 'calculation_error');
+            }
+
+            throw $exception;
         }
-
-        $text .= "\n\n".Arr::random($this->endings);
-
-        return trim($text);
     }
 
     protected function formatWeatherPoint(string $time, ?array $point): string
@@ -713,14 +838,21 @@ protected function pickWeatherAdvice(array $variants, string $seed): string
             ->all();
     }
 
-    protected function sendTelegram(string $message, TelegramBotService $bot): void
+    protected function sendTelegram(string $message, TelegramBotService $bot, array $journalContexts = []): void
     {
-        foreach ($this->telegramTargets() as $target) {
-            $bot->sendMessage(
+        foreach ($this->telegramTargets() as $index => $target) {
+            $send = fn () => $bot->sendMessage(
                 (string) $target['chat_id'],
                 $message,
                 filled($target['thread_id'] ?? null) ? (string) $target['thread_id'] : null,
             );
+            $context = $journalContexts[$index] ?? null;
+
+            if ($context !== null) {
+                app(TelegramOutboundMonitor::class)->withContext($context, $send);
+            } else {
+                $send();
+            }
         }
     }
 }

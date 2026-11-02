@@ -75,3 +75,7 @@ Actual production values for:
 must be verified from the environment when relevant.
 
 Do not infer them solely from config defaults or repository files.
+
+## Pest discovery: EmergencyTrisTest
+
+At `origin/main` commit `4f672ce`, `tests/Pest.php` already binds `Tests\\TestCase` to the whole `Feature` directory, while `tests/Feature/EmergencyTrisTest.php` also declares `uses(TestCase::class)`. The targeted Pest command fails during discovery with `Test case [Tests\\TestCase] can not be used ... already uses the test case`. The discovery files are unchanged on the digest feature branch; this is a pre-existing main issue that blocks the full suite and should be handled separately.

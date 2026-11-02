@@ -16,6 +16,10 @@ use WeakMap;
 /** Observes every outbound Telegram content request, including legacy direct HTTP calls. */
 class TelegramOutboundMonitor
 {
+    private const DIGEST_TYPES = [
+        'calendar', 'morning_digest', 'scheduled_control_summary', 'evening_intelligence', 'linen_defect',
+    ];
+
     private WeakMap $inFlight;
 
     /** Laravel creates a new Request object for connection failures. */
@@ -136,6 +140,8 @@ class TelegramOutboundMonitor
             $operation->error_reason = null;
             $operation->save();
 
+            $this->recordDigestEvent($operation, 'send_attempt', 'attempted', ['attempt' => $operation->attempts]);
+
             $this->inFlight[$event->request] = $operation->getKey();
             $this->inFlightByRoute[$this->routeFingerprint($event->request)] = $operation->getKey();
         });
@@ -163,6 +169,15 @@ class TelegramOutboundMonitor
                 // Telegram descriptions can contain message content and are deliberately excluded.
                 'error_reason' => $accepted ? ($hasReceipt ? null : 'receipt_missing') : 'telegram_api_rejected',
             ]);
+            $this->recordDigestEvent(
+                $operation,
+                'telegram_response',
+                $accepted ? ($hasReceipt ? 'accepted' : 'uncertain') : 'rejected',
+                array_filter([
+                    'http_status' => $event->response->status(),
+                    'error_code' => $accepted ? null : (int) (data_get($result, 'error_code') ?: $event->response->status()),
+                ], fn (mixed $value): bool => $value !== null),
+            );
             $this->forget($event->request);
         });
     }
@@ -170,13 +185,33 @@ class TelegramOutboundMonitor
     public function failed(ConnectionFailed $event): void
     {
         $this->safely(function () use ($event): void {
-            $this->operation($event->request)?->update([
+            $operation = $this->operation($event->request);
+            $operation?->update([
                 'status' => 'uncertain',
                 'finished_at' => now(),
                 'error_reason' => 'connection_failed',
             ]);
+            if ($operation !== null) {
+                $this->recordDigestEvent($operation, 'telegram_response', 'uncertain');
+            }
             $this->forget($event->request);
         });
+    }
+
+    private function recordDigestEvent(TelegramOutboundOperation $operation, string $stage, string $outcome, array $metrics = []): void
+    {
+        if (! in_array($operation->notification_type, self::DIGEST_TYPES, true)
+            || ! is_string($operation->operation_key)
+            || $operation->operation_key === '') {
+            return;
+        }
+
+        app(TelegramDigestBuildJournal::class)->record(
+            ['operation_key' => $operation->operation_key],
+            $stage,
+            $outcome,
+            $metrics,
+        );
     }
 
     private function operation(Request $request): ?TelegramOutboundOperation

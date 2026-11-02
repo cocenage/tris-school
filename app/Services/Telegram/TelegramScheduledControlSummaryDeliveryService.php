@@ -3,6 +3,7 @@
 namespace App\Services\Telegram;
 
 use App\Jobs\DeliverScheduledControlSummary;
+use App\Models\TelegramOutboundOperation;
 use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Models\TelegramScheduledMessage;
 use Carbon\CarbonImmutable;
@@ -56,20 +57,61 @@ class TelegramScheduledControlSummaryDeliveryService
         if ($this->builder->day($date)->gt(CarbonImmutable::now('Europe/Rome')->startOfDay())) {
             return ['queued' => 0, 'skipped' => 'future_date'];
         }
-        $summary = $this->builder->build($date);
-        if ($summary['totals']['controls'] === 0) {
-            return ['queued' => 0, 'skipped' => 'no_deliveries'];
-        }
-        if ($onlyIfDue && ! $this->eligible($date, $summary)) {
-            return ['queued' => 0, 'skipped' => 'not_due'];
-        }
+
         $chatId = config('services.telegram.scheduled_summary_chat_id');
         $threadId = config('services.telegram.scheduled_summary_thread_id');
+        $context = $this->operationContext($date, $chatId, $threadId);
+        $journal = app(TelegramDigestBuildJournal::class);
+        $journal->reserve($context);
+
+        try {
+            $summary = $this->builder->build($date);
+        } catch (\Throwable $error) {
+            $journal->record($context, 'controls_source', 'failure_unclassified');
+
+            throw $error;
+        }
+
+        $controlCount = (int) $summary['totals']['controls'];
+        $journal->record($context, 'controls_source', $controlCount > 0 ? 'loaded' : 'no_input', [
+            'controls_count' => $controlCount,
+        ]);
+        $journal->record($context, 'controls_filter', $controlCount > 0 ? 'complete' : 'no_significant_events', [
+            'controls_count' => $controlCount,
+            'responses_count' => (int) ($summary['totals']['response_messages'] ?? 0),
+        ]);
+
+        if ($controlCount === 0) {
+            $journal->record($context, 'controls_format', 'no_message', ['message_present' => false]);
+            $journal->record($context, 'controls_queue', 'skipped', ['queued_count' => 0]);
+
+            return ['queued' => 0, 'skipped' => 'no_deliveries'];
+        }
+        if ($onlyIfDue) {
+            try {
+                $eligible = $this->eligible($date, $summary);
+            } catch (\Throwable $error) {
+                $journal->record($context, 'controls_filter', 'failure_unclassified');
+
+                throw $error;
+            }
+
+            if (! $eligible) {
+                $journal->record($context, 'controls_queue', 'skipped', ['queued_count' => 0]);
+
+                return ['queued' => 0, 'skipped' => 'not_due'];
+            }
+        }
         if (! filled($chatId)) {
+            $journal->record($context, 'controls_queue', 'skipped', ['queued_count' => 0]);
+
             return ['queued' => 0, 'skipped' => 'destination_missing'];
         }
+
+        $delivery = null;
+        $dispatchFailed = false;
         try {
-            $queued = DB::transaction(function () use ($date, $summary, $chatId, $threadId): int {
+            $queued = DB::transaction(function () use ($date, $summary, $chatId, $threadId, $context, &$delivery, &$dispatchFailed): int {
                 $hash = hash('sha256', json_encode($summary, JSON_THROW_ON_ERROR));
                 $key = hash('sha256', implode('|', [$date, $chatId, $threadId ?? '']));
                 $delivery = TelegramScheduledControlSummaryDelivery::firstOrCreate(['delivery_key' => $key], [
@@ -78,12 +120,25 @@ class TelegramScheduledControlSummaryDeliveryService
                 ]);
                 $delivery = TelegramScheduledControlSummaryDelivery::query()->lockForUpdate()->findOrFail($delivery->id);
 
-                return $this->enqueue($delivery);
+                return $this->enqueue($delivery, $context['operation_key'], $dispatchFailed);
             });
+            $this->linkOperationToDelivery($context, $delivery);
+            $messagePresent = trim((string) $delivery->text) !== '';
+            $journal->record($context, 'controls_format', $messagePresent ? 'built' : 'no_message', [
+                'message_present' => $messagePresent,
+            ]);
+            $journal->record($context, 'controls_queue', $queued > 0 ? 'queued' : 'skipped', [
+                'queued_count' => $queued,
+            ]);
             Log::info('scheduled_control_summary_queued', ['queued' => $queued, 'date' => $date]);
 
             return ['queued' => $queued, 'skipped' => $queued ? null : 'already_reserved_or_sent'];
         } catch (\Throwable $error) {
+            if ($dispatchFailed) {
+                $journal->record($context, 'controls_queue', 'queue_failed');
+            } else {
+                $journal->record($context, 'controls_format', 'calculation_error');
+            }
             Log::warning('scheduled_control_summary_failed', ['exception' => class_basename($error)]);
 
             return ['queued' => 0, 'failed' => 1];
@@ -97,13 +152,35 @@ class TelegramScheduledControlSummaryDeliveryService
             ->whereIn('status', ['queued', 'retrying'])
             ->where(fn ($query) => $query->whereNull('queued_at')->orWhere('queued_at', '<=', now()->subHour()))
             ->each(function ($delivery) use (&$queued): void {
-                $queued += DB::transaction(fn () => $this->enqueue(TelegramScheduledControlSummaryDelivery::query()->lockForUpdate()->findOrFail($delivery->id)));
+                $delivery = TelegramScheduledControlSummaryDelivery::query()->findOrFail($delivery->id);
+                $context = $this->operationContext($delivery->summary_date, $delivery->chat_id, $delivery->message_thread_id, $delivery->id);
+                $journal = app(TelegramDigestBuildJournal::class);
+                $journal->reserve($context);
+                $dispatchFailed = false;
+
+                try {
+                    $count = DB::transaction(fn () => $this->enqueue(
+                        TelegramScheduledControlSummaryDelivery::query()->lockForUpdate()->findOrFail($delivery->id),
+                        $context['operation_key'],
+                        $dispatchFailed,
+                    ));
+                } catch (\Throwable $error) {
+                    if ($dispatchFailed) {
+                        $journal->record($context, 'controls_queue', 'queue_failed');
+                    }
+
+                    throw $error;
+                }
+
+                $this->linkOperationToDelivery($context, $delivery);
+                $journal->record($context, 'controls_queue', $count > 0 ? 'queued' : 'skipped', ['queued_count' => $count]);
+                $queued += $count;
             });
 
         return $queued;
     }
 
-    private function enqueue(TelegramScheduledControlSummaryDelivery $delivery): int
+    private function enqueue(TelegramScheduledControlSummaryDelivery $delivery, string $operationKey, bool &$dispatchFailed = false): int
     {
         if ($delivery->sent_at
             || in_array($delivery->status, ['sending', 'uncertain', 'failed'], true)
@@ -111,9 +188,46 @@ class TelegramScheduledControlSummaryDeliveryService
             return 0;
         }
         $delivery->update(['queued_at' => now(), 'status' => 'queued']);
-        $job = (new DeliverScheduledControlSummary($delivery->id))->onConnection('database')->onQueue('default')->afterCommit();
-        Bus::dispatch($job);
+        $job = (new DeliverScheduledControlSummary($delivery->id, $operationKey))->onConnection('database')->onQueue('default')->afterCommit();
+        try {
+            Bus::dispatch($job);
+        } catch (\Throwable $error) {
+            $dispatchFailed = true;
+
+            throw $error;
+        }
 
         return 1;
+    }
+
+    private function operationContext(string $date, ?string $chatId, ?string $threadId, ?int $deliveryId = null): array
+    {
+        $destinationHash = hash('sha256', implode('|', [$date, $chatId ?? '', $threadId ?? '']));
+
+        return [
+            'operation_key' => 'scheduled_control_summary:'.$date.':'.$destinationHash,
+            'notification_type' => 'scheduled_control_summary',
+            'bot' => 'analytics',
+            'chat_id' => $chatId,
+            'message_thread_id' => $threadId,
+            'source_type' => 'telegram_scheduled_control_summary_delivery',
+            'source_id' => $deliveryId === null ? null : (string) $deliveryId,
+            'scheduled_for' => $date,
+        ];
+    }
+
+    private function linkOperationToDelivery(array $context, TelegramScheduledControlSummaryDelivery $delivery): void
+    {
+        try {
+            TelegramOutboundOperation::query()
+                ->where('operation_key', $context['operation_key'])
+                ->update([
+                    'source_type' => 'telegram_scheduled_control_summary_delivery',
+                    'source_id' => (string) $delivery->id,
+                    'updated_at' => now(),
+                ]);
+        } catch (\Throwable $exception) {
+            Log::warning('Scheduled Controls outbound source link unavailable.', ['error' => class_basename($exception)]);
+        }
     }
 }
