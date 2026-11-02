@@ -178,7 +178,9 @@ it('dispatches operational observation only after a persisted work message when 
         ],
     ])->assertOk();
 
-    Queue::assertPushed(ProcessTelegramOperationalMessage::class, fn ($job) => $job->telegramMessageId === 501 && $job->mode === 'message'
+    Queue::assertPushed(ProcessTelegramOperationalMessage::class, fn ($job) => $job->telegramMessageId === 501
+        && $job->mode === 'message'
+        && $job->sourceBot === 'work'
     );
     expect(Http::recorded())->toHaveCount(0);
 });
@@ -1504,7 +1506,7 @@ it('keeps duplicate polled work messages idempotent', function () {
     expect(Artisan::call('telegram:work-poll'))->toBe(0);
 
     $message = TelegramMessage::query()->where('message_id', '704')->sole();
-    app(TelegramOperationalEventObserver::class)->observe($message);
+    app(TelegramOperationalEventObserver::class)->observe($message, sourceBot: 'work');
 
     expect(Artisan::call('telegram:work-poll'))->toBe(0)
         ->and(TelegramMessage::query()->where('message_id', '704')->count())->toBe(1);
@@ -1543,7 +1545,7 @@ it('keeps OI work recoverable when an observation is missing or the message is e
     Queue::assertPushed(ProcessTelegramOperationalMessage::class, 2);
 
     $message = TelegramMessage::query()->where('message_id', '706')->sole();
-    app(TelegramOperationalEventObserver::class)->observe($message);
+    app(TelegramOperationalEventObserver::class)->observe($message, sourceBot: 'work');
 
     expect(Artisan::call('telegram:work-poll'))->toBe(0)
         ->and($message->fresh()->text)->toBe('Замок снова не работает');

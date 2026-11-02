@@ -13,30 +13,43 @@ use Throwable;
 
 class TelegramOperationalEventObserver
 {
+    private const SOURCE_BOTS = ['analytics', 'work', 'legacy'];
+
     public function __construct(
         protected TelegramOperationalInterpreter $interpreter,
         protected TelegramDistrictRouteRegistry $districts,
     ) {}
 
-    public function hasCompletedCurrentRevision(TelegramMessage $message): bool
+    public function hasCompletedCurrentRevision(TelegramMessage $message, string $sourceBot = 'legacy'): bool
     {
-        return TelegramOperationalObservation::query()
+        $this->assertSourceBot($sourceBot);
+
+        $identity = TelegramOperationalObservation::query()
             ->where('telegram_message_id', $message->id)
             ->where('source_revision_hash', $this->revisionHash($message, $this->normalizedRaw($message->raw)))
             ->where('evaluation_kind', 'message')
-            ->where('is_current_revision', true)
-            ->where('state', 'completed')
-            ->exists();
+            ->where('is_current_revision', true);
+
+        $current = (clone $identity)->where('source_bot', $sourceBot)->first();
+
+        if ($current) {
+            return $current->state === 'completed';
+        }
+
+        return $sourceBot !== 'legacy'
+            && $identity->where('source_bot', 'legacy')->where('state', 'completed')->exists();
     }
 
     public function observe(
         TelegramMessage $message,
         string $evaluationKind = 'message',
         Carbon|string|null $asOf = null,
+        string $sourceBot = 'legacy',
     ): array {
         if (! in_array($evaluationKind, ['message', 'unanswered'], true)) {
             throw new \InvalidArgumentException('Unsupported operational evaluation kind.');
         }
+        $this->assertSourceBot($sourceBot);
 
         $message->loadMissing(['chat', 'topic', 'telegramUser', 'attachments']);
         $clock = $asOf instanceof Carbon
@@ -44,16 +57,35 @@ class TelegramOperationalEventObserver
             : Carbon::parse($asOf ?: now(config('app.timezone', 'Europe/Rome')), config('app.timezone', 'Europe/Rome'));
         $raw = $this->normalizedRaw($message->raw);
         $revisionHash = $this->revisionHash($message, $raw);
+        $identity = [
+            'telegram_message_id' => $message->id,
+            'source_bot' => $sourceBot,
+            'source_revision_hash' => $revisionHash,
+            'evaluation_kind' => $evaluationKind,
+        ];
 
         $existing = TelegramOperationalObservation::query()
             ->with('evidence.event')
-            ->where('telegram_message_id', $message->id)
-            ->where('source_revision_hash', $revisionHash)
-            ->where('evaluation_kind', $evaluationKind)
+            ->where($identity)
             ->first();
 
         if ($existing?->state === 'completed') {
             return $this->resultFromObservation($existing, true);
+        }
+
+        if (! $existing && $sourceBot !== 'legacy') {
+            $legacy = TelegramOperationalObservation::query()
+                ->with('evidence.event')
+                ->where('telegram_message_id', $message->id)
+                ->where('source_bot', 'legacy')
+                ->where('source_revision_hash', $revisionHash)
+                ->where('evaluation_kind', $evaluationKind)
+                ->where('state', 'completed')
+                ->first();
+
+            if ($legacy) {
+                return $this->resultFromObservation($legacy, true);
+            }
         }
 
         try {
@@ -63,23 +95,30 @@ class TelegramOperationalEventObserver
                 $clock,
                 $raw,
                 $revisionHash,
+                $identity,
             ): array {
+                $now = now();
+                DB::connection('analytics')->table('telegram_operational_observations')->insertOrIgnore([
+                    ...$identity,
+                    'state' => 'processing',
+                    'is_current_revision' => true,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+
                 $observation = TelegramOperationalObservation::query()
-                    ->where('telegram_message_id', $message->id)
-                    ->where('source_revision_hash', $revisionHash)
-                    ->where('evaluation_kind', $evaluationKind)
+                    ->where($identity)
                     ->lockForUpdate()
                     ->first();
+
+                if (! $observation) {
+                    throw new \RuntimeException('Operational observation claim could not be read after insert.');
+                }
 
                 if ($observation?->state === 'completed') {
                     return $this->resultFromObservation($observation->load('evidence.event'), true);
                 }
 
-                $observation ??= new TelegramOperationalObservation([
-                    'telegram_message_id' => $message->id,
-                    'source_revision_hash' => $revisionHash,
-                    'evaluation_kind' => $evaluationKind,
-                ]);
                 $observation->fill([
                     'state' => 'processing',
                     'outcome' => null,
@@ -131,7 +170,7 @@ class TelegramOperationalEventObserver
                 $this->markPreviousRevisionSuperseded($message, $observation);
                 $event = $candidates->count() === 1
                     ? $this->appendToEvent($candidates->first(), $message, $observation, $decision)
-                    : $this->createInitialEvent($message, $observation, $decision);
+                    : $this->createOrReuseRootEvent($message, $observation, $decision);
                 $transition = $observation->evidence()->latest('id')->value('transition');
                 $outcome = $decision['is_question']
                     ? 'pending_question'
@@ -153,30 +192,74 @@ class TelegramOperationalEventObserver
                 return $this->result($message, $observation, $event, false);
             }, 3);
         } catch (Throwable $exception) {
-            TelegramOperationalObservation::query()->updateOrCreate(
-                [
-                    'telegram_message_id' => $message->id,
-                    'source_revision_hash' => $revisionHash,
-                    'evaluation_kind' => $evaluationKind,
-                ],
-                [
-                    'state' => 'failed',
-                    'outcome' => null,
-                    'processed_at' => $clock,
-                    'error_code' => class_basename($exception),
-                    'is_current_revision' => true,
-                ],
-            );
+            try {
+                DB::connection('analytics')->transaction(function () use ($identity, $clock, $exception): void {
+                    $now = now();
+                    DB::connection('analytics')->table('telegram_operational_observations')->insertOrIgnore([
+                        ...$identity,
+                        'state' => 'failed',
+                        'processed_at' => $clock,
+                        'error_code' => class_basename($exception),
+                        'is_current_revision' => true,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+
+                    DB::connection('analytics')->table('telegram_operational_observations')
+                        ->where($identity)
+                        ->where('state', '!=', 'completed')
+                        ->update([
+                            'state' => 'failed',
+                            'outcome' => null,
+                            'processed_at' => $clock,
+                            'error_code' => class_basename($exception),
+                            'is_current_revision' => true,
+                            'updated_at' => $now,
+                        ]);
+                }, 3);
+            } catch (Throwable) {
+                // Keep the original processing exception. A missing failed marker is still retryable.
+            }
+
+            $completed = TelegramOperationalObservation::query()
+                ->with('evidence.event')
+                ->where($identity)
+                ->where('state', 'completed')
+                ->first();
+
+            if (! $completed && $sourceBot !== 'legacy'
+                && ! TelegramOperationalObservation::query()->where($identity)->exists()) {
+                $completed = TelegramOperationalObservation::query()
+                    ->with('evidence.event')
+                    ->where('telegram_message_id', $message->id)
+                    ->where('source_bot', 'legacy')
+                    ->where('source_revision_hash', $revisionHash)
+                    ->where('evaluation_kind', $evaluationKind)
+                    ->where('state', 'completed')
+                    ->first();
+            }
+
+            if ($completed) {
+                return $this->resultFromObservation($completed, true);
+            }
 
             throw $exception;
         }
     }
 
-    private function createInitialEvent(
+    private function createOrReuseRootEvent(
         TelegramMessage $message,
         TelegramOperationalObservation $observation,
         array $decision,
     ): TelegramOperationalEvent {
+        $sharedMessageEvent = TelegramOperationalEvent::query()
+            ->where('root_message_id', $message->id)
+            ->first();
+
+        if ($sharedMessageEvent) {
+            return $this->appendToEvent($sharedMessageEvent, $message, $observation, $decision);
+        }
+
         $occurredAt = $this->messageTime($message);
         $status = $decision['transition'] === 'resolved' ? 'resolved' : 'open';
         $event = TelegramOperationalEvent::query()->create([
@@ -537,14 +620,18 @@ class TelegramOperationalEventObserver
                 'unanswered_due_at' => $dueAt,
             ])->save();
 
-            return $this->result($message, $observation, $this->eventForMessageRevision($message, $revisionHash), false);
+            return $this->result($message, $observation, $this->eventForMessageRevision(
+                $message,
+                $revisionHash,
+                $observation->source_bot,
+            ), false);
         }
 
         if ($this->hasMeaningfulResponse($message, $clock)) {
             return $this->completeNoEvent($observation, 'operational_question_answered', $clock);
         }
 
-        $event = $this->eventForMessageRevision($message, $revisionHash);
+        $event = $this->eventForMessageRevision($message, $revisionHash, $observation->source_bot);
 
         if (! $event) {
             return $this->completeNoEvent($observation, 'question_event_missing', $clock);
@@ -618,13 +705,17 @@ class TelegramOperationalEventObserver
         });
     }
 
-    private function eventForMessageRevision(TelegramMessage $message, string $revisionHash): ?TelegramOperationalEvent
-    {
+    private function eventForMessageRevision(
+        TelegramMessage $message,
+        string $revisionHash,
+        string $sourceBot,
+    ): ?TelegramOperationalEvent {
         return TelegramOperationalEvent::query()
-            ->whereHas('evidence.observation', function ($query) use ($message, $revisionHash) {
+            ->whereHas('evidence.observation', function ($query) use ($message, $revisionHash, $sourceBot) {
                 $query
                     ->where('telegram_message_id', $message->id)
                     ->where('source_revision_hash', $revisionHash)
+                    ->whereIn('source_bot', $this->sourceBotsForCurrentOrLegacy($sourceBot))
                     ->where('evaluation_kind', 'message');
             })
             ->first();
@@ -779,6 +870,8 @@ class TelegramOperationalEventObserver
                 ->where('is_current_revision', true)
                 ->whereHas('observation', fn ($observationQuery) => $observationQuery
                     ->where('telegram_message_id', $message->id)
+                    ->whereIn('source_bot', $this->sourceBotsForCurrentOrLegacy($current->source_bot))
+                    ->where('state', 'completed')
                     ->where('evaluation_kind', $current->evaluation_kind)
                     ->whereKeyNot($current->id)))
             ->lockForUpdate()
@@ -794,6 +887,15 @@ class TelegramOperationalEventObserver
             ->where('evaluation_kind', $current->evaluation_kind)
             ->whereKeyNot($current->id)
             ->where('is_current_revision', true)
+            ->where(function ($query) use ($current): void {
+                $query->where('source_bot', $current->source_bot);
+
+                if ($current->source_bot !== 'legacy') {
+                    $query->orWhere(fn ($legacyQuery) => $legacyQuery
+                        ->where('source_bot', 'legacy')
+                        ->where('state', 'completed'));
+                }
+            })
             ->pluck('id');
 
         if ($previousIds->isEmpty()) {
@@ -835,6 +937,18 @@ class TelegramOperationalEventObserver
         return null;
     }
 
+    private function assertSourceBot(string $sourceBot): void
+    {
+        if (! in_array($sourceBot, self::SOURCE_BOTS, true)) {
+            throw new \InvalidArgumentException('Unsupported Telegram source bot.');
+        }
+    }
+
+    private function sourceBotsForCurrentOrLegacy(string $sourceBot): array
+    {
+        return $sourceBot === 'legacy' ? ['legacy'] : [$sourceBot, 'legacy'];
+    }
+
     private function revisionHash(TelegramMessage $message, array $raw): string
     {
         $payload = $this->messagePayload($raw);
@@ -847,7 +961,7 @@ class TelegramOperationalEventObserver
             'message_type' => $message->message_type,
             'text' => $message->text,
             'caption' => $message->caption,
-            'edited_at' => $message->edited_at?->toIso8601String(),
+            'edited_at' => $message->edited_at?->copy()->utc()->toIso8601String(),
             'reply_to_message_id' => data_get($payload, 'reply_to_message.message_id'),
             'is_bot' => data_get($payload, 'from.is_bot'),
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));

@@ -10,6 +10,7 @@ use App\Services\Telegram\TelegramOperationalEventObserver;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Symfony\Component\Process\Process;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function () {
@@ -33,6 +34,22 @@ afterEach(function () {
     DB::purge('sqlite');
 });
 
+it('defaults serialized pre-bot observer jobs to the legacy source', function () {
+    $jobClass = ProcessTelegramOperationalMessage::class;
+    $legacyPayload = sprintf(
+        'O:%d:"%s":2:{s:%d:"telegramMessageId";i:904;s:4:"mode";s:7:"message";}',
+        strlen($jobClass),
+        $jobClass,
+        strlen('telegramMessageId'),
+    );
+    $job = unserialize($legacyPayload, ['allowed_classes' => [$jobClass]]);
+
+    expect($job)->toBeInstanceOf(ProcessTelegramOperationalMessage::class)
+        ->and($job->telegramMessageId)->toBe(904)
+        ->and($job->mode)->toBe('message')
+        ->and($job->sourceBot)->toBe('legacy');
+});
+
 it('reprocesses a queued operational message without duplicating its observation or event', function () {
     $message = TelegramOperationalTestDatabase::message(
         'В квартире протечка под раковиной.',
@@ -48,6 +65,126 @@ it('reprocesses a queued operational message without duplicating its observation
     expect(TelegramOperationalObservation::query()->where('telegram_message_id', $message->id)->count())->toBe(1)
         ->and(TelegramOperationalObservation::query()->where('telegram_message_id', $message->id)->value('state'))->toBe('completed')
         ->and(TelegramOperationalEvent::query()->count())->toBe(1);
+});
+
+it('keeps bot-scoped observations distinct while reusing the one event for their shared message', function () {
+    $message = TelegramOperationalTestDatabase::message(
+        'В квартире протечка под раковиной.',
+        '2026-06-17 08:00:00',
+        '905',
+    );
+    $observer = app(TelegramOperationalEventObserver::class);
+
+    $observer->observe($message, sourceBot: 'analytics');
+    $observer->observe($message, sourceBot: 'work');
+
+    expect(TelegramOperationalObservation::query()
+        ->where('telegram_message_id', $message->id)
+        ->where('state', 'completed')
+        ->count())->toBe(2)
+        ->and(TelegramOperationalObservation::query()
+            ->where('telegram_message_id', $message->id)
+            ->pluck('source_bot')->sort()->values()->all())->toBe(['analytics', 'work'])
+        ->and(TelegramOperationalEvent::query()->count())->toBe(1);
+});
+
+it('allows only one logical operation when two SQLite workers process the same update concurrently', function () {
+    $databasePath = tempnam(sys_get_temp_dir(), 'tris-oi-');
+
+    if ($databasePath === false) {
+        throw new RuntimeException('Could not allocate the test-owned SQLite file.');
+    }
+
+    $gatePath = $databasePath.'.go';
+    $readyPaths = [$databasePath.'.worker-one-ready', $databasePath.'.worker-two-ready'];
+    $processes = [];
+
+    try {
+        TelegramOperationalTestDatabase::refresh($databasePath);
+        $message = TelegramOperationalTestDatabase::message(
+            'В квартире протечка под раковиной.',
+            '2026-06-17 08:00:00',
+            '903',
+        );
+        $workerScript = base_path('tests/Support/TelegramOperationalConcurrentWorker.php');
+        $workerEnvironment = [
+            'APP_ENV' => 'testing',
+            'APP_KEY' => 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+            'DB_CONNECTION' => 'sqlite',
+            'DB_DATABASE' => ':memory:',
+            'DB_URL' => '',
+            'DB_ANALYTICS_DATABASE' => $databasePath,
+            'DB_OLD_DATABASE' => ':memory:',
+            'DB_BUSY_TIMEOUT' => '5000',
+            'QUEUE_CONNECTION' => 'sync',
+            'CACHE_STORE' => 'array',
+        ];
+
+        foreach ($readyPaths as $readyPath) {
+            $process = new Process([
+                PHP_BINARY,
+                $workerScript,
+                $databasePath,
+                $gatePath,
+                $readyPath,
+                (string) $message->id,
+            ], base_path(), $workerEnvironment);
+            $process->start();
+            $processes[] = $process;
+        }
+
+        $readyDeadline = microtime(true) + 20;
+
+        while (! collect($readyPaths)->every(fn (string $path): bool => is_file($path))) {
+            foreach ($processes as $process) {
+                if (! $process->isRunning() && ! $process->isSuccessful()) {
+                    throw new RuntimeException('Concurrent worker exited before the start barrier: '.$process->getErrorOutput());
+                }
+            }
+
+            if (microtime(true) >= $readyDeadline) {
+                throw new RuntimeException('Concurrent workers did not reach the start barrier.');
+            }
+
+            usleep(10_000);
+        }
+
+        if (file_put_contents($gatePath, 'go', LOCK_EX) === false) {
+            throw new RuntimeException('Could not release the concurrent-worker barrier.');
+        }
+
+        foreach ($processes as $process) {
+            $process->wait();
+
+            if (! $process->isSuccessful()) {
+                throw new RuntimeException('Concurrent worker failed: '.$process->getErrorOutput().$process->getOutput());
+            }
+        }
+
+        DB::purge('analytics');
+
+        expect(TelegramOperationalObservation::query()
+            ->where('telegram_message_id', $message->id)
+            ->where('source_bot', 'analytics')
+            ->where('evaluation_kind', 'message')
+            ->where('state', 'completed')
+            ->count())->toBe(1)
+            ->and(TelegramOperationalEvent::query()->count())->toBe(1);
+    } finally {
+        foreach ($processes as $process) {
+            if ($process->isRunning()) {
+                $process->stop(1);
+            }
+        }
+
+        DB::purge('analytics');
+
+        foreach ([$databasePath, $gatePath, ...$readyPaths] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    }
 });
 
 it('merges one employees delay updates and retains its duration, apartment and every source', function () {
