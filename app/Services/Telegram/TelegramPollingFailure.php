@@ -11,6 +11,8 @@ class TelegramPollingFailure extends RuntimeException
         public readonly string $stage,
         public readonly ?int $updateId = null,
         ?Throwable $previous = null,
+        public readonly int $connectionRetries = 0,
+        public readonly ?int $connectionErrorCode = null,
     ) {
         parent::__construct('telegram_polling_'.$stage.'_failure', 0, $previous);
     }

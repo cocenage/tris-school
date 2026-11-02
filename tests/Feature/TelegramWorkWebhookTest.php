@@ -24,14 +24,18 @@ use Illuminate\Http\Client\ResponseSequence;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Tests\Support\TelegramOperationalTestDatabase;
 
 beforeEach(function () {
+    $this->pollingHealthCachePath = storage_path('framework/testing/telegram-polling-health-work-webhook-'.Str::uuid());
     config([
+        'cache.stores.file.path' => $this->pollingHealthCachePath,
         'services.telegram.bot_token' => 'test-token',
         'services.telegram.main_bot_auto_replies_enabled' => true,
         'services.telegram.work_webhook_secret' => 'test-secret',
@@ -104,6 +108,7 @@ beforeEach(function () {
 
 afterEach(function () {
     TelegramOperationalTestDatabase::purge();
+    File::deleteDirectory($this->pollingHealthCachePath);
     Schema::dropIfExists('telegram_scheduled_control_summary_deliveries');
     Schema::dropIfExists('telegram_scheduled_message_responses');
     Schema::dropIfExists('telegram_scheduled_message_deliveries');
@@ -1237,7 +1242,7 @@ it('long polls for fresh callbacks and carries the acknowledged offset into the 
         waitSeconds: 15,
     );
 
-    expect($result)->toBe(['processed' => 1, 'last_update_id' => 501])
+    expect($result)->toBe(['processed' => 1, 'network_retries' => 0, 'last_update_id' => 501])
         ->and($processed)->toBe([501]);
     $requests = Http::recorded()->pluck(0)->values();
     expect($requests[0]['offset'])->toBe(500)
@@ -1584,33 +1589,36 @@ it('does not start a competing work poller while another invocation holds the lo
     }
 });
 
-it('recovers a stored work message after the acknowledgement request times out', function () {
+it('recovers a stored work message after retrying a transient acknowledgement timeout', function () {
     TelegramOperationalTestDatabase::refresh();
     config(['services.telegram.work_allowed_chat_ids' => ['-100']]);
     Queue::fake();
     $assistant = Mockery::mock(TelegramAssistantService::class);
-    $assistant->shouldReceive('isActivated')->twice()->andReturnFalse();
+    $assistant->shouldReceive('isActivated')->once()->andReturnFalse();
     $this->app->instance(TelegramAssistantService::class, $assistant);
     $update = workPollingPayload(707, 210);
     $calls = 0;
-    Http::fake(function (ClientRequest $request) use (&$calls, $update) {
+    $offsets = [];
+    Http::fake(function (ClientRequest $request) use (&$calls, &$offsets, $update) {
+        if (! str_ends_with($request->url(), '/getUpdates')) {
+            return Http::response(['ok' => true, 'result' => []]);
+        }
+
         $calls++;
+        $offsets[] = $request->data()['offset'] ?? null;
 
         if ($calls === 2) {
             throw new ConnectionException('simulated timeout');
         }
 
-        return Http::response(['ok' => true, 'result' => $calls === 3 ? [$update] : ($calls === 4 ? [] : [$update])]);
+        return Http::response(['ok' => true, 'result' => $calls === 1 ? [$update] : []]);
     });
 
-    expect(Artisan::call('telegram:work-poll'))->toBe(1)
-        ->and(Artisan::output())->toContain('acknowledgement status is uncertain')
+    expect(Artisan::call('telegram:work-poll'))->toBe(0)
         ->and(TelegramMessage::query()->where('message_id', '707')->count())->toBe(1)
-        ->and(Artisan::call('telegram:work-poll'))->toBe(0)
-        ->and(TelegramMessage::query()->where('message_id', '707')->count())->toBe(1)
-        ->and($calls)->toBe(4);
+        ->and($calls)->toBe(3)
+        ->and($offsets)->toBe([null, 211, 211]);
 });
-
 it('stops on a locked database update without confirming it or later updates', function () {
     fakeWorkPollResponses()->push(['ok' => true, 'result' => [
         ['update_id' => 211, 'message' => ['message_id' => 711]],
