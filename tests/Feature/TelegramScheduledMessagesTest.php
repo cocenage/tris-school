@@ -45,6 +45,7 @@ beforeEach(function (): void {
     (require base_path('database/migrations/2026_10_01_020000_create_scheduled_control_response_tables.php'))->up();
     (require base_path('database/migrations/2026_10_18_000000_add_district_answers_to_scheduled_controls.php'))->up();
     (require database_path('migrations/2026_10_27_000000_add_scheduled_control_followups.php'))->up();
+    (require database_path('migrations/2026_11_01_000000_add_sequential_check_state_to_scheduled_deliveries.php'))->up();
     $queueMigration = require base_path('database/migrations/0001_01_01_000002_create_jobs_table.php');
     $queueMigration->up();
 

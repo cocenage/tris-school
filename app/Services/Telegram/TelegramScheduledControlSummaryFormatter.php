@@ -8,13 +8,44 @@ use Illuminate\Support\Str;
 
 class TelegramScheduledControlSummaryFormatter
 {
-    public function formatInteractive(TelegramScheduledMessageDelivery $delivery): string
+    /** @return array{text: string, reply_markup: array, render_hash: string} */
+    public function interactivePayload(TelegramScheduledMessageDelivery $delivery): array
+    {
+        $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
+        $text = $this->formatInteractive($delivery, $states);
+        $context = $delivery->sequence_context ?? [];
+        $scope = ($context['stage'] ?? null) === 'second' && is_array($context['eligible_districts'] ?? null)
+            ? $context['eligible_districts'] : null;
+        $keyboard = ScheduledControlTypes::districtKeyboard($delivery->id, $scope, $states);
+
+        return [
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'render_hash' => hash('sha256', json_encode([$text, $keyboard], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)),
+        ];
+    }
+
+    public function formatInteractive(TelegramScheduledMessageDelivery $delivery, ?array $states = null): string
     {
         $lines = [htmlspecialchars((string) $delivery->scheduledMessage?->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), ''];
-        $latest = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
+        $latest = $states ?? app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
+        $context = $delivery->sequence_context ?? [];
+
+        if (($context['stage'] ?? null) === 'second') {
+            $lines[] = $this->sequenceContextLine($context);
+            $lines[] = '';
+        }
 
         foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
             $answers = collect($latest[$key] ?? []);
+            if (($context['stage'] ?? null) === 'second'
+                && ($context['criteria_matches'] ?? false)
+                && ! in_array($key, $context['eligible_districts'] ?? [], true)
+                && ($context['previous_states'][$key] ?? null) === 'confirmed') {
+                $lines[] = '✅ '.$label.' — подтверждено ранее';
+
+                continue;
+            }
             if ($answers->isEmpty()) {
                 $lines[] = '▫️ '.$label.' — нет ответа';
 
@@ -51,6 +82,46 @@ class TelegramScheduledControlSummaryFormatter
         }
 
         return implode("\n", $lines);
+    }
+
+    private function sequenceContextLine(array $context): string
+    {
+        $sourceTime = htmlspecialchars((string) ($context['source_time'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $sourceStatus = $context['source_status'] ?? 'missing_delivery';
+        if ($sourceStatus !== 'sent') {
+            $description = match ($sourceStatus) {
+                'ambiguous_template' => 'предыдущий контроль неоднозначен',
+                'missing_template', 'missing_delivery' => 'предыдущий контроль не зафиксирован',
+                'pending', 'retrying' => 'предыдущий контроль ещё не отправлен',
+                'failed' => 'предыдущий контроль не доставлен',
+                'uncertain', 'sending' => 'результат предыдущей отправки неизвестен',
+                default => 'предыдущий контроль недоступен',
+            };
+
+            return 'ℹ️ Контекст '.$sourceTime.': '.$description.'; проверяются все районы.';
+        }
+
+        $states = [];
+        foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+            $status = $context['previous_states'][$key] ?? 'no_response';
+            $statusLabel = match ($status) {
+                'confirmed' => 'Да', 'problem' => 'Нет', 'partial' => 'частично', 'unclear' => 'неясно',
+                'conflict' => 'расхождение', default => 'нет ответа',
+            };
+            if (($context['criteria_matches'] ?? false) && $status === 'confirmed') {
+                $statusLabel = 'подтверждено ранее';
+            } elseif (! ($context['criteria_matches'] ?? false) && $status === 'confirmed') {
+                $statusLabel = 'ранее Да, не засчитывается';
+            }
+            $states[] = $label.' — '.$statusLabel;
+        }
+
+        $line = 'ℹ️ Контекст '.$sourceTime.': '.implode('; ', $states).'.';
+        if (! ($context['criteria_matches'] ?? false)) {
+            $line .= ' Критерий отличается или не подтверждён — ответы не переносятся.';
+        }
+
+        return $line;
     }
 
     public function format(array $summary): string
@@ -104,7 +175,7 @@ class TelegramScheduledControlSummaryFormatter
         return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
-    private function deliveryStatusLine(string $label, string $status, bool $conditionNotMet = false): string
+    private function deliveryStatusLine(string $label, string $status, bool $conditionNotMet = false, ?string $failureReason = null): string
     {
         return match ($status) {
             'pending', 'retrying' => '⏳ '.$label.": отправка ожидается\n",
@@ -112,7 +183,9 @@ class TelegramScheduledControlSummaryFormatter
             'cancelled' => $conditionNotMet
                 ? '⚪ '.$label.": отправка отменена — условие подтверждения не выполнено\n"
                 : '⚪ '.$label.": отправка отменена\n",
-            'skipped' => '⏭ '.$label.": отправка пропущена\n",
+            'skipped' => $failureReason === 'sequential_all_districts_confirmed'
+                ? '⏭ '.$label.": отправка пропущена — все районы подтверждены предыдущей проверкой\n"
+                : '⏭ '.$label.": отправка пропущена\n",
             'failed' => '⚠️ '.$label.": ошибка доставки\n",
             default => '⚠️ '.$label.": сообщение не доставлено\n",
         };
@@ -124,7 +197,12 @@ class TelegramScheduledControlSummaryFormatter
         $label = $control['label'];
         $deliveryStatus = $control['delivery_status'] ?? 'sent';
         if ($deliveryStatus !== 'sent') {
-            return $this->deliveryStatusLine($label, $deliveryStatus, (bool) ($control['condition_not_met'] ?? false));
+            return $this->deliveryStatusLine(
+                $label,
+                $deliveryStatus,
+                (bool) ($control['condition_not_met'] ?? false),
+                $control['failure_reason'] ?? null,
+            );
         }
         $history = $control['district_history'] ?? [];
         if ($history !== []) {

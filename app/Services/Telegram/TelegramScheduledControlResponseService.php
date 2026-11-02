@@ -384,6 +384,11 @@ class TelegramScheduledControlResponseService
             return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
         }
 
+        $districtScope = $delivery->sequence_context['eligible_districts'] ?? null;
+        if (is_array($districtScope) && ! in_array($districtKey, $districtScope, true)) {
+            return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
+        }
+
         $timezone = config('app.timezone', 'Europe/Rome');
         $scheduledDay = CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString();
         if ($scheduledDay !== CarbonImmutable::now('UTC')->setTimezone($timezone)->toDateString()) {

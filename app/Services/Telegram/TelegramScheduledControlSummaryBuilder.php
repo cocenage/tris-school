@@ -147,6 +147,7 @@ class TelegramScheduledControlSummaryBuilder
                 'scheduled_for' => CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->setTimezone('Europe/Rome')->toIso8601String(),
                 'sent_at' => $delivery->sent_at ? CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), $timezone)->setTimezone('Europe/Rome')->toIso8601String() : null,
                 'delivery_status' => $delivery->status,
+                'failure_reason' => $delivery->failure_reason,
                 'condition_not_met' => $delivery->status === 'cancelled' && $delivery->failure_reason === 'confirmation_not_current',
                 'eligible_for_statistics' => $delivery->status === 'sent' && $sentAt !== null && $sentAt->lessThanOrEqualTo($cutoff),
                 'district_history' => $delivery->bot_type === 'work' && $delivery->status === 'sent'
@@ -191,6 +192,7 @@ class TelegramScheduledControlSummaryBuilder
                 'district_results' => $districtResults,
                 'district_history' => $representative['district_history'],
                 'delivery_status' => $representative['delivery_status'],
+                'failure_reason' => $representative['failure_reason'],
                 'condition_not_met' => $representative['condition_not_met'],
                 'additional_delivery_statuses' => $rows->filter(fn (array $row): bool => $row['delivery_id'] !== $representative['delivery_id']
                     && $row['delivery_status'] !== 'sent')->pluck('delivery_status')->values()->all(),
