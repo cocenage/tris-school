@@ -140,7 +140,7 @@ it('warns about missing or unfinished OI input instead of claiming a confirmed z
 
     expect($empty['incomplete'])->toBeTrue()
         ->and($pending['incomplete'])->toBeTrue()
-        ->and($emptyText)->toContain('Данные неполные')
+        ->and($emptyText)->toContain('Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.')
         ->not->toContain('Подтверждённых сообщений о браке белья не найдено.');
 });
 

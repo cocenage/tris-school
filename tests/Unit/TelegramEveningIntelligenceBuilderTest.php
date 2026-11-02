@@ -105,7 +105,7 @@ it('separates requested-day problems from unresolved historical problems in ever
                 ->and($text)->toContain('Не работает свет в комнате 2.')
                 ->not->toContain('Проверить неисправность света в комнате 2.');
         } else {
-            expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\nЗа сегодня:\n⚠️ Нет входящих данных за этот день. Отсутствие данных не подтверждает отсутствие проблем.");
+            expect($text)->toBe('🌙 '.($district ?? 'TRIS')." — проблемы за день · 30.09.2026\n\nЗа сегодня:\n⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.");
         }
     } finally {
         Carbon::setTestNow();
@@ -118,12 +118,12 @@ it('reports missing or incomplete district input instead of claiming a confirmed
     $missing = $builder->build('2026-09-30', ['district' => ['label' => 'Navigli', 'chat_id' => '-1001']]);
 
     expect($missing['data_quality'])->toMatchArray([
-        'source_status' => 'unavailable',
+        'source_status' => 'no_messages',
         'source_messages' => 0,
         'observed_messages' => 0,
     ])
         ->and($formatter->eveningIntelligence($missing))
-        ->toContain('⚠️ Нет входящих данных за этот день.')
+        ->toContain('⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.')
         ->not->toContain('✅ Новых значимых событий не зафиксировано.');
 
     $problem = TelegramOperationalTestDatabase::message(
@@ -153,6 +153,26 @@ it('reports missing or incomplete district input instead of claiming a confirmed
         ->and($incompleteText)
         ->toContain('Via Navigli 10 — Не работает замок в квартире.')
         ->toContain('⚠️ Входящие сообщения обработаны не полностью. Сводка может быть неполной.');
+});
+
+it('marks a configured zero-message source as unconfirmed rather than unavailable or clean', function () {
+    $builder = app(TelegramEveningIntelligenceBuilder::class);
+    $district = ['key' => 'lodi', 'label' => 'Lodi', 'chat_id' => '-1001'];
+    $preview = $builder->build('2026-11-01', ['district' => $district]);
+    $preview['linen_report'] = [
+        'cases' => [],
+        'districts' => ['lodi' => ['source_status' => 'no_messages', 'known_units' => 0]],
+        'incomplete' => true,
+    ];
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+
+    expect($preview['data_quality'])->toMatchArray([
+        'source_status' => 'no_messages',
+        'source_messages' => 0,
+        'observed_messages' => 0,
+    ])
+        ->and($text)->toContain('Входящие сообщения не зарегистрированы', 'полнота получения данных не подтверждена')
+        ->not->toContain('✅ По обработанным сообщениям значимых выводов не выявлено.');
 });
 
 it('keeps the zero state when the district had source messages and all were processed', function () {
@@ -449,7 +469,7 @@ it('retains an eligible locationless prior-day problem for audit without renderi
         ->and($preview['sections'])->toBeEmpty()
         ->and(collect($preview['editorial_sections'])->keyBy('key')->get('carry_over')['items'])->toHaveCount(1)
         ->and(app(TelegramDigestFormatter::class)->eveningIntelligence($preview))
-        ->toContain('⚠️ Нет входящих данных за этот день.')
+        ->toContain('⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.')
         ->not->toContain('⚠️ Осталось с прошлых дней:')
         ->and($preview['mode'])->toBe([
             'read_only' => true,
@@ -500,7 +520,7 @@ it('retains only durable prior-day issues in audit carry-over without inventing 
         ])
         ->and($bySummary->every(fn (array $item): bool => $item['carry_over'] && $item['open_age_days'] === 2))->toBeTrue()
         ->and(collect($followingDay['editorial_sections'])->keyBy('key')->get('carry_over')['items'])->toHaveCount(3)
-        ->and($text)->toContain('⚠️ Нет входящих данных за этот день.')
+        ->and($text)->toContain('⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.')
         ->not->toContain('⚠️ Осталось с прошлых дней:')
         ->not->toContain('🔄 Требует внимания:')
         ->not->toContain('задержке')
@@ -670,7 +690,7 @@ it('shows a temporary missing-paper search only on its day unless independent st
         ->and($nextDayWithConfirmation['events'][0]['carry_over'])->toBeTrue()
         ->and(collect($nextDayWithConfirmation['editorial_sections'])->keyBy('key')->get('carry_over')['items'])->toHaveCount(1)
         ->and($nextDayWithConfirmationText)->not->toContain('🔄 Требует внимания:')
-        ->toContain('⚠️ Нет входящих данных за этот день.')
+        ->toContain('⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.')
         ->and($nextDayWithConfirmation['mode']['mutations'])->toBe(0)
         ->and($nextDayWithConfirmation['mode']['telegram_actions'])->toBe(0);
 });
@@ -1009,7 +1029,7 @@ it('uses calendar-day age for an older open event without mutating ledger state'
     expect($preview['events'][0]['open_age_days'])->toBe(4)
         ->and(collect($preview['editorial_sections'])->keyBy('key')->get('carry_over')['items'])->toHaveCount(1)
         ->and($text)->not->toContain('🔄 Требует внимания:')
-        ->toContain('⚠️ Нет входящих данных за этот день.')
+        ->toContain('⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.')
         ->and(TelegramOperationalEvent::query()->firstOrFail()->toArray())->toBe($before);
 });
 
@@ -1307,7 +1327,7 @@ it('builds a district shift handoff from explicit editorial states', function ()
             ->not->toContain('Via Editorial 102', 'Via Editorial 109', 'Via Editorial 108')
             ->not->toContain('Осталось сделать:', '🔄 Требует внимания:', 'грязная посуда', 'Думаю не проблема будет')
             ->and(collect($preview['daily_problems'])->pluck('context_label'))->toContain('Via Editorial 105')
-            ->and($renderedNextDay)->toContain('⚠️ Нет входящих данных за этот день.')
+            ->and($renderedNextDay)->toContain('⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.')
             ->not->toContain('⚠️ Осталось с прошлых дней:', 'Via Editorial 103', 'Via Editorial 104', 'Via Editorial 102', 'Via Editorial 109', 'грязная посуда')
             ->and($attentionAndActionEventKeys)->not->toContain($paperEventKey);
     } finally {
@@ -1334,9 +1354,13 @@ it('selects only unresolved daily problem cards while retaining excluded events 
         ->and($preview['no_material_events'])->toBe(! $included)
         ->and($event->fresh()->toArray())->toBe($before);
     if (! $included) {
-        expect($text)->toContain($date === '2026-09-30'
-            ? '✅ Новых значимых событий не зафиксировано.'
-            : '⚠️ Нет входящих данных за этот день.')
+        $sourceNotice = match ($preview['data_quality']['source_status'] ?? null) {
+            'available' => '✅ Новых значимых событий не зафиксировано.',
+            'no_messages' => '⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.',
+            'incomplete' => '⚠️ Входящие сообщения обработаны не полностью. Сводка может быть неполной.',
+            default => '⚠️ Источник входящих сообщений недоступен; полнота сводки не подтверждена.',
+        };
+        expect($text)->toContain($sourceNotice)
             ->not->toContain('•');
     }
 })->with([
@@ -1431,3 +1455,36 @@ it('requires a factual condition even when legacy evidence is labelled as a prob
     'completed replacement' => ['Простынь с пятном; заменила, брак.', false, null],
     'unspecified lock' => ['Не работает замок', true, 'Не работает замок.'],
 ]);
+
+it('renders one management entry when a technical event is also an unresolved problem', function () {
+    $message = TelegramOperationalTestDatabase::message(
+        'Не работает вытяжка.',
+        sentAt: '2026-11-01 15:47:00',
+        messageId: '21101',
+        threadId: '21101',
+    );
+    $message->topic?->update(['title' => 'Via Test 23']);
+    $observation = app(TelegramOperationalEventObserver::class)->observe($message);
+    TelegramOperationalEvent::query()->where('event_key', $observation['event_key'])->update([
+        'primary_type' => 'problem',
+        'types' => ['problem'],
+    ]);
+
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-11-01');
+    $sections = collect($preview['management_sections']);
+    $eventKeys = $sections->flatMap(fn (array $items): array => collect($items)->pluck('event_key')->all());
+    $entry = $sections->flatten(1)->sole();
+    $preview['district'] = ['key' => 'navigli', 'label' => 'Navigli'];
+    $preview['linen_report'] = [
+        'cases' => [],
+        'districts' => ['navigli' => ['source_status' => 'available', 'known_units' => 0]],
+        'incomplete' => false,
+    ];
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+
+    expect($eventKeys->duplicates())->toBeEmpty()
+        ->and($entry['classifications'])->toContain('technical_faults', 'unresolved_problems')
+        ->and(str_ends_with($entry['source_url'], '/21101'))->toBeTrue()
+        ->and(substr_count($text, 'Не работает вытяжка.'))->toBe(1)
+        ->and($text)->toContain('Классификации: техническая неисправность · значимая проблема');
+});

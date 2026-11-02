@@ -248,6 +248,11 @@ class TelegramEveningIntelligenceBuilder
                 'reported_at' => $source['source_time'],
                 'source_url' => $source['source_url'],
                 'status' => $item['status'],
+                'confidence' => $item['confidence'] ?? null,
+                'uncertainty' => $item['uncertainty'] ?? null,
+                'resolution_confirmed' => $item['status'] === 'resolved'
+                    && $candidates->contains(fn (array $candidate): bool => ($candidate['role'] ?? null) === 'resolution'
+                        && ($candidate['transition'] ?? null) === 'resolved'),
                 'next_action' => $item['editorial']['next_action'],
                 'follow_ups' => collect($item['_citation_candidates'] ?? [])
                     ->filter(fn (array $candidate): bool => ($candidate['message_id'] ?? null) !== ($source['message_id'] ?? null)
@@ -290,8 +295,30 @@ class TelegramEveningIntelligenceBuilder
             }
         }
 
-        return collect($sections)->map(fn (array $lines): array => collect($lines)
-            ->unique('event_key')->values()->all())->all();
+        $entries = collect($sections)->flatMap(fn (array $lines, string $section): array => collect($lines)
+            ->unique('event_key')
+            ->map(fn (array $line): array => ['section' => $section, 'item' => $line])
+            ->all());
+        $grouped = $entries->groupBy(fn (array $entry): string => (string) $entry['item']['event_key']);
+        $consolidated = array_fill_keys(array_keys($sections), []);
+
+        foreach ($grouped as $matches) {
+            $classifications = $matches->pluck('section')->unique()->values();
+            $primarySection = collect(array_keys($sections))
+                ->first(fn (string $section): bool => $classifications->contains($section));
+            $primary = $matches->firstWhere('section', $primarySection)['item'];
+            $primary['classifications'] = $classifications->all();
+            $primary['source_urls'] = $matches->flatMap(fn (array $entry): array => collect([
+                $entry['item']['source_url'] ?? null,
+            ])->merge(collect($entry['item']['source_urls'] ?? []))
+                ->merge(collect($entry['item']['follow_ups'] ?? [])->pluck('source_url'))
+                ->filter()->all())->unique()->values()->all();
+            $primary['follow_ups'] = $matches->flatMap(fn (array $entry): array => $entry['item']['follow_ups'] ?? [])
+                ->unique('source_url')->values()->all();
+            $consolidated[$primarySection][] = $primary;
+        }
+
+        return $consolidated;
     }
 
     /**
@@ -329,7 +356,7 @@ class TelegramEveningIntelligenceBuilder
 
         return [
             'source_status' => $sourceMessages === 0
-                ? 'unavailable'
+                ? 'no_messages'
                 : ($observedMessages < $sourceMessages ? 'incomplete' : 'available'),
             'source_messages' => $sourceMessages,
             'observed_messages' => $observedMessages,
