@@ -200,22 +200,46 @@ it('includes the configured route in the stable event key', function () {
     expect($secondKey)->not->toBe($firstKey);
 });
 
-function insertDigestCalendarEvent(string $type, string $title, string $start, ?string $end = null, ?string $description = null): int
-{
+function insertDigestCalendarEvent(
+    string $type,
+    string $title,
+    string $start,
+    ?string $end = null,
+    ?string $description = null,
+    string $repeatType = 'none',
+    ?string $repeatUntil = null,
+): int {
     return DB::table('calendar_events')->insertGetId([
         'type' => $type,
         'title' => $title,
         'description' => $description,
         'start_date' => $start,
         'end_date' => $end,
-        'repeat_type' => 'none',
-        'repeat_until' => null,
+        'repeat_type' => $repeatType,
+        'repeat_until' => $repeatUntil,
         'is_active' => true,
         'priority' => 1,
         'created_at' => now(),
         'updated_at' => now(),
     ]);
 }
+
+it('includes recurring calendar events on their occurrence date', function () {
+    insertDigestCalendarEvent(
+        'holiday',
+        'Ежегодный день Академии',
+        '2020-11-02',
+        repeatType: 'yearly',
+        repeatUntil: '2030-11-02',
+    );
+
+    $date = CarbonImmutable::parse('2026-11-02', 'Europe/Rome');
+    $events = app(TeamCelebrationService::class)->eventsForDate($date);
+
+    expect($events)->toHaveCount(1)
+        ->and($events->first()['kind'])->toBe('calendar_holiday')
+        ->and($events->first()['text'])->toContain('<b>Ежегодный день Академии</b>');
+});
 
 it('formats a grouped digest with multiple birthday mentions and no empty sections', function () {
     insertCelebrationUser(['name' => 'Анна & друзья', 'telegram_id' => '123456789', 'birthday' => '1992-11-02']);

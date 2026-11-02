@@ -18,6 +18,11 @@
 - Keep historical event operation rows and avoid truncating or splitting the digest.
 - Preview must not make network calls or write outbound journal rows.
 
+## Safe production cutover handoff
+
+- Switch outside the 09:00 dispatch window and confirm the previous sender invocation has ended before enabling the new daily digest. The legacy per-event sender and the digest use different operation keys, so overlapping versions can both deliver the same event.
+- If rolling back after the daily digest has been sent, do not rerun or re-enable the legacy celebrations sender for that same Europe/Rome calendar day. The old version cannot recognize the digest's daily operation key; resume the legacy sender on the next eligible local day. Do not delete ledger rows or perform automatic retries to force the cutover.
+
 ## Review Focus
 
 - Failed or ambiguous Telegram outcomes must remain suppressed by the outbound monitor's existing status semantics; verify retry behavior through the existing monitor tests.
@@ -70,4 +75,4 @@
 
 - [x] Run the requested Pest suite, Pint, and `git diff --check`; inspect full diff and status.
 - [x] Generate a clearly synthetic preview for 2026-11-02 using safe fixtures; do not read production data.
-- [ ] Commit, push, and create the PR; confirm PR URL and pushed SHA.
+- [x] Commit, push, and create the PR; confirm PR URL and pushed SHA.
