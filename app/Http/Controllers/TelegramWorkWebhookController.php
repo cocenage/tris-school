@@ -298,12 +298,24 @@ class TelegramWorkWebhookController extends Controller
 
         try {
             $edited = Cache::lock('telegram_work_control_sync:'.$delivery->id, 10)->block(3, function () use ($delivery): bool {
-                $text = app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery);
+                $current = $delivery->fresh();
+                if ($current === null) {
+                    return false;
+                }
+                $payload = app(TelegramScheduledControlSummaryFormatter::class)->interactivePayload($current);
+                if (is_string($current->render_hash) && hash_equals($current->render_hash, $payload['render_hash'])) {
+                    return true;
+                }
 
-                return app(TelegramBotService::class)->editMessage(
-                    (string) $delivery->chat_id, (int) $delivery->telegram_message_id, [], $text,
-                    ScheduledControlTypes::districtKeyboard($delivery->id), true,
+                $edited = app(TelegramBotService::class)->editMessage(
+                    (string) $current->chat_id, (int) $current->telegram_message_id, [], $payload['text'],
+                    $payload['reply_markup'], true,
                 );
+                if ($edited) {
+                    $current->update(['render_hash' => $payload['render_hash']]);
+                }
+
+                return $edited;
             });
         } catch (\Throwable $exception) {
             Log::warning('Work control message sync failed.', ['delivery_id' => $delivery->id, 'exception' => class_basename($exception)]);

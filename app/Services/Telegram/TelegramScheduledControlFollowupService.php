@@ -142,6 +142,10 @@ class TelegramScheduledControlFollowupService
             return null;
         }
 
+        if ($this->isSequentialCheck($delivery, $message)) {
+            return null;
+        }
+
         if ($delivery->getRawOriginal('sent_at_utc') === null
             && $this->hasAmbiguousLocalTimestamp($delivery->getRawOriginal('sent_at'))) {
             return null;
@@ -248,6 +252,30 @@ class TelegramScheduledControlFollowupService
                 : $topic !== null && $topic->is_enabled
                     && (string) $topic->telegram_chat_id === (string) $message->telegram_chat_record_id
                     && (string) $topic->telegram_thread_id === (string) $delivery->message_thread_id);
+    }
+
+    private function isSequentialCheck(TelegramScheduledMessageDelivery $delivery, TelegramScheduledMessage $message): bool
+    {
+        if (isset($delivery->sequence_context['pair'])) {
+            return true;
+        }
+
+        $time = substr((string) $delivery->getRawOriginal('scheduled_for'), 11, 8);
+        $stage = ScheduledControlTypes::sequentialStage($delivery->control_type, $time);
+        if ($stage === null) {
+            return false;
+        }
+        if ($stage['stage'] === 'second') {
+            return true;
+        }
+
+        return TelegramScheduledMessage::query()->enabled()
+            ->whereIn('control_type', $stage['types'])
+            ->where('telegram_chat_record_id', $message->telegram_chat_record_id)
+            ->where('telegram_topic_record_id', $message->telegram_topic_record_id)
+            ->get()
+            ->contains(fn (TelegramScheduledMessage $candidate): bool => ScheduledControlTypes::normalizeTime((string) $candidate->send_time) === $stage['next_time']
+                && in_array(CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome')->dayOfWeekIso, array_map('intval', $candidate->weekdays ?? []), true));
     }
 
     private function hasReachedNextStage(TelegramScheduledMessageDelivery $delivery, TelegramScheduledMessage $message, CarbonImmutable $now): bool
