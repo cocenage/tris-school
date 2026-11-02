@@ -1,5 +1,6 @@
 <?php
 
+use App\Console\Commands\IsolateSqliteQueueCommand;
 use App\Console\Commands\SendTeamCelebrationsNotification;
 use App\Http\Middleware\EnsureUserHasRole;
 use App\Http\Middleware\EnsureUserIsApproved;
@@ -14,7 +15,7 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
-    ->withCommands([SendTeamCelebrationsNotification::class])
+    ->withCommands([SendTeamCelebrationsNotification::class, IsolateSqliteQueueCommand::class])
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->redirectGuestsTo(fn () => route('landing'));
 

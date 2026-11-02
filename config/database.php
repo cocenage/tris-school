@@ -14,6 +14,10 @@ $sqliteConnection = [
     'synchronous' => null,
 ];
 
+$queueDatabase = env('DB_QUEUE_DATABASE');
+$queueDatabase = is_string($queueDatabase) ? trim($queueDatabase) : $queueDatabase;
+$queueDatabaseConfigured = is_string($queueDatabase) && $queueDatabase !== '';
+
 return [
 
     /*
@@ -51,6 +55,10 @@ return [
         // This avoids DEFERRED read-to-write lock upgrades without making
         // application transactions hold a writer lock during external calls.
         'sqlite_queue' => array_merge($sqliteConnection, [
+            // An explicit queue path must not be overridden by the primary DB_URL.
+            'url' => $queueDatabaseConfigured ? null : $sqliteConnection['url'],
+            'database' => $queueDatabaseConfigured ? $queueDatabase : $sqliteConnection['database'],
+            'busy_timeout' => (int) env('DB_QUEUE_BUSY_TIMEOUT', env('DB_BUSY_TIMEOUT', 5000)),
             'transaction_mode' => 'IMMEDIATE',
         ]),
 
