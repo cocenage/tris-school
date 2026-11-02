@@ -89,7 +89,7 @@ it('restores the original active-cleaner count and approved dated absences', fun
     expect($text)->toContain('📅 <b>Сводка на завтра</b>', 'Пятница, 9 октября 2026')
         ->toContain('🧹 <b>Клинеры</b> — доступно: <b>1 из 3</b>', 'Не работают: <b>2</b>')
         ->toContain('• Елена Novara — выходной', '• Людмила 1 — отпуск')
-        ->toContain('👔 <b>Супервайзеры</b> — доступно: <b>1 из 1</b>', 'Все супервайзеры доступны')
+        ->toContain('👔 <b>Супервайзеры</b> — доступно: <b>1 из 1</b>', '✅ Супервайзер — работает')
         ->not->toContain('Погода', 'Транспорт', 'Доступ', 'Операционка', 'Неактивная', 'личное');
     Http::assertNothingSent();
 });
@@ -152,6 +152,148 @@ it('preserves regular weekends and the existing shift-status thresholds', functi
     ]);
 });
 
+it('renders the cleaner-only shift availability status and keeps supervisors out of its denominator', function () {
+    $cleaners = collect(range(1, 22))->map(fn (int $number) => tomorrowStaff('Клинер '.str_pad((string) $number, 2, '0', STR_PAD_LEFT)));
+    foreach ($cleaners->take(8) as $cleaner) {
+        tomorrowAbsence($cleaner, 'day_off', 'approved', date: '2026-11-03');
+    }
+
+    foreach (range(1, 4) as $number) {
+        $supervisor = tomorrowStaff('Супервайзер '.$number, role: 'supervisor');
+        if ($number <= 2) {
+            $supervisor->update(['weekend_days' => [2]]);
+        }
+    }
+
+    $summary = app(CalendarSummaryService::class)->build('2026-11-03');
+    $text = app(SendTomorrowCalendarEventsNotification::class)->renderStaffSummary(Carbon::parse('2026-11-03', 'Europe/Rome'), $summary);
+    $shiftLines = collect(explode("\n", $text))
+        ->filter(fn (string $line) => str_contains($line, 'Смена:'))
+        ->values()
+        ->all();
+
+    expect($summary['shift'])->toMatchArray([
+        'total' => 22,
+        'working' => 14,
+        'working_percent' => 64,
+        'level' => 'warning',
+        'label' => 'Средняя нагрузка',
+    ])
+        ->and($shiftLines)->toBe(['🟡 Смена: средняя'])
+        ->and($text)->not->toContain('64%', 'Показатель основан на доступности персонала', 'фактический объём уборок не учитывается');
+});
+
+it('shows each active supervisor once with a status while keeping cleaners in the compact absence format', function () {
+    $cleanerAvailable = tomorrowStaff('Клинер доступен');
+    $cleanerAbsent = tomorrowStaff('Клинер выходной');
+    $regularWeekend = tomorrowStaff('Супервизор регулярный выходной', role: 'supervisor', weekends: [2]);
+    $approvedDayOff = tomorrowStaff('Супервизор одобренный выходной', role: 'supervisor');
+    $vacation = tomorrowStaff('Супервизор отпуск', role: 'supervisor');
+    $working = tomorrowStaff('Супервизор работает', role: 'supervisor');
+    tomorrowStaff('Супервизор неактивный', role: 'supervisor', active: false);
+    tomorrowStaff('Супервизор ожидает одобрения', role: 'supervisor', status: 'pending');
+    tomorrowAbsence($cleanerAbsent, 'day_off', 'approved', date: '2026-11-03');
+    tomorrowAbsence($approvedDayOff, 'day_off', 'approved', 'partially_approved', '2026-11-03');
+    tomorrowAbsence($vacation, 'vacation', 'approved', 'partially_approved', '2026-11-03');
+
+    $summary = app(CalendarSummaryService::class)->build('2026-11-03');
+    $text = app(SendTomorrowCalendarEventsNotification::class)->renderStaffSummary(Carbon::parse('2026-11-03', 'Europe/Rome'), $summary);
+    $supervisorLines = collect(explode("\n", $text))
+        ->filter(fn (string $line) => str_contains($line, 'Супервизор '))
+        ->values();
+
+    expect($summary['workers']['by_role']['supervisor'])->toMatchArray([
+        'total' => 4,
+        'available_count' => 1,
+        'absent_count' => 3,
+    ])
+        ->and($text)->toContain('👔 <b>Супервайзеры</b> — доступно: <b>1 из 4</b>')
+        ->toContain('✅ Супервизор работает — работает')
+        ->toContain('💤 Супервизор регулярный выходной — рег. выходной')
+        ->toContain('💤 Супервизор одобренный выходной — выходной')
+        ->toContain('🌴 Супервизор отпуск — отпуск')
+        ->toContain('🧹 <b>Клинеры</b> — доступно: <b>1 из 2</b>')
+        ->toContain('• Клинер выходной — выходной')
+        ->not->toContain('Не работают: <b>3</b>', 'Все супервайзеры доступны')
+        ->not->toContain('Супервизор неактивный', 'Супервизор ожидает одобрения')
+        ->not->toContain('Клинер доступен — работает');
+
+    expect($supervisorLines)->toHaveCount(4)
+        ->and(substr_count($text, '✅'))->toBe(1)
+        ->and(substr_count($text, '💤'))->toBe(2)
+        ->and(substr_count($text, '🌴'))->toBe(1)
+        ->and($summary['workers']['by_role']['supervisor']['available_count'])
+        ->toBe(substr_count($text, '✅'));
+});
+
+it('uses approved child days while preserving parent aggregate statuses', function () {
+    $pendingParent = tomorrowStaff('Клинер с ожидающей заявкой');
+    $partialParent = tomorrowStaff('Клинер с частично одобренной заявкой');
+
+    $pendingRequestId = DB::table('day_off_requests')->insertGetId([
+        'user_id' => $pendingParent->id, 'status' => 'pending', 'reason' => 'личное',
+    ]);
+    DB::table('day_off_request_days')->insert([
+        ['day_off_request_id' => $pendingRequestId, 'user_id' => $pendingParent->id, 'date' => '2026-11-03', 'status' => 'approved'],
+        ['day_off_request_id' => $pendingRequestId, 'user_id' => $pendingParent->id, 'date' => '2026-11-04', 'status' => 'pending'],
+    ]);
+
+    $partialRequestId = DB::table('day_off_requests')->insertGetId([
+        'user_id' => $partialParent->id, 'status' => 'partially_approved', 'reason' => 'личное',
+    ]);
+    DB::table('day_off_request_days')->insert([
+        ['day_off_request_id' => $partialRequestId, 'user_id' => $partialParent->id, 'date' => '2026-11-03', 'status' => 'approved'],
+        ['day_off_request_id' => $partialRequestId, 'user_id' => $partialParent->id, 'date' => '2026-11-04', 'status' => 'rejected'],
+    ]);
+
+    $summary = app(CalendarSummaryService::class)->build('2026-11-03');
+
+    expect($summary['workers']['by_role']['cleaner'])->toMatchArray([
+        'total' => 2,
+        'available_count' => 0,
+        'absent_count' => 2,
+    ])
+        ->and(collect($summary['workers']['by_role']['cleaner']['absent'])->pluck('name')->all())
+        ->toBe(['Клинер с ожидающей заявкой', 'Клинер с частично одобренной заявкой']);
+});
+
+it('keeps the exact percentage classification edges for cleaner availability', function () {
+    $method = new ReflectionMethod(CalendarSummaryService::class, 'makeShiftSummary');
+    $method->setAccessible(true);
+    $service = app(CalendarSummaryService::class);
+    $notification = app(SendTomorrowCalendarEventsNotification::class);
+    $renderStatus = fn (int $notWorking): ?string => collect(explode("\n", $notification->renderStaffSummary(
+        Carbon::parse('2026-10-09', 'Europe/Rome'),
+        ['shift' => $method->invoke($service, 100, $notWorking)],
+    )))->first(fn (string $line) => str_contains($line, 'Смена:'));
+
+    expect($method->invoke($service, 100, 41))->toMatchArray(['working_percent' => 59, 'level' => 'critical'])
+        ->and($method->invoke($service, 100, 40))->toMatchArray(['working_percent' => 60, 'level' => 'warning'])
+        ->and($method->invoke($service, 100, 21))->toMatchArray(['working_percent' => 79, 'level' => 'warning'])
+        ->and($method->invoke($service, 100, 20))->toMatchArray(['working_percent' => 80, 'level' => 'good'])
+        ->and($renderStatus(41))->toBe('🔴 Смена: тяжёлая')
+        ->and($renderStatus(40))->toBe('🟡 Смена: средняя')
+        ->and($renderStatus(21))->toBe('🟡 Смена: средняя')
+        ->and($renderStatus(20))->toBe('🟢 Смена: лёгкая')
+        ->and($method->invoke($service, 0, 0))->toMatchArray([
+            'working_percent' => null,
+            'level' => 'unknown',
+            'label' => 'Нет данных о составе',
+        ]);
+});
+
+it('handles a roster with supervisors but no cleaners without inventing a shift status', function () {
+    tomorrowStaff('Единственный супервайзер', role: 'supervisor');
+
+    $summary = app(CalendarSummaryService::class)->build('2026-11-03');
+    $text = app(SendTomorrowCalendarEventsNotification::class)->renderStaffSummary(Carbon::parse('2026-11-03', 'Europe/Rome'), $summary);
+
+    expect($summary['shift'])->toMatchArray(['total' => 0, 'working_percent' => null, 'level' => 'unknown'])
+        ->and($text)->toContain('ℹ️ Смена: нет данных')
+        ->toContain('✅ Единственный супервайзер — работает')
+        ->not->toContain('Критическая смена', 'Средняя нагрузка', 'Нормальная смена');
+});
+
 it('renders staffing by role without private absence details or unrelated event categories', function () {
     $summary = [
         'workers' => [
@@ -180,7 +322,7 @@ it('renders staffing by role without private absence details or unrelated event 
     expect($text)
         ->toContain('🧹 <b>Клинеры</b> — доступно: <b>1 из 2</b>')
         ->toContain('👔 <b>Супервайзеры</b> — доступно: <b>1 из 2</b>')
-        ->toContain('• Клинер — отпуск', '• Супервайзер — выходной')
+        ->toContain('• Клинер — отпуск', '💤 Супервайзер — выходной')
         ->not->toContain('ЛИЧНАЯ ПРИЧИНА', 'Другой', 'Больничный');
 });
 
