@@ -181,9 +181,18 @@ class CalendarSummaryService
     {
         $working = max($total - $notWorking, 0);
 
-        $percent = $total > 0
-            ? (int) round(($working / $total) * 100)
-            : 0;
+        if ($total < 1) {
+            return [
+                'total' => 0,
+                'working' => 0,
+                'not_working' => 0,
+                'working_percent' => null,
+                'level' => 'unknown',
+                'label' => 'Нет данных о составе',
+            ];
+        }
+
+        $percent = (int) round(($working / $total) * 100);
 
         $level = match (true) {
             $percent < 60 => 'critical',

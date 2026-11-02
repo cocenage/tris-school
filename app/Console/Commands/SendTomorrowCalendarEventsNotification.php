@@ -133,6 +133,7 @@ class SendTomorrowCalendarEventsNotification extends Command
         $lines[] = '<b>'.e(mb_strtoupper(mb_substr($dateLabel, 0, 1)).mb_substr($dateLabel, 1)).'</b>';
         $lines[] = '';
 
+        $this->appendShiftBlock($lines, $summary);
         $this->appendStaffingBlock($lines, $summary);
         $peaks = $events->where('type', 'peak')->values();
 
@@ -156,17 +157,12 @@ class SendTomorrowCalendarEventsNotification extends Command
             return;
         }
 
-        $lines[] = '👥 <b>Смена</b>';
-        $lines[] = 'Работают: <b>'.($shift['working'] ?? 0).' из '.($shift['total'] ?? 0).'</b>';
-        $lines[] = 'Не работают: <b>'.($shift['not_working'] ?? 0).'</b>';
-        $indicator = match ($shift['level'] ?? null) {
-            'good' => '🟢 ',
-            'warning' => '🟡 ',
-            'critical' => '🔴 ',
-            default => '',
+        $lines[] = match ($shift['level'] ?? null) {
+            'good' => '🟢 Смена: лёгкая',
+            'warning' => '🟡 Смена: средняя',
+            'critical' => '🔴 Смена: тяжёлая',
+            default => 'ℹ️ Смена: нет данных',
         };
-        $lines[] = 'Статус: <b>'.$indicator.e($shift['label'] ?? 'Без статуса').'</b>';
-        $lines[] = '';
     }
 
     protected function appendNotWorkingBlock(array &$lines, array $summary): void
@@ -226,7 +222,6 @@ class SendTomorrowCalendarEventsNotification extends Command
             ],
             'supervisor' => [
                 'title' => '👔 <b>Супервайзеры</b>',
-                'all_available' => 'Все супервайзеры доступны',
             ],
         ];
 
@@ -242,30 +237,59 @@ class SendTomorrowCalendarEventsNotification extends Command
             }
 
             $available = (int) data_get($staff, 'available_count', 0);
+            $availablePeople = collect(data_get($staff, 'available', []))
+                ->sortBy(fn (array $person) => mb_strtolower((string) ($person['name'] ?? '')))
+                ->values();
             $absent = collect(data_get($staff, 'absent', []))
                 ->sortBy(fn (array $person) => mb_strtolower((string) ($person['name'] ?? '')))
                 ->values();
 
             $lines[] = $labels['title'].' — доступно: <b>'.$available.' из '.$total.'</b>';
 
-            if ($absent->isEmpty()) {
-                $lines[] = $labels['all_available'];
-                $lines[] = '';
+            if ($role === 'supervisor') {
+                $people = $availablePeople
+                    ->map(fn (array $person) => [
+                        'name' => (string) ($person['name'] ?? 'Без имени'),
+                        'status' => 'working',
+                    ])
+                    ->concat($absent->map(fn (array $person) => [
+                        'name' => (string) ($person['name'] ?? 'Без имени'),
+                        'status' => (string) ($person['reason'] ?? 'unknown'),
+                    ]))
+                    ->sortBy(fn (array $person) => mb_strtolower($person['name']))
+                    ->values();
 
-                continue;
-            }
+                foreach ($people as $person) {
+                    [$indicator, $status] = match ($person['status']) {
+                        'working' => ['✅', 'работает'],
+                        'regular_weekend' => ['💤', 'рег. выходной'],
+                        'day_off' => ['💤', 'выходной'],
+                        'vacation' => ['🌴', 'отпуск'],
+                        default => ['💤', 'отсутствует'],
+                    };
 
-            $lines[] = 'Не работают: <b>'.(int) data_get($staff, 'absent_count', $absent->count()).'</b>';
+                    $lines[] = $indicator.' '.e($person['name']).' — '.$status;
+                }
+            } else {
+                if ($absent->isEmpty()) {
+                    $lines[] = $labels['all_available'];
+                    $lines[] = '';
 
-            foreach ($absent as $person) {
-                $reason = match ($person['reason'] ?? null) {
-                    'vacation' => 'отпуск',
-                    'day_off' => 'выходной',
-                    'regular_weekend' => 'регулярный выходной',
-                    default => 'отсутствие без уточнённой категории',
-                };
+                    continue;
+                }
 
-                $lines[] = '• '.e($person['name'] ?? 'Без имени').' — '.$reason;
+                $lines[] = 'Не работают: <b>'.(int) data_get($staff, 'absent_count', $absent->count()).'</b>';
+
+                foreach ($absent as $person) {
+                    $reason = match ($person['reason'] ?? null) {
+                        'vacation' => 'отпуск',
+                        'day_off' => 'выходной',
+                        'regular_weekend' => 'регулярный выходной',
+                        default => 'отсутствие без уточнённой категории',
+                    };
+
+                    $lines[] = '• '.e($person['name'] ?? 'Без имени').' — '.$reason;
+                }
             }
 
             $lines[] = '';
