@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\Calendar\CalendarEventsService;
 use App\Services\Calendar\TeamCelebrationService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Schema\Blueprint;
@@ -148,7 +149,7 @@ it('announces only full work years and maps February twenty ninth to February tw
         ->and($tooEarly)->toBeEmpty();
 });
 
-it('sends a multi-day active calendar holiday only on its first date', function () {
+it('includes a multi-day active calendar holiday on each covered date', function () {
     DB::table('calendar_events')->insert([
         'type' => 'holiday',
         'title' => 'Праздник команды',
@@ -182,8 +183,9 @@ it('sends a multi-day active calendar holiday only on its first date', function 
 
     expect($firstDay)->toHaveCount(1)
         ->and($firstDay->first())
-        ->toMatchArray(['kind' => 'calendar_holiday', 'source_type' => 'CalendarEvent', 'text' => '🎉 <b>Праздник команды</b>'])
-        ->and($middleDay)->toBeEmpty();
+        ->toMatchArray(['kind' => 'calendar_holiday', 'source_type' => 'CalendarEvent'])
+        ->and($firstDay->first()['text'])->toContain('<b>Праздник команды</b>', '09.10–11.10')
+        ->and($middleDay)->toHaveCount(1);
 });
 
 it('includes the configured route in the stable event key', function () {
@@ -196,4 +198,199 @@ it('includes the configured route in the stable event key', function () {
     $secondKey = $service->eventsForDate($date)->first()['operation_key'];
 
     expect($secondKey)->not->toBe($firstKey);
+});
+
+function insertDigestCalendarEvent(string $type, string $title, string $start, ?string $end = null, ?string $description = null): int
+{
+    return DB::table('calendar_events')->insertGetId([
+        'type' => $type,
+        'title' => $title,
+        'description' => $description,
+        'start_date' => $start,
+        'end_date' => $end,
+        'repeat_type' => 'none',
+        'repeat_until' => null,
+        'is_active' => true,
+        'priority' => 1,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+}
+
+it('formats a grouped digest with multiple birthday mentions and no empty sections', function () {
+    insertCelebrationUser(['name' => 'Анна & друзья', 'telegram_id' => '123456789', 'birthday' => '1992-11-02']);
+    insertCelebrationUser(['name' => 'Мария', 'telegram_username' => 'maria_team', 'birthday' => '1990-11-02']);
+
+    $date = CarbonImmutable::parse('2026-11-02', 'Europe/Rome');
+    $service = app(TeamCelebrationService::class);
+    $events = $service->eventsForDate($date);
+    $digest = $service->formatDigest($date, $events);
+
+    expect($events)->toHaveCount(2)
+        ->and($digest['text'])->toContain('🎂 <b>Дни рождения</b>', 'Анна &amp; друзья', 'tg://user?id=123456789', 'https://t.me/maria_team')
+        ->not->toContain('🏆 <b>Годовщины работы</b>', '🎉 <b>Праздники</b>')
+        ->and($digest['text'])->toContain("\n\n")
+        ->and(substr_count($digest['text'], '<a '))->toBe(substr_count($digest['text'], '</a>'))
+        ->and(substr_count($digest['text'], '<b>'))->toBe(substr_count($digest['text'], '</b>'));
+});
+
+it('groups birthdays, work anniversaries, and a holiday that share a date', function () {
+    insertCelebrationUser(['name' => 'Анна', 'birthday' => '1992-11-02']);
+    insertCelebrationUser(['name' => 'Иван', 'work_started_at' => '2021-11-02']);
+    insertDigestCalendarEvent('holiday', 'День Академии', '2026-11-02');
+
+    $date = CarbonImmutable::parse('2026-11-02', 'Europe/Rome');
+    $service = app(TeamCelebrationService::class);
+    $digest = $service->formatDigest($date, $service->eventsForDate($date));
+
+    expect($digest['text'])->toContain('🎂 <b>Дни рождения</b>', '🏆 <b>Годовщины работы</b>', '🎉 <b>Праздники</b>', 'День Академии', '5 лет')
+        ->and(strpos($digest['text'], '🎂 <b>Дни рождения</b>'))->toBeLessThan(strpos($digest['text'], '🏆 <b>Годовщины работы</b>'))
+        ->and(strpos($digest['text'], '🏆 <b>Годовщины работы</b>'))->toBeLessThan(strpos($digest['text'], '🎉 <b>Праздники</b>'));
+});
+
+it('includes all active calendar types except vacations and excludes day-off records', function () {
+    foreach (['workflow', 'finance', 'holiday', 'peak', 'strike', 'vacation'] as $type) {
+        insertDigestCalendarEvent($type, 'Событие '.$type, '2026-11-02');
+    }
+
+    $dayOffRequestId = DB::table('day_off_requests')->insertGetId([
+        'user_id' => 999,
+        'status' => 'approved',
+        'reason' => 'Не для сводки',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    DB::table('day_off_request_days')->insert([
+        'day_off_request_id' => $dayOffRequestId,
+        'user_id' => 999,
+        'date' => '2026-11-02',
+        'status' => 'approved',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $date = CarbonImmutable::parse('2026-11-02', 'Europe/Rome');
+    $service = app(TeamCelebrationService::class);
+    $events = $service->eventsForDate($date);
+
+    expect($events->pluck('kind'))->toContain('workflow', 'finance', 'calendar_holiday', 'peak', 'strike')
+        ->and($events->pluck('kind'))->not->toContain('vacation')
+        ->and($events->pluck('text')->implode(' '))->not->toContain('Событие vacation', 'Не для сводки');
+
+    $digest = $service->formatDigest($date, $events);
+    expect($digest['text'])->toContain(
+        '🧭 <b>Рабочие процессы</b>',
+        '💶 <b>Финансы</b>',
+        '📈 <b>Пиковая загрузка</b>',
+        '🚧 <b>Забастовки</b>',
+    )->not->toContain('Событие vacation');
+});
+
+it('shows a multi-day calendar event on every date it covers', function () {
+    insertDigestCalendarEvent('workflow', 'Инвентаризация', '2026-11-02', '2026-11-04', 'Проверить склад');
+
+    $service = app(TeamCelebrationService::class);
+    $date = CarbonImmutable::parse('2026-11-03', 'Europe/Rome');
+    $events = $service->eventsForDate($date);
+    $digest = $service->formatDigest($date, $events);
+
+    expect($events)->toHaveCount(1)
+        ->and($digest['text'])->toContain('Инвентаризация', 'Проверить склад', '02.11–04.11');
+});
+
+it('keeps the year visible for a calendar event that crosses New Year', function () {
+    insertDigestCalendarEvent('workflow', 'Новогодний переход', '2026-12-31', '2027-01-02');
+
+    $service = app(TeamCelebrationService::class);
+    $date = CarbonImmutable::parse('2027-01-01', 'Europe/Rome');
+    $digest = $service->formatDigest($date, $service->eventsForDate($date));
+
+    expect($digest['text'])->toContain('31.12.2026–02.01.2027');
+});
+
+it('returns no digest for an empty date and escapes calendar HTML', function () {
+    $date = CarbonImmutable::parse('2026-11-02', 'Europe/Rome');
+    $service = app(TeamCelebrationService::class);
+
+    expect($service->formatDigest($date, collect()))->toBeNull();
+
+    insertCelebrationUser(['name' => 'Анна <Академия>', 'telegram_id' => '123456789', 'birthday' => '1992-11-02']);
+    insertDigestCalendarEvent('workflow', '<Встреча & план>', '2026-11-02', description: '<script>опасно</script>');
+    $digest = $service->formatDigest($date, $service->eventsForDate($date));
+    preg_match_all('~</?([a-z]+)(?:\s[^>]*)?>~i', $digest['text'], $tags);
+    $tagNames = array_unique(array_map('strtolower', $tags[1]));
+
+    expect($digest['text'])->toContain('&lt;Встреча &amp; план&gt;', '&lt;script&gt;опасно&lt;/script&gt;')
+        ->not->toContain('<script>', '<Встреча', '<Академия>')
+        ->and($tagNames)->toEqualCanonicalizing(['a', 'b'])
+        ->and(substr_count($digest['text'], '<a '))->toBe(substr_count($digest['text'], '</a>'))
+        ->and(substr_count($digest['text'], '<b>'))->toBe(substr_count($digest['text'], '</b>'));
+});
+
+it('selects the optional birthday card by the two-digit month', function () {
+    $directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'tris-month-cards-'.uniqid();
+    mkdir($directory);
+    file_put_contents($directory.DIRECTORY_SEPARATOR.'10.jpg', 'october-card');
+    insertCelebrationUser(['birthday' => '1992-11-02']);
+
+    $service = new class(app(CalendarEventsService::class), $directory) extends TeamCelebrationService
+    {
+        public function __construct(CalendarEventsService $calendarEventsService, private string $directory)
+        {
+            parent::__construct($calendarEventsService);
+        }
+
+        protected function cardDirectory(): string
+        {
+            return $this->directory;
+        }
+    };
+
+    try {
+        $event = $service->eventsForDate(CarbonImmutable::parse('2026-11-02', 'Europe/Rome'))->first();
+        expect($event['photo_path'])->toBeNull();
+
+        file_put_contents($directory.DIRECTORY_SEPARATOR.'11.jpg', 'november-card');
+        $eventWithCard = $service->eventsForDate(CarbonImmutable::parse('2026-11-02', 'Europe/Rome'))->first();
+        expect(str_replace('\\', '/', $eventWithCard['photo_path']))->toBe(str_replace('\\', '/', $directory.'/11.jpg'));
+    } finally {
+        @unlink($directory.DIRECTORY_SEPARATOR.'11.jpg');
+        @unlink($directory.DIRECTORY_SEPARATOR.'10.jpg');
+        @rmdir($directory);
+    }
+});
+
+it('respects Telegram caption and message limits without truncating visible text', function () {
+    $service = app(TeamCelebrationService::class);
+    $date = CarbonImmutable::parse('2026-11-02', 'Europe/Rome');
+    $photoPath = tempnam(sys_get_temp_dir(), 'tris-digest-card-');
+    file_put_contents($photoPath, 'fixture-image');
+
+    try {
+        $birthday = ['kind' => 'birthday', 'text' => '', 'photo_path' => $photoPath];
+        $captionBase = $service->formatDigest($date, collect([$birthday]))['character_count'];
+        $birthday['text'] = str_repeat('x', 1024 - $captionBase);
+        $captionLimit = $service->formatDigest($date, collect([$birthday]));
+        expect($captionLimit['character_count'])->toBe(1024)
+            ->and($captionLimit['photo_path'])->toBe($photoPath)
+            ->and($captionLimit['over_limit'])->toBeFalse();
+
+        $birthday['text'] .= 'x';
+        expect($service->formatDigest($date, collect([$birthday]))['photo_path'])->toBeNull();
+
+        $calendarEvent = ['kind' => 'workflow', 'text' => '', 'photo_path' => null];
+        $textBase = $service->formatDigest($date, collect([$calendarEvent]))['character_count'];
+        $calendarEvent['text'] = str_repeat('y', 4096 - $textBase);
+        $textLimit = $service->formatDigest($date, collect([$calendarEvent]));
+        expect($textLimit['character_count'])->toBe(4096)
+            ->and($textLimit['over_limit'])->toBeFalse()
+            ->and($textLimit['text'])->toEndWith(str_repeat('y', 4096 - $textBase));
+
+        $calendarEvent['text'] .= 'z';
+        $overLimit = $service->formatDigest($date, collect([$calendarEvent]));
+        expect($overLimit['over_limit'])->toBeTrue()
+            ->and($overLimit['text'])->toEndWith('z');
+    } finally {
+        @unlink($photoPath);
+    }
 });
