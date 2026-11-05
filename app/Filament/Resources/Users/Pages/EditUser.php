@@ -3,14 +3,21 @@
 namespace App\Filament\Resources\Users\Pages;
 
 use App\Filament\Resources\Users\UserResource;
+use App\Services\Calendar\EmployeeWorkCalendarManagementService;
+use Carbon\Carbon;
 use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\ViewAction;
 use Filament\Resources\Pages\EditRecord;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class EditUser extends EditRecord
 {
     protected static string $resource = UserResource::class;
+
+    protected ?string $workStartedReason = null;
 
     protected function getHeaderActions(): array
     {
@@ -44,6 +51,7 @@ class EditUser extends EditRecord
 
     protected function mutateFormDataBeforeFill(array $data): array
     {
+        $data['work_started_at_reason'] = null;
         $data['access_finance'] = $this->record->hasPanelAccess('finance');
         $data['access_education'] = $this->record->hasPanelAccess('education');
 
@@ -54,10 +62,55 @@ class EditUser extends EditRecord
         $data['calendar_vacation'] = $this->record->hasCalendarTypeAccess('vacation', true);
         $data['calendar_strike'] = $this->record->hasCalendarTypeAccess('strike', true);
 
+        $calendarPermission = $this->record->calendarPermission;
+        $data['calendar_can_view_all'] = (bool) $calendarPermission?->can_view_all_calendars;
+        $data['calendar_can_edit'] = (bool) $calendarPermission?->can_edit;
+        $data['calendar_can_export'] = (bool) $calendarPermission?->can_export;
+
         return $data;
     }
+
+    protected function mutateFormDataBeforeSave(array $data): array
+    {
+        $this->workStartedReason = filled($this->data['work_started_at_reason'] ?? null)
+            ? trim((string) $this->data['work_started_at_reason'])
+            : null;
+        unset($data['work_started_at_reason']);
+
+        return $data;
+    }
+
+    protected function handleRecordUpdate(Model $record, array $data): Model
+    {
+        return DB::transaction(function () use ($record, $data): Model {
+            $newWorkStartedAt = filled($data['work_started_at'] ?? null)
+                ? Carbon::parse($data['work_started_at'], config('app.timezone', 'Europe/Rome'))
+                : null;
+            $oldWorkStartedAt = $record->work_started_at;
+
+            if (! $newWorkStartedAt) {
+                throw ValidationException::withMessages(['work_started_at' => 'Укажите дату начала работы.']);
+            }
+
+            if ($newWorkStartedAt->toDateString() !== $oldWorkStartedAt?->toDateString()) {
+                app(EmployeeWorkCalendarManagementService::class)->recordProfileStartDateChange(
+                    $record,
+                    $oldWorkStartedAt,
+                    $newWorkStartedAt,
+                    auth()->user(),
+                    (string) $this->workStartedReason,
+                );
+            }
+
+            return parent::handleRecordUpdate($record, $data);
+        });
+    }
+
     protected function afterSave(): void
     {
+        $this->workStartedReason = null;
+        $this->data['work_started_at_reason'] = null;
+
         $this->savePanelAccess('finance', (bool) ($this->data['access_finance'] ?? false));
         $this->savePanelAccess('education', (bool) ($this->data['access_education'] ?? false));
 
@@ -67,6 +120,15 @@ class EditUser extends EditRecord
         $this->saveCalendarTypeAccess('peak', (bool) ($this->data['calendar_peak'] ?? false));
         $this->saveCalendarTypeAccess('vacation', (bool) ($this->data['calendar_vacation'] ?? false));
         $this->saveCalendarTypeAccess('strike', (bool) ($this->data['calendar_strike'] ?? false));
+
+        if (auth()->user()?->isAdmin() && $this->record->role === 'supervisor') {
+            $canViewAll = (bool) ($this->data['calendar_can_view_all'] ?? false);
+            $this->record->calendarPermission()->updateOrCreate([], [
+                'can_view_all_calendars' => $canViewAll,
+                'can_edit' => $canViewAll && (bool) ($this->data['calendar_can_edit'] ?? false),
+                'can_export' => $canViewAll && (bool) ($this->data['calendar_can_export'] ?? false),
+            ]);
+        }
     }
 
     protected function saveCalendarTypeAccess(string $type, bool $canView): void

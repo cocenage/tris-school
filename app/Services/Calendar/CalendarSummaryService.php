@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\VacationRequestDay;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Schema;
 
 class CalendarSummaryService
 {
@@ -25,12 +26,106 @@ class CalendarSummaryService
             'shift' => $this->makeShiftSummary(
                 total: $workers['total'],
                 notWorking: $workers['not_working_count'],
+                unknown: $workers['unknown_count'] ?? 0,
             ),
             'workers' => $workers,
         ];
     }
 
     protected function getWorkersForDay(Carbon $day): array
+    {
+        if (! Schema::hasTable('employee_work_schedule_versions')
+            || ! Schema::hasTable('employee_calendar_adjustments')) {
+            return $this->getLegacyWorkersForDay($day);
+        }
+
+        $staff = User::query()
+            ->activeStaff()
+            ->whereIn('role', ['cleaner', 'supervisor'])
+            ->orderBy('name')
+            ->get();
+
+        $projection = app(EmployeeWorkCalendarService::class)
+            ->forEmployees($staff, $day, $day)
+            ->map(fn (Collection $dates) => $dates->get($day->toDateString()));
+
+        $byRole = [];
+        $workingCleaners = collect();
+        $absentCleaners = collect();
+        $unknownCleaners = collect();
+
+        foreach (['cleaner', 'supervisor'] as $role) {
+            $roleUsers = $staff->where('role', $role)->values();
+            $available = collect();
+            $absent = collect();
+            $unknown = collect();
+            $notEmployedCount = 0;
+
+            foreach ($roleUsers as $user) {
+                $projected = $projection->get($user->id, []);
+                $state = $projected['state'] ?? 'unknown_schedule';
+
+                if ($state === 'not_employed') {
+                    $notEmployedCount++;
+
+                    continue;
+                }
+
+                if ($state === 'planned_work') {
+                    $available->push(['name' => $user->name]);
+                    if ($role === 'cleaner') {
+                        $workingCleaners->push($user);
+                    }
+
+                    continue;
+                }
+
+                if (in_array($state, ['regular_day_off', 'approved_absence'], true)) {
+                    $reason = $this->absenceReason($state, $projected['sources'] ?? []);
+                    $absent->push(['name' => $user->name, 'reason' => $reason]);
+
+                    if ($role === 'cleaner') {
+                        $user->setAttribute('not_working_reason', $this->absenceLabel($reason));
+                        $absentCleaners->push($user);
+                    }
+
+                    continue;
+                }
+
+                $unknown->push(['name' => $user->name]);
+                if ($role === 'cleaner') {
+                    $unknownCleaners->push($user);
+                }
+            }
+
+            $byRole[$role] = [
+                'total' => $roleUsers->count() - $notEmployedCount,
+                'available_count' => $available->count(),
+                'absent_count' => $absent->count(),
+                'unknown_count' => $unknown->count(),
+                'not_employed_count' => $notEmployedCount,
+                'available' => $available->all(),
+                'absent' => $absent->all(),
+                'unknown' => $unknown->all(),
+            ];
+        }
+
+        $cleanerRole = $byRole['cleaner'];
+
+        return [
+            'total' => $cleanerRole['total'],
+            'working_count' => $cleanerRole['available_count'],
+            'not_working_count' => $cleanerRole['absent_count'],
+            'unknown_count' => $cleanerRole['unknown_count'],
+            'not_employed_count' => $cleanerRole['not_employed_count'],
+            'working' => $workingCleaners,
+            'not_working' => $absentCleaners,
+            'unknown' => $unknownCleaners,
+            'by_role' => $byRole,
+        ];
+    }
+
+    protected function getLegacyWorkersForDay(Carbon $day): array
     {
         $staff = User::query()
             ->activeStaff()
@@ -177,9 +272,9 @@ class CalendarSummaryService
         return collect();
     }
 
-    protected function makeShiftSummary(int $total, int $notWorking): array
+    protected function makeShiftSummary(int $total, int $notWorking, int $unknown = 0): array
     {
-        $working = max($total - $notWorking, 0);
+        $working = max($total - $notWorking - $unknown, 0);
 
         if ($total < 1) {
             return [
@@ -189,6 +284,18 @@ class CalendarSummaryService
                 'working_percent' => null,
                 'level' => 'unknown',
                 'label' => 'Нет данных о составе',
+            ];
+        }
+
+        if ($unknown > 0) {
+            return [
+                'total' => $total,
+                'working' => $working,
+                'not_working' => $notWorking,
+                'unknown' => $unknown,
+                'working_percent' => null,
+                'level' => 'unknown',
+                'label' => 'График не подтверждён',
             ];
         }
 
@@ -210,9 +317,58 @@ class CalendarSummaryService
             'total' => $total,
             'working' => $working,
             'not_working' => $notWorking,
+            'unknown' => 0,
             'working_percent' => $percent,
             'level' => $level,
             'label' => $label,
         ];
+    }
+
+    protected function absenceReason(string $state, array $sources): string
+    {
+        if ($state === 'regular_day_off') {
+            return 'regular_weekend';
+        }
+
+        foreach ($sources as $source) {
+            if ($source['superseded'] ?? false) {
+                continue;
+            }
+
+            if (($source['type'] ?? null) === 'manual_adjustment') {
+                $category = $source['category'] ?? null;
+
+                if (in_array($category, ['vacation', 'day_off', 'unpaid_leave'], true)) {
+                    return $category;
+                }
+
+                continue;
+            }
+
+            if (($source['status'] ?? null) !== 'approved') {
+                continue;
+            }
+
+            if (($source['type'] ?? null) === 'vacation') {
+                return 'vacation';
+            }
+
+            if (($source['type'] ?? null) === 'day_off') {
+                return 'day_off';
+            }
+        }
+
+        return 'day_off';
+    }
+
+    protected function absenceLabel(string $reason): string
+    {
+        return match ($reason) {
+            'vacation' => 'Отпуск',
+            'regular_weekend' => 'Регулярный выходной',
+            'day_off' => 'Выходной',
+            'unpaid_leave' => 'Неоплачиваемый отпуск',
+            default => 'Не работает',
+        };
     }
 }

@@ -161,6 +161,9 @@ class SendTomorrowCalendarEventsNotification extends Command
             'good' => '🟢 Смена: лёгкая',
             'warning' => '🟡 Смена: средняя',
             'critical' => '🔴 Смена: тяжёлая',
+            'unknown' => (int) ($shift['total'] ?? 0) > 0
+                ? 'ℹ️ Смена: график клинеров подтверждён не полностью'
+                : 'ℹ️ Смена: нет данных',
             default => 'ℹ️ Смена: нет данных',
         };
     }
@@ -237,6 +240,7 @@ class SendTomorrowCalendarEventsNotification extends Command
             }
 
             $available = (int) data_get($staff, 'available_count', 0);
+            $unknown = (int) data_get($staff, 'unknown_count', 0);
             $availablePeople = collect(data_get($staff, 'available', []))
                 ->sortBy(fn (array $person) => mb_strtolower((string) ($person['name'] ?? '')))
                 ->values();
@@ -245,6 +249,10 @@ class SendTomorrowCalendarEventsNotification extends Command
                 ->values();
 
             $lines[] = $labels['title'].' — доступно: <b>'.$available.' из '.$total.'</b>';
+
+            if ($unknown > 0) {
+                $lines[] = 'График не подтверждён у <b>'.$unknown.'</b>'.($unknown === 1 ? ' сотрудника' : ' сотрудников');
+            }
 
             if ($role === 'supervisor') {
                 $people = $availablePeople
@@ -256,6 +264,10 @@ class SendTomorrowCalendarEventsNotification extends Command
                         'name' => (string) ($person['name'] ?? 'Без имени'),
                         'status' => (string) ($person['reason'] ?? 'unknown'),
                     ]))
+                    ->concat(collect(data_get($staff, 'unknown', []))->map(fn (array $person) => [
+                        'name' => (string) ($person['name'] ?? 'Без имени'),
+                        'status' => 'schedule_unknown',
+                    ]))
                     ->sortBy(fn (array $person) => mb_strtolower($person['name']))
                     ->values();
 
@@ -265,6 +277,8 @@ class SendTomorrowCalendarEventsNotification extends Command
                         'regular_weekend' => ['💤', 'рег. выходной'],
                         'day_off' => ['💤', 'выходной'],
                         'vacation' => ['🌴', 'отпуск'],
+                        'unpaid_leave' => ['💤', 'неоплачиваемый отпуск'],
+                        'schedule_unknown' => ['ℹ️', 'график не подтверждён'],
                         default => ['💤', 'отсутствует'],
                     };
 
@@ -272,7 +286,13 @@ class SendTomorrowCalendarEventsNotification extends Command
                 }
             } else {
                 if ($absent->isEmpty()) {
-                    $lines[] = $labels['all_available'];
+                    if ($unknown === 0) {
+                        $lines[] = $labels['all_available'];
+                    } else {
+                        foreach (collect(data_get($staff, 'unknown', [])) as $person) {
+                            $lines[] = '• '.e((string) ($person['name'] ?? 'Без имени')).' — график не подтверждён';
+                        }
+                    }
                     $lines[] = '';
 
                     continue;
@@ -285,6 +305,7 @@ class SendTomorrowCalendarEventsNotification extends Command
                         'vacation' => 'отпуск',
                         'day_off' => 'выходной',
                         'regular_weekend' => 'регулярный выходной',
+                        'unpaid_leave' => 'неоплачиваемый отпуск',
                         default => 'отсутствие без уточнённой категории',
                     };
 

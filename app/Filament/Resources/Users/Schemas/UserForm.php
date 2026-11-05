@@ -2,13 +2,16 @@
 
 namespace App\Filament\Resources\Users\Schemas;
 
+use App\Models\User;
 use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Illuminate\Support\HtmlString;
 
@@ -78,6 +81,7 @@ class UserForm
                             ->displayFormat('d.m.Y')
                             ->format('Y-m-d')
                             ->placeholder('дд.мм.гггг')
+                            ->required()
                             ->native(true)
                             ->default(fn () => now()->toDateString())
                             ->afterStateHydrated(function ($component, $state, $record) {
@@ -92,6 +96,16 @@ class UserForm
 
                                 $component->state(now()->toDateString());
                             }),
+
+                        Textarea::make('work_started_at_reason')
+                            ->label('Причина изменения даты начала работы')
+                            ->rows(2)
+                            ->maxLength(1000)
+                            ->dehydrated(false)
+                            ->visible(fn (Get $get, ?User $record): bool => $record !== null
+                                && ($get('work_started_at') ?: null) !== $record->work_started_at?->toDateString())
+                            ->required(fn (Get $get, ?User $record): bool => $record !== null
+                                && ($get('work_started_at') ?: null) !== $record->work_started_at?->toDateString()),
                     ])
                     ->columns(2),
 
@@ -111,10 +125,31 @@ CheckboxList::make('weekend_days')
         7 => 'Воскресенье',
     ])
     ->columns(2)
-    ->helperText('Эти дни будут считаться регулярными выходными сотрудника'),
+    ->disabled()
+    ->dehydrated(false)
+    ->helperText('Меняйте график на вкладке «История графика» — изменения сохраняются с датой вступления в силу.'),
 
         ])
                     ->columns(2),
+
+                Section::make('Права рабочего календаря')
+                    ->description('Отдельные права на просмотр календарей сотрудников, изменение графиков и экспорт.')
+                    ->visible(fn (?User $record): bool => $record?->role === 'supervisor')
+                    ->schema([
+                        Toggle::make('calendar_can_view_all')
+                            ->label('Просмотр календарей всех сотрудников')
+                            ->dehydrated(false)
+                            ->disabled(fn (): bool => ! auth()->user()?->isAdmin()),
+                        Toggle::make('calendar_can_edit')
+                            ->label('Изменение графиков и корректировки')
+                            ->dehydrated(false)
+                            ->disabled(fn (Get $get): bool => ! auth()->user()?->isAdmin() || ! (bool) $get('calendar_can_view_all')),
+                        Toggle::make('calendar_can_export')
+                            ->label('Экспорт календаря и статистики')
+                            ->dehydrated(false)
+                            ->disabled(fn (Get $get): bool => ! auth()->user()?->isAdmin() || ! (bool) $get('calendar_can_view_all')),
+                    ])
+                    ->columns(3),
                 Section::make('Telegram')
                     ->description('Данные, которые пришли из Telegram Mini App')
                     ->schema([
