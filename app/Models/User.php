@@ -6,6 +6,8 @@ use App\Services\TelegramUserNotificationService;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\Storage;
@@ -99,6 +101,67 @@ class User extends Authenticatable implements FilamentUser
         return $this->hasPanelAccess($panel->getId());
     }
 
+    public function workScheduleVersions(): HasMany
+    {
+        return $this->hasMany(EmployeeWorkScheduleVersion::class);
+    }
+
+    public function calendarAdjustments(): HasMany
+    {
+        return $this->hasMany(EmployeeCalendarAdjustment::class);
+    }
+
+    public function calendarPermission(): HasOne
+    {
+        return $this->hasOne(UserCalendarPermission::class);
+    }
+
+    public function canViewAllEmployeeCalendars(): bool
+    {
+        if ($this->isAdmin()) {
+            return true;
+        }
+
+        if ($this->role !== 'supervisor') {
+            return false;
+        }
+
+        return (bool) $this->employeeCalendarPermission()?->can_view_all_calendars;
+    }
+
+    public function canEditEmployeeCalendars(): bool
+    {
+        if ($this->isAdmin()) {
+            return true;
+        }
+
+        $permission = $this->employeeCalendarPermission();
+
+        return $this->role === 'supervisor'
+            && (bool) $permission?->can_view_all_calendars
+            && (bool) $permission?->can_edit;
+    }
+
+    public function canExportEmployeeCalendars(): bool
+    {
+        if ($this->isAdmin()) {
+            return true;
+        }
+
+        $permission = $this->employeeCalendarPermission();
+
+        return $this->role === 'supervisor'
+            && (bool) $permission?->can_view_all_calendars
+            && (bool) $permission?->can_export;
+    }
+
+    private function employeeCalendarPermission(): ?UserCalendarPermission
+    {
+        return $this->relationLoaded('calendarPermission')
+            ? $this->getRelation('calendarPermission')
+            : $this->calendarPermission()->first();
+    }
+
     public function calendarTypeAccesses()
     {
         return $this->hasMany(UserCalendarTypeAccess::class);
@@ -173,6 +236,11 @@ class User extends Authenticatable implements FilamentUser
     public function dayOffRequestDays()
     {
         return $this->hasMany(\App\Models\DayOffRequestDay::class);
+    }
+
+    public function vacationRequestDays(): HasMany
+    {
+        return $this->hasMany(VacationRequestDay::class);
     }
 
     public function vacationRequests()

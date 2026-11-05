@@ -7,8 +7,10 @@ use App\Models\CalendarEvent;
 use App\Models\DayOffRequestDay;
 use App\Models\VacationRequest;
 use App\Services\RolePreviewContext;
+use App\Services\Calendar\EmployeeWorkCalendarManagementService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 new class extends Component
 {
@@ -17,6 +19,7 @@ public bool $profileRequired = false;
     public ?string $profileName = null;
     public ?string $profileBirthday = null;
     public ?string $profileWorkStartedAt = null;
+    public ?string $profileWorkStartedReason = null;
 
     public ?string $calendarBadge = null;
     public ?string $applicationsBadge = null;
@@ -75,26 +78,49 @@ protected function isProfileComplete(): bool
         $this->profileName = $user->name;
         $this->profileBirthday = $user->birthday?->format('Y-m-d');
         $this->profileWorkStartedAt = $user->work_started_at?->format('Y-m-d');
+        $this->profileWorkStartedReason = null;
     }
 
-    public function saveProfile(): void
+    public function saveProfile(EmployeeWorkCalendarManagementService $calendarManagement): void
     {
+        $workStartedChanged = ($this->profileWorkStartedAt ?: null) !== auth()->user()->work_started_at?->toDateString();
         $this->validate([
             'profileName' => ['required', 'string', 'max:255'],
             'profileBirthday' => ['required', 'date'],
             'profileWorkStartedAt' => ['required', 'date'],
+            'profileWorkStartedReason' => $workStartedChanged
+                ? ['required', 'string', 'max:1000']
+                : ['nullable', 'string', 'max:1000'],
         ], [
             'profileName.required' => 'Введите имя.',
             'profileName.max' => 'Имя слишком длинное.',
             'profileBirthday.date' => 'Некорректная дата рождения.',
             'profileWorkStartedAt.date' => 'Некорректная дата начала работы.',
+            'profileWorkStartedReason.required' => 'Укажите причину изменения даты начала работы.',
+            'profileWorkStartedReason.max' => 'Причина не должна превышать 1000 символов.',
         ]);
 
-        auth()->user()->forceFill([
-            'name' => trim($this->profileName),
-            'birthday' => $this->profileBirthday ?: null,
-            'work_started_at' => $this->profileWorkStartedAt ?: null,
-        ])->save();
+        $user = auth()->user();
+        $oldWorkStartedAt = $user->work_started_at;
+        $newWorkStartedAt = Carbon::parse($this->profileWorkStartedAt, config('app.timezone', 'Europe/Rome'));
+
+        DB::transaction(function () use ($user, $calendarManagement, $workStartedChanged, $oldWorkStartedAt, $newWorkStartedAt): void {
+            $user->forceFill([
+                'name' => trim($this->profileName),
+                'birthday' => $this->profileBirthday ?: null,
+            ])->save();
+
+            if ($workStartedChanged) {
+                $calendarManagement->recordProfileStartDateChange(
+                    $user,
+                    $oldWorkStartedAt,
+                    $newWorkStartedAt,
+                    $user,
+                    (string) $this->profileWorkStartedReason,
+                );
+            }
+        });
+
 $this->profileRequired = false;
         $this->profileEditOpen = false;
 
@@ -103,6 +129,7 @@ $this->profileRequired = false;
             'Профиль обновлён',
             'Данные успешно сохранены'
         );
+        $this->profileWorkStartedReason = null;
     }
 
     protected function buildCalendarBadge(): ?string
@@ -380,6 +407,23 @@ $this->profileRequired = false;
                 <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
             </div>
         </a>
+
+        @if(in_array($user->role, ['cleaner', 'supervisor'], true))
+            <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+
+            <a
+                href="{{ route('page-profile.calendar') }}"
+                class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
+            >
+                <div class="flex min-w-0 items-center gap-4">
+                    <x-heroicon-o-calendar-days class="h-[24px] w-[24px]" />
+
+                    <span class="truncate text-[18px]">Мой календарь</span>
+                </div>
+
+                <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
+            </a>
+        @endif
     </div>
 
 
@@ -592,6 +636,25 @@ $hasAnyAdminAccess =
                     </div>
                 @enderror
             </div>
+
+            @if(($profileWorkStartedAt ?: null) !== auth()->user()->work_started_at?->toDateString())
+                <div>
+                    <label class="mb-[7px] block text-[14px] text-black/50">
+                        Причина изменения даты начала работы
+                    </label>
+                    <textarea
+                        wire:model="profileWorkStartedReason"
+                        rows="3"
+                        maxlength="1000"
+                        required
+                        class="w-full rounded-[22px] border border-[#E7E7E7] bg-[#F8F8F8] px-[16px] py-[12px] text-[16px] outline-none focus:border-[#213259]"
+                        placeholder="Например, уточнена дата по документам"
+                    ></textarea>
+                    @error('profileWorkStartedReason')
+                        <div class="mt-[6px] text-[13px] text-red-500">{{ $message }}</div>
+                    @enderror
+                </div>
+            @endif
         </div>
 
         <div class="mt-[20px] grid {{ $profileRequired ? 'grid-cols-1' : 'grid-cols-2' }} gap-[10px]">

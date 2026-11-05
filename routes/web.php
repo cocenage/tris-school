@@ -153,9 +153,7 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->middleware(SafeguardRolePreviewData::class)
         ->name('page-tasks.show');
 
-    Route::get('/profile/calendar', function () {
-        return redirect()->route('page-tasks.calendar');
-    })->name('page-profile.calendar');
+    Route::livewire('/profile/calendar', 'profile.page-calendar')->name('page-profile.calendar');
 });
 
 Route::post('/telegram/analytics-webhook/{secret}', TelegramAnalyticsWebhookController::class)
