@@ -85,6 +85,7 @@ class MilanWeatherService
             }
 
             $point = $this->mapHour($hour);
+            [$point['condition'], $point['emoji']] = $this->weatherCondition($point['weather_code']);
             if (count(array_filter($point, fn (mixed $value): bool => $value !== null)) > 0) {
                 $points[$key] = $point;
             }
@@ -280,46 +281,73 @@ class MilanWeatherService
     private function morningAdvice(array $points): ?string
     {
         $thunder = [1087, 1273, 1276, 1279, 1282];
-        $snowOrIce = [1066, 1069, 1072, 1114, 1117, 1168, 1171, 1198, 1201, 1204, 1207, 1210, 1213, 1216, 1219, 1222, 1225, 1237, 1249, 1252, 1255, 1258, 1261, 1264, 1279, 1282];
+        $snowOrIce = [1066, 1069, 1072, 1114, 1117, 1168, 1171, 1198, 1201, 1204, 1207, 1210, 1213, 1216, 1219, 1222, 1225, 1237, 1249, 1252, 1255, 1258, 1261, 1264];
         $rain = [1063, 1069, 1072, 1150, 1153, 1168, 1171, 1180, 1183, 1186, 1189, 1192, 1195, 1198, 1201, 1204, 1207, 1240, 1243, 1246, 1249, 1252, 1273, 1276];
         $heavyRain = [1192, 1195, 1243, 1246, 1276];
+        $riskTimes = [
+            'thunder' => null,
+            'snow_or_ice' => null,
+            'strong_wind' => null,
+            'heavy_rain' => null,
+            'intense_rain' => null,
+            'high_rain_chance' => null,
+            'extreme_heat' => null,
+            'extreme_cold' => null,
+        ];
 
         foreach ($points as $time => $point) {
             if ($point === null) {
                 continue;
             }
 
-            $code = $point['weather_code'];
+            $code = is_numeric($point['weather_code'] ?? null) ? (int) $point['weather_code'] : null;
+            $wind = $point['wind_speed_kmh'] ?? null;
+            $rainAmount = $point['rain_mm'] ?? null;
+            $rainProbability = $point['precipitation_probability_pct'] ?? null;
+            $temperature = $point['temperature_c'] ?? null;
+
             if ($code !== null && in_array($code, $thunder, true)) {
-                return "⚠️ Прогноз указывает на грозу около {$time}; учитывайте это при перемещении между квартирами.";
+                $riskTimes['thunder'] ??= $time;
             }
-
             if ($code !== null && in_array($code, $snowOrIce, true)) {
-                return "⚠️ Прогноз снега или гололёда около {$time}; планируйте перемещения осторожно.";
+                $riskTimes['snow_or_ice'] ??= $time;
             }
-
-            if ($point['wind_speed_kmh'] !== null && $point['wind_speed_kmh'] >= 50) {
-                return "⚠️ Около {$time} ожидается очень сильный ветер (от 50 км/ч); учитывайте условия на улице.";
+            if (is_numeric($wind) && $wind >= 50) {
+                $riskTimes['strong_wind'] ??= $time;
             }
-
             if ($code !== null && in_array($code, $heavyRain, true)) {
-                return "⚠️ Около {$time} прогнозируется сильный дождь; возможны задержки в пути.";
+                $riskTimes['heavy_rain'] ??= $time;
             }
-            if ($point['rain_mm'] !== null && $point['rain_mm'] >= 4) {
-                return "⚠️ Около {$time} прогнозируется интенсивный дождь; возможны задержки в пути.";
+            if (is_numeric($rainAmount) && $rainAmount >= 4) {
+                $riskTimes['intense_rain'] ??= $time;
             }
             if ($code !== null && in_array($code, $rain, true)
-                && $point['precipitation_probability_pct'] !== null
-                && $point['precipitation_probability_pct'] >= 75) {
-                return "⚠️ Около {$time} высока вероятность дождя; учитывайте возможные задержки в пути.";
+                && is_numeric($rainProbability) && $rainProbability >= 75) {
+                $riskTimes['high_rain_chance'] ??= $time;
+            }
+            if (is_numeric($temperature) && $temperature >= 35) {
+                $riskTimes['extreme_heat'] ??= $time;
+            }
+            if (is_numeric($temperature) && $temperature <= -10) {
+                $riskTimes['extreme_cold'] ??= $time;
+            }
+        }
+
+        foreach (array_keys($riskTimes) as $risk) {
+            $time = $riskTimes[$risk];
+            if ($time === null) {
+                continue;
             }
 
-            if ($point['temperature_c'] !== null && $point['temperature_c'] >= 35) {
-                return "⚠️ Около {$time} прогнозируется экстремальная жара; чаще делайте перерывы и пейте воду.";
-            }
-            if ($point['temperature_c'] !== null && $point['temperature_c'] <= -10) {
-                return "⚠️ Около {$time} прогнозируется сильный мороз; учитывайте это при перемещении.";
-            }
+            return match ($risk) {
+                'thunder' => "⚠️ Прогноз указывает на грозу около {$time} — будьте осторожны на улице.",
+                'snow_or_ice' => "⚠️ Снег или гололёд около {$time} — будьте осторожны на улице.",
+                'strong_wind' => "⚠️ Сильный ветер около {$time} — будьте осторожны на улице.",
+                'heavy_rain', 'intense_rain' => "⚠️ Сильный дождь около {$time} — будьте осторожны на улице.",
+                'high_rain_chance' => "⚠️ Высока вероятность дождя около {$time} — будьте осторожны на улице.",
+                'extreme_heat' => "⚠️ Экстремальная жара около {$time} — избегайте перегрева.",
+                'extreme_cold' => "⚠️ Сильный мороз около {$time} — одевайтесь теплее.",
+            };
         }
 
         return null;

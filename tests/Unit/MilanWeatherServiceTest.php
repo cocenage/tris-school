@@ -288,6 +288,46 @@ it('returns a severe weather warning only when forecast fields support it', func
         ->toContain('грозу около 13:00');
 });
 
+it('does not expose provider translations outside the concise condition map in the morning forecast', function () {
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-31 06:00', 'Europe/Rome'));
+    Http::fake(['api.weatherapi.com/*' => Http::response(weatherApiUnitResponse('2026-10-31', [
+        weatherApiUnitHour('2026-10-31 13:00', [
+            'temp_c' => 14.3,
+            'condition' => ['text' => 'Местами дождь поблизости', 'code' => 9999],
+        ]),
+    ]))]);
+
+    $point = app(MilanWeatherService::class)
+        ->morningForecast(CarbonImmutable::parse('2026-10-31', 'Europe/Rome'))['points']['13:00'];
+
+    expect($point)->toMatchArray([
+        'condition' => null,
+        'emoji' => null,
+        'weather_code' => 9999,
+        'temperature_c' => 14.3,
+    ])->and($point['condition'])->toBeNull();
+});
+
+it('prioritizes severe risks across all forecast points instead of the earliest mild risk', function () {
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-31 06:00', 'Europe/Rome'));
+    Http::fake(['api.weatherapi.com/*' => Http::response(weatherApiUnitResponse('2026-10-31', [
+        weatherApiUnitHour('2026-10-31 08:00', [
+            'chance_of_rain' => 95,
+            'precip_mm' => 5,
+            'condition' => ['text' => 'Сильный дождь', 'code' => 1195],
+        ]),
+        weatherApiUnitHour('2026-10-31 13:00'),
+        weatherApiUnitHour('2026-10-31 15:00', [
+            'condition' => ['text' => 'Гроза', 'code' => 1276],
+        ]),
+    ]))]);
+
+    $advice = app(MilanWeatherService::class)
+        ->morningForecast(CarbonImmutable::parse('2026-10-31', 'Europe/Rome'))['advice'];
+
+    expect($advice)->toContain('грозу около 15:00')->not->toContain('сильный дождь');
+});
+
 it('uses concise Russian conditions from WeatherAPI codes instead of poor provider translations', function () {
     CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-31 06:00', 'Europe/Rome'));
     Http::fake(['api.weatherapi.com/*' => Http::response(weatherApiUnitResponse('2026-10-31', [
