@@ -128,7 +128,7 @@ it('records a morning weather source error while preserving the existing fallbac
         ->and(json_encode($operation->events->toArray()))->not->toContain('1006', 'error', 'WeatherAPI');
 });
 
-it('omits strikes from the morning digest while preserving weather and other important mobility alerts', function () {
+it('keeps mobility filtering separate from the weather message and omits strike summaries', function () {
     Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     $strikeBuilder = Mockery::mock(MobilityStrikesSummaryBuilder::class);
     $strikeBuilder->shouldReceive('build')->zeroOrMoreTimes()->andReturn(['strikes' => [[
@@ -171,7 +171,8 @@ it('omits strikes from the morning digest while preserving weather and other imp
     );
 
     expect($message)
-        ->toContain('Погода', 'Сегодня важно', 'Blocco totale della circolazione in zona Navigli')
+        ->toContain('Погода на сегодня', 'Отличной смены 🚀')
+        ->not->toContain('Сегодня важно', 'Blocco totale della circolazione in zona Navigli', 'Navigli')
         ->not->toContain('Sciopero', 'Забастовка транспорта', 'trasporto pubblico.', 'SYNTHETIC_STRIKE_SECTION');
     $strikeBuilder->shouldNotHaveReceived('build');
     $strikeFormatter->shouldNotHaveReceived('formatMorningSection');
@@ -345,7 +346,7 @@ it('suppresses raw M1-M5 and Crescenzago source rows when normalized events exis
         ->and($rendered->first()['district'])->toBe('M2');
 });
 
-it('builds two regional dry-runs with distinct weather coordinates and evidence-based mobility scope', function () {
+it('builds two regional weather dry-runs and keeps mobility alerts out of their message content', function () {
     Carbon::setTestNow(Carbon::parse('2026-08-03 06:00', 'Europe/Rome'));
     CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-08-03 06:00', 'Europe/Rome'));
     config(['services.telegram.digest_districts' => [
@@ -386,16 +387,17 @@ it('builds two regional dry-runs with distinct weather coordinates and evidence-
     $output = mb_strtolower(Artisan::output());
 
     expect($output)->toContain('navigli')->toContain('lodi')
-        ->and(substr_count($output, 'interruzione totale della circolazione dalle 18:00'))->toBe(1)
-        ->and(substr_count($output, 'interruzione totale della circolazione dalle 19:00'))->toBe(1)
-        ->and(substr_count($output, 'сегодня важно'))->toBe(2)
-        ->and($output)->not->toContain('m2 chiusura');
+        ->and(substr_count($output, '🌤 <b>погода на сегодня</b>'))->toBe(2)
+        ->and(substr_count($output, 'отличной смены 🚀'))->toBe(2)
+        ->and($output)->not->toContain(
+            'interruzione totale della circolazione', 'сегодня важно', 'm2 chiusura'
+        );
     Http::assertSentCount(2);
     $coordinates = collect(Http::recorded())->map(fn (array $pair): string => $pair[0]['q'])->sort()->values()->all();
     expect($coordinates)->toBe(['45.44,9.21', '45.45,9.17']);
 });
 
-it('keeps a regional morning digest useful when weather is unavailable', function () {
+it('keeps a regional morning digest concise when weather is unavailable', function () {
     Carbon::setTestNow(Carbon::parse('2026-08-03 06:00', 'Europe/Rome'));
     CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-08-03 06:00', 'Europe/Rome'));
     Http::fake(['api.weatherapi.com/*' => Http::response([], 503)]);
@@ -411,14 +413,11 @@ it('keeps a regional morning digest useful when weather is unavailable', functio
     ]);
 
     expect($message)
-        ->toContain('Navigli')
-        ->toContain('Прогноз временно недоступен')
-        ->not->toContain('Передвижение')
-        ->not->toContain('Сегодня важно')
-        ->toMatch('/Хорошей смены|Удачного дня|Отличной смены|Легкого рабочего дня|Пусть день пройдет спокойно/');
+        ->toBe("🌤 <b>Погода на сегодня</b>\n\nПрогноз временно недоступен.\n\nОтличной смены 🚀")
+        ->not->toContain('Navigli', 'Передвижение', 'Сегодня важно', 'WeatherAPI.com');
 });
 
-it('renders severe weather with a concrete district travel impact and no generic warning', function () {
+it('renders one concise weather recommendation without mobility details', function () {
     $this->mock(MilanWeatherService::class, fn (MockInterface $mock) => $mock
         ->shouldReceive('morningForecast')->once()->andReturn([
             'points' => [
@@ -431,10 +430,11 @@ it('renders severe weather with a concrete district travel impact and no generic
                     'emoji' => '🌧', 'condition' => 'Дождь', 'temperature_c' => 18,
                     'apparent_temperature_c' => 16, 'relative_humidity_pct' => 78,
                     'wind_speed_kmh' => 8, 'wind_direction' => 'ЮЗ', 'precipitation_probability_pct' => 90,
+                    'weather_code' => 1195, 'rain_mm' => 5,
                 ],
                 '15:00' => null,
             ],
-            'advice' => '🌧 После обеда лучше заложить больше времени на дорогу между квартирами.',
+            'advice' => '⚠️ Сильный дождь около 13:00 — будьте осторожны на улице.',
         ]));
     $command = app(MobilityDigestCommand::class);
     $method = new ReflectionMethod($command, 'buildMessage');
@@ -443,8 +443,9 @@ it('renders severe weather with a concrete district travel impact and no generic
     ]);
 
     expect($message)->toContain('08:00 · Ясно — +16°C', '13:00 · Дождь — +18°C', 'Ощущается +15°', 'Ощущается +16°')
-        ->toContain('🌧 После обеда лучше заложить больше времени на дорогу между квартирами.')
-        ->not->toContain('78%', '90%', 'Влажность', 'км/ч', 'Возможны задержки из-за погоды', 'Будьте осторожны из-за погоды');
+        ->toContain('⚠️ Сильный дождь около 13:00 — будьте осторожны на улице.')
+        ->toContain('Отличной смены 🚀')
+        ->not->toContain('78%', '90%', 'Влажность', 'км/ч', 'между квартирами', 'Сегодня важно');
 });
 
 it('renders all three forecast hours for all five configured districts for the requested dry-run date', function () {
@@ -483,8 +484,9 @@ it('renders all three forecast hours for all five configured districts for the r
     expect(substr_count($output, '08:00 ·'))->toBe(5)
         ->and(substr_count($output, '13:00 ·'))->toBe(5)
         ->and(substr_count($output, '15:00 ·'))->toBe(5)
-        ->and(substr_count($output, 'WeatherAPI.com'))->toBe(0)
-        ->and(substr_count($output, 'официальными метеослужбами'))->toBe(0)
+        ->and(substr_count($output, 'WeatherAPI.com'))->toBe(5)
+        ->and(substr_count($output, 'официальными метеослужбами'))->toBe(5)
+        ->and(substr_count($output, 'Отличной смены 🚀'))->toBe(5)
         ->and(substr_count($output, '1,2 мм'))->toBe(0);
 
     preg_match_all('/===== DRY RUN MORNING DIGEST · .+? =====\r?\n(.*?)\r?\n===================================/s', $output, $messages);
@@ -496,7 +498,8 @@ it('renders all three forecast hours for all five configured districts for the r
 
         expect(mb_strlen($visibleText, 'UTF-8'))->toBeLessThanOrEqual(4096)
             ->and(array_values(array_unique(array_map('strtolower', $tags[1]))))->toBe(['b'])
-            ->and(substr_count($message, '<b>'))->toBe(substr_count($message, '</b>'));
+            ->and(substr_count($message, '<b>'))->toBe(substr_count($message, '</b>'))
+            ->and($message)->not->toContain('Navigli', 'Сегодня важно', 'weatherapi.com', 'href=');
     }
     $requests = collect(Http::recorded())->map(fn (array $pair) => $pair[0]);
     expect($requests)->toHaveCount(5)
@@ -504,6 +507,33 @@ it('renders all three forecast hours for all five configured districts for the r
             && $request['aqi'] === 'no' && $request['alerts'] === 'no'
             && $request['lang'] === 'ru'))->toBeTrue()
         ->and($requests->pluck('q')->all())->toBe(['45.4,9.1', '45.41,9.11', '45.42,9.12', '45.43,9.13', '45.44,9.14']);
+});
+
+it('uses Europe/Rome for the default forecast date and hourly points', function () {
+    config([
+        'app.timezone' => 'UTC',
+        'services.telegram.digest_districts' => [
+            'navigli' => [
+                'label' => 'Navigli', 'chat_id' => '-1001', 'duty_thread_id' => '11',
+                'latitude' => 45.45, 'longitude' => 9.17,
+            ],
+        ],
+    ]);
+    Carbon::setTestNow(Carbon::parse('2026-10-06 22:30:00', 'UTC'));
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-06 22:30:00', 'UTC'));
+    $this->mock(MilanWeatherService::class, fn (MockInterface $mock) => $mock
+        ->shouldReceive('morningForecast')->once()->withArgs(
+            fn (CarbonImmutable $date, float $latitude, float $longitude, string $timezone): bool => $date->toDateString() === '2026-10-07' && $timezone === 'Europe/Rome'
+        )->andReturn([
+            'points' => ['08:00' => null, '13:00' => null, '15:00' => null],
+            'advice' => null,
+            'unavailable_reason' => 'provider_error',
+        ]));
+    $this->mock(TelegramBotService::class, fn (MockInterface $mock) => $mock
+        ->shouldNotReceive('sendAnalyticsMessage'));
+
+    expect(Artisan::call('mobility:digest', ['--dry-run' => true]))->toBe(0)
+        ->and(Artisan::output())->toContain('Погода на сегодня', 'Прогноз временно недоступен');
 });
 
 it('omits strike announcements and routine M1-M5 statuses from every district morning digest', function () {
@@ -542,7 +572,7 @@ it('omits strike announcements and routine M1-M5 statuses from every district mo
         ->and($output)->not->toContain('M1 chiusura')->not->toContain('M5 chiusura');
 });
 
-it('shows a confirmed critical network disruption but not a critical single-line closure', function () {
+it('keeps qualifying mobility alerts out of the weather-only message', function () {
     Http::fake(['api.weatherapi.com/*' => Http::response(['forecast' => ['forecastday' => [['date' => '2026-10-07', 'hour' => []]]]])]);
     $command = app(MobilityDigestCommand::class);
     $method = new ReflectionMethod($command, 'buildMessage');
@@ -566,9 +596,8 @@ it('shows a confirmed critical network disruption but not a critical single-line
     ]);
 
     expect($message)
-        ->toContain('Сегодня важно')
-        ->toContain('Servizio sospeso su tutta la rete')
-        ->not->toContain('M3 chiusura');
+        ->toContain('Погода на сегодня', 'Отличной смены 🚀')
+        ->not->toContain('Сегодня важно', 'Servizio sospeso su tutta la rete', 'M3 chiusura');
 });
 
 it('uses the analytics sender and matching duty topics for regional morning delivery', function () {
@@ -616,7 +645,9 @@ it('uses the analytics sender and matching duty topics for regional morning deli
 
     expect($sent)->toHaveCount(2);
     foreach ($sent as $message) {
-        expect($message)->toContain('Источник: <code>WeatherAPI.com</code> · перевод и округление.');
+        expect($message)
+            ->toContain('🌤 <b>Погода на сегодня</b>', '08:00', '13:00', '15:00', 'Источник: WeatherAPI.com.', 'Отличной смены 🚀')
+            ->not->toContain('Navigli', 'Lodi', 'Сегодня важно', 'href=', 'захватите зонт', 'возможен дождик');
     }
 });
 
@@ -698,27 +729,27 @@ it('does not send a requested date outside the WeatherAPI Free forecast window',
     Http::assertNothingSent();
 });
 
-it('renders compact blank-separated forecast blocks with source attribution, safe HTML and Telegram length', function () {
+it('renders the approved weather layout with attribution, safe HTML and Telegram length', function () {
     $this->mock(MilanWeatherService::class, fn (MockInterface $mock) => $mock
         ->shouldReceive('morningForecast')->once()->andReturn([
             'points' => [
                 '08:00' => [
-                    'emoji' => '🌤', 'condition' => 'Переменная облачность', 'temperature_c' => 22,
-                    'apparent_temperature_c' => 22, 'relative_humidity_pct' => 50,
-                    'wind_speed_kmh' => 5, 'wind_direction' => 'СВ',
-                    'precipitation_probability_pct' => 0, 'rain_mm' => 0,
-                ],
-                '13:00' => [
-                    'emoji' => '🌧', 'condition' => 'Морось', 'temperature_c' => 10,
-                    'apparent_temperature_c' => 7, 'relative_humidity_pct' => 78,
+                    'emoji' => '🌧', 'condition' => 'Возможен дождь', 'temperature_c' => 11,
+                    'apparent_temperature_c' => 10, 'relative_humidity_pct' => 78,
                     'wind_speed_kmh' => 19, 'wind_direction' => 'В',
                     'precipitation_probability_pct' => 46, 'rain_mm' => 0.3,
                 ],
+                '13:00' => [
+                    'emoji' => '☁️', 'condition' => 'Пасмурно', 'temperature_c' => 13,
+                    'apparent_temperature_c' => 11, 'relative_humidity_pct' => 78,
+                    'wind_speed_kmh' => 19, 'wind_direction' => 'В',
+                    'precipitation_probability_pct' => 0, 'rain_mm' => 0,
+                ],
                 '15:00' => [
-                    'emoji' => '⛈', 'condition' => 'Гроза', 'temperature_c' => 15,
-                    'apparent_temperature_c' => 14, 'relative_humidity_pct' => 82,
-                    'wind_speed_kmh' => 25, 'wind_direction' => 'Ю',
-                    'precipitation_probability_pct' => 65, 'rain_mm' => 1.5,
+                    'emoji' => '☁️', 'condition' => 'Пасмурно', 'temperature_c' => 13,
+                    'apparent_temperature_c' => 11, 'relative_humidity_pct' => 78,
+                    'wind_speed_kmh' => 19, 'wind_direction' => 'В',
+                    'precipitation_probability_pct' => 0, 'rain_mm' => 0,
                 ],
             ],
             'advice' => null,
@@ -727,35 +758,29 @@ it('renders compact blank-separated forecast blocks with source attribution, saf
 
     $command = app(MobilityDigestCommand::class);
     $method = new ReflectionMethod($command, 'buildMessage');
-    $message = $method->invoke($command, Carbon::parse('2026-10-07'), collect(), [
+    $message = $method->invoke($command, Carbon::parse('2026-10-07', 'Europe/Rome'), collect(), [
         'key' => 'navigli', 'label' => '<Navigli & Co>', 'latitude' => 45.45, 'longitude' => 9.17,
     ]);
 
-    $expectedBlocks = "🌤 <b>08:00 · Переменная облачность — +22°C</b>\n"
-        ."Ощущается +22°\n\n"
-        ."🌧 <b>13:00 · Морось — +10°C</b>\n"
-        ."Ощущается +7°\n\n"
-        ."⛈ <b>15:00 · Гроза — +15°C</b>\n"
-        .'Ощущается +14°';
+    $expectedMessage = "🌤 <b>Погода на сегодня</b>\n\n"
+        ."🌧 <b>08:00 · Возможен дождь — +11°C</b>\nОщущается +10°\n\n"
+        ."☁️ <b>13:00 · Пасмурно — +13°C</b>\nОщущается +11°\n\n"
+        ."☁️ <b>15:00 · Пасмурно — +13°C</b>\nОщущается +11°\n\n"
+        ."🌧 Утром возможен дождик — захватите зонт.\n\n"
+        ."Источник: WeatherAPI.com.\n"
+        .'ℹ️ Только для общего сведения: прогноз вероятностный и может быть неточным для конкретного места и времени. Не используйте его как единственную основу решений о личной безопасности, авиации, морской навигации, экстренном планировании и иных вопросах, критичных для безопасности; сверяйтесь с официальными метеослужбами и предупреждениями компетентных органов.'
+        ."\n\nОтличной смены 🚀";
 
     preg_match_all('/<\/?([a-z][a-z0-9]*)\b[^>]*>/i', $message, $tags);
     $visibleText = html_entity_decode(strip_tags($message), ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
-    expect($message)
-        ->toContain($expectedBlocks)
-        ->toContain('&lt;Navigli &amp; Co&gt;')
-        ->toContain('Источник: <code>WeatherAPI.com</code> · перевод и округление.')
-        ->toContain('только для общего сведения')
-        ->toContain('может быть неточным для конкретного места и времени')
-        ->toContain('личной безопасности')
-        ->toContain('авиации')
-        ->toContain('морской навигации')
-        ->toContain('экстренном планировании')
-        ->toContain('официальными метеослужбами')
-        ->toContain('предупреждениями компетентных органов')
-        ->not->toContain('Влажность', 'км/ч', '1,5 мм')
+    expect($message)->toBe($expectedMessage)
+        ->toContain('08:00', '13:00', '15:00', 'Источник: WeatherAPI.com.', 'личной безопасности', 'авиации', 'морской навигации', 'экстренном планировании', 'официальными метеослужбами')
+        ->not->toContain('Navigli', 'Влажность', 'км/ч', '46%', '0,3 мм', 'Сегодня важно', 'Доброе утро')
         ->not->toMatch('/<a\b|href=/i')
-        ->and(array_values(array_unique(array_map('strtolower', $tags[1]))))->toBe(['b', 'code'])
+        ->and(substr_count($message, 'возможен дождик'))->toBe(1)
+        ->and(substr_count($message, 'Отличной смены 🚀'))->toBe(1)
+        ->and(array_values(array_unique(array_map('strtolower', $tags[1]))))->toBe(['b'])
         ->and(substr_count($message, '<b>'))->toBe(substr_count($message, '</b>'))
         ->and(mb_strlen($visibleText, 'UTF-8'))->toBeLessThanOrEqual(4096);
 });
@@ -785,8 +810,34 @@ it('omits unavailable forecast measures instead of formatting them as zeroes', f
 
     expect($message)
         ->toContain('08:00', '13:00', '15:00', '13:00 · Ясно — +17°C')
-        ->toContain('08:00 · Прогноз временно недоступен', '15:00 · Прогноз временно недоступен')
-        ->not->toContain('0 км/ч', '0%', '0,0 мм');
+        ->toContain('08:00 · Прогноз временно недоступен', 'Ощущаемая температура недоступна', '15:00 · Прогноз временно недоступен')
+        ->not->toContain('0 км/ч', '0%', '0,0 мм', 'Ощущается +0°');
+});
+
+it('does not format invalid temperature values as zeroes', function () {
+    $this->mock(MilanWeatherService::class, fn (MockInterface $mock) => $mock
+        ->shouldReceive('morningForecast')->once()->andReturn([
+            'points' => [
+                '08:00' => [
+                    'emoji' => '☀️', 'condition' => 'Ясно', 'temperature_c' => 'unavailable',
+                    'apparent_temperature_c' => 'unknown',
+                ],
+                '13:00' => null,
+                '15:00' => null,
+            ],
+            'advice' => null,
+            'unavailable_reason' => null,
+        ]));
+
+    $command = app(MobilityDigestCommand::class);
+    $method = new ReflectionMethod($command, 'buildMessage');
+    $message = $method->invoke($command, Carbon::parse('2026-10-07', 'Europe/Rome'), collect(), [
+        'key' => 'navigli', 'latitude' => 45.45, 'longitude' => 9.17,
+    ]);
+
+    expect($message)
+        ->toContain('08:00 · Ясно — температура недоступна', 'Ощущаемая температура недоступна')
+        ->not->toContain('+0°C', '+0°');
 });
 
 it('names all forecast times when WeatherAPI is unavailable', function () {
@@ -799,6 +850,6 @@ it('names all forecast times when WeatherAPI is unavailable', function () {
     ]);
 
     expect($message)
-        ->toContain('Прогноз временно недоступен', '08:00, 13:00 и 15:00')
-        ->not->toContain('WeatherAPI.com', 'href=');
+        ->toBe("🌤 <b>Погода на сегодня</b>\n\nПрогноз временно недоступен.\n\nОтличной смены 🚀")
+        ->not->toContain('WeatherAPI.com', 'href=', 'Сегодня важно', 'Navigli');
 });
