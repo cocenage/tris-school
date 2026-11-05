@@ -295,16 +295,14 @@ class MobilityDigestCommand extends Command
             $hasForecast = collect($points)->contains(fn (?array $point): bool => $point !== null);
             $text = '🌤 <b>Погода на сегодня</b>';
 
-            if (! $hasForecast) {
-                $text .= "\n\nПрогноз временно недоступен.";
-            } else {
-                $blocks = [];
-                foreach (['08:00', '13:00', '15:00'] as $time) {
-                    $blocks[] = $this->formatWeatherPoint($time, $points[$time] ?? null);
-                }
+            $blocks = [];
+            foreach (['08:00', '13:00', '15:00'] as $time) {
+                $blocks[] = $this->formatWeatherPoint($time, $points[$time] ?? null);
+            }
 
-                $text .= "\n\n".implode("\n\n", $blocks);
+            $text .= "\n\n".implode("\n\n", $blocks);
 
+            if ($hasForecast) {
                 $advice = is_string($weather['advice'] ?? null) && trim($weather['advice']) !== ''
                     ? $weather['advice']
                     : $this->friendlyWeatherAdvice($points);
@@ -332,7 +330,7 @@ class MobilityDigestCommand extends Command
     protected function formatWeatherPoint(string $time, ?array $point): string
     {
         if ($point === null) {
-            return '🌤 <b>'.e($time).' · Прогноз временно недоступен</b>';
+            return 'ℹ️ <b>'.e($time).' · Прогноз временно недоступен</b>';
         }
 
         $condition = is_string($point['condition'] ?? null)
@@ -346,7 +344,7 @@ class MobilityDigestCommand extends Command
             : null;
 
         if ($condition === '' && $temperature === null && $apparent === null) {
-            return '🌤 <b>'.e($time).' · Прогноз временно недоступен</b>';
+            return 'ℹ️ <b>'.e($time).' · Прогноз временно недоступен</b>';
         }
 
         $emoji = is_string($point['emoji'] ?? null) && filled($point['emoji'])

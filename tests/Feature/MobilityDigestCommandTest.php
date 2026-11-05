@@ -413,7 +413,13 @@ it('keeps a regional morning digest concise when weather is unavailable', functi
     ]);
 
     expect($message)
-        ->toBe("🌤 <b>Погода на сегодня</b>\n\nПрогноз временно недоступен.\n\nОтличной смены 🚀")
+        ->toBe(
+            "🌤 <b>Погода на сегодня</b>\n\n"
+            ."ℹ️ <b>08:00 · Прогноз временно недоступен</b>\n\n"
+            ."ℹ️ <b>13:00 · Прогноз временно недоступен</b>\n\n"
+            ."ℹ️ <b>15:00 · Прогноз временно недоступен</b>\n\n"
+            .'Отличной смены 🚀'
+        )
         ->not->toContain('Navigli', 'Передвижение', 'Сегодня важно', 'WeatherAPI.com');
 });
 
@@ -850,6 +856,12 @@ it('names all forecast times when WeatherAPI is unavailable', function () {
     ]);
 
     expect($message)
-        ->toBe("🌤 <b>Погода на сегодня</b>\n\nПрогноз временно недоступен.\n\nОтличной смены 🚀")
+        ->toBe(
+            "🌤 <b>Погода на сегодня</b>\n\n"
+            ."ℹ️ <b>08:00 · Прогноз временно недоступен</b>\n\n"
+            ."ℹ️ <b>13:00 · Прогноз временно недоступен</b>\n\n"
+            ."ℹ️ <b>15:00 · Прогноз временно недоступен</b>\n\n"
+            .'Отличной смены 🚀'
+        )
         ->not->toContain('WeatherAPI.com', 'href=', 'Сегодня важно', 'Navigli');
 });
