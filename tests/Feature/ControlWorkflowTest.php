@@ -801,6 +801,95 @@ it('restores, removes and submits Classic draft media without accepting a foreig
     $this->actingAs($cleaner)->get($resultUrl)->assertOk();
 });
 
+it('persists distinct Classic media comments across draft restore and final submission, then reopens the stored JSON result', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    $this->withoutVite();
+    Storage::fake('local');
+
+    $component = Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('comment', 'Общее замечание к контролю')
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('first.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('second.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->call('saveMediaComment', 0, 0, 0, '  Следы пыли на полке  ')
+        ->call('saveMediaComment', 0, 0, 1, 'Скол на поверхности')
+        ->call('openReview')
+        ->assertSee('Следы пыли на полке')
+        ->assertSee('Скол на поверхности')
+        ->call('saveDraft');
+
+    $draftMedia = ControlResponseDraft::query()->sole()->responses[0][0]['media'];
+    expect($draftMedia)->toHaveCount(2)
+        ->and($draftMedia[0]['comment'])->toBe('Следы пыли на полке')
+        ->and($draftMedia[1]['comment'])->toBe('Скол на поверхности');
+
+    Livewire::test('forms.page-control')
+        ->assertSet('answers.0.0.media.0.comment', 'Следы пыли на полке')
+        ->assertSet('answers.0.0.media.1.comment', 'Скол на поверхности')
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    $response = ControlResponse::query()->sole();
+    expect($response->responses[0][0]['media'][0]['comment'])->toBe('Следы пыли на полке')
+        ->and($response->responses[0][0]['media'][1]['comment'])->toBe('Скол на поверхности')
+        ->and($response->comment)->toBe('Общее замечание к контролю');
+
+    $existingJson = $response->responses;
+    $existingJson[0][0]['media'][0]['comment'] = 'Замечание из уже сохранённого JSON';
+    $response->forceFill(['responses' => $existingJson])->save();
+
+    $resultUrl = route('page-profile.checks.result', $response);
+    $badge = Mockery::mock(UserApplicationBadgeService::class);
+    $badge->shouldReceive('label')->andReturnNull();
+    app()->instance(UserApplicationBadgeService::class, $badge);
+    foreach (['day_off_requests', 'vacation_requests', 'inventory_requests', 'salary_questions', 'schedule_questions', 'feedback_suggestions'] as $tableName) {
+        if (! Schema::hasTable($tableName)) {
+            Schema::create($tableName, function ($table): void {
+                $table->id();
+                $table->unsignedBigInteger('user_id')->nullable();
+                $table->timestamp('answer_seen_at')->nullable();
+                $table->timestamp('answered_at')->nullable();
+                $table->text('admin_comment')->nullable();
+                $table->string('status')->nullable();
+            });
+        }
+    }
+
+    $this->actingAs($cleaner)->get($resultUrl)
+        ->assertOk()
+        ->assertSee('Замечание из уже сохранённого JSON')
+        ->assertSee('Скол на поверхности')
+        ->assertSee('Общее замечание к контролю');
+
+    $unauthorized = User::create(['name' => 'Unauthorized', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($unauthorized)->get($resultUrl)->assertForbidden();
+});
+
+it('keeps empty photo comments absent and preserves the overall control comment', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('local');
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('comment', 'Общее замечание')
+        ->set('answers.0.0.selected', 'yes')
+        ->set('photoUploads.0.0', [UploadedFile::fake()->image('without-comment.jpg')])
+        ->call('finishPhotoUpload', 0, 0)
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    $response = ControlResponse::query()->sole();
+    expect($response->responses[0][0]['media'][0])->not->toHaveKey('comment')
+        ->and($response->comment)->toBe('Общее замечание');
+});
+
 it('keeps Focus separate from Classic and restores the same server draft', function () {
     [, $cleaner, $apartment, $control] = mountControlWorkflow();
 
@@ -961,6 +1050,50 @@ it('attaches Focus photo and video to the exact question and restores media in i
     expect($saved[0][0]['media'])->toHaveCount(1)
         ->and($saved[0][0]['media'][0]['mime'])->toBe('video/mp4');
     Storage::disk('public')->assertExists($saved[0][0]['media'][0]['path']);
+});
+
+it('persists Focus media comments without unlocking saved media metadata', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    Storage::fake('public');
+
+    $focus = Livewire::test('forms.page-control-focus')
+        ->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->image('first.jpg'))
+        ->call('attachMedia', 0, 0)
+        ->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->image('second.jpg'))
+        ->call('attachMedia', 0, 0)
+        ->call('saveMediaComment', 0, 0, 0, 'Первое замечание')
+        ->call('saveMediaComment', 0, 0, 1, 'Второе замечание');
+
+    $draftMedia = ControlResponseDraft::query()->where('control_id', $control->id)->sole()->responses[0][0]['media'];
+    expect($draftMedia)->toHaveCount(2)
+        ->and($draftMedia[0]['comment'])->toBe('Первое замечание')
+        ->and($draftMedia[1]['comment'])->toBe('Второе замечание');
+
+    $completed = Livewire::test('forms.page-control-focus')
+        ->assertSet('savedMedia.0.0.0.comment', 'Первое замечание')
+        ->assertSet('savedMedia.0.0.1.comment', 'Второе замечание')
+        ->call('review')
+        ->assertSee('Первое замечание')
+        ->assertSee('Второе замечание')
+        ->call('backToSetup')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('review')
+        ->call('submit')
+        ->assertSet('submitted', true)
+        ->call('saveMediaComment', 0, 0, 0, 'Позднее изменение')
+        ->assertSet('savedMedia.0.0.0.comment', 'Первое замечание');
+
+    $saved = ControlResponse::query()->sole()->responses[0][0]['media'];
+    expect($saved)->toHaveCount(2)
+        ->and($saved[0]['comment'])->toBe('Первое замечание')
+        ->and($saved[1]['comment'])->toBe('Второе замечание')
+        ->and($saved[0]['path'])->toBe($draftMedia[0]['path'])
+        ->and($saved[1]['path'])->toBe($draftMedia[1]['path'])
+        ->and(ControlResponseDraft::query()->count())->toBe(0);
 });
 
 it('shows a failed Focus draft save instead of claiming success', function () {
