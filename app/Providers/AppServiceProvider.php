@@ -4,9 +4,19 @@ namespace App\Providers;
 
 use App\Http\Middleware\BlockRolePreviewWrites;
 use App\Models\Apartment;
+use App\Models\CalendarEvent;
+use App\Models\Control;
+use App\Models\ControlResponse;
+use App\Models\DayOffRequest;
+use App\Models\DayOffRequestDay;
 use App\Models\User;
+use App\Models\VacationRequest;
+use App\Models\VacationRequestDay;
 use App\Observers\UserObserver;
 use App\Policies\ApartmentPolicy;
+use App\Policies\QualityControlPolicy;
+use App\Policies\SupervisorCalendarEventPolicy;
+use App\Policies\SupervisorRequestPolicy;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use Filament\Facades\Filament;
 use Filament\Navigation\NavigationItem;
@@ -44,6 +54,13 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(ResponseReceived::class, [TelegramOutboundMonitor::class, 'received']);
         Event::listen(ConnectionFailed::class, [TelegramOutboundMonitor::class, 'failed']);
         Gate::policy(Apartment::class, ApartmentPolicy::class);
+        Gate::policy(CalendarEvent::class, SupervisorCalendarEventPolicy::class);
+        Gate::policy(Control::class, QualityControlPolicy::class);
+        Gate::policy(ControlResponse::class, QualityControlPolicy::class);
+        Gate::policy(DayOffRequest::class, SupervisorRequestPolicy::class);
+        Gate::policy(DayOffRequestDay::class, SupervisorRequestPolicy::class);
+        Gate::policy(VacationRequest::class, SupervisorRequestPolicy::class);
+        Gate::policy(VacationRequestDay::class, SupervisorRequestPolicy::class);
 
         Filament::serving(function () {
             Filament::registerNavigationItems([

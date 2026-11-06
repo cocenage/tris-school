@@ -342,6 +342,10 @@ $this->profileRequired = false;
 >
     @php
         $rolePreview = app(RolePreviewContext::class);
+        $canSeeGeneralCalendar = ! $rolePreview->isActive()
+            && ($user?->isAdmin()
+                || ($user?->role === 'supervisor'
+                    && app(\App\Services\Authorization\SupervisorPanelAccess::class)->hasGeneralCalendarAccess($user)));
     @endphp
 
     @if($user?->isAdmin())
@@ -424,6 +428,23 @@ $this->profileRequired = false;
                 <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
             </a>
         @endif
+
+        @if($canSeeGeneralCalendar)
+            <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+
+            <a
+                href="{{ route('page-tasks.calendar') }}"
+                class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
+            >
+                <div class="flex min-w-0 items-center gap-4">
+                    <x-heroicon-o-calendar class="h-[24px] w-[24px]" />
+
+                    <span class="truncate text-[18px]">Рабочий календарь</span>
+                </div>
+
+                <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
+            </a>
+        @endif
     </div>
 
 
@@ -448,13 +469,12 @@ $this->profileRequired = false;
 
 @php
 $canSeeAdminPanel = ! $rolePreview->isActive() && $user->isAdmin();
-$canSeeFinancePanel = ! $rolePreview->isActive() && ($user->isAdmin() || $user->hasPanelAccess('finance'));
-$canSeeEducationPanel = ! $rolePreview->isActive() && ($user->isAdmin() || $user->hasPanelAccess('education'));
+$canSeeSupervisorPanel = ! $rolePreview->isActive()
+    && $user->canAccessPanel(\Filament\Facades\Filament::getPanel('education'));
 
 $hasAnyAdminAccess =
     $canSeeAdminPanel ||
-    $canSeeFinancePanel ||
-    $canSeeEducationPanel;
+    $canSeeSupervisorPanel;
 @endphp
 
 @if($hasAnyAdminAccess)
@@ -500,41 +520,20 @@ $hasAnyAdminAccess =
             </a>
         @endif
 
-        @if($canSeeFinancePanel)
+        @if($canSeeSupervisorPanel)
             @if($canSeeAdminPanel)
                 <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
             @endif
 
             <a
-                href="/admin/finance"
-                class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
-            >
-                <div class="flex min-w-0 items-center gap-4">
-                    <x-heroicon-o-banknotes class="h-[24px] w-[24px]" />
-
-                    <span class="truncate text-[18px]">
-                        Финансы
-                    </span>
-                </div>
-
-                <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
-            </a>
-        @endif
-
-        @if($canSeeEducationPanel)
-            @if($canSeeAdminPanel || $canSeeFinancePanel)
-                <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
-            @endif
-
-            <a
-                href="/admin/education"
+                href="/admin/supervisor"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
             >
                 <div class="flex min-w-0 items-center gap-4">
                     <x-heroicon-o-academic-cap class="h-[24px] w-[24px]" />
 
                     <span class="truncate text-[18px]">
-                        Обучение
+                        Панель супервайзера
                     </span>
                 </div>
 

@@ -359,7 +359,7 @@ new class extends Component {
             'strike' => 'Забастовки',
         ];
 
-        $allowed = auth()->user()?->allowedCalendarTypes() ?? [];
+        $allowed = $this->allowedCalendarTypes();
 
         $filters = collect($all)
             ->only($allowed)
@@ -378,16 +378,20 @@ new class extends Component {
 
     protected function allowedCalendarTypes(): array
     {
-        return auth()->user()?->allowedCalendarTypes() ?? [];
+        return app(\App\Services\Authorization\SupervisorPanelAccess::class)
+            ->allowedCalendarTypes(auth()->user());
     }
 
     protected function canViewCalendarType(string $type): bool
     {
+        $user = auth()->user();
         if ($type === 'day_off') {
-            return in_array('vacation', $this->allowedCalendarTypes(), true);
+            return app(\App\Services\Authorization\SupervisorPanelAccess::class)
+                ->canViewCalendarType($user, 'vacation');
         }
 
-        return in_array($type, $this->allowedCalendarTypes(), true);
+        return app(\App\Services\Authorization\SupervisorPanelAccess::class)
+            ->canViewCalendarType($user, $type);
     }
 
     public function getWeeksForMonth(Carbon $month): array

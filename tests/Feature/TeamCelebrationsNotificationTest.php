@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Schedule;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function () {
-    Carbon::setTestNow(Carbon::parse('2026-10-09 08:45:00', 'Europe/Rome'));
+    Carbon::setTestNow(Carbon::parse('2026-10-08 08:45:00', 'Europe/Rome'));
     config([
         'services.telegram.bot_token' => 'work-test-token',
         'services.telegram.chat_id_celebrations' => 'celebrations-test-chat',
@@ -83,17 +83,54 @@ it('prints a dry-run preview without sending or reserving an operation', functio
     Http::assertNothingSent();
 });
 
-it('does not create an outbound message for an empty date', function () {
-    teamCelebrationServiceReturning([]);
+it('previews the exact empty-day message without sending or reserving an operation', function () {
+    teamCelebrationServiceReturning([], '2026-10-09');
     $bot = Mockery::mock(TelegramBotService::class);
     $bot->shouldNotReceive('sendMessage');
     $bot->shouldNotReceive('sendPhoto');
     app()->instance(TelegramBotService::class, $bot);
 
-    expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09']))->toBe(0)
-        ->and(Artisan::output())->toContain('На сегодня событий нет')
+    expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09', '--dry-run' => true]))->toBe(0)
+        ->and(Artisan::output())->toContain("📅 События на 09.10.2026\n\nℹ️ На завтра событий нет.")
         ->and(TelegramOutboundOperation::query()->count())->toBe(0);
     Http::assertNothingSent();
+});
+
+it('uses a date-neutral empty message for arbitrary preview dates', function () {
+    teamCelebrationServiceReturning([], '2026-10-10');
+
+    expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-10', '--dry-run' => true]))->toBe(0)
+        ->and(Artisan::output())->toContain("📅 События на 10.10.2026\n\nℹ️ На эту дату событий нет.")
+        ->and(TelegramOutboundOperation::query()->count())->toBe(0);
+
+    Http::assertNothingSent();
+});
+
+it('sends an empty digest for tomorrow once and requires the Telegram receipt', function () {
+    Carbon::setTestNow(Carbon::parse('2026-11-06 08:45:00', 'Europe/Rome'));
+    Http::fake(['https://api.telegram.org/*/sendMessage' => Http::response(['ok' => true, 'result' => ['message_id' => 75]], 200)]);
+    teamCelebrationServiceReturning([], '2026-11-07', times: 2);
+
+    expect(Artisan::call('calendar:notify-celebrations'))->toBe(0)
+        ->and(Artisan::call('calendar:notify-celebrations'))->toBe(0);
+
+    Http::assertSentCount(1);
+    Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendMessage')
+        && $request->data()['chat_id'] === 'celebrations-test-chat'
+        && $request->data()['message_thread_id'] === 7
+        && $request->data()['text'] === "📅 События на 07.11.2026\n\nℹ️ На завтра событий нет.");
+
+    expect(TelegramOutboundOperation::query()->sole())
+        ->toMatchArray([
+            'status' => 'sent',
+            'source_type' => 'TeamCelebrationDigest',
+            'source_id' => '2026-11-07',
+            'telegram_message_id' => 75,
+        ])
+        ->and(TelegramOutboundOperation::query()->sole()->operation_key)
+        ->toStartWith('calendar:celebrations:2026-11-07:')
+        ->and(TelegramOutboundOperation::query()->sole()->scheduled_for->format('Y-m-d H:i:s'))
+        ->toBe('2026-11-07 06:05:00');
 });
 
 it('fails closed when the dedicated celebration destination is missing', function () {
@@ -222,14 +259,14 @@ it('previews seven selected days only in dry-run without journal writes or Teleg
 
 it('uses Europe Rome when selecting the default preview date', function () {
     Carbon::setTestNow(Carbon::parse('2026-10-09 22:30:00', 'UTC'));
-    teamCelebrationServiceReturning([teamCelebrationTestEvent()], '2026-10-10');
+    teamCelebrationServiceReturning([teamCelebrationTestEvent()], '2026-10-11');
     $bot = Mockery::mock(TelegramBotService::class);
     $bot->shouldNotReceive('sendMessage');
     $bot->shouldNotReceive('sendPhoto');
     app()->instance(TelegramBotService::class, $bot);
 
     expect(Artisan::call('calendar:notify-celebrations', ['--dry-run' => true]))->toBe(0)
-        ->and(Artisan::output())->toContain('10.10.2026');
+        ->and(Artisan::output())->toContain('11.10.2026');
     Http::assertNothingSent();
 });
 
@@ -306,7 +343,7 @@ it('does not send a text fallback after a photo attempt has an uncertain result'
     unlink($path);
 });
 
-it('refuses to send historical events outside the current Rome date', function () {
+it('refuses to send events outside tomorrow Rome date', function () {
     $bot = Mockery::mock(TelegramBotService::class);
     $bot->shouldNotReceive('sendMessage');
     $bot->shouldNotReceive('sendPhoto');
@@ -320,16 +357,21 @@ it('refuses to send historical events outside the current Rome date', function (
     Http::assertNothingSent();
 });
 
-it('schedules the separate celebration command at nine in Europe Rome without overlap', function () {
+it('schedules the celebration command at 06:05 after the 06:00 calendar digest in Europe Rome', function () {
     expect(base_path())->toBe(getcwd());
     expect(app(Kernel::class)->all())
         ->toHaveKey('calendar:notify-celebrations');
 
     $event = collect(Schedule::events())
         ->first(fn ($event) => str_contains($event->command ?? '', 'calendar:notify-celebrations'));
+    $calendarEvent = collect(Schedule::events())
+        ->first(fn ($event) => str_contains($event->command ?? '', 'calendar:notify-tomorrow'));
 
     expect($event)->not->toBeNull()
         ->and($event->timezone)->toBe('Europe/Rome')
-        ->and($event->expression)->toBe('0 9 * * *')
-        ->and($event->withoutOverlapping)->toBeTrue();
+        ->and($event->expression)->toBe('5 6 * * *')
+        ->and($event->withoutOverlapping)->toBeTrue()
+        ->and($calendarEvent)->not->toBeNull()
+        ->and($calendarEvent->timezone)->toBe('Europe/Rome')
+        ->and($calendarEvent->expression)->toBe('0 6 * * *');
 });

@@ -25,8 +25,9 @@ class TelegramUserNotificationService
         $adminChatId = config('services.telegram.admin_chat_id');
         $adminThreadId = config('services.telegram.admin_thread_id');
 
-        if (!$botToken || !$adminChatId) {
+        if (! $botToken || ! $adminChatId) {
             Log::warning('Telegram admin notification config missing.');
+
             return;
         }
 
@@ -40,8 +41,8 @@ class TelegramUserNotificationService
             'text' => implode("\n", [
                 '👤 <b>Новая заявка на доступ</b>',
                 '',
-                '<b>Имя:</b> ' . $this->escape($this->userName($user)),
-                '<b>Telegram:</b> ' . $this->escape($this->telegramUsername($user)),
+                '<b>Имя:</b> '.$this->escape($this->userName($user)),
+                '<b>Telegram:</b> '.$this->escape($this->telegramUsername($user)),
                 '<b>Статус:</b> ожидает одобрения',
                 '',
                 'Пользователь ждёт подтверждения доступа к сайту.',
@@ -51,11 +52,11 @@ class TelegramUserNotificationService
                     [
                         [
                             'text' => '✅ Одобрить',
-                            'callback_data' => 'access:approve:' . $user->id,
+                            'callback_data' => 'access:approve:'.$user->id,
                         ],
                         [
                             'text' => '❌ Отказать',
-                            'callback_data' => 'access:reject:' . $user->id,
+                            'callback_data' => 'access:reject:'.$user->id,
                         ],
                     ],
                     [
@@ -90,7 +91,7 @@ class TelegramUserNotificationService
             replyMarkup: $payload['reply_markup'],
         ));
 
-        if (!$messageId) {
+        if (! $messageId) {
             Log::warning('Telegram access requested notification failed.', [
                 'user_id' => $user->id,
                 'telegram_id' => $user->telegram_id,
@@ -106,7 +107,7 @@ class TelegramUserNotificationService
 
     public function accessPending(User $user): void
     {
-        if (!$user->telegram_id) {
+        if (! $user->telegram_id) {
             return;
         }
 
@@ -120,8 +121,9 @@ class TelegramUserNotificationService
 
         $botToken = config('services.telegram.bot_token');
 
-        if (!$botToken) {
+        if (! $botToken) {
             Log::warning('Telegram bot token is not configured.');
+
             return;
         }
 
@@ -142,6 +144,7 @@ class TelegramUserNotificationService
             ]),
         ))) {
             Log::warning('Telegram access pending notification failed.', ['user_id' => $user->id]);
+
             return;
         }
 
@@ -152,7 +155,7 @@ class TelegramUserNotificationService
         return;
 
         $response = Http::timeout(10)->post(
-            'https://api.telegram.org/bot' . $botToken . '/sendMessage',
+            'https://api.telegram.org/bot'.$botToken.'/sendMessage',
             [
                 'chat_id' => $user->telegram_id,
                 'parse_mode' => 'HTML',
@@ -168,7 +171,7 @@ class TelegramUserNotificationService
             ]
         );
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             Log::warning('Telegram access pending notification failed.', [
                 'user_id' => $user->id,
                 'telegram_id' => $user->telegram_id,
@@ -186,7 +189,7 @@ class TelegramUserNotificationService
 
     public function accessApproved(User $user): void
     {
-        if (!$user->telegram_id) {
+        if (! $user->telegram_id) {
             return;
         }
 
@@ -196,8 +199,9 @@ class TelegramUserNotificationService
 
         $botToken = config('services.telegram.bot_token');
 
-        if (!$botToken) {
+        if (! $botToken) {
             Log::warning('Telegram bot token is not configured.');
+
             return;
         }
 
@@ -222,6 +226,7 @@ class TelegramUserNotificationService
             ],
         ))) {
             Log::warning('Telegram access approved notification failed.', ['user_id' => $user->id]);
+
             return;
         }
 
@@ -232,7 +237,7 @@ class TelegramUserNotificationService
         return;
 
         $response = Http::timeout(10)->post(
-            'https://api.telegram.org/bot' . $botToken . '/sendMessage',
+            'https://api.telegram.org/bot'.$botToken.'/sendMessage',
             [
                 'chat_id' => $user->telegram_id,
                 'parse_mode' => 'HTML',
@@ -256,7 +261,7 @@ class TelegramUserNotificationService
             ]
         );
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             Log::warning('Telegram access approved notification failed.', [
                 'user_id' => $user->id,
                 'telegram_id' => $user->telegram_id,
@@ -274,7 +279,7 @@ class TelegramUserNotificationService
 
     protected function userAdminUrl(User $user): string
     {
-        return url('/admin/education/users/' . $user->id . '/edit');
+        return url('/admin/supervisor/users/'.$user->id.'/edit');
     }
 
     private function accessContext(User $user, string $kind, string $chatId, ?string $threadId = null): array
@@ -318,7 +323,7 @@ class TelegramUserNotificationService
     protected function telegramUsername(User $user): string
     {
         return $user->telegram_username
-            ? '@' . $user->telegram_username
+            ? '@'.$user->telegram_username
             : '—';
     }
 

@@ -14,7 +14,7 @@ Schedule::command('calendar:notify-tomorrow')
     ->timezone('Europe/Rome');
 
 Schedule::command('calendar:notify-celebrations')
-    ->dailyAt('09:00')
+    ->dailyAt('06:05')
     ->timezone('Europe/Rome')
     ->withoutOverlapping();
 

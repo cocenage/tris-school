@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Apartments\RelationManagers;
 
 use App\Models\ApartmentInformationAttachment;
+use App\Services\Apartments\ApartmentAccessService;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -39,7 +40,7 @@ class InformationAttachmentsRelationManager extends RelationManager
             FileUpload::make('path')
                 ->label('Файл')
                 ->disk('local')
-                ->directory(fn (): string => 'apartment-information/' . $this->getOwnerRecord()->getKey())
+                ->directory(fn (): string => 'apartment-information/'.$this->getOwnerRecord()->getKey())
                 ->acceptedFileTypes(ApartmentInformationAttachment::ALLOWED_MIME_TYPES)
                 ->maxSize(10240)
                 ->storeFileNamesIn('original_name')
@@ -77,7 +78,7 @@ class InformationAttachmentsRelationManager extends RelationManager
 
                 TextColumn::make('file_size')
                     ->label('Размер')
-                    ->formatStateUsing(fn (?int $state): string => $state ? number_format($state / 1024, 0, ',', ' ') . ' КБ' : '—'),
+                    ->formatStateUsing(fn (?int $state): string => $state ? number_format($state / 1024, 0, ',', ' ').' КБ' : '—'),
 
                 TextColumn::make('uploadedBy.name')
                     ->label('Загрузил')
@@ -91,6 +92,7 @@ class InformationAttachmentsRelationManager extends RelationManager
             ->headerActions([
                 CreateAction::make()
                     ->label('Загрузить файл')
+                    ->authorize(fn (): bool => app(ApartmentAccessService::class)->canManage(auth()->user()))
                     ->mutateDataUsing(function (array $data): array {
                         $data['disk'] = 'local';
                         $data['uploaded_by'] = auth()->id();
@@ -105,8 +107,13 @@ class InformationAttachmentsRelationManager extends RelationManager
                     }),
             ])
             ->actions([
-                EditAction::make()->label('Изменить'),
-                DeleteAction::make()->label('Удалить')->requiresConfirmation(),
+                EditAction::make()
+                    ->label('Изменить')
+                    ->authorize(fn (): bool => app(ApartmentAccessService::class)->canManage(auth()->user())),
+                DeleteAction::make()
+                    ->label('Удалить')
+                    ->authorize(fn (): bool => app(ApartmentAccessService::class)->canManage(auth()->user()))
+                    ->requiresConfirmation(),
             ]);
     }
 }

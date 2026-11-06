@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\ControlResponses\Tables;
 
+use App\Filament\Resources\ControlResponses\ControlResponseResource;
 use App\Models\ControlResponse;
 use Filament\Actions\ViewAction;
 use Filament\Tables\Columns\TextColumn;
@@ -98,10 +99,7 @@ class ControlResponsesTable
                     ->preload(),
             ])
             ->defaultSort('sent_at', 'desc')
-            ->recordUrl(fn (ControlResponse $record) => route(
-                'filament.admin.resources.control-responses.view',
-                $record
-            ))
+            ->recordUrl(fn (ControlResponse $record) => ControlResponseResource::getUrl('view', ['record' => $record]))
             ->actions([
                 ViewAction::make(),
             ]);

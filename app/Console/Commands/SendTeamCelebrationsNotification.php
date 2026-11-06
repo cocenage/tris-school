@@ -46,8 +46,9 @@ class SendTeamCelebrationsNotification extends Command
             return self::FAILURE;
         }
 
-        if (! $dryRun && $date->toDateString() !== CarbonImmutable::now('Europe/Rome')->toDateString()) {
-            $this->error('Фактическая отправка разрешена только для сегодняшней даты Europe/Rome.');
+        $tomorrow = CarbonImmutable::now('Europe/Rome')->addDay()->startOfDay();
+        if (! $dryRun && $date->toDateString() !== $tomorrow->toDateString()) {
+            $this->error('Фактическая отправка разрешена только на завтра Europe/Rome.');
 
             return self::FAILURE;
         }
@@ -57,11 +58,24 @@ class SendTeamCelebrationsNotification extends Command
             $previewDate = $date->addDays($offset)->startOfDay();
             $sourceEvents = $celebrationService->eventsForDate($previewDate);
             $events = $this->withoutAlreadyDeliveredLegacyEvents($sourceEvents);
+            $digest = $celebrationService->formatDigest($previewDate, $events);
+            if ($digest === null && $sourceEvents->isEmpty()) {
+                $emptyDateMessage = $previewDate->toDateString() === $tomorrow->toDateString()
+                    ? 'На завтра событий нет.'
+                    : 'На эту дату событий нет.';
+                $text = "📅 События на {$previewDate->format('d.m.Y')}\n\nℹ️ {$emptyDateMessage}";
+                $digest = [
+                    'text' => $text,
+                    'photo_path' => null,
+                    'over_limit' => intdiv(strlen(mb_convert_encoding($text, 'UTF-16LE', 'UTF-8')), 2) > 4096,
+                    'character_count' => intdiv(strlen(mb_convert_encoding($text, 'UTF-16LE', 'UTF-8')), 2),
+                ];
+            }
             $previews[] = [
                 'date' => $previewDate,
                 'source_event_count' => $sourceEvents->count(),
                 'events' => $events,
-                'digest' => $celebrationService->formatDigest($previewDate, $events),
+                'digest' => $digest,
             ];
         }
 
@@ -147,7 +161,7 @@ class SendTeamCelebrationsNotification extends Command
             'message_thread_id' => filled($threadId) ? (string) $threadId : null,
             'source_type' => 'TeamCelebrationDigest',
             'source_id' => $date->toDateString(),
-            'scheduled_for' => $date->setTime(9, 0),
+            'scheduled_for' => $date->setTime(6, 5),
         ];
 
         if (! $monitor->reserveExpected($context)) {
@@ -216,7 +230,7 @@ class SendTeamCelebrationsNotification extends Command
         $value = $this->option('date');
 
         if (! filled($value)) {
-            return CarbonImmutable::now('Europe/Rome')->startOfDay();
+            return CarbonImmutable::now('Europe/Rome')->addDay()->startOfDay();
         }
 
         try {

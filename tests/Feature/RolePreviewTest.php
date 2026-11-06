@@ -1,8 +1,16 @@
 <?php
 
+use App\Filament\Resources\CalendarEvents\CalendarEventResource;
+use App\Filament\Resources\CalendarEvents\Pages\ListCalendarEvents;
 use App\Filament\Resources\RewardPrograms\Pages\EditRewardProgram;
+use App\Filament\Resources\SupervisorEmployees\SupervisorEmployeeResource;
+use App\Filament\Resources\Users\UserResource;
 use App\Http\Middleware\BlockRolePreviewWrites;
 use App\Http\Middleware\EndRolePreviewOnFilamentAccess;
+use App\Models\Apartment;
+use App\Models\CalendarEvent;
+use App\Models\Control;
+use App\Models\DayOffRequest;
 use App\Models\RewardProgram;
 use App\Models\User;
 use App\Services\RolePreviewContext;
@@ -12,12 +20,14 @@ use Filament\Http\Middleware\Authenticate;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Livewire\Livewire;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function () {
+    $this->withoutVite();
     config([
         'database.default' => 'sqlite',
         'database.connections.sqlite.database' => ':memory:',
@@ -51,14 +61,49 @@ beforeEach(function () {
         $table->unique(['user_id', 'panel']);
     });
 
+    Schema::connection('sqlite')->create('user_calendar_type_accesses', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('user_id');
+        $table->string('type');
+        $table->boolean('can_view')->default(false);
+        $table->timestamps();
+        $table->unique(['user_id', 'type']);
+    });
+
+    Schema::connection('sqlite')->create('user_calendar_permissions', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('user_id')->unique();
+        $table->boolean('can_view_all_calendars')->default(false);
+        $table->boolean('can_edit')->default(false);
+        $table->boolean('can_export')->default(false);
+        $table->timestamps();
+    });
+
     Schema::connection('sqlite')->create('calendar_events', function (Blueprint $table): void {
         $table->id();
         $table->string('title');
+        $table->string('type')->default('workflow');
         $table->date('start_date');
         $table->date('end_date')->nullable();
         $table->string('repeat_type')->default('none');
         $table->boolean('is_active')->default(true);
         $table->unsignedInteger('priority')->default(0);
+        $table->timestamps();
+    });
+
+    Schema::connection('sqlite')->create('apartments', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+        $table->boolean('is_active')->default(true);
+        $table->string('information_status')->default('published');
+        $table->timestamps();
+    });
+
+    Schema::connection('sqlite')->create('apartment_user_access', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('apartment_id');
+        $table->unsignedBigInteger('user_id');
+        $table->dateTime('expires_at')->nullable();
         $table->timestamps();
     });
 
@@ -348,4 +393,182 @@ it('shows a safe empty state instead of employee records during a role preview',
         ->assertSee('Предпросмотр: Клинер')
         ->assertSee('Выйти из предпросмотра')
         ->assertSee('Данные сотрудников скрыты');
+});
+
+it('renames the education panel without widening its explicit access grants', function () {
+    DB::table('user_panel_accesses')->insert([
+        'user_id' => $this->supervisor->id,
+        'panel' => 'education',
+        'can_access' => true,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    expect($this->supervisor->canAccessPanel(Filament::getPanel('education')))->toBeTrue()
+        ->and($this->cleaner->canAccessPanel(Filament::getPanel('education')))->toBeFalse();
+
+    $this->actingAs($this->supervisor)->get('/admin/supervisor')->assertOk();
+    $this->actingAs($this->admin)->get('/admin/education')->assertRedirect('/admin/supervisor');
+    $this->actingAs($this->supervisor)->get('/admin/education/users/'.$this->supervisor->id.'/edit')
+        ->assertRedirect('/admin/supervisor/users/'.$this->supervisor->id.'/edit');
+    $this->actingAs($this->cleaner)->get('/admin/supervisor')->assertForbidden();
+    $this->actingAs($this->cleaner)->get('/admin/education/users/'.$this->supervisor->id.'/edit')->assertForbidden();
+});
+
+it('blocks supervisor user administration and unsafe resource actions server-side', function () {
+    Filament::setCurrentPanel('education');
+    DB::table('user_panel_accesses')->insert([
+        'user_id' => $this->supervisor->id,
+        'panel' => 'education',
+        'can_access' => true,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    DB::table('user_calendar_type_accesses')->insert([
+        [
+            'user_id' => $this->supervisor->id,
+            'type' => 'workflow',
+            'can_view' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+        [
+            'user_id' => $this->supervisor->id,
+            'type' => 'finance',
+            'can_view' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+    ]);
+
+    $this->actingAs($this->supervisor)
+        ->get('/admin/supervisor/users/'.$this->supervisor->id.'/edit')
+        ->assertForbidden();
+
+    expect(Gate::forUser($this->supervisor)->allows('review', new DayOffRequest))
+        ->toBeTrue()
+        ->and(Gate::forUser($this->cleaner)->allows('review', new DayOffRequest))->toBeFalse()
+        ->and(Gate::forUser($this->supervisor)->allows('update', new Control))->toBeFalse()
+        ->and(Gate::forUser($this->supervisor)->allows('create', Control::class))->toBeFalse()
+        ->and(Gate::forUser($this->admin)->allows('update', new Control))->toBeTrue()
+        ->and(Gate::forUser($this->supervisor)->allows('manageAccess', new Apartment))->toBeFalse()
+        ->and(Gate::forUser($this->supervisor)->allows('view', new CalendarEvent(['type' => 'workflow'])))->toBeTrue()
+        ->and(Gate::forUser($this->supervisor)->allows('view', new CalendarEvent(['type' => 'finance'])))->toBeFalse();
+
+    $this->actingAs($this->supervisor)
+        ->get('/admin/supervisor/controls/create')
+        ->assertForbidden();
+});
+
+it('limits supervisor staff and calendar queries to approved safe records and permitted categories', function () {
+    Filament::setCurrentPanel('education');
+    DB::table('user_panel_accesses')->insert([
+        'user_id' => $this->supervisor->id,
+        'panel' => 'education',
+        'can_access' => true,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    DB::table('user_calendar_type_accesses')->insert([
+        [
+            'user_id' => $this->supervisor->id,
+            'type' => 'workflow',
+            'can_view' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+        [
+            'user_id' => $this->supervisor->id,
+            'type' => 'finance',
+            'can_view' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+    ]);
+    DB::table('calendar_events')->insert([
+        ['title' => 'Рабочее событие', 'type' => 'workflow', 'start_date' => '2026-11-07', 'is_active' => true, 'priority' => 0, 'repeat_type' => 'none'],
+        ['title' => 'Финансовое событие', 'type' => 'finance', 'start_date' => '2026-11-07', 'is_active' => true, 'priority' => 0, 'repeat_type' => 'none'],
+    ]);
+    $inactiveCleaner = User::query()->forceCreate([
+        'name' => 'Inactive cleaner',
+        'email' => 'inactive@example.test',
+        'password' => 'secret',
+        'role' => 'cleaner',
+        'status' => 'approved',
+        'is_active' => false,
+    ]);
+    $pendingSupervisor = User::query()->forceCreate([
+        'name' => 'Pending supervisor',
+        'email' => 'pending@example.test',
+        'password' => 'secret',
+        'role' => 'supervisor',
+        'status' => 'pending',
+        'is_active' => true,
+    ]);
+
+    auth()->login($this->supervisor);
+
+    $tabs = (new ListCalendarEvents)->getTabs();
+
+    expect(array_keys($tabs))->not->toContain('finance')
+        ->and(CalendarEventResource::getNavigationBadge())->toBe('1')
+        ->and(CalendarEventResource::getEloquentQuery()->pluck('type')->all())
+        ->toBe(['workflow'])
+        ->and(SupervisorEmployeeResource::getEloquentQuery()->pluck('id')->all())
+        ->toContain($this->cleaner->id)
+        ->not->toContain($inactiveCleaner->id)
+        ->not->toContain($pendingSupervisor->id)
+        ->and(UserResource::canViewAny())->toBeFalse();
+
+    Filament::setCurrentPanel('admin');
+    expect(SupervisorEmployeeResource::canViewAny())->toBeFalse();
+});
+
+it('shows profile links by actual access and excludes finance calendar events for supervisors', function () {
+    DB::table('user_panel_accesses')->insert([
+        'user_id' => $this->supervisor->id,
+        'panel' => 'education',
+        'can_access' => true,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    DB::table('user_calendar_type_accesses')->insert([
+        [
+            'user_id' => $this->supervisor->id,
+            'type' => 'workflow',
+            'can_view' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+        [
+            'user_id' => $this->supervisor->id,
+            'type' => 'finance',
+            'can_view' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+    ]);
+
+    Livewire::actingAs($this->supervisor)
+        ->test('page-profile')
+        ->assertSee('Мой календарь')
+        ->assertSee('Рабочий календарь')
+        ->assertSee('Панель супервайзера')
+        ->assertSee('/admin/supervisor')
+        ->assertDontSee('/admin/finance');
+
+    Livewire::actingAs($this->cleaner)
+        ->test('page-profile')
+        ->assertSee('Мой календарь')
+        ->assertDontSee('Рабочий календарь')
+        ->assertDontSee('Панель супервайзера')
+        ->assertDontSee('/admin/finance');
+
+    Livewire::actingAs($this->admin)
+        ->test('page-profile')
+        ->assertSee('Рабочий календарь')
+        ->assertDontSee('/admin/finance');
+
+    DB::table('user_calendar_type_accesses')->where('user_id', $this->supervisor->id)->where('type', 'workflow')->delete();
+    Livewire::actingAs($this->supervisor)->test('page-profile')->assertDontSee('Рабочий календарь');
 });

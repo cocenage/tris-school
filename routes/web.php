@@ -13,6 +13,7 @@ use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
 use App\Http\Middleware\SafeguardRolePreviewData;
 use App\Models\Instruction;
+use Filament\Facades\Filament;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
@@ -67,6 +68,23 @@ Route::get('/instruction/obiazatelnye-foto', function () {
 
     return redirect()->route('page-home.instructions.single', $instruction->slug, 301);
 });
+
+Route::match(['GET', 'HEAD'], '/admin/education/{path?}', function (?string $path = null) {
+    $panel = Filament::getPanel('education');
+    abort_unless($panel, 404);
+
+    $user = Auth::user();
+    if (! $user) {
+        return redirect()->to($panel->getLoginUrl() ?? '/admin/supervisor/login');
+    }
+
+    abort_unless($user->canAccessPanel($panel), 403);
+
+    $target = '/admin/supervisor'.($path === null || $path === '' ? '' : '/'.ltrim($path, '/'));
+    $query = request()->getQueryString();
+
+    return redirect()->to($target.($query ? '?'.$query : ''));
+})->where('path', '.*')->name('education.legacy-redirect');
 
 Route::middleware(['auth', 'approved'])->group(function () {
     Route::post('/ui/role-preview', [RolePreviewController::class, 'store'])

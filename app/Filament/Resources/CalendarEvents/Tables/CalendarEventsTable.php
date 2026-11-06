@@ -4,16 +4,19 @@ namespace App\Filament\Resources\CalendarEvents\Tables;
 
 use App\Filament\Resources\CalendarEvents\CalendarEventResource;
 use App\Models\CalendarEvent;
+use App\Services\Authorization\SupervisorPanelAccess;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
+use Filament\Facades\Filament;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\HtmlString;
 
 class CalendarEventsTable
@@ -78,7 +81,12 @@ class CalendarEventsTable
             ->filters([
                 SelectFilter::make('type')
                     ->label('Тип')
-                    ->options(CalendarEvent::typeOptions())
+                    ->options(fn (): array => Filament::getCurrentPanel()?->getId() === 'education'
+                        ? array_intersect_key(
+                            CalendarEvent::typeOptions(),
+                            array_flip(app(SupervisorPanelAccess::class)->allowedCalendarTypes(auth()->user())),
+                        )
+                        : CalendarEvent::typeOptions())
                     ->placeholder('Все'),
 
                 SelectFilter::make('repeat_type')
@@ -102,9 +110,10 @@ class CalendarEventsTable
                         ->color('success')
                         ->visible(fn (CalendarEvent $record): bool => ! $record->is_active)
                         ->requiresConfirmation()
-                        ->action(fn (CalendarEvent $record) => $record->update([
-                            'is_active' => true,
-                        ])),
+                        ->action(function (CalendarEvent $record): void {
+                            Gate::authorize('update', $record);
+                            $record->update(['is_active' => true]);
+                        }),
 
                     Action::make('deactivate')
                         ->label('Скрыть')
@@ -112,9 +121,10 @@ class CalendarEventsTable
                         ->color('warning')
                         ->visible(fn (CalendarEvent $record): bool => $record->is_active)
                         ->requiresConfirmation()
-                        ->action(fn (CalendarEvent $record) => $record->update([
-                            'is_active' => false,
-                        ])),
+                        ->action(function (CalendarEvent $record): void {
+                            Gate::authorize('update', $record);
+                            $record->update(['is_active' => false]);
+                        }),
 
                     ViewAction::make()
                         ->label('Открыть'),
@@ -153,9 +163,9 @@ class CalendarEventsTable
         };
 
         return new HtmlString(
-            '<span style="' . $style . 'display:inline-flex;align-items:center;border-radius:9999px;padding:4px 10px;font-size:12px;font-weight:600;line-height:1.2;">'
-            . e($label)
-            . '</span>'
+            '<span style="'.$style.'display:inline-flex;align-items:center;border-radius:9999px;padding:4px 10px;font-size:12px;font-weight:600;line-height:1.2;">'
+            .e($label)
+            .'</span>'
         );
     }
 }
