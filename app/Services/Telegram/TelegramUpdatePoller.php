@@ -30,6 +30,7 @@ class TelegramUpdatePoller
         ?int $offset = null,
         int $waitSeconds = 0,
         string $pollerName = 'unknown',
+        bool $experimentalWidgets = false,
     ): array {
         $pollerName = in_array($pollerName, ['work', 'analytics', 'scheduled'], true) ? $pollerName : 'unknown';
         $parameters = ['limit' => $limit];
@@ -39,7 +40,7 @@ class TelegramUpdatePoller
             $parameters['offset'] = $offset;
         }
 
-        $updates = $this->fetch($token, $allowedUpdates, $parameters, 'fetch', $pollerName, $connectionRetries, $waitSeconds);
+        $updates = $this->fetch($token, $allowedUpdates, $parameters, 'fetch', $pollerName, $connectionRetries, $waitSeconds, $experimentalWidgets);
         $processed = $this->processUpdates($updates, $processor);
 
         if ($processed['last_update_id'] === null) {
@@ -60,7 +61,7 @@ class TelegramUpdatePoller
         $nextUpdates = $this->fetch($token, $allowedUpdates, [
             'offset' => $processed['last_update_id'] + 1,
             'limit' => 1,
-        ], 'acknowledge', $pollerName, $connectionRetries);
+        ], 'acknowledge', $pollerName, $connectionRetries, experimentalWidgets: $experimentalWidgets);
         $next = $this->processUpdates($nextUpdates, $processor);
 
         $result = [
@@ -90,9 +91,19 @@ class TelegramUpdatePoller
         string $pollerName,
         int &$connectionRetries,
         int $waitSeconds = 0,
+        bool $experimentalWidgets = false,
     ): array {
         try {
-            $response = $this->requestWithRetry($token, $allowedUpdates, $parameters, $waitSeconds, $pollerName, $stage, $connectionRetries);
+            $response = $this->requestWithRetry(
+                $token,
+                $allowedUpdates,
+                $parameters,
+                $waitSeconds,
+                $pollerName,
+                $stage,
+                $connectionRetries,
+                $experimentalWidgets,
+            );
             $this->assertSuccessfulResponse($response);
             $updates = data_get($response->json(), 'result');
 
@@ -132,16 +143,21 @@ class TelegramUpdatePoller
         string $pollerName,
         string $stage,
         int &$connectionRetries,
+        bool $experimentalWidgets = false,
     ): Response {
         $requestRetries = 0;
 
         while (true) {
             try {
+                $endpoint = $experimentalWidgets
+                    ? 'https://api.telegram.org/beta/bot'.$token.'/test/getUpdates'
+                    : 'https://api.telegram.org/bot'.$token.'/getUpdates';
+
                 return Http::withOptions([
                     'force_ip_resolve' => config('services.telegram.ip_resolve', 'v6'),
                 ])->timeout(max(10, $waitSeconds + 5))
                     ->connectTimeout(3)
-                    ->post('https://api.telegram.org/bot'.$token.'/getUpdates', [
+                    ->post($endpoint, [
                         ...$parameters,
                         'timeout' => $waitSeconds,
                         'allowed_updates' => $allowedUpdates,
