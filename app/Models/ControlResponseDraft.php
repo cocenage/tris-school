@@ -21,6 +21,10 @@ class ControlResponseDraft extends Model
         'comment',
         'responses',
         'schema_snapshot',
+        'schema_version',
+        'run_id',
+        'revision',
+        'state',
     ];
 
     protected $casts = [
@@ -29,6 +33,7 @@ class ControlResponseDraft extends Model
         'is_assigned' => 'boolean',
         'cleaning_date' => 'date',
         'inspection_date' => 'date',
+        'revision' => 'integer',
     ];
 
     public function control()

@@ -5,10 +5,13 @@ use App\Models\Control;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
+use App\Services\Controls\ControlRunManager;
+use App\Services\Controls\ControlSchema;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Locked;
 use Livewire\Component;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
@@ -23,6 +26,27 @@ new class extends Component
 
     #[Locked]
     public array $rooms = [];
+
+    #[Locked]
+    public string $schemaVersion = '';
+
+    #[Locked]
+    public string $runId = '';
+
+    #[Locked]
+    public int $draftRevision = 0;
+
+    #[Locked]
+    public ?int $draftId = null;
+
+    #[Locked]
+    public ?int $conflictedDraftId = null;
+
+    #[Locked]
+    public bool $draftSchemaConflict = false;
+
+    #[Locked]
+    public string $draftSchemaNotice = '';
 
     public array $answers = [];
 
@@ -78,13 +102,9 @@ new class extends Component
         abort_if(! $this->control, 404);
 
         $this->rooms = is_array($this->control->main) ? array_values($this->control->main) : [];
-        foreach ($this->rooms as $roomIndex => $room) {
-            foreach (($room['items'] ?? []) as $questionIndex => $question) {
-                $this->answers[$roomIndex][$questionIndex] = $this->emptyAnswer();
-                $this->savedMedia[$roomIndex][$questionIndex] = [];
-            }
-        }
-
+        $this->schemaVersion = (new ControlSchema((int) $this->control->id, $this->rooms))->version();
+        $this->runId = (string) Str::uuid();
+        $this->initializeAnswers();
         $this->cleaning_date = now()->toDateString();
         $this->inspection_date = now()->toDateString();
         $this->restoreDraft();
@@ -105,6 +125,19 @@ new class extends Component
         return ['selected' => '', 'custom' => '', 'media' => [], 'corrective' => [
             'repeats' => null, 'action' => '', 'recheck' => null,
         ]];
+    }
+
+    protected function initializeAnswers(): void
+    {
+        $this->answers = [];
+        $this->savedMedia = [];
+
+        foreach ($this->rooms as $roomIndex => $room) {
+            foreach (($room['items'] ?? []) as $questionIndex => $question) {
+                $this->answers[$roomIndex][$questionIndex] = $this->emptyAnswer();
+                $this->savedMedia[$roomIndex][$questionIndex] = [];
+            }
+        }
     }
 
     public function getQuestionsProperty(): array
@@ -163,11 +196,46 @@ new class extends Component
         }
     }
 
-    protected function normalizedAnswers(): array
+    protected function currentCanonicalRooms(): ?array
+    {
+        if (! $this->control) {
+            return null;
+        }
+
+        $control = Control::query()
+            ->where('is_active', true)
+            ->latest()
+            ->first();
+
+        if (! $control || (int) $control->id !== (int) $this->control->id) {
+            $message = 'Активный шаблон контроля изменился. Перезагрузите страницу или начните новый черновик.';
+            $this->addError('draft', $message);
+            $this->draftError = $message;
+
+            return null;
+        }
+
+        $rooms = is_array($control->main) ? array_values($control->main) : [];
+        $version = (new ControlSchema((int) $control->id, $rooms))->version();
+
+        if (! hash_equals($this->schemaVersion, $version)) {
+            $this->draftSchemaConflict = true;
+            $this->conflictedDraftId = $this->draftId;
+            $message = 'Шаблон контроля изменился во время проверки. Старый черновик сохранён; начните новую проверку.';
+            $this->addError('draft', $message);
+            $this->draftError = $message;
+
+            return null;
+        }
+
+        return $rooms;
+    }
+
+    protected function normalizedAnswers(array $rooms): array
     {
         $normalized = [];
-        foreach ($this->rooms as $roomIndex => $room) {
-            foreach (($room['items'] ?? []) as $questionIndex => $question) {
+        foreach ($rooms as $roomIndex => $room) {
+            foreach (array_values($room['items'] ?? []) as $questionIndex => $question) {
                 $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
                 $answer = is_array($answer) ? $answer : [];
                 $selected = mb_substr(trim((string) ($answer['selected'] ?? '')), 0, 255);
@@ -186,10 +254,10 @@ new class extends Component
             }
         }
 
-        return $normalized;
+        return (new ControlSchema((int) $this->control->id, $rooms))->attachQuestionIds($normalized);
     }
 
-    protected function draftPayload(): array
+    protected function draftPayload(array $rooms): array
     {
         return [
             'cleaner_id' => $this->cleaner_id,
@@ -199,26 +267,65 @@ new class extends Component
             'is_assigned' => $this->is_assigned,
             'previous_cleaner' => $this->previous_cleaner,
             'comment' => $this->comment,
-            'responses' => $this->normalizedAnswers(),
-            'schema_snapshot' => $this->rooms,
+            'responses' => $this->normalizedAnswers($rooms),
+            'schema_snapshot' => $rooms,
+            'schema_version' => (new ControlSchema((int) $this->control->id, $rooms))->version(),
         ];
     }
-
     public function saveDraft(bool $silent = false): bool
     {
         $this->ensureAuthorized();
+        if (! $this->control || $this->submitted || $this->draftSchemaConflict) {
+            return false;
+        }
+
+        $rooms = $this->currentCanonicalRooms();
+        if ($rooms === null) {
+            return false;
+        }
+
+        $schema = new ControlSchema((int) $this->control->id, $rooms);
+        $validationErrors = $schema->validateAnswers($this->answers);
+        if ($validationErrors !== []) {
+            $this->resetErrorBag();
+            foreach ($validationErrors as $key => $message) {
+                $this->addError($key, $message);
+            }
+            $this->draftState = 'error';
+            $this->draftError = reset($validationErrors) ?: 'Проверьте ответы перед сохранением.';
+
+            return false;
+        }
+
+        $this->resetErrorBag();
         $this->draftState = 'saving';
         $this->draftError = '';
 
         try {
-            ControlResponseDraft::updateOrCreate(
-                ['control_id' => $this->control->id, 'supervisor_id' => Auth::id()],
-                $this->draftPayload()
+            $draft = app(ControlRunManager::class)->saveDraft(
+                controlId: (int) $this->control->id,
+                supervisorId: (int) Auth::id(),
+                runId: $this->runId,
+                expectedRevision: $this->draftRevision,
+                draftId: $this->draftId,
+                schemaVersion: $schema->version(),
+                attributes: $this->draftPayload($rooms),
             );
+
+            $this->draftId = $draft->id;
+            $this->draftRevision = (int) $draft->revision;
+            $this->runId = (string) $draft->run_id;
             $this->draftState = 'saved';
-            $this->draftSavedAt = now()->format('H:i');
+            $this->draftSavedAt = $draft->updated_at?->format('H:i');
 
             return true;
+        } catch (ValidationException $e) {
+            $message = $e->errors()['draft'][0] ?? 'Не удалось сохранить черновик. Повторите сохранение.';
+            $this->draftState = 'error';
+            $this->draftError = $message;
+            $this->addError('draft', $message);
+
+            return false;
         } catch (Throwable $e) {
             report($e);
             $this->draftState = 'error';
@@ -231,9 +338,64 @@ new class extends Component
     protected function restoreDraft(): void
     {
         $draft = ControlResponseDraft::query()
-            ->where('control_id', $this->control->id)->where('supervisor_id', Auth::id())->first();
+            ->where('control_id', $this->control->id)
+            ->where('supervisor_id', Auth::id())
+            ->where('state', 'active')
+            ->latest('updated_at')
+            ->first();
+
         if (! $draft) {
+            $conflict = ControlResponseDraft::query()
+                ->where('control_id', $this->control->id)
+                ->where('supervisor_id', Auth::id())
+                ->where('state', 'conflict')
+                ->latest('updated_at')
+                ->first();
+
+            if ($conflict) {
+                $this->draftSchemaConflict = true;
+                $this->conflictedDraftId = $conflict->id;
+                $this->draftState = 'error';
+                $this->draftError = 'Найден сохранённый черновик другой версии. Его ответы сохранены отдельно.';
+            }
+
             return;
+        }
+
+
+        $draftVersion = $draft->schema_version;
+        if (! $draftVersion && is_array($draft->schema_snapshot)) {
+            $draftVersion = (new ControlSchema((int) $this->control->id, $draft->schema_snapshot))->version();
+        }
+
+        if (! is_string($draftVersion) || ! hash_equals($this->schemaVersion, $draftVersion)) {
+            $this->draftSchemaConflict = true;
+            $this->conflictedDraftId = $draft->id;
+            $this->draftId = null;
+            $this->draftRevision = 0;
+            $this->runId = (string) Str::uuid();
+            $this->draftState = 'error';
+            $this->draftError = 'Черновик относится к другой версии списка. Ответы не перенесены, старый черновик сохранён.';
+
+            return;
+        }
+
+        $schema = new ControlSchema((int) $this->control->id, $this->rooms);
+        foreach ($schema->questionIds() as $roomIndex => $questions) {
+            foreach ($questions as $questionIndex => $questionId) {
+                $storedId = $draft->responses[$roomIndex][$questionIndex]['question_id'] ?? null;
+                if (is_string($storedId) && ! hash_equals($questionId, $storedId)) {
+                    $this->draftSchemaConflict = true;
+                    $this->conflictedDraftId = $draft->id;
+                    $this->draftId = null;
+                    $this->draftRevision = 0;
+                    $this->runId = (string) Str::uuid();
+                    $this->draftState = 'error';
+                    $this->draftError = 'Ответы черновика не совпадают с его снимком. Старый черновик сохранён.';
+
+                    return;
+                }
+            }
         }
 
         foreach (['cleaner_id', 'apartment_id', 'is_assigned', 'previous_cleaner', 'comment'] as $field) {
@@ -241,6 +403,11 @@ new class extends Component
         }
         $this->cleaning_date = $draft->cleaning_date?->toDateString() ?? $this->cleaning_date;
         $this->inspection_date = $draft->inspection_date?->toDateString() ?? $this->inspection_date;
+
+        $this->draftId = $draft->id;
+        $this->draftRevision = (int) $draft->revision;
+        $this->runId = $draft->run_id ?: (string) Str::uuid();
+
         if (is_array($draft->responses)) {
             $this->answers = array_replace_recursive($this->answers, $draft->responses);
             foreach ($this->questions as $item) {
@@ -250,17 +417,55 @@ new class extends Component
                 $this->savedMedia[$roomIndex][$questionIndex] = is_array($media) ? array_values($media) : [];
             }
         }
+
         $this->draftState = 'saved';
         $this->draftSavedAt = $draft->updated_at?->format('H:i');
     }
 
+    public function startNewDraft(): void
+    {
+        $this->ensureAuthorized();
+        if (! $this->draftSchemaConflict || ! $this->control) {
+            return;
+        }
+
+        if ($this->conflictedDraftId !== null) {
+            app(ControlRunManager::class)->markSchemaConflict(
+                $this->conflictedDraftId,
+                (int) $this->control->id,
+                (int) Auth::id(),
+            );
+        }
+
+        $control = Control::query()
+            ->where('is_active', true)
+            ->latest()
+            ->firstOrFail();
+        $this->control = $control;
+        $this->rooms = is_array($control->main) ? array_values($control->main) : [];
+        $this->schemaVersion = (new ControlSchema((int) $control->id, $this->rooms))->version();
+        $this->draftId = null;
+        $this->draftRevision = 0;
+        $this->conflictedDraftId = null;
+        $this->runId = (string) Str::uuid();
+        $this->draftSchemaConflict = false;
+        $this->draftSchemaNotice = 'Старый черновик сохранён без переноса ответов. Новая проверка начата отдельно.';
+        $this->currentRoomIndex = 0;
+        $this->stage = 'setup';
+        $this->initializeAnswers();
+        $this->draftState = 'dirty';
+        $this->saveDraft(true);
+    }
     public function start(): void
     {
         $this->ensureAuthorized();
+        if ($this->draftSchemaConflict || $this->currentCanonicalRooms() === null) {
+            return;
+        }
+
         $this->currentRoomIndex = 0;
         $this->stage = 'questions';
     }
-
     public function goToQuestion(int $roomIndex, int $questionIndex): void
     {
         $this->ensureAuthorized();
@@ -317,6 +522,7 @@ new class extends Component
     public function setAnswer(int $roomIndex, int $questionIndex, string $value): void
     {
         $this->ensureAuthorized();
+        abort_if($this->draftSchemaConflict, 409);
         $question = $this->rooms[$roomIndex]['items'][$questionIndex] ?? null;
         abort_unless(is_array($question), 404);
         $allowed = array_map(
@@ -480,9 +686,20 @@ new class extends Component
         }
     }
 
-    protected function validateControl(): bool
+    protected function validateControl(): array|false
     {
         $this->resetErrorBag();
+        if ($this->draftSchemaConflict) {
+            $this->addError('draft', $this->draftError ?: 'Разрешите конфликт версии черновика перед продолжением.');
+
+            return false;
+        }
+
+        $rooms = $this->currentCanonicalRooms();
+        if ($rooms === null) {
+            return false;
+        }
+
         if (! $this->cleaner_id || ! User::query()->activeStaff()->whereIn('role', ['cleaner', 'supervisor'])->whereKey($this->cleaner_id)->exists()) {
             $this->addError('cleaner_id', 'Выберите сотрудника.');
         }
@@ -500,97 +717,118 @@ new class extends Component
             $this->addError('comment', 'Проверьте длину комментария и предыдущего сотрудника.');
         }
 
-        foreach ($this->questions as $item) {
-            $roomIndex = $item['room_index'];
-            $questionIndex = $item['question_index'];
-            $answer = $this->answers[$roomIndex][$questionIndex] ?? [];
-            $key = "answers.$roomIndex.$questionIndex";
-            if (! $item['optional'] && ! $this->filledAnswer($answer)) {
-                $this->addError($key, 'Ответьте на обязательный вопрос.');
-            }
-            if (mb_strlen((string) ($answer['custom'] ?? '')) > 2000) {
-                $this->addError($key, 'Текстовый ответ: максимум 2000 символов.');
-            }
-            if (count($this->savedMedia[$roomIndex][$questionIndex] ?? []) > 12) {
-                $this->addError($key, 'Максимум 12 файлов на вопрос.');
-            }
-            // TODO Focus V2: restore optional corrective input in a later sprint without blocking the basic answer flow.
+        $schema = new ControlSchema((int) $this->control->id, $rooms);
+        foreach ($schema->validateAnswers($this->answers, requireComplete: true) as $key => $message) {
+            $this->addError($key, $message);
         }
+
+        foreach ($rooms as $roomIndex => $room) {
+            foreach (array_values($room['items'] ?? []) as $questionIndex => $question) {
+                if (count($this->savedMedia[$roomIndex][$questionIndex] ?? []) > 12) {
+                    $this->addError("answers.$roomIndex.$questionIndex", 'Максимум 12 файлов на вопрос.');
+                }
+            }
+        }
+
         if ($this->pendingMediaCount > 0 || $this->mediaUpload instanceof TemporaryUploadedFile) {
             $this->addError('mediaUpload', 'Дождитесь завершения загрузки файлов.');
         }
 
-        return $this->getErrorBag()->isEmpty();
+        return $this->getErrorBag()->isEmpty() ? $rooms : false;
     }
-
     public function review(?int $roomIndex = null): void
     {
         $this->ensureAuthorized();
+        if ($this->draftSchemaConflict || $this->currentCanonicalRooms() === null) {
+            return;
+        }
+
         if ($roomIndex !== null && isset($this->rooms[$roomIndex])) {
             $this->currentRoomIndex = $roomIndex;
         }
         $this->stage = 'review';
     }
-
     public function submit(): void
     {
         $this->ensureAuthorized();
-        if ($this->stage !== 'review' || $this->isSubmitting || $this->submitted || ! $this->validateControl()) {
+        if ($this->stage !== 'review' || $this->isSubmitting || $this->submitted) {
+            return;
+        }
+
+        $rooms = $this->validateControl();
+        if ($rooms === false) {
             return;
         }
 
         $this->isSubmitting = true;
-        $lockKey = implode(':', ['control-submit', Auth::id(), $this->control->id, $this->cleaner_id,
-            $this->apartment_id, $this->cleaning_date, $this->inspection_date]);
-        if (Cache::has($lockKey.':completed')) {
-            $this->isSubmitting = false;
-            $this->addError('submit', 'Этот контроль уже отправлен.');
-
-            return;
-        }
+        $lockKey = implode(':', ['control-submit', $this->runId]);
         $lock = Cache::lock($lockKey, 30);
         if (! $lock->get()) {
             $this->isSubmitting = false;
-            $this->addError('submit', 'Контроль уже отправляется.');
+            $this->addError('submit', 'Контроль уже отправляется. Повторите через несколько секунд.');
 
             return;
         }
 
         try {
-            $score = DB::transaction(function (): array {
-                $answers = $this->normalizedAnswers();
-                $score = ControlResponse::calculateScores($this->rooms, $answers);
-                $response = ControlResponse::create([
-                    'control_id' => $this->control->id, 'cleaner_id' => $this->cleaner_id,
-                    'supervisor_id' => Auth::id(), 'apartment_id' => $this->apartment_id,
+            $answers = $this->normalizedAnswers($rooms);
+            $score = ControlResponse::calculateScores($rooms, $answers);
+            $response = app(ControlRunManager::class)->submitOnce(
+                controlId: (int) $this->control->id,
+                supervisorId: (int) Auth::id(),
+                runId: $this->runId,
+                schemaVersion: $this->schemaVersion,
+                expectedRevision: $this->draftRevision,
+                draftId: $this->draftId,
+                attributes: [
+                    'cleaner_id' => $this->cleaner_id,
+                    'apartment_id' => $this->apartment_id,
                     'is_assigned' => $this->is_assigned,
                     'previous_cleaner' => trim($this->previous_cleaner),
-                    'cleaning_date' => $this->cleaning_date, 'inspection_date' => $this->inspection_date,
-                    'comment' => trim($this->comment), 'responses' => $answers, 'schema_snapshot' => $this->rooms,
-                    'total_points' => $score['total_points'], 'max_points' => $score['max_points'],
-                    'score_percent' => $score['score_percent'], 'penalty_points' => $score['penalty_points'],
-                    'errors_count' => $score['errors_count'], 'has_critical_failure' => $score['has_critical_failure'],
-                    'result_zone' => $score['result_zone'], 'result_zone_reason' => $score['result_zone_reason'],
-                    'status' => ControlResponse::STATUS_SENT, 'sent_at' => now(),
-                ]);
-                activity()->causedBy(Auth::user())->performedOn($response)->event('control_completed')
-                    ->withProperties(['control_id' => $this->control->id, 'control_name' => $this->control->name,
-                        'cleaner_id' => $this->cleaner_id, 'apartment_id' => $this->apartment_id,
-                        'cleaning_date' => $this->cleaning_date, 'inspection_date' => $this->inspection_date,
-                        'total_points' => $score['total_points'], 'max_points' => $score['max_points'],
-                        'score_percent' => $score['score_percent'], 'result_zone' => $score['result_zone'],
-                        'penalty_points' => $score['penalty_points'], 'errors_count' => $score['errors_count'],
-                        'result_zone_reason' => $score['result_zone_reason']])
-                    ->log('Супервайзер отправил контроль качества');
-                ControlResponseDraft::query()->where('control_id', $this->control->id)
-                    ->where('supervisor_id', Auth::id())->delete();
+                    'cleaning_date' => $this->cleaning_date,
+                    'inspection_date' => $this->inspection_date,
+                    'comment' => trim($this->comment),
+                    'responses' => $answers,
+                    'schema_snapshot' => $rooms,
+                    'schema_version' => $this->schemaVersion,
+                    'total_points' => $score['total_points'],
+                    'max_points' => $score['max_points'],
+                    'score_percent' => $score['score_percent'],
+                    'penalty_points' => $score['penalty_points'],
+                    'errors_count' => $score['errors_count'],
+                    'has_critical_failure' => $score['has_critical_failure'],
+                    'result_zone' => $score['result_zone'],
+                    'result_zone_reason' => $score['result_zone_reason'],
+                    'status' => ControlResponse::STATUS_SENT,
+                    'sent_at' => now(),
+                ],
+                afterCreate: function (ControlResponse $response) use ($score): void {
+                    activity()->causedBy(Auth::user())->performedOn($response)->event('control_completed')
+                        ->withProperties([
+                            'control_id' => $this->control->id,
+                            'control_name' => $this->control->name,
+                            'cleaner_id' => $this->cleaner_id,
+                            'apartment_id' => $this->apartment_id,
+                            'cleaning_date' => $this->cleaning_date,
+                            'inspection_date' => $this->inspection_date,
+                            'total_points' => $score['total_points'],
+                            'max_points' => $score['max_points'],
+                            'score_percent' => $score['score_percent'],
+                            'result_zone' => $score['result_zone'],
+                            'penalty_points' => $score['penalty_points'],
+                            'errors_count' => $score['errors_count'],
+                            'result_zone_reason' => $score['result_zone_reason'],
+                        ])
+                        ->log('Супервайзер отправил контроль качества');
+                },
+            );
 
-                return $score;
-            });
-            Cache::put($lockKey.':completed', true, now()->addMinutes(10));
+            $this->draftId = null;
             $this->submitted = true;
             $this->stage = 'done';
-            $this->successMessage = "Оценка: {$score['total_points']} / {$score['max_points']} ({$score['score_percent']}%).";
+            $this->successMessage = "Оценка: {$response->total_points} / {$response->max_points} ({$response->score_percent}%).";
+        } catch (ValidationException $e) {
+            $this->addError('submit', $e->errors()['draft'][0] ?? $e->errors()['submit'][0] ?? 'Черновик изменился. Перезагрузите контроль перед отправкой.');
         } catch (Throwable $e) {
             report($e);
             $this->addError('submit', 'Не удалось отправить контроль. Попробуйте ещё раз.');
@@ -599,6 +837,7 @@ new class extends Component
             $this->isSubmitting = false;
         }
     }
+
 };
 ?>
 
@@ -730,6 +969,16 @@ new class extends Component
         get busy() { return this.uploads.some(item => ['ожидание', 'загрузка', 'загружено'].includes(item.status)); }
     }"
     x-on:focus-question-selected.window="focusQuestion($event.detail)">
+    @if($draftSchemaConflict)
+        <div role="alert" class="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+            <p class="font-semibold">{{ $draftError ?: 'Схема контроля изменилась. Старый черновик сохранён без переноса ответов.' }}</p>
+            <button type="button" wire:click="startNewDraft" class="mt-3 min-h-11 rounded-xl bg-amber-900 px-4 font-semibold text-white">
+                Начать новую проверку
+            </button>
+        </div>
+    @elseif(filled($draftSchemaNotice))
+        <div role="status" class="mb-4 rounded-2xl bg-blue-50 p-4 text-sm text-blue-900">{{ $draftSchemaNotice }}</div>
+    @endif
     <div class="mb-4 flex items-start justify-between gap-3">
         <div class="min-w-0">
             <h1 class="mt-1 truncate text-[22px] font-bold leading-tight">{{ $stage === 'review' ? 'Проверка контроля' : ($control?->name ?? 'Контроль качества') }}</h1>

@@ -4,6 +4,8 @@ use App\Models\Control;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
+use App\Services\Controls\ControlRunManager;
+use App\Services\Controls\ControlSchema;
 use App\Services\UserApplicationBadgeService;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Database\Schema\Blueprint;
@@ -13,6 +15,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
 
 beforeEach(function () {
@@ -64,6 +67,10 @@ beforeEach(function () {
         $table->text('comment')->nullable();
         $table->json('responses')->nullable();
         $table->json('schema_snapshot')->nullable();
+        $table->string('schema_version', 64)->nullable();
+        $table->uuid('run_id')->nullable()->unique();
+        $table->unsignedInteger('revision')->default(0);
+        $table->string('state', 20)->default('active');
         $table->timestamps();
     });
 
@@ -80,6 +87,8 @@ beforeEach(function () {
         $table->text('comment')->nullable();
         $table->json('responses')->nullable();
         $table->json('schema_snapshot')->nullable();
+        $table->string('schema_version', 64)->nullable();
+        $table->uuid('submission_token')->nullable()->unique();
         $table->unsignedInteger('total_points')->default(0);
         $table->unsignedInteger('max_points')->default(0);
         $table->unsignedTinyInteger('score_percent')->default(0);
@@ -1342,4 +1351,297 @@ it('persists the latest rapid answer edits together and restores them after relo
         ->assertSet('answers.0.4.selected', 'yes')
         ->assertSet('answers.1.0.selected', 'no')
         ->assertSet('answers.1.4.selected', 'no');
+});
+
+
+it('restores a legacy Focus draft only when its saved schema snapshot matches', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $rooms = $control->main;
+    $now = now();
+
+    DB::table('control_response_drafts')->insert([
+        'control_id' => $control->id,
+        'supervisor_id' => auth()->id(),
+        'cleaner_id' => $cleaner->id,
+        'apartment_id' => $apartment,
+        'cleaning_date' => $now->toDateString(),
+        'inspection_date' => $now->toDateString(),
+        'responses' => json_encode([[['selected' => 'yes', 'custom' => '', 'media' => []]]], JSON_THROW_ON_ERROR),
+        'schema_snapshot' => json_encode($rooms, JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    Livewire::test('forms.page-control-focus')
+        ->assertSet('answers.0.0.selected', 'yes')
+        ->assertSet('cleaner_id', $cleaner->id)
+        ->assertSet('apartment_id', $apartment)
+        ->call('saveDraft')
+        ->assertSet('draftState', 'saved');
+
+    $draft = DB::table('control_response_drafts')->first();
+    expect($draft->schema_version)->toBe((new ControlSchema((int) $control->id, $rooms))->version())
+        ->and($draft->revision)->toBe(1)
+        ->and($draft->run_id)->not->toBeNull();
+});
+
+it('preserves an incompatible Focus draft and starts a separate blank run', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $oldRooms = $control->main;
+    $now = now();
+
+    $oldDraftId = DB::table('control_response_drafts')->insertGetId([
+        'control_id' => $control->id,
+        'supervisor_id' => auth()->id(),
+        'cleaner_id' => $cleaner->id,
+        'apartment_id' => $apartment,
+        'cleaning_date' => $now->toDateString(),
+        'inspection_date' => $now->toDateString(),
+        'responses' => json_encode([[['selected' => 'yes', 'custom' => 'old answer', 'media' => []]]], JSON_THROW_ON_ERROR),
+        'schema_snapshot' => json_encode($oldRooms, JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $control->update(['main' => [[
+        'title' => 'Вход',
+        'items' => [
+            ...$oldRooms[0]['items'],
+            [
+                'question' => 'Новый вопрос?',
+                'answer_type' => 'options',
+                'answer_options_scored' => [['value' => 'yes', 'label' => 'Да', 'points' => 1]],
+            ],
+        ],
+    ]]]);
+
+    Livewire::test('forms.page-control-focus')
+        ->assertSet('draftSchemaConflict', true)
+        ->assertSet('answers.0.0.selected', '')
+        ->assertSet('cleaner_id', null)
+        ->call('startNewDraft')
+        ->assertSet('draftSchemaConflict', false)
+        ->assertSet('answers.0.0.selected', '');
+
+    $oldDraft = DB::table('control_response_drafts')->where('id', $oldDraftId)->first();
+    $newDraft = DB::table('control_response_drafts')->where('state', 'active')->first();
+
+    expect($oldDraft->state)->toBe('conflict')
+        ->and(json_decode($oldDraft->responses, true)[0][0]['selected'])->toBe('yes')
+        ->and($newDraft)->not->toBeNull()
+        ->and($newDraft->id)->not->toBe($oldDraftId)
+        ->and(json_decode($newDraft->responses, true)[0][0]['selected'])->toBe('');
+});
+
+it('rejects a stale Focus draft revision without overwriting the latest answers', function () {
+    [, , , $control] = mountControlWorkflow();
+    $runId = (string) Str::uuid();
+    $schemaVersion = (new ControlSchema((int) $control->id, $control->main))->version();
+    $now = now();
+    $draftId = DB::table('control_response_drafts')->insertGetId([
+        'control_id' => $control->id,
+        'supervisor_id' => auth()->id(),
+        'responses' => json_encode([[['selected' => 'no']]], JSON_THROW_ON_ERROR),
+        'schema_snapshot' => json_encode($control->main, JSON_THROW_ON_ERROR),
+        'schema_version' => $schemaVersion,
+        'run_id' => $runId,
+        'revision' => 4,
+        'state' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    expect(fn () => app(ControlRunManager::class)->saveDraft(
+        controlId: (int) $control->id,
+        supervisorId: (int) auth()->id(),
+        runId: $runId,
+        expectedRevision: 3,
+        draftId: $draftId,
+        schemaVersion: $schemaVersion,
+        attributes: ['responses' => [['selected' => 'yes']]],
+    ))->toThrow(ValidationException::class);
+
+    expect(json_decode((string) DB::table('control_response_drafts')->where('id', $draftId)->value('responses'), true)[0][0]['selected'])
+        ->toBe('no');
+});
+
+it('makes Focus submission idempotent per run while allowing a new run for the same control', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $manager = app(ControlRunManager::class);
+    $schemaVersion = (new ControlSchema((int) $control->id, $control->main))->version();
+    $attributes = [
+        'cleaner_id' => $cleaner->id,
+        'apartment_id' => $apartment,
+        'cleaning_date' => now()->toDateString(),
+        'inspection_date' => now()->toDateString(),
+        'responses' => [],
+        'schema_snapshot' => $control->main,
+        'total_points' => 0,
+        'max_points' => 0,
+        'score_percent' => 0,
+        'penalty_points' => 0,
+        'errors_count' => 0,
+        'has_critical_failure' => false,
+        'result_zone' => 'green',
+        'result_zone_reason' => 'Ошибок нет',
+        'status' => ControlResponse::STATUS_SENT,
+        'sent_at' => now(),
+    ];
+    $firstRun = (string) Str::uuid();
+    $created = 0;
+    $callback = function (ControlResponse $response) use (&$created): void {
+        $created++;
+    };
+
+    $first = $manager->submitOnce(
+        controlId: (int) $control->id,
+        supervisorId: (int) auth()->id(),
+        runId: $firstRun,
+        schemaVersion: $schemaVersion,
+        expectedRevision: 0,
+        draftId: null,
+        attributes: $attributes,
+        afterCreate: $callback,
+    );
+    $retry = $manager->submitOnce(
+        controlId: (int) $control->id,
+        supervisorId: (int) auth()->id(),
+        runId: $firstRun,
+        schemaVersion: $schemaVersion,
+        expectedRevision: 0,
+        draftId: null,
+        attributes: $attributes,
+        afterCreate: $callback,
+    );
+    $secondRun = $manager->submitOnce(
+        controlId: (int) $control->id,
+        supervisorId: (int) auth()->id(),
+        runId: (string) Str::uuid(),
+        schemaVersion: $schemaVersion,
+        expectedRevision: 0,
+        draftId: null,
+        attributes: $attributes,
+        afterCreate: $callback,
+    );
+
+    $otherSupervisor = User::create([
+        'name' => 'Other Supervisor',
+        'role' => 'supervisor',
+        'status' => 'approved',
+        'is_active' => true,
+    ]);
+
+    expect(fn () => $manager->submitOnce(
+        controlId: (int) $control->id,
+        supervisorId: (int) $otherSupervisor->id,
+        runId: $firstRun,
+        schemaVersion: $schemaVersion,
+        expectedRevision: 0,
+        draftId: null,
+        attributes: $attributes,
+        afterCreate: $callback,
+    ))->toThrow(ValidationException::class);
+
+    expect($retry->id)->toBe($first->id)
+        ->and($secondRun->id)->not->toBe($first->id)
+        ->and($created)->toBe(2)
+        ->and(DB::table('control_responses')->count())->toBe(2);
+});
+
+it('rejects a client supplied option that is not in the canonical Focus schema', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'forged-value')
+        ->call('review')
+        ->call('submit')
+        ->assertSet('submitted', false)
+        ->assertHasErrors('answers.0.0');
+
+    expect(DB::table('control_responses')->count())->toBe(0);
+});
+
+it('does not restore a conflict draft into Classic Control', function () {
+    [, , , $control] = mountControlWorkflow();
+    $now = now();
+    DB::table('control_response_drafts')->insert([
+        'control_id' => $control->id,
+        'supervisor_id' => auth()->id(),
+        'responses' => json_encode([[['selected' => 'yes']]], JSON_THROW_ON_ERROR),
+        'schema_snapshot' => json_encode($control->main, JSON_THROW_ON_ERROR),
+        'state' => 'conflict',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    Livewire::test('forms.page-control')
+        ->assertSet('answers.0.0.selected', '')
+        ->assertSet('draftState', 'idle');
+});
+it('keeps shared Focus drafts revision-safe when Classic saves them', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+
+    $staleFocus = Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes');
+
+    $before = DB::table('control_response_drafts')->first();
+    expect((int) $before->revision)->toBeGreaterThan(0);
+
+    Livewire::test('forms.page-control')
+        ->set('answers.0.0.selected', 'no')
+        ->call('saveDraftAuto')
+        ->assertSet('draftState', 'saved');
+
+    $after = DB::table('control_response_drafts')->first();
+    $storedAnswer = json_decode((string) $after->responses, true)[0][0];
+
+    expect((int) $after->revision)->toBeGreaterThan((int) $before->revision)
+        ->and($after->schema_version)->toBe((new ControlSchema((int) $control->id, $control->main))->version())
+        ->and($storedAnswer['question_id'])->toBe((new ControlSchema((int) $control->id, $control->main))->questionIds()[0][0])
+        ->and($storedAnswer['selected'])->toBe('no');
+
+    $staleFocus->call('setAnswer', 0, 0, 'yes')->assertSet('draftState', 'error');
+
+    expect(json_decode((string) DB::table('control_response_drafts')->first()->responses, true)[0][0]['selected'])
+        ->toBe('no');
+});
+it('produces the same result for identical Classic and Focus answers', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'no')
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    $classic = DB::table('control_responses')->first();
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'no')
+        ->call('start')
+        ->call('review')
+        ->call('submit')
+        ->assertSet('submitted', true);
+
+    $focus = DB::table('control_responses')->where('id', '<>', $classic->id)->first();
+    $scoreFields = [
+        'total_points',
+        'max_points',
+        'score_percent',
+        'penalty_points',
+        'errors_count',
+        'has_critical_failure',
+        'result_zone',
+        'result_zone_reason',
+    ];
+
+    expect(collect($focus)->only($scoreFields)->all())->toBe(collect($classic)->only($scoreFields)->all());
 });
