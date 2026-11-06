@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Http\Controllers\TelegramWorkWebhookController;
+use App\Services\Telegram\HtmlBubbles\TelegramHtmlBubblesTargetGuard;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramPollingFailure;
@@ -30,6 +31,7 @@ class TelegramWorkPollCommand extends Command
         TelegramScheduledControlResponseService $responses,
         TelegramDistrictRouteRegistry $districts,
         TelegramPollingHealthMonitor $health,
+        TelegramHtmlBubblesTargetGuard $htmlBubblesTarget,
     ): int {
         $startedAt = hrtime(true);
         $token = (string) config('services.telegram.bot_token');
@@ -84,6 +86,13 @@ class TelegramWorkPollCommand extends Command
             $total = 0;
             $networkRetries = 0;
             $attempts = 0;
+            $htmlBubblesEnabled = (bool) config('services.telegram.htmlbubbles.enabled', false)
+                && $htmlBubblesTarget->hasSafeConfiguredTarget();
+            $allowedUpdates = ['message', 'edited_message', 'channel_post', 'callback_query'];
+
+            if ($htmlBubblesEnabled) {
+                $allowedUpdates[] = 'widget_query';
+            }
 
             do {
                 $waitSeconds = $listenSeconds > 0
@@ -91,7 +100,7 @@ class TelegramWorkPollCommand extends Command
                     : 0;
                 $result = $poller->poll(
                     $token,
-                    ['message', 'edited_message', 'channel_post', 'callback_query'],
+                    $allowedUpdates,
                     $limit,
                     function (array $update) use ($processor, $ingestService, $assistantService, $responses, $districts): void {
                         $response = $processor->processUpdate(
@@ -112,6 +121,7 @@ class TelegramWorkPollCommand extends Command
                     $offset,
                     $waitSeconds,
                     pollerName: 'work',
+                    experimentalWidgets: $htmlBubblesEnabled,
                 );
                 $attempts++;
                 $total += $result['processed'];
