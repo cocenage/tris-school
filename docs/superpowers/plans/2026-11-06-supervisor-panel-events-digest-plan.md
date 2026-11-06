@@ -1,8 +1,8 @@
 # Supervisor Panel and Daily Events Digest — Implementation Plan
 
-**Date:** 2026-11-06  
-**Branch:** `codex/supervisor-panel-events-digest`  
-**Base:** `origin/main` at `d95aa73a1ae1734650551020eeb8a2bd9abdf214`  
+**Date:** 2026-11-06
+**Branch:** `codex/supervisor-panel-events-digest`
+**Base:** `origin/main` at `d95aa73a1ae1734650551020eeb8a2bd9abdf214`
 **Approved design:** `docs/superpowers/specs/2026-11-06-supervisor-panel-events-digest-design.md`
 
 ## Constraints
