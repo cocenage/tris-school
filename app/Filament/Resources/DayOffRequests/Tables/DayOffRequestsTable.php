@@ -9,13 +9,14 @@ use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Textarea;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
-use Filament\Forms\Components\DatePicker;
+use Illuminate\Support\Facades\DB;
 
 class DayOffRequestsTable
 {
@@ -135,13 +136,15 @@ class DayOffRequestsTable
                         ->visible(fn (DayOffRequest $record): bool => $record->status !== 'approved')
                         ->requiresConfirmation()
                         ->action(function (DayOffRequest $record): void {
-                            $record->update([
-                                'status' => 'approved',
-                            ]);
+                            DB::transaction(function () use ($record): void {
+                                $record->update([
+                                    'status' => 'approved',
+                                ]);
 
-                            $record->days()->update([
-                                'status' => 'approved',
-                            ]);
+                                $record->days()->update([
+                                    'status' => 'approved',
+                                ]);
+                            });
                         }),
 
                     Action::make('reject')
@@ -157,16 +160,18 @@ class DayOffRequestsTable
                                 ->default(fn (DayOffRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (DayOffRequest $record, array $data): void {
-                            $record->update([
-                                'status' => 'rejected',
-                                'admin_comment' => filled($data['admin_comment'] ?? null)
-                                    ? trim((string) $data['admin_comment'])
-                                    : $record->admin_comment,
-                            ]);
+                            DB::transaction(function () use ($record, $data): void {
+                                $record->update([
+                                    'status' => 'rejected',
+                                    'admin_comment' => filled($data['admin_comment'] ?? null)
+                                        ? trim((string) $data['admin_comment'])
+                                        : $record->admin_comment,
+                                ]);
 
-                            $record->days()->update([
-                                'status' => 'rejected',
-                            ]);
+                                $record->days()->update([
+                                    'status' => 'rejected',
+                                ]);
+                            });
                         }),
 
                     Action::make('set_admin_comment')

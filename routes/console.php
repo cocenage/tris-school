@@ -13,6 +13,11 @@ Schedule::command('calendar:notify-tomorrow')
     ->dailyAt('6:00')
     ->timezone('Europe/Rome');
 
+Schedule::command('calendar:summaries-reconcile')
+    ->everyFiveMinutes()
+    ->timezone('Europe/Rome')
+    ->withoutOverlapping();
+
 Schedule::command('calendar:notify-celebrations')
     ->dailyAt('09:00')
     ->timezone('Europe/Rome')

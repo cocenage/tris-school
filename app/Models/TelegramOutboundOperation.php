@@ -14,6 +14,7 @@ class TelegramOutboundOperation extends Model
         'attempted_at' => 'datetime',
         'finished_at' => 'datetime',
         'telegram_message_id' => 'integer',
+        'last_sent_content_hash' => 'string',
         'error_code' => 'integer',
         'attempts' => 'integer',
     ];

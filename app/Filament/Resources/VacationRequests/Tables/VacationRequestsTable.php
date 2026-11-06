@@ -16,6 +16,7 @@ use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 
 class VacationRequestsTable
 {
@@ -134,17 +135,19 @@ class VacationRequestsTable
                         ->visible(fn (VacationRequest $record): bool => $record->status !== 'approved')
                         ->requiresConfirmation()
                         ->action(function (VacationRequest $record): void {
-                            foreach ($record->days as $day) {
-                                $day->update([
-                                    'status' => 'approved',
-                                    'admin_comment' => null,
-                                    'reviewed_at' => now(),
-                                    'reviewed_by' => auth()->id(),
-                                ]);
-                            }
+                            DB::transaction(function () use ($record): void {
+                                foreach ($record->days as $day) {
+                                    $day->update([
+                                        'status' => 'approved',
+                                        'admin_comment' => null,
+                                        'reviewed_at' => now(),
+                                        'reviewed_by' => auth()->id(),
+                                    ]);
+                                }
 
-                            $record->resetNotification();
-                            $record->syncStatusAndNotify();
+                                $record->resetNotification();
+                                $record->syncStatusAndNotify();
+                            });
                         }),
 
                     Action::make('reject')
@@ -160,25 +163,27 @@ class VacationRequestsTable
                                 ->default(fn (VacationRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (VacationRequest $record, array $data): void {
-                            $adminComment = filled($data['admin_comment'] ?? null)
-                                ? trim((string) $data['admin_comment'])
-                                : $record->admin_comment;
+                            DB::transaction(function () use ($record, $data): void {
+                                $adminComment = filled($data['admin_comment'] ?? null)
+                                    ? trim((string) $data['admin_comment'])
+                                    : $record->admin_comment;
 
-                            foreach ($record->days as $day) {
-                                $day->update([
-                                    'status' => 'rejected',
+                                foreach ($record->days as $day) {
+                                    $day->update([
+                                        'status' => 'rejected',
+                                        'admin_comment' => $adminComment,
+                                        'reviewed_at' => now(),
+                                        'reviewed_by' => auth()->id(),
+                                    ]);
+                                }
+
+                                $record->update([
                                     'admin_comment' => $adminComment,
-                                    'reviewed_at' => now(),
-                                    'reviewed_by' => auth()->id(),
                                 ]);
-                            }
 
-                            $record->update([
-                                'admin_comment' => $adminComment,
-                            ]);
-
-                            $record->resetNotification();
-                            $record->syncStatusAndNotify();
+                                $record->resetNotification();
+                                $record->syncStatusAndNotify();
+                            });
                         }),
 
                     Action::make('set_admin_comment')

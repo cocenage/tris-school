@@ -4,7 +4,14 @@ namespace App\Providers;
 
 use App\Http\Middleware\BlockRolePreviewWrites;
 use App\Models\Apartment;
+use App\Models\DayOffRequest;
+use App\Models\DayOffRequestDay;
+use App\Models\EmployeeCalendarAdjustment;
+use App\Models\EmployeeWorkScheduleVersion;
 use App\Models\User;
+use App\Models\VacationRequest;
+use App\Models\VacationRequestDay;
+use App\Observers\CalendarSummarySourceObserver;
 use App\Observers\UserObserver;
 use App\Policies\ApartmentPolicy;
 use App\Services\Telegram\TelegramOutboundMonitor;
@@ -54,5 +61,12 @@ class AppServiceProvider extends ServiceProvider
             ]);
         });
         User::observe(UserObserver::class);
+        User::observe(CalendarSummarySourceObserver::class);
+        DayOffRequest::observe(CalendarSummarySourceObserver::class);
+        DayOffRequestDay::observe(CalendarSummarySourceObserver::class);
+        VacationRequest::observe(CalendarSummarySourceObserver::class);
+        VacationRequestDay::observe(CalendarSummarySourceObserver::class);
+        EmployeeWorkScheduleVersion::observe(CalendarSummarySourceObserver::class);
+        EmployeeCalendarAdjustment::observe(CalendarSummarySourceObserver::class);
     }
 }

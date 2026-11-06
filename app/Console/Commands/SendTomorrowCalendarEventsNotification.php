@@ -144,6 +144,21 @@ class SendTomorrowCalendarEventsNotification extends Command
         return trim(implode("\n", $lines));
     }
 
+    /** Build a summary with the same formatter used by the scheduled initial send. */
+    public function buildForDate(
+        Carbon $date,
+        CalendarEventsService $calendarEventsService,
+        CalendarSummaryService $calendarSummaryService,
+    ): string {
+        Carbon::setLocale('ru');
+
+        $events = collect($calendarEventsService->getEventsForDay($date, 'peak'))
+            ->where('type', 'peak')
+            ->values();
+
+        return $this->buildMessage($date, $events, $calendarSummaryService->build($date));
+    }
+
     public function renderStaffSummary(Carbon $date, array $summary): string
     {
         return $this->buildMessage($date, collect(), $summary);

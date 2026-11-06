@@ -156,19 +156,35 @@ class TelegramOutboundMonitor
             }
 
             $result = $event->response->json();
-            $accepted = $event->response->successful() && data_get($result, 'ok') === true;
-            $messageId = data_get($result, 'result.message_id') ?: data_get($result, 'result.0.message_id');
+            $context = $this->context ?? [];
             $isEdit = str_starts_with($operation->method, 'editMessage');
+            $notModified = ($context['accept_not_modified_edit'] ?? false)
+                && $isEdit
+                && $event->response->status() === 400
+                && str_contains(mb_strtolower((string) data_get($result, 'description')), 'message is not modified');
+            $accepted = ($event->response->successful() && data_get($result, 'ok') === true) || $notModified;
+            $messageId = data_get($result, 'result.message_id') ?: data_get($result, 'result.0.message_id');
             $hasReceipt = $isEdit || is_numeric($messageId);
+            $requestData = $event->request->data();
+            $contentHash = $operation->notification_type === 'calendar'
+                && is_string($requestData['text'] ?? null)
+                ? hash('sha256', $requestData['text'])
+                : null;
 
-            $operation->update([
+            $updates = [
                 'status' => $accepted ? ($hasReceipt ? ($isEdit ? 'edited' : 'sent') : 'uncertain') : 'failed',
                 'finished_at' => now(),
                 'telegram_message_id' => is_numeric($messageId) ? (int) $messageId : $operation->telegram_message_id,
                 'error_code' => $accepted ? null : (int) (data_get($result, 'error_code') ?: $event->response->status()),
                 // Telegram descriptions can contain message content and are deliberately excluded.
                 'error_reason' => $accepted ? ($hasReceipt ? null : 'receipt_missing') : 'telegram_api_rejected',
-            ]);
+            ];
+
+            if ($accepted && $contentHash !== null && Schema::hasColumn('telegram_outbound_operations', 'last_sent_content_hash')) {
+                $updates['last_sent_content_hash'] = $contentHash;
+            }
+
+            $operation->update($updates);
             $this->recordDigestEvent(
                 $operation,
                 'telegram_response',
