@@ -10,20 +10,20 @@ use App\Filament\Resources\CalendarEvents\Schemas\CalendarEventForm;
 use App\Filament\Resources\CalendarEvents\Schemas\CalendarEventInfolist;
 use App\Filament\Resources\CalendarEvents\Tables\CalendarEventsTable;
 use App\Models\CalendarEvent;
+use App\Services\Authorization\SupervisorPanelAccess;
 use BackedEnum;
+use Filament\Facades\Filament;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
-use UnitEnum;
+use Illuminate\Database\Eloquent\Builder;
 
 class CalendarEventResource extends Resource
 {
     protected static ?string $model = CalendarEvent::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedCalendarDays;
-
-    protected static string|UnitEnum|null $navigationGroup = 'Контент';
 
     protected static ?int $navigationSort = 1;
 
@@ -34,6 +34,26 @@ class CalendarEventResource extends Resource
     protected static ?string $modelLabel = 'событие календаря';
 
     protected static ?string $pluralModelLabel = 'события календаря';
+
+    public static function getNavigationGroup(): ?string
+    {
+        return Filament::getCurrentPanel()?->getId() === 'education'
+            ? 'Рабочие инструменты'
+            : 'Контент';
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery();
+
+        if (Filament::getCurrentPanel()?->getId() !== 'education') {
+            return $query;
+        }
+
+        $types = app(SupervisorPanelAccess::class)->allowedCalendarTypes(auth()->user());
+
+        return $types === [] ? $query->whereRaw('1 = 0') : $query->whereIn('type', $types);
+    }
 
     public static function form(Schema $schema): Schema
     {
@@ -67,7 +87,7 @@ class CalendarEventResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return (string) static::getModel()::query()
+        return (string) static::getEloquentQuery()
             ->where('is_active', true)
             ->count();
     }

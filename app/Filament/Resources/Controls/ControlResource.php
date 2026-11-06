@@ -11,6 +11,7 @@ use App\Filament\Resources\Controls\Schemas\ControlInfolist;
 use App\Filament\Resources\Controls\Tables\ControlsTable;
 use App\Models\Control;
 use BackedEnum;
+use Filament\Facades\Filament;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
@@ -25,12 +26,16 @@ class ControlResource extends Resource
     protected static ?string $recordTitleAttribute = 'name';
 
     protected static ?string $navigationLabel = 'Формы контролей';
+
     protected static ?string $modelLabel = 'Контроль';
+
     protected static ?string $pluralModelLabel = 'Контроли';
 
     public static function getNavigationGroup(): ?string
     {
-        return 'Формы контроля и коучинга';
+        return Filament::getCurrentPanel()?->getId() === 'education'
+            ? 'Контроль качества'
+            : 'Формы контроля и коучинга';
     }
 
     public static function form(Schema $schema): Schema

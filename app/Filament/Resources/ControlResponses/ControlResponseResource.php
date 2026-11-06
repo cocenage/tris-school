@@ -2,7 +2,6 @@
 
 namespace App\Filament\Resources\ControlResponses;
 
-use App\Filament\Resources\ControlResponses\Pages\CreateControlResponse;
 use App\Filament\Resources\ControlResponses\Pages\EditControlResponse;
 use App\Filament\Resources\ControlResponses\Pages\ListControlResponses;
 use App\Filament\Resources\ControlResponses\Pages\ViewControlResponse;
@@ -11,6 +10,7 @@ use App\Filament\Resources\ControlResponses\Schemas\ControlResponseInfolist;
 use App\Filament\Resources\ControlResponses\Tables\ControlResponsesTable;
 use App\Models\ControlResponse;
 use BackedEnum;
+use Filament\Facades\Filament;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
@@ -20,15 +20,22 @@ class ControlResponseResource extends Resource
 {
     protected static ?string $model = ControlResponse::class;
 
-   protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedClipboardDocumentCheck;
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedClipboardDocumentCheck;
 
-protected static ?string $navigationLabel = 'Ответы контроля';
+    protected static ?string $navigationLabel = 'Ответы контроля';
 
-protected static ?string $modelLabel = 'Ответ контроля';
+    protected static ?string $modelLabel = 'Ответ контроля';
 
-protected static ?string $pluralModelLabel = 'Ответы контроля';
+    protected static ?string $pluralModelLabel = 'Ответы контроля';
 
-protected static ?string $recordTitleAttribute = 'apartment';
+    protected static ?string $recordTitleAttribute = 'apartment';
+
+    public static function getNavigationGroup(): ?string
+    {
+        return Filament::getCurrentPanel()?->getId() === 'education'
+            ? 'Контроль качества'
+            : 'Формы контроля и коучинга';
+    }
 
     public static function form(Schema $schema): Schema
     {

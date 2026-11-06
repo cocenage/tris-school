@@ -6,20 +6,21 @@ use App\Filament\Resources\Apartments\Pages\CreateApartment;
 use App\Filament\Resources\Apartments\Pages\EditApartment;
 use App\Filament\Resources\Apartments\Pages\ListApartments;
 use App\Filament\Resources\Apartments\Pages\ViewApartment;
+use App\Filament\Resources\Apartments\RelationManagers\AccessRelationManager;
 use App\Filament\Resources\Apartments\RelationManagers\InformationAttachmentsRelationManager;
 use App\Filament\Resources\Apartments\RelationManagers\InformationSectionsRelationManager;
-use App\Filament\Resources\Apartments\RelationManagers\AccessRelationManager;
 use App\Filament\Resources\Apartments\Schemas\ApartmentForm;
 use App\Filament\Resources\Apartments\Schemas\ApartmentInfolist;
 use App\Filament\Resources\Apartments\Tables\ApartmentsTable;
 use App\Models\Apartment;
 use App\Services\Apartments\ApartmentAccessService;
 use BackedEnum;
-use Illuminate\Database\Eloquent\Builder;
+use Filament\Facades\Filament;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class ApartmentResource extends Resource
 {
@@ -30,12 +31,16 @@ class ApartmentResource extends Resource
     protected static ?string $recordTitleAttribute = 'name';
 
     protected static ?string $navigationLabel = 'Квартиры';
+
     protected static ?string $modelLabel = 'Квартира';
+
     protected static ?string $pluralModelLabel = 'Квартиры';
 
     public static function getNavigationGroup(): ?string
     {
-        return 'Формы контроля и коучинга';
+        return Filament::getCurrentPanel()?->getId() === 'education'
+            ? 'Рабочие инструменты'
+            : 'Формы контроля и коучинга';
     }
 
     public static function form(Schema $schema): Schema

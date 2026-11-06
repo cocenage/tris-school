@@ -6,10 +6,10 @@ use App\Models\User;
 use App\Services\Calendar\EmployeeWorkCalendarStatisticsService;
 use BackedEnum;
 use Carbon\CarbonImmutable;
+use Filament\Facades\Filament;
 use Filament\Pages\Page;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
-use UnitEnum;
 
 class EmployeeWorkCalendarReport extends Page
 {
@@ -18,8 +18,6 @@ class EmployeeWorkCalendarReport extends Page
     protected static ?string $navigationLabel = 'Рабочий календарь';
 
     protected static ?string $title = 'Рабочий календарь сотрудников';
-
-    protected static string|UnitEnum|null $navigationGroup = 'Пользователи';
 
     protected static ?int $navigationSort = 2;
 
@@ -36,6 +34,13 @@ class EmployeeWorkCalendarReport extends Page
     public static function canAccess(): bool
     {
         return auth()->user()?->canViewAllEmployeeCalendars() ?? false;
+    }
+
+    public static function getNavigationGroup(): ?string
+    {
+        return Filament::getCurrentPanel()?->getId() === 'education'
+            ? 'Сотрудники и графики'
+            : 'Пользователи';
     }
 
     public function mount(): void

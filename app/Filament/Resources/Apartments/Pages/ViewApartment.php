@@ -2,8 +2,8 @@
 
 namespace App\Filament\Resources\Apartments\Pages;
 
-use App\Models\Apartment;
 use App\Filament\Resources\Apartments\ApartmentResource;
+use App\Models\Apartment;
 use App\Services\Apartments\ApartmentAccessService;
 use App\Services\Apartments\TelegramApartmentImportService;
 use Filament\Actions\Action;
@@ -11,8 +11,10 @@ use Filament\Actions\EditAction;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Placeholder;
-use Filament\Schemas\Components\Utilities\Get;
+use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ViewRecord;
+use Filament\Schemas\Components\Utilities\Get;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\HtmlString;
 use Illuminate\Validation\ValidationException;
 
@@ -61,6 +63,7 @@ class ViewApartment extends ViewRecord
                             } catch (ValidationException $exception) {
                                 return new HtmlString('<span class="text-danger-600">'.e($exception->getMessage()).'</span>');
                             }
+
                             return view('filament.components.telegram-import-preview', compact('preview'));
                         }),
                     Checkbox::make('confirm')
@@ -69,6 +72,7 @@ class ViewApartment extends ViewRecord
                         ->required(),
                 ])
                 ->action(function (Apartment $record, array $data): void {
+                    Gate::authorize('manageInformation', $record);
                     $result = app(TelegramApartmentImportService::class)->import(
                         $record,
                         $data['json_path'],
@@ -76,7 +80,7 @@ class ViewApartment extends ViewRecord
                         auth()->user(),
                     );
 
-                    \Filament\Notifications\Notification::make()
+                    Notification::make()
                         ->title('Импорт завершён')
                         ->body(sprintf(
                             'Сообщений: %d, изображений: %d, документов: %d, пропущено: %d.',

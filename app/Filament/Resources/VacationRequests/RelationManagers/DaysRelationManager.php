@@ -9,6 +9,7 @@ use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Support\Facades\Gate;
 
 class DaysRelationManager extends RelationManager
 {
@@ -67,6 +68,7 @@ class DaysRelationManager extends RelationManager
                     ->visible(fn (VacationRequestDay $record): bool => $record->status !== 'approved')
                     ->requiresConfirmation()
                     ->action(function (VacationRequestDay $record): void {
+                        Gate::authorize('review', $record);
                         $request = $record->request;
 
                         if ($record->status !== 'approved') {
@@ -96,6 +98,7 @@ class DaysRelationManager extends RelationManager
                             ->default(fn (VacationRequestDay $record) => $record->admin_comment),
                     ])
                     ->action(function (VacationRequestDay $record, array $data): void {
+                        Gate::authorize('review', $record);
                         $request = $record->request;
 
                         $adminComment = filled($data['admin_comment'] ?? null)
@@ -127,6 +130,7 @@ class DaysRelationManager extends RelationManager
                     ->visible(fn (VacationRequestDay $record): bool => $record->status !== 'pending')
                     ->requiresConfirmation()
                     ->action(function (VacationRequestDay $record): void {
+                        Gate::authorize('review', $record);
                         $request = $record->request;
 
                         $record->update([
