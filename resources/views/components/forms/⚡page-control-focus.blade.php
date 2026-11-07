@@ -454,6 +454,32 @@ new class extends Component
         }
     }
 
+    public function saveMediaComment(int $roomIndex, int $questionIndex, int $mediaIndex, string $comment): void
+    {
+        $this->ensureAuthorized();
+        if ($this->submitted || $this->stage === 'done') {
+            return;
+        }
+
+        $media = $this->savedMedia[$roomIndex][$questionIndex] ?? null;
+        if (! is_array($media) || ! is_array($media[$mediaIndex] ?? null)) {
+            return;
+        }
+
+        $previousMedia = $media;
+        $comment = mb_substr(trim($comment), 0, 2000);
+        if ($comment === '') {
+            unset($media[$mediaIndex]['comment']);
+        } else {
+            $media[$mediaIndex]['comment'] = $comment;
+        }
+
+        $this->savedMedia[$roomIndex][$questionIndex] = array_values($media);
+        if (! $this->saveDraft(true)) {
+            $this->savedMedia[$roomIndex][$questionIndex] = $previousMedia;
+        }
+    }
+
     protected function validateControl(): bool
     {
         $this->resetErrorBag();
@@ -875,6 +901,14 @@ new class extends Component
                                                     <span class="font-semibold text-[#16834B]">Сохранено</span>
                                                     <button type="button" wire:click="removeMedia({{ $roomIndex }}, {{ $questionIndex }}, {{ $mediaIndex }})" class="font-semibold text-[#B42318]">Удалить</button>
                                                 </div>
+                                                <textarea
+                                                    rows="2"
+                                                    maxlength="2000"
+                                                    aria-label="Комментарий к вложению {{ $mediaIndex + 1 }}"
+                                                    placeholder="Комментарий к фото или видео"
+                                                    wire:blur="saveMediaComment({{ $roomIndex }}, {{ $questionIndex }}, {{ $mediaIndex }}, $event.target.value)"
+                                                    class="mt-1 block min-h-12 w-full resize-y rounded-lg border border-[#D7DEE6] bg-white px-2 py-1.5 text-xs leading-5 text-[#263238] placeholder:text-[#7A858B] focus:border-[#285B86] focus:ring-2 focus:ring-[#285B86]"
+                                                >{{ $file['comment'] ?? '' }}</textarea>
                                             </div>
                                         @endforeach
                                         <template x-for="item in uploads.filter(file => file.room === {{ $roomIndex }} && file.question === {{ $questionIndex }})" :key="item.id">
@@ -917,6 +951,37 @@ new class extends Component
                 <p><strong>Проверка:</strong> {{ $inspection_date ?: 'Не указана' }}</p>
                 <button type="button" wire:click="$set('stage', 'setup')" class="mt-2 font-semibold text-[#285B86]">Изменить данные</button>
             </div>
+            @if(collect($savedMedia)->flatten(2)->isNotEmpty())
+                <section class="mt-4 rounded-2xl bg-[#F8FAFC] p-3">
+                    <h3 class="mb-2 text-sm font-semibold">Фото и видео с комментариями</h3>
+                    <div class="space-y-3">
+                        @foreach($rooms as $roomIndex => $room)
+                            @foreach(($room['items'] ?? []) as $questionIndex => $question)
+                                @php $reviewMedia = $savedMedia[$roomIndex][$questionIndex] ?? []; @endphp
+                                @if($reviewMedia !== [])
+                                    <div class="min-w-0">
+                                        <p class="mb-1 text-xs font-semibold text-[#475569]">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }} · {{ $question['question'] ?? 'Вопрос' }}</p>
+                                        <div class="grid grid-cols-2 gap-2 min-[390px]:grid-cols-3">
+                                            @foreach($reviewMedia as $mediaIndex => $file)
+                                                <figure class="min-w-0 overflow-hidden rounded-xl bg-white">
+                                                    @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
+                                                        <video src="{{ ControlResponse::resolveMediaUrl($file) }}" controls preload="metadata" class="aspect-[4/3] w-full object-cover"></video>
+                                                    @else
+                                                        <img src="{{ ControlResponse::resolveMediaUrl($file) }}" alt="Фото к вопросу" loading="lazy" decoding="async" class="aspect-[4/3] w-full object-cover">
+                                                    @endif
+                                                    @if(filled($file['comment'] ?? null))
+                                                        <figcaption class="whitespace-pre-wrap break-words px-2 py-1.5 text-xs leading-5 text-[#263238]">{{ $file['comment'] }}</figcaption>
+                                                    @endif
+                                                </figure>
+                                            @endforeach
+                                        </div>
+                                    </div>
+                                @endif
+                            @endforeach
+                        @endforeach
+                    </div>
+                </section>
+            @endif
             @if(count($this->incompleteQuestions))
                 <h3 class="mt-5 font-bold text-[#B42318]">Незаполненные обязательные вопросы</h3>
                 <div class="mt-2 space-y-2">

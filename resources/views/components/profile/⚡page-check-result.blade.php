@@ -263,19 +263,39 @@ new class extends Component {
                             @foreach($mediaItems as $item)
                                 <div class="rounded-[18px] bg-[#F8F8F8] p-[12px]">
                                     <div class="text-[13px] font-semibold">{{ $item['room'] }} · {{ $item['question'] }}</div>
-                                    <div class="mt-[10px] flex gap-[8px] overflow-x-auto">
+                                    <div class="mt-[10px] grid grid-cols-2 gap-[8px] min-[420px]:grid-cols-3">
                                         @foreach($item['media'] as $file)
-                                                @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
-                                                    <div x-data="{ playbackFailed: false }" class="shrink-0">
-                                                        <video src="{{ $file['url'] }}" controls preload="metadata" x-on:error="playbackFailed = true" class="h-[92px] w-[92px] rounded-[18px] object-cover"></video>
-                                                        <p x-show="playbackFailed" x-cloak class="text-[11px]">Браузер не воспроизводит это видео.</p>
-                                                        <a href="{{ $file['url'] }}?download=1" class="text-[11px] font-semibold underline">Оригинал видео</a>
+                                            @php $fileComment = trim((string) ($file['comment'] ?? '')); @endphp
+                                            @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
+                                                <figure x-data="{ playbackFailed: false }" class="min-w-0 overflow-hidden rounded-[14px] bg-white">
+                                                    <video src="{{ $file['url'] }}" controls preload="metadata" x-on:error="playbackFailed = true" class="aspect-[4/3] w-full object-cover"></video>
+                                                    <p x-show="playbackFailed" x-cloak class="px-2 pt-1 text-[11px]">Браузер не воспроизводит это видео.</p>
+                                                    <a href="{{ $file['url'] }}?download=1" class="block px-2 pt-1 text-[11px] font-semibold underline">Оригинал видео</a>
+                                                    @if($fileComment !== '')
+                                                        <figcaption class="whitespace-pre-wrap break-words px-2 py-2 text-[13px] leading-[1.4] text-[#263238]">{{ $fileComment }}</figcaption>
+                                                    @endif
+                                                </figure>
+                                            @else
+                                                <figure x-data="{ zoomOpen: false }" class="min-w-0 overflow-hidden rounded-[14px] bg-white">
+                                                    <button type="button" x-on:click="zoomOpen = true" aria-label="Увеличить фото" class="block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#285B86]">
+                                                        <img src="{{ $file['url'] }}" alt="Фото к вопросу" loading="lazy" decoding="async" class="aspect-[4/3] w-full object-cover">
+                                                    </button>
+                                                    @if($fileComment !== '')
+                                                        <figcaption class="break-words px-2 py-2 text-[13px] leading-[1.4] text-[#263238]">{{ $fileComment }}</figcaption>
+                                                    @endif
+                                                    <div x-show="zoomOpen" x-cloak x-on:click.self="zoomOpen = false" x-on:keydown.escape.window="zoomOpen = false" role="dialog" aria-modal="true" aria-label="Увеличенное фото" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-3 sm:p-6">
+                                                        <div class="max-h-full w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-3 sm:p-4">
+                                                            <div class="mb-2 flex justify-end">
+                                                                <button type="button" x-on:click="zoomOpen = false" aria-label="Закрыть увеличенное фото" class="min-h-11 min-w-11 rounded-full bg-[#F1F5F9] text-xl font-semibold text-[#17201A]">×</button>
+                                                            </div>
+                                                            <img src="{{ $file['url'] }}" alt="Фото к вопросу" class="mx-auto max-h-[68dvh] w-auto max-w-full rounded-xl object-contain">
+                                                            @if($fileComment !== '')
+                                                                <p class="mx-auto mt-3 max-w-3xl whitespace-pre-wrap break-words text-[14px] leading-[1.5] text-[#17201A]">{{ $fileComment }}</p>
+                                                            @endif
+                                                        </div>
                                                     </div>
-                                                @else
-                                                    <a href="{{ $file['url'] }}" target="_blank" class="shrink-0" aria-label="Открыть вложение">
-                                                    <img src="{{ $file['url'] }}" alt="Фото к вопросу" class="h-[92px] w-[92px] rounded-[18px] object-cover">
-                                                    </a>
-                                                @endif
+                                                </figure>
+                                            @endif
                                         @endforeach
                                     </div>
                                 </div>

@@ -1034,6 +1034,58 @@ protected function getDraftPayload(?array $media = null): array
         return 'control-draft-media:'.$this->control->id.':'.Auth::id();
     }
 
+    public function saveMediaComment(int $roomIndex, int $questionIndex, int $mediaIndex, string $comment): void
+    {
+        $this->ensureCanConductControl();
+
+        if (! isset($this->rooms[$roomIndex]['items'][$questionIndex])) {
+            return;
+        }
+
+        $lock = Cache::lock($this->draftMediaLockKey(), 30);
+        if (! $lock->get()) {
+            $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Сохранение ещё выполняется. Повторите попытку.');
+
+            return;
+        }
+
+        try {
+            $media = $this->draftMedia();
+            if (! is_array($media[$roomIndex][$questionIndex][$mediaIndex] ?? null)) {
+                return;
+            }
+
+            $comment = mb_substr(trim($comment), 0, 2000);
+            if ($comment === '') {
+                unset($media[$roomIndex][$questionIndex][$mediaIndex]['comment']);
+            } else {
+                $media[$roomIndex][$questionIndex][$mediaIndex]['comment'] = $comment;
+            }
+
+            $media[$roomIndex][$questionIndex] = array_values($media[$roomIndex][$questionIndex]);
+            $payload = $this->getDraftPayload($media);
+            $draft = ControlResponseDraft::updateOrCreate(
+                ['control_id' => $this->control->id, 'supervisor_id' => Auth::id()],
+                $payload
+            );
+
+            $this->draftId = $draft->id;
+            $this->answers[$roomIndex][$questionIndex]['media'] = $media[$roomIndex][$questionIndex];
+            $this->lastDraftHash = $this->getDraftHash($payload);
+            $this->draftSavedAt = now()->format('H:i');
+            $this->draftState = 'saved';
+            $this->hasUnsavedChanges = false;
+            $this->resetErrorBag("queuedPhotos.$roomIndex.$questionIndex");
+        } catch (\Throwable $e) {
+            report($e);
+            $this->draftState = 'error';
+            $this->hasUnsavedChanges = true;
+            $this->addError("queuedPhotos.$roomIndex.$questionIndex", 'Не удалось сохранить комментарий к вложению. Повторите сохранение.');
+        } finally {
+            $lock->release();
+        }
+    }
+
     public function removeQueuedPhoto(int $roomIndex, int $questionIndex, int $photoIndex, ?string $uploadId = null): void
     {
         $this->ensureCanConductControl();
@@ -2681,6 +2733,15 @@ protected function getDraftPayload(?array $media = null): array
                                                                                 <img src="{{ $mediaUrl }}" alt="Фото контроля" loading="lazy" decoding="async" class="h-[88px] w-full object-cover">
                                                                             @endif
 
+                                                                            <textarea
+                                                                                rows="2"
+                                                                                maxlength="2000"
+                                                                                aria-label="Комментарий к вложению {{ $photoIndex + 1 }}"
+                                                                                placeholder="Комментарий к фото или видео"
+                                                                                wire:blur="saveMediaComment({{ $roomIndex }}, {{ $questionIndex }}, {{ $photoIndex }}, $event.target.value)"
+                                                                                class="block min-h-[52px] w-full resize-y border-0 bg-white px-2 py-1.5 text-xs leading-5 text-[#263238] placeholder:text-[#7A858B] focus:ring-2 focus:ring-inset focus:ring-[#2D6494]"
+                                                                            >{{ $photo['comment'] ?? '' }}</textarea>
+
                                                                             <span class="absolute bottom-[5px] left-[5px] rounded-full bg-black/65 px-[6px] py-[2px] text-[10px] font-semibold text-white">Готово</span>
 
                                                                             <button
@@ -2881,6 +2942,39 @@ protected function getDraftPayload(?array $media = null): array
                             </div>
                         @endforeach
                     </div>
+                @endif
+
+                @if($summary['photos_total'] > 0)
+                    <section class="mt-[14px] rounded-[18px] bg-[#F8FAFC] p-[12px]">
+                        <h2 class="mb-[10px] text-[13px] font-semibold text-[#17201A]">Фото и видео с комментариями</h2>
+                        <div class="space-y-[12px]">
+                            @foreach($rooms as $roomIndex => $room)
+                                @foreach(($room['items'] ?? []) as $questionIndex => $question)
+                                    @php $reviewMedia = $answers[$roomIndex][$questionIndex]['media'] ?? []; @endphp
+                                    @if($reviewMedia !== [])
+                                        <div class="min-w-0">
+                                            <div class="mb-[6px] text-[12px] font-semibold text-[#475569]">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }} · {{ $question['question'] ?? 'Вопрос' }}</div>
+                                            <div class="grid grid-cols-2 gap-[8px] min-[390px]:grid-cols-3">
+                                                @foreach($reviewMedia as $photoIndex => $photo)
+                                                    @php $photoUrl = route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $photoIndex]); @endphp
+                                                    <figure class="min-w-0 overflow-hidden rounded-[12px] bg-white">
+                                                        @if(str_starts_with((string) ($photo['mime'] ?? ''), 'video/'))
+                                                            <video src="{{ $photoUrl }}" controls preload="metadata" class="aspect-[4/3] w-full object-cover"></video>
+                                                        @else
+                                                            <img src="{{ $photoUrl }}" alt="Фото к вопросу" loading="lazy" decoding="async" class="aspect-[4/3] w-full object-cover">
+                                                        @endif
+                                                        @if(filled($photo['comment'] ?? null))
+                                                            <figcaption class="whitespace-pre-wrap break-words px-[8px] py-[7px] text-[12px] leading-[1.4] text-[#263238]">{{ $photo['comment'] }}</figcaption>
+                                                        @endif
+                                                    </figure>
+                                                @endforeach
+                                            </div>
+                                        </div>
+                                    @endif
+                                @endforeach
+                            @endforeach
+                        </div>
+                    </section>
                 @endif
 
                 @if(count($this->reviewIssues) > 0)
