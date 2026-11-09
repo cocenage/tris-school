@@ -359,11 +359,17 @@ class ControlResponseInfolist
             $html .= '<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">';
             foreach ($item['media'] as $file) {
                 $url = e($file['url']);
+                $html .= '<figure style="display:flex;flex-direction:column;gap:4px;max-width:320px;margin:0;">';
                 if (str_starts_with((string) ($file['mime'] ?? ''), 'video/')) {
                     $html .= '<video src="'.$url.'" controls preload="metadata" style="width:160px;height:120px;border-radius:12px;"></video>';
                 } else {
                     $html .= '<a href="'.$url.'" target="_blank"><img src="'.$url.'" alt="Фото контроля" style="width:120px;height:120px;object-fit:cover;border-radius:12px;"></a>';
                 }
+                $comment = trim((string) ($file['comment'] ?? ''));
+                if ($comment !== '') {
+                    $html .= '<figcaption style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;">'.e($comment).'</figcaption>';
+                }
+                $html .= '</figure>';
             }
             $html .= '</div></div>';
         }

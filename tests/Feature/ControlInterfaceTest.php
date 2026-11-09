@@ -119,6 +119,32 @@ it('renders corrective metadata on result and Filament views without requiring a
         ->toContain('Корректирующие действия');
 });
 
+it('renders per-photo comments in control summaries, completed results and the Filament view', function () {
+    $classic = file_get_contents(base_path('resources/views/components/forms/⚡page-control.blade.php'));
+    $focus = file_get_contents(base_path('resources/views/components/forms/⚡page-control-focus.blade.php'));
+    $result = file_get_contents(base_path('resources/views/components/profile/⚡page-check-result.blade.php'));
+    $infolist = file_get_contents(base_path('app/Filament/Resources/ControlResponses/Schemas/ControlResponseInfolist.php'));
+
+    expect($classic)
+        ->toContain("\$photo['comment'] ?? null")
+        ->toContain('saveMediaComment(')
+        ->toContain('grid-cols-2')
+        ->and($focus)
+        ->toContain("\$file['comment'] ?? ''")
+        ->toContain('saveMediaComment(')
+        ->toContain('min-[390px]:grid-cols-3')
+        ->and($result)
+        ->toContain("\$file['comment'] ?? ''")
+        ->toContain('$fileComment')
+        ->toContain('role="dialog"')
+        ->toContain('aria-modal="true"')
+        ->toContain('max-w-full')
+        ->and($infolist)
+        ->toContain('e($comment)')
+        ->toContain('white-space:pre-wrap')
+        ->toContain('overflow-wrap:anywhere');
+});
+
 it('uses the sent status consistently in the Filament response form', function () {
     $form = file_get_contents(base_path('app/Filament/Resources/ControlResponses/Schemas/ControlResponseForm.php'));
 
