@@ -519,6 +519,7 @@ class TelegramScheduledControlResponseService
                     $events[] = [
                         'district' => $district, 'identity' => $identity, 'classification' => $classification,
                         'responded_at' => CarbonImmutable::parse($at)->setTimezone('Europe/Rome')->toIso8601String(),
+                        'text' => $text,
                         'response' => $response,
                     ];
                 }

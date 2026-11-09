@@ -112,13 +112,18 @@ class TelegramScheduledControlSummaryBuilder
 
                 return $interpretation + [
                     'text' => Str::limit((string) preg_replace('/\s+/u', ' ', $response->text), 180),
+                    'full_text' => trim((string) preg_replace('/\s+/u', ' ', $response->text)),
                     'control_type' => $delivery->control_type,
                     'author_name' => $response->author_name,
+                    'username' => $response->username,
+                    'response_kind' => $response->response_kind,
+                    'district_key' => $response->district_key,
                     'responder_key' => $response->user_id !== null ? 'user:'.$response->user_id
                         : ($response->telegram_user_id !== null ? 'telegram:'.$response->telegram_user_id : null),
                     'responded_at' => $response->responded_at?->toIso8601String(),
                     'source_message_id' => $response->telegram_message_id,
                     'reply_to_message_id' => $response->reply_to_message_id,
+                    'source_url' => $this->sourceUrl((string) $delivery->chat_id, $response->telegram_message_id ?: $response->reply_to_message_id),
                 ];
             })->values()->all();
 
@@ -139,6 +144,8 @@ class TelegramScheduledControlSummaryBuilder
 
             return $stats + [
                 'delivery_id' => $delivery->id, 'scheduled_message_id' => $delivery->scheduled_message_id,
+                'trigger_delivery_id' => $delivery->trigger_delivery_id,
+                'sequence_context' => $delivery->sequence_context ?? [],
                 'group_key' => $delivery->bot_type === 'work' && isset(ScheduledControlTypes::LABELS[$delivery->control_type])
                     ? 'delivery:'.$delivery->id
                     : hash('sha256', implode('|', [$delivery->control_type, $delivery->chat_id, $delivery->message_thread_id,
@@ -257,6 +264,15 @@ class TelegramScheduledControlSummaryBuilder
                     'status' => $event['classification'],
                     'responded_at' => $event['responded_at'],
                     'source_message_id' => $event['response']->telegram_message_id ?: $event['response']->reply_to_message_id,
+                    'response_id' => $event['response']->id,
+                    'source_url' => $this->sourceUrl((string) $delivery->chat_id, $event['response']->telegram_message_id ?: $event['response']->reply_to_message_id),
+                    'text' => trim((string) preg_replace('/\s+/u', ' ', (string) ($event['text'] ?? $event['response']->text))),
+                    'author_name' => $event['response']->author_name,
+                    'username' => $event['response']->username,
+                    'responder_key' => hash('sha256', (string) $event['identity']),
+                    'reason' => $this->districtReason($event['text'] ?? $event['response']->text, $delivery->control_type, $label),
+                    'apartment' => $event['response']->telegramMessage?->topic?->apartment?->name,
+                    'is_repeat_check' => $event['response']->followup_id !== null || $delivery->trigger_delivery_id !== null,
                 ];
             }
 
@@ -294,6 +310,23 @@ class TelegramScheduledControlSummaryBuilder
         }
 
         return $districts;
+    }
+
+    private function districtReason(string $text, string $controlType, string $district): ?string
+    {
+        $interpretation = $this->interpreter->interpret($text, $controlType);
+        $result = collect($interpretation['districts'] ?? [])->first(fn (array $entry): bool => mb_strtolower((string) ($entry['district'] ?? '')) === mb_strtolower($district));
+
+        return $result['reason'] ?? $interpretation['reason'] ?? null;
+    }
+
+    private function sourceUrl(string $chatId, mixed $messageId): ?string
+    {
+        if (! str_starts_with($chatId, '-100') || ! is_numeric($messageId)) {
+            return null;
+        }
+
+        return 'https://t.me/c/'.substr($chatId, 4).'/'.$messageId;
     }
 
     private function mergeDistrictResults($responses): array

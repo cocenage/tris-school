@@ -8,6 +8,26 @@ namespace App\Services\Telegram;
  */
 class TelegramRichMessageBuilder
 {
+    /** @return array{markdown: string} */
+    public function markdownDocument(string $markdown): array
+    {
+        return ['markdown' => $markdown];
+    }
+
+    /** Escape untrusted text for inline insertion into Telegram Rich Markdown. */
+    public function escapeRichText(string $value): string
+    {
+        $value = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $value = trim((string) preg_replace('/[\p{Cc}\p{Cf}\s]+/u', ' ', $value));
+        $value = htmlspecialchars($value, ENT_NOQUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+        return str_replace(
+            ['\\', '*', '_', '[', ']', '(', ')', '`', '#', '>', '+', '-', '.', '!', '|', '~', '='],
+            ['\\\\', '\\*', '\\_', '\\[', '\\]', '\\(', '\\)', '\\`', '\\#', '\\>', '\\+', '\\-', '\\.', '\\!', '\\|', '\\~', '\\='],
+            $value,
+        );
+    }
+
     public function build(
         string $title,
         string $status,
