@@ -14,7 +14,7 @@ use RuntimeException;
 
 class TelegramScheduledControlSummaryDeliveryService
 {
-    public function __construct(private TelegramScheduledControlSummaryBuilder $builder, private TelegramScheduledControlSummaryFormatter $formatter) {}
+    public function __construct(private TelegramScheduledControlSummaryBuilder $builder, private TelegramScheduledControlSummaryRichFormatter $formatter) {}
 
     public function eligible(string $date, array $summary): bool
     {
@@ -112,11 +112,15 @@ class TelegramScheduledControlSummaryDeliveryService
         $dispatchFailed = false;
         try {
             $queued = DB::transaction(function () use ($date, $summary, $chatId, $threadId, $context, &$delivery, &$dispatchFailed): int {
-                $hash = hash('sha256', json_encode($summary, JSON_THROW_ON_ERROR));
+                $richMessage = $this->formatter->richMessage($summary);
+                $fallbackHtml = $this->formatter->fallbackHtml($summary);
+                $storedSummary = $summary;
+                $storedSummary['rendered_rich_message'] = $richMessage;
+                $hash = hash('sha256', json_encode($storedSummary, JSON_THROW_ON_ERROR));
                 $key = hash('sha256', implode('|', [$date, $chatId, $threadId ?? '']));
                 $delivery = TelegramScheduledControlSummaryDelivery::firstOrCreate(['delivery_key' => $key], [
                     'summary_date' => $date, 'chat_id' => (string) $chatId, 'message_thread_id' => filled($threadId) ? (string) $threadId : null,
-                    'summary_hash' => $hash, 'summary' => $summary, 'text' => $this->formatter->format($summary),
+                    'summary_hash' => $hash, 'summary' => $storedSummary, 'text' => $fallbackHtml,
                 ]);
                 $delivery = TelegramScheduledControlSummaryDelivery::query()->lockForUpdate()->findOrFail($delivery->id);
 

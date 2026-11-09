@@ -47,6 +47,7 @@ class DeliverScheduledControlSummary implements ShouldQueue
         }
 
         try {
+            $richMessage = $delivery->summary['rendered_rich_message'] ?? null;
             $messageId = app(TelegramOutboundMonitor::class)->withContext([
                 'operation_key' => $this->operationKey ?? 'scheduled_control_summary:'.$delivery->id,
                 'notification_type' => 'scheduled_control_summary',
@@ -56,11 +57,18 @@ class DeliverScheduledControlSummary implements ShouldQueue
                 'source_type' => 'telegram_scheduled_control_summary_delivery',
                 'source_id' => $delivery->id,
                 'scheduled_for' => $delivery->summary_date,
-            ], fn () => $telegram->sendAnalyticsMessage(
-                $delivery->chat_id,
-                $delivery->text,
-                $delivery->message_thread_id ?? '',
-            ));
+            ], fn () => is_array($richMessage)
+                ? $telegram->sendAnalyticsRichMessage(
+                    chatId: $delivery->chat_id,
+                    richMessage: $richMessage,
+                    fallbackHtml: $delivery->text,
+                    threadId: $delivery->message_thread_id,
+                )
+                : $telegram->sendAnalyticsMessage(
+                    $delivery->chat_id,
+                    $delivery->text,
+                    $delivery->message_thread_id ?? '',
+                ));
         } catch (Throwable $error) {
             $this->markUncertain();
             Log::warning('scheduled_control_summary_outcome_uncertain', [

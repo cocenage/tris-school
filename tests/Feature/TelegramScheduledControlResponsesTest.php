@@ -25,6 +25,7 @@ use App\Services\Telegram\TelegramScheduledControlStatistics;
 use App\Services\Telegram\TelegramScheduledControlSummaryBuilder;
 use App\Services\Telegram\TelegramScheduledControlSummaryDeliveryService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
+use App\Services\Telegram\TelegramScheduledControlSummaryRichFormatter;
 use App\Services\Telegram\TelegramScheduledInboundProcessor;
 use App\Services\Telegram\TelegramScheduledMessageDeliveryService;
 use App\Services\Telegram\TelegramUpdateIngestService;
@@ -112,9 +113,10 @@ function controlDeliveryFixture(array $overrides = []): TelegramScheduledMessage
 
 function stubControlSummaryFormatter(): void
 {
-    $formatter = Mockery::mock(TelegramScheduledControlSummaryFormatter::class);
-    $formatter->shouldReceive('format')->andReturn('Test control summary');
-    app()->instance(TelegramScheduledControlSummaryFormatter::class, $formatter);
+    $formatter = Mockery::mock(TelegramScheduledControlSummaryRichFormatter::class);
+    $formatter->shouldReceive('richMessage')->andReturn(['markdown' => '# Test control summary']);
+    $formatter->shouldReceive('fallbackHtml')->andReturn('Test control summary');
+    app()->instance(TelegramScheduledControlSummaryRichFormatter::class, $formatter);
 }
 
 function controlReplyPayload(TelegramScheduledMessageDelivery $delivery, string $text = 'Да, все начали', int $id = 100, int $author = 101, string $at = '2026-10-01 09:41:00'): array
@@ -1159,7 +1161,7 @@ it('renders aggregate control points and exceptions without inventing expected r
 
 it('exposes the requested read-only preview command and a compact empty state', function () {
     expect(Artisan::call('telegram:control-summary-preview', ['--date' => '2026-10-01']))->toBe(0)
-        ->and(Artisan::output())->toContain('✅ Контрольных сообщений за день не было.')
+        ->and(Artisan::output())->toContain('🧹 TRIS — Итоги рабочего дня', 'Проведённых контролей', 'Итоги дня')
         ->not->toContain('Нет ответа');
 });
 
@@ -1367,7 +1369,8 @@ it('sends a concise human exception for one missing district while retaining sta
         ->not->toContain('подтверждены: Lambrate', 'Контролей:', 'Ответы:', 'Медиана', 'По типам', 'schedule_checked');
 
     expect(app(TelegramScheduledControlSummaryDeliveryService::class)->queue('2026-10-01')['queued'])->toBe(1);
-    expect(TelegramScheduledControlSummaryDelivery::query()->sole()->text)->toBe($text);
+    expect(TelegramScheduledControlSummaryDelivery::query()->sole()->text)
+        ->toBe(app(TelegramScheduledControlSummaryRichFormatter::class)->fallbackHtml($summary));
     expect(Artisan::call('telegram:scheduled-controls-summary-send', ['--date' => '2026-10-01', '--dry-run' => true, '--json' => true]))->toBe(0);
     $json = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
     expect($json['totals'])->toMatchArray(['response_rate_percent' => 100, 'median_response_latency_seconds' => 360.0])
@@ -1487,9 +1490,10 @@ it('correlates the queued scheduled controls job and Telegram receipt to the pre
 
 it('records a formatted-empty Scheduled Controls message separately from source-zero', function () {
     enableOutboundJournalForScheduledTest();
-    $formatter = Mockery::mock(TelegramScheduledControlSummaryFormatter::class);
-    $formatter->shouldReceive('format')->once()->andReturn('');
-    app()->instance(TelegramScheduledControlSummaryFormatter::class, $formatter);
+    $formatter = Mockery::mock(TelegramScheduledControlSummaryRichFormatter::class);
+    $formatter->shouldReceive('richMessage')->once()->andReturn(['markdown' => '']);
+    $formatter->shouldReceive('fallbackHtml')->once()->andReturn('');
+    app()->instance(TelegramScheduledControlSummaryRichFormatter::class, $formatter);
     controlDeliveryFixture();
     $operationKey = 'scheduled_control_summary:2026-10-01:'.hash('sha256', '2026-10-01|-2001|17');
 
@@ -1771,7 +1775,7 @@ it('does not automatically retry a summary whose Telegram receipt is uncertain',
     $receipt = TelegramScheduledControlSummaryDelivery::sole();
     $job = new DeliverScheduledControlSummary($receipt->id);
     $bot = Mockery::mock(TelegramBotService::class);
-    $bot->shouldReceive('sendAnalyticsMessage')->once()->andReturnNull();
+    $bot->shouldReceive('sendAnalyticsRichMessage')->once()->andReturnNull();
     $job->handle($bot);
     $job->handle($bot);
 
@@ -1788,7 +1792,7 @@ it('sends a scheduled summary outside a database transaction and records a confi
     $receipt = TelegramScheduledControlSummaryDelivery::sole();
     $transactionLevelDuringSend = null;
     $bot = Mockery::mock(TelegramBotService::class);
-    $bot->shouldReceive('sendAnalyticsMessage')->once()->andReturnUsing(function () use (&$transactionLevelDuringSend): int {
+    $bot->shouldReceive('sendAnalyticsRichMessage')->once()->andReturnUsing(function () use (&$transactionLevelDuringSend): int {
         $transactionLevelDuringSend = DB::transactionLevel();
 
         return 444;
