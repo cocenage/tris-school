@@ -85,7 +85,9 @@ class MilanWeatherService
             }
 
             $point = $this->mapHour($hour);
-            [$point['condition'], $point['emoji']] = $this->weatherCondition($point['weather_code']);
+            if ($point['condition'] === null) {
+                [$point['condition'], $point['emoji']] = $this->precipitationCondition($point);
+            }
             if (count(array_filter($point, fn (mixed $value): bool => $value !== null)) > 0) {
                 $points[$key] = $point;
             }
@@ -196,11 +198,13 @@ class MilanWeatherService
         $code = $this->nullableInteger($condition['code'] ?? null);
         [$fallbackCondition, $emoji] = $this->weatherCondition($code);
         $providerCondition = $condition['text'] ?? null;
+        $providerText = is_string($providerCondition) && trim($providerCondition) !== ''
+            ? trim($providerCondition)
+            : null;
 
         return [
-            'condition' => $fallbackCondition
-                ?? (is_string($providerCondition) && trim($providerCondition) !== '' ? trim($providerCondition) : null),
-            'emoji' => $emoji,
+            'condition' => $fallbackCondition ?? ($code === null ? $providerText : null),
+            'emoji' => $emoji ?? ($code === null ? $this->conditionEmoji($providerText) : null),
             'weather_code' => $code,
             'temperature_c' => $this->nullableFloat($hour['temp_c'] ?? null),
             'apparent_temperature_c' => $this->nullableFloat($hour['feelslike_c'] ?? null),
@@ -213,6 +217,47 @@ class MilanWeatherService
             'precipitation_probability_pct' => $this->nullableInteger($hour['chance_of_rain'] ?? null),
             'rain_mm' => $this->nullableFloat($hour['precip_mm'] ?? null),
         ];
+    }
+
+    private function precipitationCondition(array $point): array
+    {
+        $rain = $point['rain_mm'] ?? null;
+        $chance = $point['precipitation_probability_pct'] ?? null;
+
+        if (is_numeric($rain) && $rain > 0) {
+            return ['Ожидается дождь', '🌧'];
+        }
+
+        if (is_numeric($chance) && $chance >= 40) {
+            return ['Возможен дождь', '🌧'];
+        }
+
+        if (is_numeric($rain) && $rain === 0.0 && is_numeric($chance) && $chance < 40) {
+            return ['Без существенных осадков', '🌤'];
+        }
+
+        return [null, null];
+    }
+
+    private function conditionEmoji(?string $condition): ?string
+    {
+        $normalized = mb_strtolower(trim((string) $condition));
+
+        return match (true) {
+            str_contains($normalized, 'гроз') || str_contains($normalized, 'thunder') => '⛈',
+            str_contains($normalized, 'мокрый снег') || str_contains($normalized, 'sleet') => '🌨',
+            str_contains($normalized, 'снег') || str_contains($normalized, 'snow') => '❄️',
+            str_contains($normalized, 'дожд') || str_contains($normalized, 'rain')
+                || str_contains($normalized, 'морос') || str_contains($normalized, 'drizzle') => '🌧',
+            str_contains($normalized, 'туман') || str_contains($normalized, 'fog')
+                || str_contains($normalized, 'mist') => '🌫',
+            str_contains($normalized, 'переменная облачность') || str_contains($normalized, 'partly cloudy') => '🌤',
+            str_contains($normalized, 'облач') || str_contains($normalized, 'cloudy') => '🌥',
+            str_contains($normalized, 'пасмур') || str_contains($normalized, 'overcast') => '☁️',
+            str_contains($normalized, 'ясно') || str_contains($normalized, 'солнечно')
+                || str_contains($normalized, 'clear') || str_contains($normalized, 'sunny') => '☀️',
+            default => null,
+        };
     }
 
     private function unavailableMorning(array $points, string $reason): array

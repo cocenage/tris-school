@@ -192,6 +192,39 @@ it('maps shuffled WeatherAPI hours by Unix epoch and returns every available mea
         ]);
 });
 
+it('preserves the provider condition text when the condition code is absent', function () {
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-31 06:00', 'Europe/Rome'));
+    $hour = weatherApiUnitHour('2026-10-31 08:00', [
+        'condition' => ['text' => 'Облачно', 'code' => null],
+    ]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(weatherApiUnitResponse('2026-10-31', [$hour]))]);
+
+    $forecast = app(MilanWeatherService::class)->morningForecast(CarbonImmutable::parse('2026-10-31', 'Europe/Rome'));
+
+    expect($forecast['points']['08:00'])->toMatchArray([
+        'condition' => 'Облачно', 'emoji' => '🌥', 'temperature_c' => 16.0, 'apparent_temperature_c' => 15.0,
+    ]);
+});
+
+it('uses hourly precipitation to fill a missing provider condition without inventing unsupported weather', function (array $overrides, ?string $condition, ?string $emoji) {
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-31 06:00', 'Europe/Rome'));
+    $hour = weatherApiUnitHour('2026-10-31 08:00', [
+        'condition' => ['text' => '', 'code' => null],
+        ...$overrides,
+    ]);
+    Http::fake(['api.weatherapi.com/*' => Http::response(weatherApiUnitResponse('2026-10-31', [$hour]))]);
+
+    $point = app(MilanWeatherService::class)
+        ->morningForecast(CarbonImmutable::parse('2026-10-31', 'Europe/Rome'))['points']['08:00'];
+
+    expect($point)->toMatchArray(['condition' => $condition, 'emoji' => $emoji]);
+})->with([
+    'rain is likely' => [['chance_of_rain' => 55, 'precip_mm' => 0], 'Возможен дождь', '🌧'],
+    'measurable rain is forecast' => [['chance_of_rain' => 10, 'precip_mm' => 0.2], 'Ожидается дождь', '🌧'],
+    'low probability and no rain' => [['chance_of_rain' => 10, 'precip_mm' => 0], 'Без существенных осадков', '🌤'],
+    'precipitation data is missing' => [['chance_of_rain' => null, 'precip_mm' => null], null, null],
+]);
+
 it('keeps missing WeatherAPI fields unavailable instead of replacing them with zero', function () {
     CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-31 06:00', 'Europe/Rome'));
     $hour = weatherApiUnitHour('2026-10-31 13:00', [
@@ -301,11 +334,11 @@ it('does not expose provider translations outside the concise condition map in t
         ->morningForecast(CarbonImmutable::parse('2026-10-31', 'Europe/Rome'))['points']['13:00'];
 
     expect($point)->toMatchArray([
-        'condition' => null,
-        'emoji' => null,
+        'condition' => 'Без существенных осадков',
+        'emoji' => '🌤',
         'weather_code' => 9999,
         'temperature_c' => 14.3,
-    ])->and($point['condition'])->toBeNull();
+    ])->and($point['condition'])->toBe('Без существенных осадков');
 });
 
 it('prioritizes severe risks across all forecast points instead of the earliest mild risk', function () {
