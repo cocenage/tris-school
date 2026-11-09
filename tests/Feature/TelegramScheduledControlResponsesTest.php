@@ -1161,7 +1161,7 @@ it('renders aggregate control points and exceptions without inventing expected r
 
 it('exposes the requested read-only preview command and a compact empty state', function () {
     expect(Artisan::call('telegram:control-summary-preview', ['--date' => '2026-10-01']))->toBe(0)
-        ->and(Artisan::output())->toContain('🧹 TRIS — Итоги рабочего дня', 'Проведённых контролей', 'Итоги дня')
+        ->and(Artisan::output())->toContain('🧹 TRIS — Итоги рабочего дня', '0 проведённых контролей', 'Итоги дня')
         ->not->toContain('Нет ответа');
 });
 
@@ -2234,6 +2234,7 @@ it('accepts confirmed districts from a multi-line text response before schedulin
 });
 
 it('rechecks payment confirmation in the worker and does not repeat an uncertain send', function (): void {
+    config(['services.telegram.bot_token' => 'work-test-token']);
     $this->travelTo(Carbon::parse('2026-10-01 18:30:00', 'Europe/Rome'));
     $delivery = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
     closingPaymentTemplateFor($delivery);
@@ -2281,6 +2282,7 @@ it('uses elapsed time across the spring DST jump and never follows a control int
     Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
 });
 it('recovers a stranded queued follow-up without sending it twice', function (): void {
+    config(['services.telegram.bot_token' => 'work-test-token']);
     $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
     $delivery = followupControlFixture();
     foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
@@ -2325,6 +2327,7 @@ it('classifies an explicit partial response without treating it as completion', 
 });
 
 it('keeps an uncertain follow-up send from being repeated', function (): void {
+    config(['services.telegram.bot_token' => 'work-test-token']);
     $this->travelTo(Carbon::parse('2026-10-01 12:00:00', 'Europe/Rome'));
     $delivery = followupControlFixture();
     foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
@@ -2587,6 +2590,7 @@ it('does not schedule follow-ups when all five districts have confirmed', functi
 });
 
 it('sends the conditional payment control once through the fake Telegram API at the configured time', function (): void {
+    config(['services.telegram.bot_token' => 'work-test-token']);
     $this->travelTo(Carbon::parse('2026-10-01 17:50:00', 'Europe/Rome'));
     $delivery = followupControlFixture(ScheduledControlTypes::CLOSING_CLEANINGS, '2026-10-01 17:30:00');
     closingPaymentTemplateFor($delivery)->update(['send_time' => '19:00:00']);
