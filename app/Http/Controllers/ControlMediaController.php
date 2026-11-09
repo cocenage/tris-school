@@ -15,10 +15,18 @@ class ControlMediaController
     {
         abort_unless(in_array($request->user()?->role, ['admin', 'supervisor'], true), 403);
 
-        $draft = ControlResponseDraft::query()
+        $draftQuery = ControlResponseDraft::query()
             ->where('control_id', $control->id)
             ->where('supervisor_id', $request->user()->id)
-            ->firstOrFail();
+            ->where('state', 'active');
+
+        if ($request->filled('draft_id')) {
+            $draftQuery->whereKey($request->integer('draft_id'));
+        } else {
+            $draftQuery->latest('updated_at');
+        }
+
+        $draft = $draftQuery->firstOrFail();
 
         $file = $draft->responses[$room][$question]['media'][$media] ?? null;
 

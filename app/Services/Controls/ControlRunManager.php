@@ -55,6 +55,11 @@ final class ControlRunManager
                         ]);
                     }
 
+                    if ($draft->schema_snapshot === null && is_array($attributes['schema_snapshot'] ?? null)) {
+                        $draft->schema_snapshot = $attributes['schema_snapshot'];
+                    }
+
+                    unset($attributes['schema_snapshot']);
                     $draft->fill($attributes);
                     $draft->run_id = $runId;
                     $draft->schema_version = $schemaVersion;

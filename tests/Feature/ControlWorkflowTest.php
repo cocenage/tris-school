@@ -924,6 +924,47 @@ it('keeps Focus separate from Classic and restores the same server draft', funct
     Livewire::test('forms.page-control')->assertSet('answers.0.0.selected', 'yes');
 });
 
+it('persists multiple Focus edits in one confirmed draft revision', function () {
+    mountControlWorkflow();
+
+    $component = Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', 2)
+        ->set('comment', 'Initial check')
+        ->set('answers.0.0.selected', 'yes');
+
+    expect(DB::table('control_response_drafts')->count())->toBe(0);
+
+    $component->call('saveDraft')
+        ->assertSet('draftRevision', 1)
+        ->assertSet('draftState', 'saved');
+
+    $draft = DB::table('control_response_drafts')->sole();
+    $responses = json_decode((string) $draft->responses, true);
+
+    expect((int) $draft->revision)->toBe(1)
+        ->and($draft->comment)->toBe('Initial check')
+        ->and($responses[0][0]['selected'])->toBe('yes');
+});
+
+it('writes the Focus schema snapshot only when it first becomes available', function () {
+    [, , , $control] = mountControlWorkflow();
+    $focus = Livewire::test('forms.page-control-focus')->call('saveDraft');
+    $originalSnapshot = ControlResponseDraft::query()->sole()->schema_snapshot;
+    $draftUpdates = [];
+
+    DB::listen(function ($query) use (&$draftUpdates): void {
+        if (str_starts_with(strtolower($query->sql), 'update "control_response_drafts"')) {
+            $draftUpdates[] = $query->sql;
+        }
+    });
+
+    $focus->call('setAnswer', 0, 0, 'yes');
+
+    expect(ControlResponseDraft::query()->sole()->schema_snapshot)->toBe($originalSnapshot)
+        ->and($draftUpdates)->not->toBeEmpty()
+        ->and(collect($draftUpdates)->every(fn (string $sql): bool => ! str_contains($sql, 'schema_snapshot')))->toBeTrue();
+});
+
 it('shows all questions in the active Focus room and preserves configured question types and answers', function () {
     [, , , $control] = mountControlWorkflow();
     $control->update(['main' => [[
@@ -1013,7 +1054,8 @@ it('keeps previously saved corrective data when Focus hides that UI', function (
         ->call('setAnswer', 0, 0, 'no')
         ->set('answers.0.0.corrective.repeats', true)
         ->set('answers.0.0.corrective.action', 'Проверить ключи')
-        ->set('answers.0.0.corrective.recheck', false);
+        ->set('answers.0.0.corrective.recheck', false)
+        ->call('saveDraft');
 
     Livewire::test('forms.page-control-focus')
         ->assertSet('answers.0.0.corrective.action', 'Проверить ключи')
@@ -1031,7 +1073,7 @@ it('keeps previously saved corrective data when Focus hides that UI', function (
 
 it('attaches Focus photo and video to the exact question and restores media in its draft', function () {
     [, $cleaner, $apartment, $control] = mountControlWorkflow();
-    Storage::fake('public');
+    Storage::fake('local');
 
     $focus = Livewire::test('forms.page-control-focus')
         ->call('beginMediaUpload')
@@ -1046,24 +1088,25 @@ it('attaches Focus photo and video to the exact question and restores media in i
     expect($media)->toHaveCount(2)
         ->and($media[0]['mime'])->toBe('image/jpeg')
         ->and($media[1]['mime'])->toBe('video/mp4');
-    Storage::disk('public')->assertExists($media[0]['path']);
-    Storage::disk('public')->assertExists($media[1]['path']);
+    expect($media[0]['disk'])->toBe('local')->and($media[1]['disk'])->toBe('local');
+    Storage::disk('local')->assertExists($media[0]['path']);
+    Storage::disk('local')->assertExists($media[1]['path']);
 
     Livewire::test('forms.page-control-focus')->assertCount('savedMedia.0.0', 2);
     $focus->call('removeMedia', 0, 0, 0)->assertCount('savedMedia.0.0', 1);
-    Storage::disk('public')->assertMissing($media[0]['path']);
+    Storage::disk('local')->assertMissing($media[0]['path']);
 
     $focus->set('cleaner_id', $cleaner->id)->set('apartment_id', $apartment)
         ->call('setAnswer', 0, 0, 'yes')->call('review')->call('submit')->assertSet('submitted', true);
     $saved = json_decode((string) DB::table('control_responses')->value('responses'), true);
     expect($saved[0][0]['media'])->toHaveCount(1)
         ->and($saved[0][0]['media'][0]['mime'])->toBe('video/mp4');
-    Storage::disk('public')->assertExists($saved[0][0]['media'][0]['path']);
+    Storage::disk('local')->assertExists($saved[0][0]['media'][0]['path']);
 });
 
 it('persists Focus media comments without unlocking saved media metadata', function () {
     [, $cleaner, $apartment, $control] = mountControlWorkflow();
-    Storage::fake('public');
+    Storage::fake('local');
 
     $focus = Livewire::test('forms.page-control-focus')
         ->call('beginMediaUpload')
@@ -1105,6 +1148,70 @@ it('persists Focus media comments without unlocking saved media metadata', funct
         ->and(ControlResponseDraft::query()->count())->toBe(0);
 });
 
+it('keeps new Focus media private and serves it only through ownership checked routes', function () {
+    [$supervisor, $cleaner, , $control] = mountControlWorkflow();
+    Storage::fake('local');
+    Storage::fake('public');
+
+    Livewire::test('forms.page-control-focus')
+        ->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->image('private.jpg'))
+        ->call('attachMedia', 0, 0);
+
+    $draft = ControlResponseDraft::query()->sole();
+    $media = $draft->responses[0][0]['media'][0];
+    $draftUrl = route('page-checks.control.draft-media', [
+        $control, 0, 0, 0, 'draft_id' => $draft->id,
+    ]);
+
+    expect($media['disk'])->toBe('local');
+    Storage::disk('local')->assertExists($media['path']);
+    Storage::disk('public')->assertMissing($media['path']);
+    $this->get($draftUrl)->assertOk();
+
+    $otherCleaner = User::create(['name' => 'Other Cleaner', 'role' => 'cleaner', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($otherCleaner)->get($draftUrl)->assertForbidden();
+
+    $this->actingAs($supervisor);
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', DB::table('apartments')->value('id'))
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('review')
+        ->call('submit')
+        ->assertSet('submitted', true);
+
+    $response = ControlResponse::query()->sole();
+    $resultUrl = route('page-checks.control.result-media', [$response, 0, 0, 0]);
+    $this->actingAs($cleaner)->get($resultUrl)->assertOk();
+    $this->actingAs($otherCleaner)->get($resultUrl)->assertForbidden();
+});
+
+it('treats a retried Focus upload acknowledgement as idempotent', function () {
+    [, , , $control] = mountControlWorkflow();
+    Storage::fake('local');
+    $uploadId = 'client-retry-7f92';
+
+    $focus = Livewire::test('forms.page-control-focus')
+        ->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->image('first.jpg'))
+        ->call('attachMedia', 0, 0, $uploadId);
+    $first = ControlResponseDraft::query()->sole();
+    $firstMedia = $first->responses[0][0]['media'];
+
+    $focus->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->image('retry.jpg'))
+        ->call('attachMedia', 0, 0, $uploadId)
+        ->assertSet('pendingMediaCount', 0)
+        ->assertSet('draftRevision', 1);
+
+    $storedMedia = ControlResponseDraft::query()->sole()->responses[0][0]['media'];
+    expect($storedMedia)->toHaveCount(1)
+        ->and($storedMedia[0]['path'])->toBe($firstMedia[0]['path'])
+        ->and($storedMedia[0]['upload_id'])->toBe($uploadId)
+        ->and((int) DB::table('control_response_drafts')->value('revision'))->toBe(1);
+});
+
 it('shows a failed Focus draft save instead of claiming success', function () {
     mountControlWorkflow();
     $focus = Livewire::test('forms.page-control-focus');
@@ -1112,7 +1219,7 @@ it('shows a failed Focus draft save instead of claiming success', function () {
 
     $focus->call('setAnswer', 0, 0, 'yes')
         ->assertSet('draftState', 'error')
-        ->assertSee('Не удалось сохранить черновик');
+        ->assertSet('draftError', 'Не удалось сохранить черновик. Повторите сохранение.');
 });
 
 it('does not persist client-supplied media paths in Focus', function () {
@@ -1153,7 +1260,7 @@ it('keeps a media upload attached to its original question after navigating away
     $room = controlWorkflowSchema()[0];
     $room['items'][] = ['question' => 'Второй вопрос', 'answer_type' => 'text'];
     $control->update(['main' => [$room, ['title' => 'Кухня', 'items' => [['question' => 'Плита', 'answer_type' => 'text']]]]]);
-    Storage::fake('public');
+    Storage::fake('local');
 
     Livewire::test('forms.page-control-focus')
         ->call('start')
@@ -1644,4 +1751,36 @@ it('produces the same result for identical Classic and Focus answers', function 
     ];
 
     expect(collect($focus)->only($scoreFields)->all())->toBe(collect($classic)->only($scoreFields)->all());
+});
+
+it('renders all fifty nine Focus questions without serializing the canonical array into Livewire state', function () {
+    [, , , $control] = mountControlWorkflow();
+    $rooms = [];
+    $counts = [6, 7, 6, 7, 6, 7, 6, 7, 7];
+
+    foreach ($counts as $roomIndex => $count) {
+        $items = [];
+        for ($questionIndex = 0; $questionIndex < $count; $questionIndex++) {
+            $items[] = [
+                'question' => "Проверить объект {$roomIndex}-{$questionIndex}",
+                'answer_type' => 'options',
+                'answer_options_scored' => [
+                    ['value' => 'yes', 'label' => 'Да', 'points' => 1],
+                    ['value' => 'no', 'label' => 'Нет', 'points' => 0],
+                ],
+            ];
+        }
+        $rooms[] = ['title' => "Комната {$roomIndex}", 'items' => $items];
+    }
+
+    $control->update(['main' => $rooms]);
+    $component = Livewire::test('forms.page-control-focus');
+    $snapshot = json_encode($component->snapshot, JSON_THROW_ON_ERROR);
+    $data = $component->getData();
+
+    expect($component->get('rooms'))->toHaveCount(9)
+        ->and(collect($component->get('rooms'))->sum(fn (array $room): int => count($room['items'])))->toBe(59)
+        ->and($data)->not->toHaveKey('rooms')
+        ->and($data)->not->toHaveKey('savedMedia')
+        ->and(strlen($snapshot))->toBeLessThan(20000);
 });
