@@ -1,10 +1,11 @@
 <?php
 
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramRichMessageBuilder;
 use App\Services\Telegram\TelegramScheduledControlSummaryDemoFixture;
 use App\Services\Telegram\TelegramScheduledControlSummaryRichFormatter;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 
 beforeEach(function (): void {
@@ -189,10 +190,80 @@ it('escapes employee text and includes the same essential information in the HTM
 
     expect($markdown)->toContain('&lt;details&gt;')
         ->and($markdown)->not->toContain('<details><summary>подмена')
-        ->and($fallback)->toContain('&lt;details&gt;')
         ->and($fallback)->toContain('Итоги дня')
-        ->and($fallback)->toContain('Не установлено')
+        ->and($fallback)->toContain('Подробная история доступна отдельно')
+        ->and($fallback)->not->toContain('подмена')
+        ->and($fallback)->not->toContain('Тестовый автор')
         ->and($fallback)->not->toContain('<details>');
+});
+
+it('keeps a short fallback informative and counts Cyrillic and emoji conservatively', function (): void {
+    $summary = richControlSummaryFixture();
+    $summary['deliveries'][0]['district_history'][0]['district'] = '👩‍🔬 Москва';
+    $formatter = app(TelegramScheduledControlSummaryRichFormatter::class);
+    $html = $formatter->fallbackHtml($summary);
+    $visible = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $utf16Length = intdiv(strlen(mb_convert_encoding($visible, 'UTF-16LE', 'UTF-8')), 2);
+
+    expect($html)->toContain('08.11.2026')
+        ->and($html)->toContain('👩‍🔬 Москва')
+        ->and($html)->toContain('Главные проблемы')
+        ->and($html)->toContain('Ключевые итоги')
+        ->and($html)->toContain('Подробная история доступна отдельно')
+        ->and(TelegramRichMessageBuilder::htmlVisibleLength($html))->toBe($utf16Length)
+        ->and($utf16Length)->toBeLessThanOrEqual(TelegramScheduledControlSummaryRichFormatter::FALLBACK_MAX_VISIBLE_CHARACTERS);
+});
+
+it('limits huge fallback reports without cutting HTML and preserves deterministic problem order', function (): void {
+    $summary = richControlSummaryFixture();
+    $longUrl = 'https://t.me/c/'.str_repeat('1', 5000).'/123';
+
+    for ($index = 0; $index < 300; $index++) {
+        $at = sprintf('2026-11-08T20:%02d:%02d+01:00', intdiv($index, 60), $index % 60);
+        $summary['deliveries'][] = [
+            'delivery_id' => 1000 + $index,
+            'control_type' => 'cleanings_completed',
+            'scheduled_for' => $at,
+            'delivery_status' => 'sent',
+            'source_url' => $longUrl,
+            'district_history' => [[
+                'district' => 'District-'.str_pad((string) $index, 3, '0', STR_PAD_LEFT),
+                'district_key' => 'district_'.$index,
+                'status' => 'problem',
+                'timeline' => [[
+                    'status' => 'problem',
+                    'responded_at' => $at,
+                    'control_time' => $at,
+                    'text' => 'Подробный ответ не должен попадать в краткий итог',
+                    'source_url' => $longUrl,
+                ]],
+                'followups' => [],
+            ]],
+        ];
+    }
+
+    $formatter = app(TelegramScheduledControlSummaryRichFormatter::class);
+    $html = $formatter->fallbackHtml($summary);
+    $secondRender = $formatter->fallbackHtml($summary);
+    preg_match('/… не показано проблемных записей: (\d+)/u', $html, $omittedMatch);
+    preg_match_all('/District-\d{3}/u', $html, $includedMatches);
+
+    $previousLibxmlState = libxml_use_internal_errors(true);
+    $document = new DOMDocument;
+    $validHtml = $document->loadHTML('<!doctype html><html><body>'.$html.'</body></html>', LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD | LIBXML_NONET);
+    $htmlErrors = libxml_get_errors();
+    libxml_clear_errors();
+    libxml_use_internal_errors($previousLibxmlState);
+
+    expect(TelegramRichMessageBuilder::htmlVisibleLength($html))->toBeLessThanOrEqual(TelegramScheduledControlSummaryRichFormatter::FALLBACK_MAX_VISIBLE_CHARACTERS)
+        ->and($html)->toBe($secondRender)
+        ->and((int) ($omittedMatch[1] ?? 0))->toBe(300 - count($includedMatches[0]))
+        ->and($includedMatches[0][0] ?? null)->toBe('District-000')
+        ->and($includedMatches[0][1] ?? null)->toBe('District-001')
+        ->and($html)->not->toContain($longUrl)
+        ->and($html)->not->toContain('Подробный ответ не должен попадать')
+        ->and($validHtml)->toBeTrue()
+        ->and($htmlErrors)->toBeEmpty();
 });
 
 it('sends the summary through analytics sendRichMessage when Rich Messages are enabled', function (): void {
@@ -244,6 +315,35 @@ it('uses one analytics HTML message when Rich Messages are disabled', function (
     expect($id)->toBe(503)->and(Http::recorded())->toHaveCount(1);
     Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/botanalytics-test-token/sendMessage')
         && ($request['text'] ?? null) === '<b>Итоги</b>');
+});
+
+it('refuses an oversized analytics HTML fallback before making a Telegram request', function (): void {
+    config(['services.telegram.rich_messages_enabled' => false]);
+    Http::fake();
+    $fallback = '<b>'.str_repeat('🌧️', 1751).'</b>';
+
+    $id = app(TelegramBotService::class)->sendAnalyticsRichMessage(
+        chatId: '-100123',
+        richMessage: ['markdown' => '# Итоги'],
+        fallbackHtml: $fallback,
+        maxFallbackVisibleLength: TelegramScheduledControlSummaryRichFormatter::FALLBACK_MAX_VISIBLE_CHARACTERS,
+    );
+
+    expect($id)->toBeNull()->and(Http::recorded())->toBeEmpty();
+});
+
+it('does not send an oversized fallback after an explicit Rich Message rejection', function (): void {
+    Http::fakeSequence()->push(['ok' => false, 'description' => 'unsupported'], 400);
+
+    $id = app(TelegramBotService::class)->sendAnalyticsRichMessage(
+        chatId: '-100123',
+        richMessage: ['markdown' => '# Итоги'],
+        fallbackHtml: '<b>'.str_repeat('Ж', 3501).'</b>',
+        maxFallbackVisibleLength: TelegramScheduledControlSummaryRichFormatter::FALLBACK_MAX_VISIBLE_CHARACTERS,
+    );
+
+    expect($id)->toBeNull()->and(Http::recorded())->toHaveCount(1);
+    Http::assertNotSent(fn (Request $request): bool => str_ends_with($request->url(), '/sendMessage'));
 });
 
 it('does not send a fallback after an uncertain Rich Message result', function (): void {
