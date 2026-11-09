@@ -244,9 +244,10 @@ class TelegramBotService
         ?string $threadId = null,
         ?string $replyToMessageId = null,
         ?array $replyMarkup = null,
+        ?int $maxFallbackVisibleLength = null,
     ): ?int {
         return $this->sendRichMessageUsingToken(
-            config('services.telegram.analytics_bot_token'), $chatId, $richMessage, $fallbackHtml, $threadId, $replyToMessageId, $replyMarkup,
+            config('services.telegram.analytics_bot_token'), $chatId, $richMessage, $fallbackHtml, $threadId, $replyToMessageId, $replyMarkup, $maxFallbackVisibleLength,
         );
     }
 
@@ -258,6 +259,7 @@ class TelegramBotService
         ?string $threadId,
         ?string $replyToMessageId,
         ?array $replyMarkup,
+        ?int $maxFallbackVisibleLength = null,
     ): ?int {
 
         if (! $token) {
@@ -267,6 +269,10 @@ class TelegramBotService
         }
 
         if (! config('services.telegram.rich_messages_enabled', false)) {
+            if (! $this->fallbackWithinLimit($fallbackHtml, $maxFallbackVisibleLength)) {
+                return null;
+            }
+
             return $this->sendMessageUsingToken(
                 $token,
                 chatId: $chatId,
@@ -310,7 +316,30 @@ class TelegramBotService
             return null;
         }
 
+        if (! $this->fallbackWithinLimit($fallbackHtml, $maxFallbackVisibleLength)) {
+            return null;
+        }
+
         return $this->sendMessageUsingToken($token, $chatId, $fallbackHtml, $threadId, $replyToMessageId, $replyMarkup);
+    }
+
+    private function fallbackWithinLimit(string $fallbackHtml, ?int $maxFallbackVisibleLength): bool
+    {
+        if ($maxFallbackVisibleLength === null) {
+            return true;
+        }
+
+        $visibleLength = TelegramRichMessageBuilder::htmlVisibleLength($fallbackHtml);
+        if ($visibleLength <= $maxFallbackVisibleLength) {
+            return true;
+        }
+
+        Log::warning('Telegram HTML fallback exceeds its safe message length; not sent.', [
+            'visible_length' => $visibleLength,
+            'safe_limit' => $maxFallbackVisibleLength,
+        ]);
+
+        return false;
     }
 
     /**

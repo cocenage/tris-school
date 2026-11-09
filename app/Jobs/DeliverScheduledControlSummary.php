@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOutboundMonitor;
+use App\Services\Telegram\TelegramScheduledControlSummaryRichFormatter;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -63,6 +64,7 @@ class DeliverScheduledControlSummary implements ShouldQueue
                     richMessage: $richMessage,
                     fallbackHtml: $delivery->text,
                     threadId: $delivery->message_thread_id,
+                    maxFallbackVisibleLength: TelegramScheduledControlSummaryRichFormatter::FALLBACK_MAX_VISIBLE_CHARACTERS,
                 )
                 : $telegram->sendAnalyticsMessage(
                     $delivery->chat_id,

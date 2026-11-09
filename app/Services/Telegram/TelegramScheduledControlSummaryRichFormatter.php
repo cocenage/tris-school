@@ -6,6 +6,8 @@ use Carbon\CarbonImmutable;
 
 class TelegramScheduledControlSummaryRichFormatter
 {
+    public const FALLBACK_MAX_VISIBLE_CHARACTERS = 3500;
+
     public function __construct(private readonly TelegramRichMessageBuilder $richMessages) {}
 
     /** @return array{markdown: string} */
@@ -72,70 +74,101 @@ class TelegramScheduledControlSummaryRichFormatter
         return $this->richMessages->markdownDocument(implode("\n", $lines));
     }
 
-    /** Readable sendMessage HTML fallback. It contains all operational details without collapsible markup. */
+    /** A compact sendMessage fallback, leaving room below Telegram's 4096-character text limit. */
     public function fallbackHtml(array $summary): string
     {
         $data = $this->data($summary);
-        $lines = [
+        $problems = $data['problems'];
+        $problemCount = count($problems);
+        $prefix = [
             '<b>🧹 TRIS — Итоги рабочего дня</b>',
-            $this->html($data['date']).' · '.$data['control_count'].' проведённых контролей',
+            $this->html($data['date']).' · контролей: '.(int) $data['control_count'],
             '',
-            '<b>⚠️ Главные проблемы</b>',
+            '<b>⚠️ Главные проблемы ('.$problemCount.')</b>',
         ];
 
-        if ($data['problems'] === []) {
-            $lines[] = 'Проблем по полученным ответам не выявлено.';
-        } else {
-            foreach ($data['problems'] as $problem) {
-                $lines[] = '';
-                $lines[] = '<b>'.$this->html($problem['district'].' — '.$problem['control_label']).'</b> · '.$this->html($problem['status_label']);
-                $lines[] = 'Контроль: '.$this->html($problem['control_time']).' · обнаружено: '.$this->html($problem['discovered_time']);
-                $lines[] = 'Не выполнено: '.$this->html($problem['issue']);
-                $lines[] = 'Квартира: '.$this->html($problem['apartment']).' · Причина: '.$this->html($problem['reason']).' · Автор: '.$this->html($problem['author']);
-                if ($problem['repeat_summary'] !== '') {
-                    $lines[] = 'Повторная проверка: '.$this->html($problem['repeat_summary']);
-                }
-                $lines[] = 'Итог: '.$this->html($problem['outcome']);
-                if ($problem['source_url'] !== null) {
-                    $lines[] = '<a href="'.$problem['source_url'].'">Исходное сообщение ↗</a>';
-                }
+        if ($problems === []) {
+            $prefix[] = 'По полученным ответам проблем не выявлено.';
+        }
+
+        $metrics = $data['metrics'];
+        $completed = array_slice($data['completed'], 0, 3);
+        $remainingCompleted = max(0, count($data['completed']) - count($completed));
+        $tail = [
+            '',
+            '<b>📊 Итоги дня</b>',
+            'Контролей: '.(int) ($metrics['Контрольных сообщений'] ?? 0)
+                .' · проблем: '.(int) ($metrics['Уникальных проблем'] ?? 0)
+                .' · открытых: '.(int) ($metrics['Открытых проблем'] ?? 0)
+                .' · устранено: '.(int) ($metrics['Подтверждённых устранений'] ?? 0),
+            'Без ответа: '.(int) ($metrics['Контрольных точек без ответа'] ?? 0)
+                .' · противоречий: '.(int) ($metrics['Противоречивых ответов'] ?? 0)
+                .' · повторных фиксаций: '.(int) ($metrics['Повторных проблемных фиксаций'] ?? 0),
+            '',
+            '<b>✅ Ключевые итоги</b>',
+        ];
+
+        foreach ($completed ?: ['Нет подтверждённых контрольных точек.'] as $item) {
+            $tail[] = '• '.$this->html($this->compactText($item, 150));
+        }
+
+        if ($remainingCompleted > 0) {
+            $tail[] = '… и ещё '.$remainingCompleted.' групп результатов в подробной истории.';
+        }
+
+        $tail[] = '';
+        $tail[] = 'Подробная история доступна отдельно (ответы, повторные проверки и источники).';
+
+        $selectedProblems = [];
+        foreach ($problems as $problem) {
+            $candidateProblems = [...$selectedProblems, $this->problemLine($problem)];
+            $omitted = $problemCount - count($candidateProblems);
+            $candidate = [...$prefix, ...$candidateProblems];
+            if ($omitted > 0) {
+                $candidate[] = '… не показано проблемных записей: '.$omitted.'.';
             }
-        }
+            $candidate = [...$candidate, ...$tail];
 
-        $lines[] = '';
-        $lines[] = '<b>✅ Что выполнено</b>';
-        foreach ($data['completed'] ?: ['Нет подтверждённых контрольных точек.'] as $item) {
-            $lines[] = '• '.$this->html($item);
-        }
-
-        $lines[] = '';
-        $lines[] = '<b>📋 Хронология</b>';
-        foreach ($data['chronology'] ?: ['Значимых изменений с зафиксированным временем нет.'] as $item) {
-            $lines[] = '• '.$this->html($item);
-        }
-
-        $lines[] = '';
-        $lines[] = '<b>📊 Итоги дня</b>';
-        foreach ($data['metrics'] as $label => $value) {
-            $lines[] = '• '.$this->html($label).': '.$value;
-        }
-
-        foreach ($data['details'] as $detail) {
-            if ($detail['lines'] === []) {
-                continue;
+            if (TelegramRichMessageBuilder::htmlVisibleLength(implode("\n", $candidate)) > self::FALLBACK_MAX_VISIBLE_CHARACTERS) {
+                break;
             }
-            $lines[] = '';
-            $lines[] = '<b>'.$this->html($detail['title']).'</b>';
-            foreach ($detail['lines'] as $line) {
-                $text = '• '.$this->html($line['text']);
-                if ($line['url'] !== null) {
-                    $text .= ' <a href="'.$line['url'].'">↗</a>';
-                }
-                $lines[] = $text;
-            }
+
+            $selectedProblems[] = end($candidateProblems);
         }
 
-        return implode("\n", $lines);
+        $omittedProblems = $problemCount - count($selectedProblems);
+        $lines = [...$prefix, ...$selectedProblems];
+        if ($omittedProblems > 0) {
+            $lines[] = '… не показано проблемных записей: '.$omittedProblems.'.';
+        }
+        $html = implode("\n", [...$lines, ...$tail]);
+
+        if (TelegramRichMessageBuilder::htmlVisibleLength($html) > self::FALLBACK_MAX_VISIBLE_CHARACTERS) {
+            return implode("\n", [
+                '<b>🧹 TRIS — Итоги рабочего дня</b>',
+                $this->html($data['date']),
+                'Краткая сводка превышает безопасный размер.',
+                'Подробная история доступна отдельно.',
+            ]);
+        }
+
+        return $html;
+    }
+
+    private function problemLine(array $problem): string
+    {
+        return '• <b>'.$this->html($this->compactText($problem['district'].' — '.$problem['control_label'], 110))
+            .'</b> · '.$this->html($this->compactText($problem['status_label'], 90));
+    }
+
+    private function compactText(string $value, int $maxCharacters): string
+    {
+        $value = trim((string) (preg_replace('/[\p{Cc}\s]+/u', ' ', $value) ?? $value));
+        if (mb_strlen($value, 'UTF-8') <= $maxCharacters) {
+            return $value;
+        }
+
+        return rtrim(mb_substr($value, 0, $maxCharacters - 1, 'UTF-8')).'…';
     }
 
     private function data(array $summary): array
