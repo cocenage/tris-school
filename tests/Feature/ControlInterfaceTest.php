@@ -93,6 +93,16 @@ it('keeps Focus room navigation in Alpine and provides one room page at a time',
         ->toContain('x-if="activeRoomIndex === {{ $roomIndex }}"')
         ->toContain('env(safe-area-inset-bottom)')
         ->toContain('scrollToActiveRoom()')
+        ->toContain('scheduleAutosave(delay = 900)')
+        ->toContain('this.$wire.saveDraft()')
+        ->toContain('Изменения не сохранены')
+        ->toContain('Сохранение выполняется')
+        ->toContain('Изменения сохранены')
+        ->toContain('Нет подтверждения сохранения')
+        ->not->toContain('wire:click="setAnswer(')
+        ->not->toContain('wire:model.blur="answers.')
+        ->not->toContain('public array $rooms')
+        ->not->toContain('public array $savedMedia')
         ->not->toContain('wire:click="goToRoom({{ $roomIndex }})"');
 });
 

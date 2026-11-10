@@ -27,6 +27,8 @@ class ControlResponse extends Model
         'comment',
         'responses',
         'schema_snapshot',
+        'schema_version',
+        'submission_token',
         'total_points',
         'max_points',
         'score_percent',

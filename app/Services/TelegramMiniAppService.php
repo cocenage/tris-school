@@ -40,7 +40,11 @@ class TelegramMiniAppService
             throw new HttpException(403, 'Telegram Mini App auth failed.');
         }
 
-        if (isset($data['auth_date']) && now()->timestamp - (int) $data['auth_date'] > 86400) {
+        $authDate = filter_var($data['auth_date'] ?? null, FILTER_VALIDATE_INT);
+
+        if ($authDate === false || $authDate === null
+            || $authDate > now()->timestamp + 60
+            || now()->timestamp - $authDate > 86400) {
             throw new HttpException(403, 'Telegram Mini App auth expired.');
         }
 
@@ -57,6 +61,9 @@ class TelegramMiniAppService
             'last_name' => $user['last_name'] ?? null,
             'photo_url' => $user['photo_url'] ?? null,
             'source' => 'mini_app',
+            'start_param' => isset($data['start_param']) && is_string($data['start_param'])
+                ? $data['start_param']
+                : null,
         ];
     }
 }

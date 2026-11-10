@@ -5,6 +5,8 @@ use App\Models\Control;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
+use App\Services\Controls\ControlSchema;
+use App\Services\Controls\ControlCompletionNotificationService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -246,6 +248,9 @@ protected function getDraftPayload(?array $media = null): array
     }
     unset($questions);
 
+    $schema = new ControlSchema((int) $this->control->id, $this->rooms);
+    $responses = $schema->attachQuestionIds($responses);
+
     return [
         'cleaner_id' => $this->cleaner_id,
         'apartment_id' => $this->apartment_id,
@@ -256,6 +261,7 @@ protected function getDraftPayload(?array $media = null): array
         'comment' => $this->comment,
         'responses' => $responses,
         'schema_snapshot' => $this->rooms,
+        'schema_version' => $schema->version(),
     ];
 }
 
@@ -298,6 +304,50 @@ protected function getDraftPayload(?array $media = null): array
         return false;
     }
 
+    protected function persistDraftPayload(array $payload): ControlResponseDraft
+    {
+        return DB::transaction(function () use ($payload): ControlResponseDraft {
+            $draft = ControlResponseDraft::query()
+                ->where('control_id', $this->control->id)
+                ->where('supervisor_id', Auth::id())
+                ->where('state', 'active')
+                ->lockForUpdate()
+                ->latest('updated_at')
+                ->first();
+
+            if (! $draft) {
+                return ControlResponseDraft::create([
+                    ...$payload,
+                    'control_id' => $this->control->id,
+                    'supervisor_id' => Auth::id(),
+                    'revision' => 0,
+                    'state' => 'active',
+                ]);
+            }
+
+            $currentVersion = $payload['schema_version'] ?? null;
+            $storedVersion = $draft->schema_version;
+            if (! $storedVersion && is_array($draft->schema_snapshot)) {
+                $storedVersion = (new ControlSchema((int) $this->control->id, $draft->schema_snapshot))->version();
+            }
+
+            if (
+                is_string($currentVersion)
+                && is_string($storedVersion)
+                && ! hash_equals($currentVersion, $storedVersion)
+            ) {
+                $payload['schema_version'] = $storedVersion;
+            }
+
+            $draft->fill($payload);
+            $draft->revision = (int) $draft->revision + 1;
+            $draft->state = 'active';
+            $draft->save();
+
+            return $draft;
+        });
+    }
+
     protected function persistDraft(bool $silent = false): void
     {
         $this->ensureCanConductControl();
@@ -335,13 +385,7 @@ protected function getDraftPayload(?array $media = null): array
 
             $this->draftState = 'saving';
 
-            $draft = ControlResponseDraft::updateOrCreate(
-                [
-                    'control_id' => $this->control->id,
-                    'supervisor_id' => Auth::id(),
-                ],
-                $payload
-            );
+            $draft = $this->persistDraftPayload($payload);
 
             $this->draftId = $draft->id;
             $this->draftSavedAt = now()->format('H:i');
@@ -388,6 +432,7 @@ protected function getDraftPayload(?array $media = null): array
         $draft = ControlResponseDraft::query()
             ->where('control_id', $this->control->id)
             ->where('supervisor_id', Auth::id())
+            ->where('state', 'active')
             ->first();
 
         if (! $draft) {
@@ -428,6 +473,7 @@ protected function getDraftPayload(?array $media = null): array
             ControlResponseDraft::query()
                 ->where('control_id', $this->control->id)
                 ->where('supervisor_id', Auth::id())
+                ->where('state', 'active')
                 ->delete();
 
             foreach ($media as $questions) {
@@ -956,10 +1002,7 @@ protected function getDraftPayload(?array $media = null): array
         $media[$roomIndex][$questionIndex] = $existing;
         $payload = $this->getDraftPayload($media);
         try {
-            $draft = ControlResponseDraft::updateOrCreate(
-                ['control_id' => $this->control->id, 'supervisor_id' => Auth::id()],
-                $payload
-            );
+            $draft = $this->persistDraftPayload($payload);
         } catch (\Throwable $e) {
             Storage::disk('local')->delete($storedPaths);
             report($e);
@@ -1064,10 +1107,7 @@ protected function getDraftPayload(?array $media = null): array
 
             $media[$roomIndex][$questionIndex] = array_values($media[$roomIndex][$questionIndex]);
             $payload = $this->getDraftPayload($media);
-            $draft = ControlResponseDraft::updateOrCreate(
-                ['control_id' => $this->control->id, 'supervisor_id' => Auth::id()],
-                $payload
-            );
+            $draft = $this->persistDraftPayload($payload);
 
             $this->draftId = $draft->id;
             $this->answers[$roomIndex][$questionIndex]['media'] = $media[$roomIndex][$questionIndex];
@@ -1113,10 +1153,7 @@ protected function getDraftPayload(?array $media = null): array
             unset($media[$roomIndex][$questionIndex][$photoIndex]);
             $media[$roomIndex][$questionIndex] = array_values($media[$roomIndex][$questionIndex]);
             $payload = $this->getDraftPayload($media);
-            ControlResponseDraft::updateOrCreate(
-                ['control_id' => $this->control->id, 'supervisor_id' => Auth::id()],
-                $payload
-            );
+            $this->persistDraftPayload($payload);
 
             $this->answers[$roomIndex][$questionIndex]['media'] = $media[$roomIndex][$questionIndex];
             Storage::disk($removed['disk'])->delete($removed['path']);
@@ -1523,6 +1560,8 @@ protected function getDraftPayload(?array $media = null): array
                         'status' => ControlResponse::STATUS_SENT,
                         'sent_at' => now(),
                     ]);
+
+                    app(ControlCompletionNotificationService::class)->queueFor($response);
 
                     activity()
                         ->causedBy(Auth::user())
