@@ -2,7 +2,6 @@
 
 namespace App\Models;
 
-use App\Services\TelegramUserNotificationService;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -88,10 +87,20 @@ class User extends Authenticatable implements FilamentUser
             ->exists();
     }
 
+    public function canViewAllStaffActivity(): bool
+    {
+        return $this->isApproved() && in_array($this->role, ['admin', 'supervisor'], true);
+    }
+
     public function canAccessPanel(Panel $panel): bool
     {
         if ($this->status !== 'approved') {
             return false;
+        }
+
+        // Legacy per-user grants must never open the primary administration panel.
+        if ($panel->getId() === 'admin') {
+            return $this->role === 'admin';
         }
 
         if ($this->role === 'admin') {
@@ -212,7 +221,7 @@ class User extends Authenticatable implements FilamentUser
 
     public function hasTelegramWriteAccess(): bool
     {
-        return !is_null($this->telegram_write_access_granted_at);
+        return ! is_null($this->telegram_write_access_granted_at);
     }
 
     public function getAvatarUrlAttribute(): ?string
@@ -230,12 +239,12 @@ class User extends Authenticatable implements FilamentUser
 
     public function dayOffRequests()
     {
-        return $this->hasMany(\App\Models\DayOffRequest::class);
+        return $this->hasMany(DayOffRequest::class);
     }
 
     public function dayOffRequestDays()
     {
-        return $this->hasMany(\App\Models\DayOffRequestDay::class);
+        return $this->hasMany(DayOffRequestDay::class);
     }
 
     public function vacationRequestDays(): HasMany
@@ -245,22 +254,22 @@ class User extends Authenticatable implements FilamentUser
 
     public function vacationRequests()
     {
-        return $this->hasMany(\App\Models\VacationRequest::class);
+        return $this->hasMany(VacationRequest::class);
     }
 
     public function inventoryRequests()
     {
-        return $this->hasMany(\App\Models\InventoryRequest::class);
+        return $this->hasMany(InventoryRequest::class);
     }
 
     public function controlResponsesAsCleaner()
     {
-        return $this->hasMany(\App\Models\ControlResponse::class, 'cleaner_id');
+        return $this->hasMany(ControlResponse::class, 'cleaner_id');
     }
 
     public function controlResponsesAsSupervisor()
     {
-        return $this->hasMany(\App\Models\ControlResponse::class, 'supervisor_id');
+        return $this->hasMany(ControlResponse::class, 'supervisor_id');
     }
 
     public function apartmentAccessGrants()
@@ -279,7 +288,7 @@ class User extends Authenticatable implements FilamentUser
     {
         return in_array($this->role, ['admin', 'supervisor'], true);
     }
-    
+
     public function scopeActiveStaff($query)
     {
         return $query

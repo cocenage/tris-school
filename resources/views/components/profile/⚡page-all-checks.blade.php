@@ -21,12 +21,12 @@ new class extends Component
 
     public function mount(): void
     {
-        abort_unless(Auth::user()?->role === 'admin', 403);
+        abort_unless(Auth::user()?->canViewAllStaffActivity(), 403);
     }
 
     public function getDataProperty(): array
     {
-        abort_unless(Auth::user()?->role === 'admin', 403);
+        abort_unless(Auth::user()?->canViewAllStaffActivity(), 403);
         $cleaners = User::query()->where('is_active', true)->whereIn('role', ['cleaner', 'supervisor'])->get();
         $from = match ($this->activityPeriod) {
             '7' => now()->subDays(7)->toDateString(),

@@ -35,7 +35,7 @@ class ControlMediaController
 
     public function result(Request $request, ControlResponse $controlResponse, int $room, int $question, int $media): BinaryFileResponse
     {
-        abort_unless($request->user()?->role === 'admin'
+        abort_unless($request->user()?->canViewAllStaffActivity()
             || $controlResponse->supervisor_id === $request->user()?->id
             || $controlResponse->cleaner_id === $request->user()?->id, 403);
 

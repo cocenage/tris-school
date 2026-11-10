@@ -13,6 +13,7 @@ use App\Models\Control;
 use App\Models\DayOffRequest;
 use App\Models\RewardProgram;
 use App\Models\User;
+use App\Services\Authorization\SupervisorPanelAccess;
 use App\Services\RolePreviewContext;
 use App\Services\UserApplicationBadgeService;
 use Filament\Facades\Filament;
@@ -552,6 +553,7 @@ it('shows profile links by actual access and excludes finance calendar events fo
     Livewire::actingAs($this->supervisor)
         ->test('page-profile')
         ->assertSee('Мой календарь')
+        ->assertSee('Все проверки')
         ->assertSee('Рабочий календарь')
         ->assertSee('Панель супервайзера')
         ->assertSee('/admin/supervisor')
@@ -560,15 +562,50 @@ it('shows profile links by actual access and excludes finance calendar events fo
     Livewire::actingAs($this->cleaner)
         ->test('page-profile')
         ->assertSee('Мой календарь')
+        ->assertDontSee('Все проверки')
         ->assertDontSee('Рабочий календарь')
         ->assertDontSee('Панель супервайзера')
         ->assertDontSee('/admin/finance');
 
     Livewire::actingAs($this->admin)
         ->test('page-profile')
+        ->assertSee('Все проверки')
         ->assertSee('Рабочий календарь')
         ->assertDontSee('/admin/finance');
 
     DB::table('user_calendar_type_accesses')->where('user_id', $this->supervisor->id)->where('type', 'workflow')->delete();
     Livewire::actingAs($this->supervisor)->test('page-profile')->assertDontSee('Рабочий календарь');
+});
+
+it('denies the main admin panel to supervisors despite legacy explicit grants', function () {
+    DB::table('user_panel_accesses')->insert([
+        'user_id' => $this->supervisor->id,
+        'panel' => 'admin',
+        'can_access' => true,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    expect($this->supervisor->fresh()->canAccessPanel(Filament::getPanel('admin')))->toBeFalse()
+        ->and($this->admin->fresh()->canAccessPanel(Filament::getPanel('admin')))->toBeTrue();
+    $this->actingAs($this->supervisor)->get('/admin')->assertForbidden();
+});
+
+it('shares quality control access on the user site while retaining Filament panel boundaries', function () {
+    $access = app(SupervisorPanelAccess::class);
+    Filament::setCurrentPanel(null);
+
+    foreach ([$this->admin, $this->supervisor] as $user) {
+        expect($access->canUseCurrentQualityControlSurface($user))->toBeTrue()
+            ->and($access->canManageCurrentQualityControlSurface($user))->toBeTrue();
+    }
+    expect($access->canUseCurrentQualityControlSurface($this->cleaner))->toBeFalse()
+        ->and($access->canManageCurrentQualityControlSurface($this->cleaner))->toBeFalse();
+
+    Filament::setCurrentPanel('admin');
+    expect($access->canUseCurrentQualityControlSurface($this->supervisor))->toBeFalse()
+        ->and($access->canManageCurrentQualityControlSurface($this->supervisor))->toBeFalse();
+
+    Filament::setCurrentPanel('education');
+    expect($access->canManageCurrentQualityControlSurface($this->supervisor))->toBeFalse();
 });

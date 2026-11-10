@@ -468,11 +468,13 @@ $this->profileRequired = false;
     </div>
 
 @php
+$canSeeStaffHistory = ! $rolePreview->isActive() && $user->canViewAllStaffActivity();
 $canSeeAdminPanel = ! $rolePreview->isActive() && $user->isAdmin();
 $canSeeSupervisorPanel = ! $rolePreview->isActive()
     && $user->canAccessPanel(\Filament\Facades\Filament::getPanel('education'));
 
 $hasAnyAdminAccess =
+    $canSeeStaffHistory ||
     $canSeeAdminPanel ||
     $canSeeSupervisorPanel;
 @endphp
@@ -486,7 +488,7 @@ $hasAnyAdminAccess =
 
     <div class="overflow-hidden rounded-[35px] bg-[#F8F7F5]">
 
-        @if($canSeeAdminPanel)
+        @if($canSeeStaffHistory)
             <a
                 href="{{ route('page-profile.all-checks') }}"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
@@ -502,8 +504,12 @@ $hasAnyAdminAccess =
                 <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
             </a>
 
-            <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+            @if($canSeeAdminPanel || $canSeeSupervisorPanel)
+                <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+            @endif
+        @endif
 
+        @if($canSeeAdminPanel)
             <a
                 href="/admin"
                 class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
