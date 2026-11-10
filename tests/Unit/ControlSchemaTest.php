@@ -1,8 +1,9 @@
 <?php
 
 use App\Services\Controls\ControlSchema;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 function controlSchemaFixture(array $rooms): ControlSchema
 {

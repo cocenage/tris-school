@@ -4,6 +4,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 $migrationTestOwnsTables = false;
 
@@ -114,13 +115,13 @@ it('preserves legacy rows, applies safe defaults, enforces unique run keys, and 
         ->and($response->schema_version)->toBeNull()
         ->and($response->submission_token)->toBeNull();
 
-    $runId = (string) Illuminate\Support\Str::uuid();
+    $runId = (string) Str::uuid();
     DB::table('control_response_drafts')->where('id', $draftId)->update(['run_id' => $runId]);
     expect(fn () => DB::table('control_response_drafts')->insert(['control_id' => $controlId, 'run_id' => $runId]))
         ->toThrow(QueryException::class);
     DB::table('control_response_drafts')->insert(['control_id' => $controlId, 'run_id' => null]);
 
-    $submissionToken = (string) Illuminate\Support\Str::uuid();
+    $submissionToken = (string) Str::uuid();
     DB::table('control_responses')->where('id', $responseId)->update(['submission_token' => $submissionToken]);
     expect(fn () => DB::table('control_responses')->insert(['control_id' => $controlId, 'submission_token' => $submissionToken]))
         ->toThrow(QueryException::class);
