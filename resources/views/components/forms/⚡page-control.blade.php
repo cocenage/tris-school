@@ -6,6 +6,7 @@ use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
 use App\Services\Controls\ControlSchema;
+use App\Services\Controls\ControlCompletionNotificationService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -1559,6 +1560,8 @@ protected function getDraftPayload(?array $media = null): array
                         'status' => ControlResponse::STATUS_SENT,
                         'sent_at' => now(),
                     ]);
+
+                    app(ControlCompletionNotificationService::class)->queueFor($response);
 
                     activity()
                         ->causedBy(Auth::user())

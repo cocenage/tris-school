@@ -64,4 +64,8 @@ Schedule::command('telegram:scheduled-controls-summary-send --only-if-due')
     ->timezone('Europe/Rome')
     ->withoutOverlapping();
 
+Schedule::command('controls:dispatch-completion-notifications')
+    ->everyMinute()
+    ->withoutOverlapping();
+
 app(EmergencyScheduleRegistrar::class)->register(app(Illuminate\Console\Scheduling\Schedule::class));

@@ -1,25 +1,36 @@
 <?php
 
+use App\Jobs\SendControlCompletionNotification;
 use App\Models\Control;
+use App\Models\ControlCompletionNotification;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
+use App\Services\Controls\ControlCompletionNotificationService;
 use App\Services\Controls\ControlRunManager;
 use App\Services\Controls\ControlSchema;
+use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOutboundMonitor;
+use App\Services\TelegramMiniAppService;
 use App\Services\UserApplicationBadgeService;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Livewire\Livewire;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function () {
-    foreach (['activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
+    foreach (['control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
         Schema::dropIfExists($table);
     }
 
@@ -30,8 +41,17 @@ beforeEach(function () {
         $table->string('status')->default('approved');
         $table->boolean('is_active')->default(true);
         $table->string('telegram_avatar_path')->nullable();
+        $table->string('telegram_username')->nullable();
+        $table->string('telegram_first_name')->nullable();
+        $table->string('telegram_last_name')->nullable();
+        $table->string('telegram_photo_url')->nullable();
+        $table->timestamp('telegram_last_auth_at')->nullable();
+        $table->string('telegram_login_source')->nullable();
+        $table->timestamp('last_login_at')->nullable();
         $table->string('email')->nullable();
         $table->string('password')->nullable();
+        $table->string('remember_token')->nullable();
+        $table->string('telegram_id')->nullable();
         $table->timestamps();
     });
 
@@ -115,10 +135,25 @@ beforeEach(function () {
         $table->uuid('batch_uuid')->nullable();
         $table->timestamps();
     });
+
+    Schema::create('control_completion_notifications', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('control_response_id')->unique();
+        $table->unsignedBigInteger('recipient_user_id')->nullable();
+        $table->string('status')->default('pending');
+        $table->unsignedInteger('attempts')->default(0);
+        $table->unsignedBigInteger('telegram_message_id')->nullable();
+        $table->string('last_error', 100)->nullable();
+        $table->timestamp('last_attempt_at')->nullable();
+        $table->timestamp('next_attempt_at')->nullable();
+        $table->timestamp('last_dispatched_at')->nullable();
+        $table->timestamp('sent_at')->nullable();
+        $table->timestamps();
+    });
 });
 
 afterEach(function () {
-    foreach (['activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
+    foreach (['control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
         Schema::dropIfExists($table);
     }
 });
@@ -149,6 +184,278 @@ function mountControlWorkflow(): array
 
     return [$supervisor, $cleaner, $apartment, $control];
 }
+
+function createControlCompletionNotificationFixture(): array
+{
+    Queue::fake();
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    $cleaner->forceFill(['telegram_id' => 'test-recipient-chat'])->save();
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    return [
+        ControlResponse::query()->sole(),
+        ControlCompletionNotification::query()->sole(),
+        $cleaner,
+    ];
+}
+
+function signedControlResultStartData(string $telegramId, string $startParam, string $botToken, ?int $authDate = null): string
+{
+    $data = [
+        'auth_date' => (string) ($authDate ?? now()->timestamp),
+        'start_param' => $startParam,
+        'user' => json_encode(['id' => (int) $telegramId, 'first_name' => 'Test'], JSON_THROW_ON_ERROR),
+    ];
+    ksort($data);
+    $check = collect($data)->map(fn (string $value, string $key): string => $key.'='.$value)->implode("\n");
+    $secret = hash_hmac('sha256', $botToken, 'WebAppData', true);
+    $data['hash'] = hash_hmac('sha256', $check, $secret);
+
+    return http_build_query($data);
+}
+
+it('queues one durable completion notification for each Classic and Focus result', function (): void {
+    Queue::fake();
+    [$supervisor, $cleaner, $apartment] = mountControlWorkflow();
+    $cleaner->forceFill(['telegram_id' => 'test-recipient-chat'])->save();
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('answers.0.0.selected', 'yes')
+        ->call('start')
+        ->call('review')
+        ->call('submit')
+        ->assertSet('submitted', true);
+
+    $notifications = DB::table('control_completion_notifications')->orderBy('control_response_id')->get();
+
+    foreach ($notifications as $notification) {
+        app(ControlCompletionNotificationService::class)->queueFor(
+            ControlResponse::query()->findOrFail($notification->control_response_id),
+        );
+    }
+
+    expect($notifications)->toHaveCount(2)
+        ->and($notifications->pluck('recipient_user_id')->unique()->all())->toBe([$cleaner->id])
+        ->and($notifications->pluck('status')->unique()->all())->toBe(['pending']);
+
+    Queue::assertPushed(SendControlCompletionNotification::class, 2);
+    foreach ($notifications as $notification) {
+        Queue::assertPushed(
+            SendControlCompletionNotification::class,
+            fn (SendControlCompletionNotification $job): bool => $job->notificationId === $notification->id,
+        );
+    }
+});
+
+it('sends a single Work Bot result message with a Mini App deep link', function (): void {
+    config([
+        'services.telegram.bot_token' => 'test-bot-token',
+        'services.telegram.bot_username' => 'tris_test_bot',
+    ]);
+    Http::preventStrayRequests();
+    Http::fake(['https://api.telegram.org/*' => Http::response([
+        'ok' => true,
+        'result' => ['message_id' => 77],
+    ])]);
+
+    [$response, $notification, $cleaner] = createControlCompletionNotificationFixture();
+    $job = new SendControlCompletionNotification((int) $notification->id);
+
+    $job->handle(app(TelegramBotService::class), app(TelegramOutboundMonitor::class), app(ControlCompletionNotificationService::class));
+    $job->handle(app(TelegramBotService::class), app(TelegramOutboundMonitor::class), app(ControlCompletionNotificationService::class));
+
+    Http::assertSentCount(1);
+    Http::assertSent(fn (HttpRequest $request): bool => $request->url() === 'https://api.telegram.org/bottest-bot-token/sendMessage'
+        && data_get($request->data(), 'chat_id') === 'test-recipient-chat'
+        && str_contains((string) data_get($request->data(), 'text'), 'Apartment')
+        && str_contains((string) data_get($request->data(), 'text'), 'Ошибки:')
+        && data_get($request->data(), 'reply_markup.inline_keyboard.0.0.url')
+            === 'https://t.me/tris_test_bot?startapp=control_result_'.$response->id,
+    );
+
+    expect($notification->fresh()->status)->toBe('sent')
+        ->and($notification->fresh()->telegram_message_id)->toBe(77)
+        ->and($cleaner->fresh()->telegram_id)->toBe('test-recipient-chat')
+        ->and(ControlResponse::query()->whereKey($response->id)->exists())->toBeTrue();
+});
+
+it('keeps a completed Classic result when the Work Bot returns an error', function (): void {
+    config([
+        'services.telegram.bot_token' => 'test-bot-token',
+        'services.telegram.bot_username' => 'tris_test_bot',
+    ]);
+    Http::preventStrayRequests();
+    Http::fake(['https://api.telegram.org/*' => Http::response(['ok' => false], 502)]);
+
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    $cleaner->forceFill(['telegram_id' => 'test-recipient-chat'])->save();
+
+    Livewire::test('forms.page-control')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->call('openReview')
+        ->call('confirmSubmit')
+        ->assertSet('successSheetOpen', true);
+
+    expect(ControlResponse::query()->count())->toBe(1)
+        ->and(ControlCompletionNotification::query()->sole()->status)->toBe('uncertain');
+    Http::assertSentCount(1);
+});
+
+it('retries a definite Telegram rate limit without duplicating a completed send', function (): void {
+    config([
+        'services.telegram.bot_token' => 'test-bot-token',
+        'services.telegram.bot_username' => 'tris_test_bot',
+    ]);
+    Http::preventStrayRequests();
+    Http::fakeSequence()
+        ->push(['ok' => false, 'parameters' => ['retry_after' => 10]], 429)
+        ->push(['ok' => true, 'result' => ['message_id' => 78]], 200);
+
+    [, $notification] = createControlCompletionNotificationFixture();
+    $job = new SendControlCompletionNotification((int) $notification->id);
+    $telegram = app(TelegramBotService::class);
+    $monitor = app(TelegramOutboundMonitor::class);
+    $links = app(ControlCompletionNotificationService::class);
+
+    $job->handle($telegram, $monitor, $links);
+    expect($notification->fresh()->status)->toBe('pending')
+        ->and($notification->fresh()->attempts)->toBe(1)
+        ->and($notification->fresh()->next_attempt_at)->not->toBeNull();
+
+    $this->travel(11)->seconds();
+    $job->handle($telegram, $monitor, $links);
+    $job->handle($telegram, $monitor, $links);
+
+    Http::assertSentCount(2);
+    expect($notification->fresh()->status)->toBe('sent')
+        ->and($notification->fresh()->attempts)->toBe(2)
+        ->and($notification->fresh()->telegram_message_id)->toBe(78);
+});
+
+it('marks an ambiguous Telegram timeout uncertain and does not send it again', function (): void {
+    config([
+        'services.telegram.bot_token' => 'test-bot-token',
+        'services.telegram.bot_username' => 'tris_test_bot',
+    ]);
+    Http::preventStrayRequests();
+    $requestAttempts = 0;
+    Http::fake(function () use (&$requestAttempts) {
+        $requestAttempts++;
+        throw new ConnectionException('simulated timeout');
+    });
+
+    [$response, $notification] = createControlCompletionNotificationFixture();
+    $job = new SendControlCompletionNotification((int) $notification->id);
+    $telegram = app(TelegramBotService::class);
+    $monitor = app(TelegramOutboundMonitor::class);
+    $links = app(ControlCompletionNotificationService::class);
+
+    $job->handle($telegram, $monitor, $links);
+    $job->handle($telegram, $monitor, $links);
+
+    expect($notification->fresh()->status)->toBe('uncertain')
+        ->and($notification->fresh()->attempts)->toBe(1)
+        ->and($requestAttempts)->toBe(1)
+        ->and(ControlResponse::query()->whereKey($response->id)->exists())->toBeTrue();
+});
+
+it('redispatches stale pending notifications from the outbox scanner', function (): void {
+    Queue::fake();
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $response = ControlResponse::create([
+        'control_id' => $control->id,
+        'supervisor_id' => auth()->id(),
+        'cleaner_id' => $cleaner->id,
+        'apartment_id' => $apartment,
+        'inspection_date' => now()->toDateString(),
+        'responses' => [],
+        'schema_snapshot' => $control->main,
+        'status' => ControlResponse::STATUS_SENT,
+        'sent_at' => now(),
+    ]);
+    ControlCompletionNotification::create([
+        'control_response_id' => $response->id,
+        'recipient_user_id' => $cleaner->id,
+        'status' => 'pending',
+        'last_dispatched_at' => now()->subMinutes(6),
+    ]);
+
+    $this->artisan('controls:dispatch-completion-notifications')->assertSuccessful();
+
+    Queue::assertPushed(SendControlCompletionNotification::class, 1);
+});
+
+it('opens only the completed result authorized for the signed Mini App user', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $token = 'test-mini-app-token';
+    config(['services.telegram.bot_token' => $token]);
+    $cleaner->forceFill(['telegram_id' => '701'])->save();
+    $response = ControlResponse::create([
+        'control_id' => $control->id,
+        'supervisor_id' => $supervisor->id,
+        'cleaner_id' => $cleaner->id,
+        'apartment_id' => $apartment,
+        'inspection_date' => now()->toDateString(),
+        'responses' => [],
+        'schema_snapshot' => $control->main,
+        'status' => ControlResponse::STATUS_SENT,
+        'sent_at' => now(),
+    ]);
+
+    $this->postJson(route('telegram.auth'), [
+        'init_data' => signedControlResultStartData('701', 'control_result_'.$response->id, $token),
+    ])
+        ->assertOk()
+        ->assertJsonPath('redirect', route('page-profile.checks.result', $response));
+
+    $other = User::create([
+        'name' => 'Other cleaner',
+        'role' => 'cleaner',
+        'status' => 'approved',
+        'is_active' => true,
+        'telegram_id' => '702',
+    ]);
+
+    $this->postJson(route('telegram.auth'), [
+        'init_data' => signedControlResultStartData((string) $other->telegram_id, 'control_result_'.$response->id, $token),
+    ])->assertForbidden();
+});
+
+it('rejects expired and future Telegram Mini App initData timestamps', function (): void {
+    $token = 'test-mini-app-token';
+    config(['services.telegram.bot_token' => $token]);
+    $service = app(TelegramMiniAppService::class);
+
+    expect(fn () => $service->validate(signedControlResultStartData('701', '', $token, now()->timestamp - 86401)))
+        ->toThrow(HttpException::class);
+
+    expect(fn () => $service->validate(signedControlResultStartData('701', '', $token, now()->timestamp + 120)))
+        ->toThrow(HttpException::class);
+
+    $signed = signedControlResultStartData('701', 'control_result_1', $token);
+    $tampered = str_replace('control_result_1', 'control_result_2', $signed);
+    expect(fn () => $service->validate($tampered))
+        ->toThrow(HttpException::class);
+});
 
 it('hides corrective details and does not require them for a negative answer', function () {
     [, $cleaner, $apartment, $control] = mountControlWorkflow();
@@ -1459,7 +1766,6 @@ it('persists the latest rapid answer edits together and restores them after relo
         ->assertSet('answers.1.0.selected', 'no')
         ->assertSet('answers.1.4.selected', 'no');
 });
-
 
 it('restores a legacy Focus draft only when its saved schema snapshot matches', function () {
     [, $cleaner, $apartment, $control] = mountControlWorkflow();

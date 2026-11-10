@@ -6,6 +6,7 @@ use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
 use App\Services\Controls\ControlRunManager;
+use App\Services\Controls\ControlCompletionNotificationService;
 use App\Services\Controls\ControlSchema;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
@@ -951,6 +952,8 @@ new class extends Component
                     'sent_at' => now(),
                 ],
                 afterCreate: function (ControlResponse $response) use ($score): void {
+                    app(ControlCompletionNotificationService::class)->queueFor($response);
+
                     activity()->causedBy(Auth::user())->performedOn($response)->event('control_completed')
                         ->withProperties([
                             'control_id' => $this->control->id,
