@@ -11,7 +11,7 @@ new class extends Component
     public function mount(Coaching $coaching): void
     {
         $user = Auth::user();
-        abort_unless($user && ($user->role === 'admin'
+        abort_unless($user && ($user->canViewAllStaffActivity()
             || ($user->role === 'supervisor' && (int) $coaching->supervisor_id === (int) $user->id)
             || ($user->role === 'cleaner' && (int) $coaching->user_id === (int) $user->id)), 403);
         $this->coaching = $coaching->load(['cleaner', 'supervisor', 'control', 'apartment']);
@@ -37,6 +37,6 @@ new class extends Component
         </dl>
         <h3 class="mb-3 mt-8 font-semibold">Что разобрали</h3>
         <p class="whitespace-pre-wrap break-words leading-relaxed">{{ $coaching->description ?: 'Описание не сохранилось в исторической записи.' }}</p>
-        <a href="{{ auth()->user()->role === 'admin' ? route('page-profile.employee-history', $coaching->user_id) : (auth()->id() === (int) $coaching->user_id ? route('page-profile.checks') : route('page-coachings.history')) }}" class="mt-8 inline-block text-sm text-[#213259] underline">Вернуться к истории</a>
+        <a href="{{ auth()->user()->canViewAllStaffActivity() ? route('page-profile.employee-history', $coaching->user_id) : (auth()->id() === (int) $coaching->user_id ? route('page-profile.checks') : route('page-coachings.history')) }}" class="mt-8 inline-block text-sm text-[#213259] underline">Вернуться к истории</a>
     </div>
 </article>

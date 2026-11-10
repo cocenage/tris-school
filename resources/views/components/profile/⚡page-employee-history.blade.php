@@ -20,7 +20,7 @@ new class extends Component
 
     public function mount(User $employee): void
     {
-        abort_unless(Auth::user()?->role === 'admin', 403);
+        abort_unless(Auth::user()?->canViewAllStaffActivity(), 403);
         $this->employee = $employee;
     }
 
@@ -33,7 +33,7 @@ new class extends Component
 
     public function getItemsProperty()
     {
-        abort_unless(Auth::user()?->role === 'admin', 403);
+        abort_unless(Auth::user()?->canViewAllStaffActivity(), 403);
 
         return app(ProfileActivityTimeline::class)->paginateForCleaner($this->employee->id, $this->activityType, $this->dateFrom, $this->dateTo);
     }

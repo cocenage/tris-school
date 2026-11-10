@@ -92,12 +92,12 @@ it('keeps the cleaner history scoped to the logged-in person and retains the con
     Livewire::actingAs($this->supervisor)->test('profile.page-checks')->set('tab', 'conducted')->assertSee('Visible control');
 });
 
-it('allows only administrators to open an employee combined history', function () {
+it('allows administrators and supervisors to open an employee combined history', function () {
     historyFixture($this->cleaner->id, $this->supervisor->id, 'coaching', '2026-10-24', 'Admin timeline coaching');
     $admin = User::create(['name' => 'Admin', 'role' => 'admin', 'status' => 'approved', 'is_active' => true]);
     Livewire::actingAs($admin)->test('profile.page-employee-history', ['employee' => $this->cleaner])->assertSee('Admin timeline coaching');
     Livewire::actingAs($this->cleaner)->test('profile.page-employee-history', ['employee' => $this->cleaner])->assertForbidden();
-    Livewire::actingAs($this->supervisor)->test('profile.page-employee-history', ['employee' => $this->cleaner])->assertForbidden();
+    Livewire::actingAs($this->supervisor)->test('profile.page-employee-history', ['employee' => $this->cleaner])->assertSee('Admin timeline coaching');
 });
 
 it('includes coaching counts in the existing admin roster and preserves its activity filter', function () {
@@ -108,6 +108,7 @@ it('includes coaching counts in the existing admin roster and preserves its acti
         ->set('activityFilter', 'no_items')->assertDontSee('Timeline cleaner')->assertSee('Timeline supervisor')
         ->set('activityFilter', 'has_items')->assertSee('Timeline cleaner')->assertDontSee('Timeline supervisor');
     Livewire::actingAs($this->cleaner)->test('profile.page-all-checks')->assertForbidden();
+    Livewire::actingAs($this->supervisor)->test('profile.page-all-checks')->assertSee('Timeline cleaner');
 });
 
 it('immediately includes a newly saved coaching in the right cleaner history without changing controls', function () {

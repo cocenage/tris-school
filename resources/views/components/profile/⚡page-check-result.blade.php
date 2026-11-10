@@ -14,7 +14,7 @@ new class extends Component {
         abort_unless(
             $controlResponse->cleaner_id === Auth::id()
             || $controlResponse->supervisor_id === Auth::id()
-            || $user?->role === 'admin',
+            || $user?->canViewAllStaffActivity(),
             403
         );
 

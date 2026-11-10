@@ -49,13 +49,19 @@ class SupervisorPanelAccess
             return false;
         }
 
-        if (Filament::getCurrentPanel()?->getId() === 'education') {
+        $panelId = Filament::getCurrentPanel()?->getId();
+
+        if ($panelId === 'education') {
             return $this->canUseSupervisorPanel($user);
         }
 
-        $adminPanel = Filament::getPanel('admin');
+        if ($panelId === 'admin') {
+            $adminPanel = Filament::getPanel('admin');
 
-        return $adminPanel !== null && $user->canAccessPanel($adminPanel);
+            return $adminPanel !== null && $user->canAccessPanel($adminPanel);
+        }
+
+        return $panelId === null && $user->canViewAllStaffActivity();
     }
 
     public function canManageCurrentQualityControlSurface(?User $user): bool
@@ -64,13 +70,19 @@ class SupervisorPanelAccess
             return false;
         }
 
-        if (Filament::getCurrentPanel()?->getId() === 'education') {
+        $panelId = Filament::getCurrentPanel()?->getId();
+
+        if ($panelId === 'education') {
             return $user->isAdmin();
         }
 
-        $adminPanel = Filament::getPanel('admin');
+        if ($panelId === 'admin') {
+            $adminPanel = Filament::getPanel('admin');
 
-        return $adminPanel !== null && $user->canAccessPanel($adminPanel);
+            return $adminPanel !== null && $user->canAccessPanel($adminPanel);
+        }
+
+        return $panelId === null && $user->canViewAllStaffActivity();
     }
 
     /** @return list<string> */

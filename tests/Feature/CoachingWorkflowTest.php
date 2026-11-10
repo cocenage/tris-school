@@ -244,7 +244,7 @@ it('does not duplicate a coaching when the same form is submitted twice', functi
         ->and((int) DB::table('coachings')->value('supervisor_id'))->toBe($supervisor->id);
 });
 
-it('shows supervisors only their coachings and cleaners only their own', function () {
+it('shows supervisors all coachings and cleaners only their own', function () {
     coachingMigration()->up();
     $supervisorA = coachingWorkflowUser('Supervisor A', 'supervisor');
     $supervisorB = coachingWorkflowUser('Supervisor B', 'supervisor');
@@ -256,7 +256,7 @@ it('shows supervisors only their coachings and cleaners only their own', functio
     Livewire::actingAs($supervisorA)
         ->test('page-coachings')
         ->assertSee('Уникальный разбор A')
-        ->assertDontSee('Уникальный разбор B');
+        ->assertSee('Уникальный разбор B');
 
     Livewire::actingAs($cleanerA)
         ->test('page-coachings')
@@ -286,7 +286,7 @@ it('lets administrators filter all coachings by cleaner and date', function () {
         ->assertSee('Админский разбор B');
 });
 
-it('allows an administrator, the authoring supervisor, and the cleaner to view a coaching but blocks other staff', function () {
+it('allows administrators and all supervisors to view coaching while keeping unrelated cleaners out', function () {
     coachingMigration()->up();
     $admin = coachingWorkflowUser('Admin', 'admin');
     $supervisor = coachingWorkflowUser('Supervisor', 'supervisor');
@@ -299,7 +299,7 @@ it('allows an administrator, the authoring supervisor, and the cleaner to view a
     $this->actingAs($admin)->get($url)->assertOk()->assertSee('Приватный разбор сотрудника');
     $this->actingAs($supervisor)->get($url)->assertOk();
     $this->actingAs($cleaner)->get($url)->assertOk();
-    $this->actingAs($otherSupervisor)->get($url)->assertForbidden();
+    $this->actingAs($otherSupervisor)->get($url)->assertOk();
     $this->actingAs($otherCleaner)->get($url)->assertForbidden();
 });
 

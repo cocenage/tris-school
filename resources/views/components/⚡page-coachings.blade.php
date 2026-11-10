@@ -33,9 +33,7 @@ new class extends Component
         $user = Auth::user();
         abort_unless(in_array($user?->role, ['admin', 'supervisor', 'cleaner'], true), 403);
         $query = Coaching::query()->with(['cleaner', 'supervisor']);
-        if ($user->role === 'supervisor') {
-            $query->where('supervisor_id', $user->id);
-        } elseif ($user->role === 'cleaner') {
+        if ($user->role === 'cleaner') {
             $query->where('user_id', $user->id);
         } else {
             $query->when($this->employeeFilter, fn ($q) => $q->where('user_id', $this->employeeFilter))
@@ -48,7 +46,7 @@ new class extends Component
 
     public function getEmployeesProperty()
     {
-        return Auth::user()?->role === 'admin'
+        return Auth::user()?->canViewAllStaffActivity()
             ? User::query()->where('role', 'cleaner')->orderBy('name')->get(['id', 'name'])
             : collect();
     }
@@ -67,7 +65,7 @@ new class extends Component
         @if(in_array(auth()->user()->role, ['admin', 'supervisor'], true))
             <a href="{{ route('page-coachings.create') }}" class="flex min-h-12 items-center justify-center rounded-full bg-[#213259] px-5 font-semibold text-white">Записать коучинг</a>
         @endif
-        @if(auth()->user()->role === 'admin')
+        @if(auth()->user()->canViewAllStaffActivity())
             <div class="space-y-3">
                 <label class="block text-sm">Сотрудник
                     <select wire:model.live="employeeFilter" class="mt-1 min-h-11 w-full rounded-xl border border-black/15 bg-white px-3"><option value="">Все сотрудники</option>@foreach($this->employees as $employee)<option value="{{ $employee->id }}">{{ $employee->name }}</option>@endforeach</select>

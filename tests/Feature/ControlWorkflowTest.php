@@ -668,7 +668,7 @@ it('preserves real Classic video bytes through reload, finalization, Range and a
     Storage::disk('local')->assertMissing($media[0]['path']);
     $url = route('page-checks.control.result-media', [$result, 0, 0, 0]);
     $this->get($url, ['Range' => 'bytes=0-31'])->assertStatus(206)->assertHeader('Content-Type', $mime);
-    $this->actingAs($other)->get($url)->assertForbidden();
+    $this->actingAs($other)->get($url)->assertOk();
     $this->actingAs($cleaner)->get($url.'?download=1')->assertDownload('clip.'.$extension);
 })->with([['mp4', 'video/mp4'], ['mov', 'video/quicktime'], ['webm', 'video/webm']]);
 
@@ -745,7 +745,7 @@ it('stores actual PNG and WebP bytes without changing existing Classic answers',
     Livewire::test('forms.page-control')->assertSet('answers.0.0.selected', 'no')->assertCount('answers.0.0.media', 1);
 })->with([['png', 'image/png'], ['webp', 'image/webp']]);
 
-it('renders the loader preview only when explicitly requested', function () {
+it('preserves loader preview navigation and safely loads the overlay on ordinary pages', function () {
     [$supervisor] = mountControlWorkflow();
 
     auth()->logout();
@@ -769,7 +769,9 @@ it('renders the loader preview only when explicitly requested', function () {
 
     $this->get('/checks/control')
         ->assertOk()
-        ->assertDontSee('loader-preview-overlay');
+        ->assertSee('loader-preview-overlay')
+        ->assertSee('visibility: hidden;', false)
+        ->assertSee('window.setTimeout(dismiss, 8000)', false);
 });
 
 it('moves to the next unanswered required question and opens review only when required answers are complete', function () {
@@ -1113,7 +1115,7 @@ it('restores, removes and submits Classic draft media without accepting a foreig
 
     $resultUrl = route('page-checks.control.result-media', [$response, 0, 0, 0]);
     $this->actingAs($supervisor)->get($resultUrl)->assertOk();
-    $this->actingAs($otherSupervisor)->get($resultUrl)->assertForbidden();
+    $this->actingAs($otherSupervisor)->get($resultUrl)->assertOk();
     $this->actingAs($cleaner)->get($resultUrl)->assertOk();
 });
 
@@ -1183,7 +1185,9 @@ it('persists distinct Classic media comments across draft restore and final subm
         ->assertSee('Общее замечание к контролю');
 
     $unauthorized = User::create(['name' => 'Unauthorized', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
-    $this->actingAs($unauthorized)->get($resultUrl)->assertForbidden();
+    $this->actingAs($unauthorized)->get($resultUrl)->assertOk();
+    $otherCleaner = User::create(['name' => 'Other cleaner', 'role' => 'cleaner', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($otherCleaner)->get($resultUrl)->assertForbidden();
 });
 
 it('keeps empty photo comments absent and preserves the overall control comment', function () {
