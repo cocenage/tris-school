@@ -6,24 +6,28 @@ use App\Filament\Resources\Users\Pages\CreateUser;
 use App\Filament\Resources\Users\Pages\EditUser;
 use App\Filament\Resources\Users\Pages\ListUsers;
 use App\Filament\Resources\Users\Pages\ViewUser;
+use App\Filament\Resources\Users\RelationManagers\CalendarAdjustmentsRelationManager;
+use App\Filament\Resources\Users\RelationManagers\DayOffRequestDaysRelationManager;
+use App\Filament\Resources\Users\RelationManagers\VacationRequestDaysRelationManager;
+use App\Filament\Resources\Users\RelationManagers\WorkScheduleVersionsRelationManager;
 use App\Filament\Resources\Users\Schemas\UserForm;
 use App\Filament\Resources\Users\Schemas\UserInfolist;
 use App\Filament\Resources\Users\Tables\UsersTable;
 use App\Models\User;
 use BackedEnum;
+use Filament\Facades\Filament;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 class UserResource extends Resource
 {
     protected static ?string $model = User::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::Users;
-
-    protected static string|\UnitEnum|null $navigationGroup = 'Пользователи';
 
     protected static ?int $navigationSort = 1;
 
@@ -34,6 +38,49 @@ class UserResource extends Resource
     protected static ?string $modelLabel = 'пользователь';
 
     protected static ?string $pluralModelLabel = 'пользователи';
+
+    public static function getNavigationGroup(): ?string
+    {
+        return Filament::getCurrentPanel()?->getId() === 'education'
+            ? 'Сотрудники и графики'
+            : 'Пользователи';
+    }
+
+    public static function canViewAny(): bool
+    {
+        $user = auth()->user();
+        if (! $user?->isApproved()) {
+            return false;
+        }
+
+        if (Filament::getCurrentPanel()?->getId() === 'education') {
+            return $user->isAdmin();
+        }
+
+        $adminPanel = Filament::getPanel('admin');
+
+        return $adminPanel !== null && $user->canAccessPanel($adminPanel);
+    }
+
+    public static function canCreate(): bool
+    {
+        return static::canViewAny();
+    }
+
+    public static function canView(Model $record): bool
+    {
+        return static::canViewAny();
+    }
+
+    public static function canEdit(Model $record): bool
+    {
+        return static::canViewAny();
+    }
+
+    public static function canDelete(Model $record): bool
+    {
+        return static::canViewAny();
+    }
 
     public static function form(Schema $schema): Schema
     {
@@ -52,7 +99,12 @@ class UserResource extends Resource
 
     public static function getRelations(): array
     {
-        return [];
+        return [
+            WorkScheduleVersionsRelationManager::class,
+            CalendarAdjustmentsRelationManager::class,
+            DayOffRequestDaysRelationManager::class,
+            VacationRequestDaysRelationManager::class,
+        ];
     }
 
     public static function getPages(): array

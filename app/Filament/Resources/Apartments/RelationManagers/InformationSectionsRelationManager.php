@@ -2,7 +2,7 @@
 
 namespace App\Filament\Resources\Apartments\RelationManagers;
 
-use App\Models\ApartmentInformationSection;
+use App\Services\Apartments\ApartmentAccessService;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\EditAction;
@@ -100,11 +100,18 @@ class InformationSectionsRelationManager extends RelationManager
                     ->sortable(),
             ])
             ->headerActions([
-                CreateAction::make()->label('Добавить раздел'),
+                CreateAction::make()
+                    ->label('Добавить раздел')
+                    ->authorize(fn (): bool => app(ApartmentAccessService::class)->canManage(auth()->user())),
             ])
             ->actions([
-                EditAction::make()->label('Изменить'),
-                DeleteAction::make()->label('Удалить')->requiresConfirmation(),
+                EditAction::make()
+                    ->label('Изменить')
+                    ->authorize(fn (): bool => app(ApartmentAccessService::class)->canManage(auth()->user())),
+                DeleteAction::make()
+                    ->label('Удалить')
+                    ->authorize(fn (): bool => app(ApartmentAccessService::class)->canManage(auth()->user()))
+                    ->requiresConfirmation(),
             ]);
     }
 

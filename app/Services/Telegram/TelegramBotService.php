@@ -27,6 +27,67 @@ class TelegramBotService
         );
     }
 
+    public function sendPhoto(string $chatId, string $path, string $caption, ?string $threadId = null): ?int
+    {
+        $token = config('services.telegram.bot_token');
+
+        if (! filled($token)) {
+            Log::warning('Telegram bot token is not configured.');
+
+            return null;
+        }
+
+        if (! is_file($path) || ! is_readable($path)) {
+            Log::warning('Telegram photo attachment is not readable.');
+
+            return null;
+        }
+
+        $photo = @fopen($path, 'rb');
+        if (! is_resource($photo)) {
+            Log::warning('Telegram photo attachment could not be opened.');
+
+            return null;
+        }
+
+        try {
+            $request = $this->telegramApiRequest(10, 3)
+                ->attach('photo', $photo, basename($path));
+            $payload = [
+                'chat_id' => $chatId,
+                'caption' => $caption,
+                'parse_mode' => 'HTML',
+            ];
+
+            if (filled($threadId)) {
+                $payload['message_thread_id'] = (int) $threadId;
+            }
+
+            $response = $request->post("https://api.telegram.org/bot{$token}/sendPhoto", $payload);
+        } catch (ConnectionException) {
+            throw new ConnectionException('Telegram API connection failed for sendPhoto.');
+        } finally {
+            fclose($photo);
+        }
+
+        $telegramResult = $response->json();
+        $messageId = data_get($telegramResult, 'result.message_id');
+        $apiOk = data_get($telegramResult, 'ok');
+        $apiErrorCode = data_get($telegramResult, 'error_code');
+
+        Log::info('Telegram sendPhoto response', [
+            'status' => $response->status(),
+            'successful' => $response->successful(),
+            'api_ok' => is_bool($apiOk) ? $apiOk : null,
+            'api_error_code' => is_numeric($apiErrorCode) ? (int) $apiErrorCode : null,
+            'receipt_present' => is_numeric($messageId),
+        ]);
+
+        return $response->successful() && $apiOk === true && is_numeric($messageId)
+            ? (int) $messageId
+            : null;
+    }
+
     public function sendAnalyticsMessage(string $chatId, string $text, string $threadId): ?int
     {
         return $this->sendMessageUsingToken(
@@ -171,7 +232,35 @@ class TelegramBotService
         ?string $replyToMessageId = null,
         ?array $replyMarkup = null,
     ): ?int {
-        $token = config('services.telegram.bot_token');
+        return $this->sendRichMessageUsingToken(
+            config('services.telegram.bot_token'), $chatId, $richMessage, $fallbackHtml, $threadId, $replyToMessageId, $replyMarkup,
+        );
+    }
+
+    public function sendAnalyticsRichMessage(
+        string $chatId,
+        array $richMessage,
+        string $fallbackHtml,
+        ?string $threadId = null,
+        ?string $replyToMessageId = null,
+        ?array $replyMarkup = null,
+        ?int $maxFallbackVisibleLength = null,
+    ): ?int {
+        return $this->sendRichMessageUsingToken(
+            config('services.telegram.analytics_bot_token'), $chatId, $richMessage, $fallbackHtml, $threadId, $replyToMessageId, $replyMarkup, $maxFallbackVisibleLength,
+        );
+    }
+
+    private function sendRichMessageUsingToken(
+        ?string $token,
+        string $chatId,
+        array $richMessage,
+        string $fallbackHtml,
+        ?string $threadId,
+        ?string $replyToMessageId,
+        ?array $replyMarkup,
+        ?int $maxFallbackVisibleLength = null,
+    ): ?int {
 
         if (! $token) {
             Log::warning('Telegram bot token is not configured.');
@@ -180,7 +269,12 @@ class TelegramBotService
         }
 
         if (! config('services.telegram.rich_messages_enabled', false)) {
-            return $this->sendMessage(
+            if (! $this->fallbackWithinLimit($fallbackHtml, $maxFallbackVisibleLength)) {
+                return null;
+            }
+
+            return $this->sendMessageUsingToken(
+                $token,
                 chatId: $chatId,
                 text: $fallbackHtml,
                 threadId: $threadId,
@@ -200,33 +294,52 @@ class TelegramBotService
         try {
             $response = $this->postTelegramApi($token, 'sendRichMessage', $payload, 10, 3);
 
-            if ($response->successful() && data_get($response->json(), 'ok', true)) {
-                return data_get($response->json(), 'result.message_id');
+            $messageId = data_get($response->json(), 'result.message_id');
+            if ($response->successful() && data_get($response->json(), 'ok', true) && is_numeric($messageId)) {
+                return (int) $messageId;
             }
 
-            Log::warning('Telegram Rich Message rejected; using HTML fallback.', [
-                'status' => $response->status(),
-            ]);
+            if (! $response->clientError() || data_get($response->json(), 'ok') !== false) {
+                Log::warning('Telegram Rich Message outcome is uncertain; fallback was not sent.', [
+                    'status' => $response->status(),
+                ]);
+
+                return null;
+            }
+
+            Log::warning('Telegram Rich Message was explicitly rejected; using HTML fallback.', ['status' => $response->status()]);
         } catch (\Throwable $e) {
-            Log::warning('Telegram Rich Message failed; using HTML fallback.', [
+            Log::warning('Telegram Rich Message outcome is uncertain; fallback was not sent.', [
                 'exception' => class_basename($e),
             ]);
+
+            return null;
         }
 
-        $fallbackPayload = [
-            'chat_id' => $chatId,
-            'text' => $fallbackHtml,
-            'parse_mode' => 'HTML',
-            'disable_web_page_preview' => true,
-        ];
+        if (! $this->fallbackWithinLimit($fallbackHtml, $maxFallbackVisibleLength)) {
+            return null;
+        }
 
-        $this->addMessageOptions($fallbackPayload, $threadId, $replyToMessageId, $replyMarkup);
+        return $this->sendMessageUsingToken($token, $chatId, $fallbackHtml, $threadId, $replyToMessageId, $replyMarkup);
+    }
 
-        $fallbackResponse = $this->postTelegramApi($token, 'sendMessage', $fallbackPayload, 10, 3);
+    private function fallbackWithinLimit(string $fallbackHtml, ?int $maxFallbackVisibleLength): bool
+    {
+        if ($maxFallbackVisibleLength === null) {
+            return true;
+        }
 
-        return $fallbackResponse->successful()
-            ? data_get($fallbackResponse->json(), 'result.message_id')
-            : null;
+        $visibleLength = TelegramRichMessageBuilder::htmlVisibleLength($fallbackHtml);
+        if ($visibleLength <= $maxFallbackVisibleLength) {
+            return true;
+        }
+
+        Log::warning('Telegram HTML fallback exceeds its safe message length; not sent.', [
+            'visible_length' => $visibleLength,
+            'safe_limit' => $maxFallbackVisibleLength,
+        ]);
+
+        return false;
     }
 
     /**

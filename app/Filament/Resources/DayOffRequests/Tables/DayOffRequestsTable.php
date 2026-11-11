@@ -9,13 +9,15 @@ use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
+use Filament\Facades\Filament;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Textarea;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
-use Filament\Forms\Components\DatePicker;
+use Illuminate\Support\Facades\Gate;
 
 class DayOffRequestsTable
 {
@@ -24,7 +26,9 @@ class DayOffRequestsTable
         return $table
             ->modifyQueryUsing(fn (Builder $query): Builder => $query->with(['user', 'days']))
             ->recordTitleAttribute('user_name')
-            ->recordUrl(fn ($record) => DayOffRequestResource::getUrl('edit', ['record' => $record]))
+            ->recordUrl(fn ($record) => Filament::getCurrentPanel()?->getId() === 'education'
+                ? DayOffRequestResource::getUrl('view', ['record' => $record])
+                : DayOffRequestResource::getUrl('edit', ['record' => $record]))
             ->defaultSort('created_at', 'desc')
 
             ->columns([
@@ -135,6 +139,7 @@ class DayOffRequestsTable
                         ->visible(fn (DayOffRequest $record): bool => $record->status !== 'approved')
                         ->requiresConfirmation()
                         ->action(function (DayOffRequest $record): void {
+                            Gate::authorize('review', $record);
                             $record->update([
                                 'status' => 'approved',
                             ]);
@@ -157,6 +162,7 @@ class DayOffRequestsTable
                                 ->default(fn (DayOffRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (DayOffRequest $record, array $data): void {
+                            Gate::authorize('review', $record);
                             $record->update([
                                 'status' => 'rejected',
                                 'admin_comment' => filled($data['admin_comment'] ?? null)
@@ -180,6 +186,7 @@ class DayOffRequestsTable
                                 ->default(fn (DayOffRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (DayOffRequest $record, array $data): void {
+                            Gate::authorize('review', $record);
                             $record->update([
                                 'admin_comment' => filled($data['admin_comment'] ?? null)
                                     ? trim((string) $data['admin_comment'])

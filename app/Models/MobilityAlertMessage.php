@@ -17,12 +17,16 @@ class MobilityAlertMessage extends Model
         'deleted_at',
         'delivery_key',
         'queued_at',
+        'delivery_status',
+        'attempted_at',
+        'error_code',
     ];
 
     protected $casts = [
         'queued_at' => 'datetime',
         'sent_at' => 'datetime',
         'deleted_at' => 'datetime',
+        'attempted_at' => 'datetime',
     ];
 
     public function alert()

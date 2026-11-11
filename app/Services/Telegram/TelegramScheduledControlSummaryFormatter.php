@@ -8,26 +8,55 @@ use Illuminate\Support\Str;
 
 class TelegramScheduledControlSummaryFormatter
 {
-    public function formatInteractive(TelegramScheduledMessageDelivery $delivery): string
+    /** @return array{text: string, reply_markup: array, render_hash: string} */
+    public function interactivePayload(TelegramScheduledMessageDelivery $delivery): array
+    {
+        $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
+        $text = $this->formatInteractive($delivery, $states);
+        $context = $delivery->sequence_context ?? [];
+        $scope = ($context['stage'] ?? null) === 'second' && is_array($context['eligible_districts'] ?? null)
+            ? $context['eligible_districts'] : null;
+        $keyboard = ScheduledControlTypes::districtKeyboard($delivery->id, $scope, $states);
+
+        return [
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'render_hash' => hash('sha256', json_encode([$text, $keyboard], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)),
+        ];
+    }
+
+    public function formatInteractive(TelegramScheduledMessageDelivery $delivery, ?array $states = null): string
     {
         $lines = [htmlspecialchars((string) $delivery->scheduledMessage?->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), ''];
-        $latest = $delivery->responses()->whereIn('response_kind', ['button', 'text_answer'])->whereNotNull('district_key')->orderBy('id')->get()
-            ->groupBy(fn ($response): string => $response->district_key.'|'.$response->telegram_user_id)
-            ->map(fn ($answers) => $answers->last())
-            ->groupBy('district_key');
+        $latest = $states ?? app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
+        $context = $delivery->sequence_context ?? [];
+
+        if (($context['stage'] ?? null) === 'second') {
+            $lines[] = $this->sequenceContextLine($context);
+            $lines[] = '';
+        }
 
         foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
-            $answers = $latest->get($key, collect());
+            $answers = collect($latest[$key] ?? []);
+            if (($context['stage'] ?? null) === 'second'
+                && ($context['criteria_matches'] ?? false)
+                && ! in_array($key, $context['eligible_districts'] ?? [], true)
+                && ($context['previous_states'][$key] ?? null) === 'confirmed') {
+                $lines[] = '✅ '.$label.' — подтверждено ранее';
+
+                continue;
+            }
             if ($answers->isEmpty()) {
                 $lines[] = '▫️ '.$label.' — нет ответа';
 
                 continue;
             }
 
-            $parts = $answers->map(function ($response): string {
+            $parts = $answers->map(function (array $state): string {
+                $response = $state['response'];
                 $name = htmlspecialchars((string) ($response->author_name ?: 'Сотрудник'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
-                $answer = match ($response->classification) {
+                $answer = match ($state['classification']) {
                     'confirmed' => '✅ Да', 'problem' => '❌ Нет', 'partial' => '🟡 Частично', default => '❔ Неясно',
                 };
 
@@ -55,29 +84,167 @@ class TelegramScheduledControlSummaryFormatter
         return implode("\n", $lines);
     }
 
+    private function sequenceContextLine(array $context): string
+    {
+        $sourceTime = htmlspecialchars((string) ($context['source_time'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $sourceStatus = $context['source_status'] ?? 'missing_delivery';
+        if ($sourceStatus !== 'sent') {
+            $description = match ($sourceStatus) {
+                'ambiguous_template' => 'предыдущий контроль неоднозначен',
+                'missing_template', 'missing_delivery' => 'предыдущий контроль не зафиксирован',
+                'pending', 'retrying' => 'предыдущий контроль ещё не отправлен',
+                'failed' => 'предыдущий контроль не доставлен',
+                'uncertain', 'sending' => 'результат предыдущей отправки неизвестен',
+                default => 'предыдущий контроль недоступен',
+            };
+
+            return 'ℹ️ Контекст '.$sourceTime.': '.$description.'; проверяются все районы.';
+        }
+
+        $states = [];
+        foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+            $status = $context['previous_states'][$key] ?? 'no_response';
+            $statusLabel = match ($status) {
+                'confirmed' => 'Да', 'problem' => 'Нет', 'partial' => 'частично', 'unclear' => 'неясно',
+                'conflict' => 'расхождение', default => 'нет ответа',
+            };
+            if (($context['criteria_matches'] ?? false) && $status === 'confirmed') {
+                $statusLabel = 'подтверждено ранее';
+            } elseif (! ($context['criteria_matches'] ?? false) && $status === 'confirmed') {
+                $statusLabel = 'ранее Да, не засчитывается';
+            }
+            $states[] = $label.' — '.$statusLabel;
+        }
+
+        $line = 'ℹ️ Контекст '.$sourceTime.': '.implode('; ', $states).'.';
+        if (! ($context['criteria_matches'] ?? false)) {
+            $line .= ' Критерий отличается или не подтверждён — ответы не переносятся.';
+        }
+
+        return $line;
+    }
+
     public function format(array $summary): string
     {
         $text = '🧹 TRIS — Контроль уборок · '.CarbonImmutable::parse($summary['date'])->format('d.m.Y')."\n";
-        if ($summary['controls'] === []) {
-            return $text."\n✅ Контрольных сообщений за день не было.\n";
+        if ($summary['controls'] === [] && ($summary['missing_deliveries'] ?? []) === []) {
+            return $text.(($summary['configuration_history_uncertain'] ?? false)
+                ? "\n⚪ История настроек за этот период неполная.\n"
+                : "\n✅ Контрольных сообщений за день не было.\n");
         }
 
         $text .= "\n";
 
         foreach ($summary['controls'] as $control) {
             $text .= $this->controlLine($control);
+            foreach ($control['additional_delivery_statuses'] ?? [] as $status) {
+                $text .= $this->deliveryStatusLine($control['label'], $status);
+            }
+        }
+        foreach ($summary['missing_deliveries'] ?? [] as $missing) {
+            $label = ScheduledControlTypes::LABELS[$missing['control_type']] ?? $missing['name'];
+            $text .= ($missing['configuration_uncertain'] ?? false)
+                ? '⚪ '.$label.": исторические настройки не подтверждены\n"
+                : '⚠️ '.$label.": отправка не зафиксирована\n";
+        }
+        if ($summary['configuration_history_uncertain'] ?? false) {
+            $text .= "\n⚪ История настроек за этот период неполная; прежний расчёт приблизительный.\n";
         }
         if (($summary['totals']['response_messages'] ?? 0) === 0) {
             $text .= "\nℹ️ Ответы на контрольные сообщения за этот день не зафиксированы.\n";
         }
+        if ($summary['has_district_history'] ?? false) {
+            $totals = $summary['totals'];
+            $text .= "\nИтоги:\n"
+                .'Контролей: '.$totals['controls']."\n"
+                .'Задержек выявлено: '.$totals['delays_identified']."\n"
+                .'Устранено: '.$totals['delays_resolved']."\n"
+                .'Осталось открытых: '.$totals['delays_open']."\n"
+                .'Районов без ответа: '.$totals['districts_without_answer']."\n"
+                .'Районов с неясным ответом: '.$totals['districts_unclear']."\n"
+                .'Противоречий: '.$totals['district_conflicts']."\n"
+                .'Сбоев или пропусков доставки: '.$totals['not_delivered']."\n"
+                .'Отменено по условию: '.$totals['cancelled_deliveries']."\n"
+                .'Пропущено: '.$totals['skipped_deliveries']."\n"
+                .'Ожидает отправки: '.$totals['pending_deliveries']."\n"
+                .'Результат отправки неизвестен: '.$totals['uncertain_deliveries']."\n"
+                .'Сбоев отправки повторов: '.$totals['followup_delivery_failures']."\n"
+                .'Неизвестный результат повторов: '.$totals['followup_delivery_uncertain']."\n";
+        }
 
         return htmlspecialchars(trim($text), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    private function deliveryStatusLine(string $label, string $status, bool $conditionNotMet = false, ?string $failureReason = null): string
+    {
+        return match ($status) {
+            'pending', 'retrying' => '⏳ '.$label.": отправка ожидается\n",
+            'uncertain', 'sending' => '⚪ '.$label.": результат отправки неизвестен\n",
+            'cancelled' => $conditionNotMet
+                ? '⚪ '.$label.": отправка отменена — условие подтверждения не выполнено\n"
+                : '⚪ '.$label.": отправка отменена\n",
+            'skipped' => $failureReason === 'sequential_all_districts_confirmed'
+                ? '⏭ '.$label.": отправка пропущена — все районы подтверждены предыдущей проверкой\n"
+                : '⏭ '.$label.": отправка пропущена\n",
+            'failed' => '⚠️ '.$label.": ошибка доставки\n",
+            default => '⚠️ '.$label.": сообщение не доставлено\n",
+        };
     }
 
     private function controlLine(array $control): string
     {
         $type = $control['control_type'];
         $label = $control['label'];
+        $deliveryStatus = $control['delivery_status'] ?? 'sent';
+        if ($deliveryStatus !== 'sent') {
+            return $this->deliveryStatusLine(
+                $label,
+                $deliveryStatus,
+                (bool) ($control['condition_not_met'] ?? false),
+                $control['failure_reason'] ?? null,
+            );
+        }
+        $history = $control['district_history'] ?? [];
+        if ($history !== []) {
+            if ($type === ScheduledControlTypes::CLOSING_PAYMENTS) {
+                $existing = $control;
+                $existing['district_history'] = [];
+                $lines = [rtrim($this->controlLine($existing))];
+            } else {
+                $lines = ['📋 '.$label.':'];
+            }
+            foreach ($history as $district) {
+                $description = match ($district['status']) {
+                    'confirmed' => $district['first_problem_at'] !== null
+                        ? ($district['delay_minutes'] === null
+                            ? '⚠️ задержка, время уточняется, затем подтверждено'
+                            : '⚠️ задержка '.$district['delay_minutes'].' мин., затем подтверждено')
+                        : '✅ подтверждено',
+                    'problem' => '❌ не выполнено',
+                    'partial' => '🟡 частично',
+                    'conflict' => '⚠️ противоречивые ответы',
+                    'unclear' => '❔ получен неясный ответ',
+                    default => '⚪ нет ответа',
+                };
+                $lines[] = $district['district'].' — '.$description;
+                if (($district['time_uncertain'] ?? false) && $district['status'] !== 'confirmed') {
+                    $lines[] = '  ⚪ Точное время ответа не установлено';
+                }
+                foreach ($district['followups'] ?? [] as $followup) {
+                    if ($followup['status'] === 'failed') {
+                        $lines[] = '  ⚠️ Повторное сообщение не доставлено';
+                    } elseif (in_array($followup['status'], ['uncertain', 'sending'], true)) {
+                        $lines[] = '  ⚪ Результат отправки повторного сообщения неизвестен';
+                    }
+                }
+            }
+            if (filled($control['source_url'] ?? null)) {
+                $lines[] = 'Источник: '.$control['source_url'];
+            }
+
+            return implode("\n", $lines)."\n";
+        }
+
         $districts = collect($control['district_results'] ?? []);
 
         if ($districts->isEmpty()) {

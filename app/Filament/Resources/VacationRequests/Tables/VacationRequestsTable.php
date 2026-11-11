@@ -9,6 +9,7 @@ use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
+use Filament\Facades\Filament;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Textarea;
 use Filament\Tables\Columns\TextColumn;
@@ -16,6 +17,7 @@ use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Gate;
 
 class VacationRequestsTable
 {
@@ -24,7 +26,9 @@ class VacationRequestsTable
         return $table
             ->modifyQueryUsing(fn (Builder $query): Builder => $query->with(['user', 'days']))
             ->recordTitleAttribute('id')
-            ->recordUrl(fn ($record) => VacationRequestResource::getUrl('edit', ['record' => $record]))
+            ->recordUrl(fn ($record) => Filament::getCurrentPanel()?->getId() === 'education'
+                ? VacationRequestResource::getUrl('view', ['record' => $record])
+                : VacationRequestResource::getUrl('edit', ['record' => $record]))
             ->defaultSort('created_at', 'desc')
 
             ->columns([
@@ -134,6 +138,7 @@ class VacationRequestsTable
                         ->visible(fn (VacationRequest $record): bool => $record->status !== 'approved')
                         ->requiresConfirmation()
                         ->action(function (VacationRequest $record): void {
+                            Gate::authorize('review', $record);
                             foreach ($record->days as $day) {
                                 $day->update([
                                     'status' => 'approved',
@@ -160,6 +165,7 @@ class VacationRequestsTable
                                 ->default(fn (VacationRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (VacationRequest $record, array $data): void {
+                            Gate::authorize('review', $record);
                             $adminComment = filled($data['admin_comment'] ?? null)
                                 ? trim((string) $data['admin_comment'])
                                 : $record->admin_comment;
@@ -192,6 +198,7 @@ class VacationRequestsTable
                                 ->default(fn (VacationRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (VacationRequest $record, array $data): void {
+                            Gate::authorize('review', $record);
                             $record->update([
                                 'admin_comment' => filled($data['admin_comment'] ?? null)
                                     ? trim((string) $data['admin_comment'])

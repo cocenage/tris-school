@@ -16,6 +16,10 @@ class TelegramDeliveryCenter
 {
     private const DISTRICTS = ['navigli', 'lodi', 'lambrate', 'como', 'certosa'];
 
+    private const DIGEST_TYPES = ['calendar', 'morning_digest', 'scheduled_control', 'scheduled_control_summary', 'evening_intelligence', 'linen_defect'];
+
+    private const HISTORY_LIMIT_PER_OPERATION = 30;
+
     private array $sourceWarnings = [];
 
     public function __construct(private TelegramDistrictRouteRegistry $routes) {}
@@ -27,6 +31,7 @@ class TelegramDeliveryCenter
         $start = $now->startOfDay();
         $date = $start->toDateString();
         $journalAvailable = Schema::hasTable('telegram_outbound_operations');
+        $buildHistoryAvailable = Schema::hasTable('telegram_outbound_operation_events');
         $monitorStartedAt = $journalAvailable
             ? TelegramOutboundOperation::query()->oldest('id')->value('created_at')
             : null;
@@ -34,6 +39,22 @@ class TelegramDeliveryCenter
             ? TelegramOutboundOperation::query()->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
                 ->orderByDesc('id')->limit(40)->get()
             : collect();
+        if ($buildHistoryAvailable) {
+            $digestOperationIds = $operations
+                ->whereIn('notification_type', self::DIGEST_TYPES)
+                ->modelKeys();
+            if ($digestOperationIds !== []) {
+                $operations->load(['events' => fn ($query) => $query
+                    ->whereIn('operation_id', $digestOperationIds)
+                    ->reorder('id', 'desc')
+                    ->limit(self::HISTORY_LIMIT_PER_OPERATION)]);
+                foreach ($operations as $operation) {
+                    if ($operation->relationLoaded('events')) {
+                        $operation->setRelation('events', $operation->events->sortBy('id')->values());
+                    }
+                }
+            }
+        }
         $dailyOperations = $journalAvailable
             ? TelegramOutboundOperation::query()->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
                 ->where('notification_type', '!=', 'mobility_alert')
@@ -86,7 +107,13 @@ class TelegramDeliveryCenter
 
             $staleExpected = TelegramOutboundOperation::query()
                 ->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
-                ->where('notification_type', '!=', 'calendar')
+                // Calendar is counted by its slot; only linked summary deliveries are expected sends.
+                ->where(function ($query): void {
+                    $query->whereNotIn('notification_type', ['calendar', 'scheduled_control_summary'])
+                        ->orWhere(fn ($summary) => $summary
+                            ->where('notification_type', 'scheduled_control_summary')
+                            ->whereNotNull('source_id'));
+                })
                 ->where('status', 'expected')
                 ->where('created_at', '<', $now->subMinutes(10)->format('Y-m-d H:i:s'))
                 ->count();
@@ -100,9 +127,12 @@ class TelegramDeliveryCenter
             'slots' => $slots,
             'operations' => $operations,
             'journal_available' => $journalAvailable,
+            'build_history_available' => $buildHistoryAvailable,
             'source_error' => implode(' ', array_filter([$sourceError, ...$this->sourceWarnings])) ?: null,
             'coverage_note' => $journalAvailable
-                ? 'Журнал связывает поддерживаемые события с HTTP-попытками после установки миграции. Остальные событийные пути и история до запуска покрыты частично.'
+                ? ($buildHistoryAvailable
+                    ? 'Журнал связывает поддерживаемые события с HTTP-попытками после установки миграции. Остальные событийные пути и история до запуска покрыты частично.'
+                    : 'Журнал доставок установлен; таблица истории построения ещё не установлена.')
                 : 'Журнал ещё не установлен: событийные отправки не подтверждены.',
         ];
     }

@@ -8,6 +8,7 @@ use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\User;
+use App\Services\Telegram\HtmlBubbles\TelegramWidgetQueryHandler;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
@@ -64,6 +65,7 @@ class TelegramWorkWebhookController extends Controller
         $actionFreshness = app(TelegramWorkActionFreshness::class);
         $updateType = match (true) {
             isset($update['callback_query']) => 'callback_query',
+            isset($update['widget_query']) => 'widget_query',
             isset($update['message']) => 'message',
             isset($update['edited_message']) => 'edited_message',
             isset($update['channel_post']) => 'channel_post',
@@ -74,7 +76,17 @@ class TelegramWorkWebhookController extends Controller
             'update_id' => is_numeric($update['update_id'] ?? null) ? (int) $update['update_id'] : null,
             'update_type' => $updateType,
             'has_callback_query' => $updateType === 'callback_query',
+            'has_widget_query' => $updateType === 'widget_query',
         ]);
+
+        if (isset($update['widget_query'])) {
+            if (! (bool) config('services.telegram.htmlbubbles.enabled', false)) {
+                return response()->json(['ok' => true, 'skipped' => 'htmlbubbles_disabled']);
+            }
+
+            return app(TelegramWidgetQueryHandler::class)
+                ->handle($update['widget_query']);
+        }
 
         if (isset($update['callback_query'])) {
             if ($actionFreshness->callbackRequiresReconciliation()) {
@@ -148,15 +160,21 @@ class TelegramWorkWebhookController extends Controller
                 if ($isControlDestination || $isWorkAllowed) {
                     $controlResponse = $responses->capture($savedMessage, $message);
                     if ($controlResponse?->delivery?->bot_type === 'work') {
-                        $this->syncWorkControlMessage($controlResponse->delivery);
+                        $controlDelivery = $controlResponse->delivery;
+                        if ($controlDelivery->control_type === ScheduledControlTypes::CLOSING_CLEANINGS
+                            && $responses->allDistrictsConfirmed($controlDelivery)
+                            && ! app(TelegramScheduledMessageDeliveryService::class)->queueClosingPayments($controlDelivery)) {
+                            Log::warning('Scheduled control payment follow-up could not be queued.', ['delivery_id' => $controlDelivery->id]);
+                        }
+                        $this->syncWorkControlMessage($controlDelivery);
                     }
                 }
             }
 
             if ($savedMessage && ($isOperationalChat || $isWorkAllowed) && config('services.telegram.operational_observer_enabled', false)
                 && ($savedMessage->raw === null
-                    || ! app(TelegramOperationalEventObserver::class)->hasCompletedCurrentRevision($savedMessage))) {
-                ProcessTelegramOperationalMessage::dispatch($savedMessage->id);
+                    || ! app(TelegramOperationalEventObserver::class)->hasCompletedCurrentRevision($savedMessage, 'work'))) {
+                ProcessTelegramOperationalMessage::dispatch($savedMessage->id, 'message', 'work');
             }
 
             if ($savedMessage && $isWorkAllowed && $activated && $currentForActions) {
@@ -220,7 +238,7 @@ class TelegramWorkWebhookController extends Controller
                 return $this->handleDayOffDayCallback($callbackQuery);
             }
 
-            if (str_starts_with($data, 'sc:')) {
+            if (str_starts_with($data, 'sc:') || str_starts_with($data, 'scf:')) {
                 return $this->handleScheduledControlCallback($callbackQuery);
             }
         } catch (\Throwable $e) {
@@ -255,8 +273,10 @@ class TelegramWorkWebhookController extends Controller
     private function handleScheduledControlCallback(array $callbackQuery)
     {
         $data = (string) ($callbackQuery['data'] ?? '');
-        if (preg_match('/^sc:(\d+):(?:lambrate|lodi|certosa|navigli|como):(yes|no)$/', $data, $matches) !== 1
-            || ! TelegramScheduledMessageDelivery::query()->whereKey((int) $matches[1])->where('bot_type', 'work')->exists()) {
+        $districtCallback = preg_match('/^sc:(\d+):(?:lambrate|lodi|certosa|navigli|como):(yes|no)$/', $data, $matches) === 1;
+        $followupCallback = preg_match('/^scf:\d+:(yes|no)$/', $data) === 1;
+        if ((! $districtCallback && ! $followupCallback)
+            || ($districtCallback && ! TelegramScheduledMessageDelivery::query()->whereKey((int) $matches[1])->where('bot_type', 'work')->exists())) {
             $this->answerCallback($callbackQuery, 'Эта кнопка больше не действует.');
 
             return response()->json(['ok' => true, 'skipped' => 'unknown_control_callback']);
@@ -290,12 +310,24 @@ class TelegramWorkWebhookController extends Controller
 
         try {
             $edited = Cache::lock('telegram_work_control_sync:'.$delivery->id, 10)->block(3, function () use ($delivery): bool {
-                $text = app(TelegramScheduledControlSummaryFormatter::class)->formatInteractive($delivery);
+                $current = $delivery->fresh();
+                if ($current === null) {
+                    return false;
+                }
+                $payload = app(TelegramScheduledControlSummaryFormatter::class)->interactivePayload($current);
+                if (is_string($current->render_hash) && hash_equals($current->render_hash, $payload['render_hash'])) {
+                    return true;
+                }
 
-                return app(TelegramBotService::class)->editMessage(
-                    (string) $delivery->chat_id, (int) $delivery->telegram_message_id, [], $text,
-                    ScheduledControlTypes::districtKeyboard($delivery->id), true,
+                $edited = app(TelegramBotService::class)->editMessage(
+                    (string) $current->chat_id, (int) $current->telegram_message_id, [], $payload['text'],
+                    $payload['reply_markup'], true,
                 );
+                if ($edited) {
+                    $current->update(['render_hash' => $payload['render_hash']]);
+                }
+
+                return $edited;
             });
         } catch (\Throwable $exception) {
             Log::warning('Work control message sync failed.', ['delivery_id' => $delivery->id, 'exception' => class_basename($exception)]);

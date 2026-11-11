@@ -2,10 +2,11 @@
 
 namespace App\Models;
 
-use App\Services\TelegramUserNotificationService;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\Storage;
@@ -86,10 +87,20 @@ class User extends Authenticatable implements FilamentUser
             ->exists();
     }
 
+    public function canViewAllStaffActivity(): bool
+    {
+        return $this->isApproved() && in_array($this->role, ['admin', 'supervisor'], true);
+    }
+
     public function canAccessPanel(Panel $panel): bool
     {
         if ($this->status !== 'approved') {
             return false;
+        }
+
+        // Legacy per-user grants must never open the primary administration panel.
+        if ($panel->getId() === 'admin') {
+            return $this->role === 'admin';
         }
 
         if ($this->role === 'admin') {
@@ -97,6 +108,67 @@ class User extends Authenticatable implements FilamentUser
         }
 
         return $this->hasPanelAccess($panel->getId());
+    }
+
+    public function workScheduleVersions(): HasMany
+    {
+        return $this->hasMany(EmployeeWorkScheduleVersion::class);
+    }
+
+    public function calendarAdjustments(): HasMany
+    {
+        return $this->hasMany(EmployeeCalendarAdjustment::class);
+    }
+
+    public function calendarPermission(): HasOne
+    {
+        return $this->hasOne(UserCalendarPermission::class);
+    }
+
+    public function canViewAllEmployeeCalendars(): bool
+    {
+        if ($this->isAdmin()) {
+            return true;
+        }
+
+        if ($this->role !== 'supervisor') {
+            return false;
+        }
+
+        return (bool) $this->employeeCalendarPermission()?->can_view_all_calendars;
+    }
+
+    public function canEditEmployeeCalendars(): bool
+    {
+        if ($this->isAdmin()) {
+            return true;
+        }
+
+        $permission = $this->employeeCalendarPermission();
+
+        return $this->role === 'supervisor'
+            && (bool) $permission?->can_view_all_calendars
+            && (bool) $permission?->can_edit;
+    }
+
+    public function canExportEmployeeCalendars(): bool
+    {
+        if ($this->isAdmin()) {
+            return true;
+        }
+
+        $permission = $this->employeeCalendarPermission();
+
+        return $this->role === 'supervisor'
+            && (bool) $permission?->can_view_all_calendars
+            && (bool) $permission?->can_export;
+    }
+
+    private function employeeCalendarPermission(): ?UserCalendarPermission
+    {
+        return $this->relationLoaded('calendarPermission')
+            ? $this->getRelation('calendarPermission')
+            : $this->calendarPermission()->first();
     }
 
     public function calendarTypeAccesses()
@@ -149,7 +221,7 @@ class User extends Authenticatable implements FilamentUser
 
     public function hasTelegramWriteAccess(): bool
     {
-        return !is_null($this->telegram_write_access_granted_at);
+        return ! is_null($this->telegram_write_access_granted_at);
     }
 
     public function getAvatarUrlAttribute(): ?string
@@ -167,32 +239,37 @@ class User extends Authenticatable implements FilamentUser
 
     public function dayOffRequests()
     {
-        return $this->hasMany(\App\Models\DayOffRequest::class);
+        return $this->hasMany(DayOffRequest::class);
     }
 
     public function dayOffRequestDays()
     {
-        return $this->hasMany(\App\Models\DayOffRequestDay::class);
+        return $this->hasMany(DayOffRequestDay::class);
+    }
+
+    public function vacationRequestDays(): HasMany
+    {
+        return $this->hasMany(VacationRequestDay::class);
     }
 
     public function vacationRequests()
     {
-        return $this->hasMany(\App\Models\VacationRequest::class);
+        return $this->hasMany(VacationRequest::class);
     }
 
     public function inventoryRequests()
     {
-        return $this->hasMany(\App\Models\InventoryRequest::class);
+        return $this->hasMany(InventoryRequest::class);
     }
 
     public function controlResponsesAsCleaner()
     {
-        return $this->hasMany(\App\Models\ControlResponse::class, 'cleaner_id');
+        return $this->hasMany(ControlResponse::class, 'cleaner_id');
     }
 
     public function controlResponsesAsSupervisor()
     {
-        return $this->hasMany(\App\Models\ControlResponse::class, 'supervisor_id');
+        return $this->hasMany(ControlResponse::class, 'supervisor_id');
     }
 
     public function apartmentAccessGrants()
@@ -211,7 +288,7 @@ class User extends Authenticatable implements FilamentUser
     {
         return in_array($this->role, ['admin', 'supervisor'], true);
     }
-    
+
     public function scopeActiveStaff($query)
     {
         return $query

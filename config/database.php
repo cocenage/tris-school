@@ -3,6 +3,21 @@
 use Illuminate\Support\Str;
 use Pdo\Mysql;
 
+$sqliteConnection = [
+    'driver' => 'sqlite',
+    'url' => env('DB_URL'),
+    'database' => env('DB_DATABASE', database_path('database.sqlite')),
+    'prefix' => '',
+    'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
+    'busy_timeout' => (int) env('DB_BUSY_TIMEOUT', 5000),
+    'journal_mode' => null,
+    'synchronous' => null,
+];
+
+$queueDatabase = env('DB_QUEUE_DATABASE');
+$queueDatabase = is_string($queueDatabase) ? trim($queueDatabase) : $queueDatabase;
+$queueDatabaseConfigured = is_string($queueDatabase) && $queueDatabase !== '';
+
 return [
 
     /*
@@ -32,19 +47,20 @@ return [
 
     'connections' => [
 
-        'sqlite' => [
-            'driver' => 'sqlite',
-            'url' => env('DB_URL'),
-            'database' => env('DB_DATABASE', database_path('database.sqlite')),
-            'prefix' => '',
-            'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
-            // SQLite allows only one writer at a time. Wait briefly for an
-            // active queue or application write instead of failing at once.
-            'busy_timeout' => (int) env('DB_BUSY_TIMEOUT', 5000),
-            'journal_mode' => null,
-            'synchronous' => null,
+        'sqlite' => array_merge($sqliteConnection, [
             'transaction_mode' => 'DEFERRED',
-        ],
+        ]),
+
+        // DatabaseQueue must reserve the SQLite writer before it reads a job.
+        // This avoids DEFERRED read-to-write lock upgrades without making
+        // application transactions hold a writer lock during external calls.
+        'sqlite_queue' => array_merge($sqliteConnection, [
+            // An explicit queue path must not be overridden by the primary DB_URL.
+            'url' => $queueDatabaseConfigured ? null : $sqliteConnection['url'],
+            'database' => $queueDatabaseConfigured ? $queueDatabase : $sqliteConnection['database'],
+            'busy_timeout' => (int) env('DB_QUEUE_BUSY_TIMEOUT', env('DB_BUSY_TIMEOUT', 5000)),
+            'transaction_mode' => 'IMMEDIATE',
+        ]),
 
         'mysql' => [
             'driver' => 'mysql',
@@ -132,6 +148,9 @@ return [
             'prefix' => '',
             'foreign_key_constraints' => false,
             'busy_timeout' => (int) env('DB_ANALYTICS_BUSY_TIMEOUT', env('DB_BUSY_TIMEOUT', 5000)),
+            // OI uses short, database-only transactions; acquire the writer
+            // reservation before reading to avoid DEFERRED lock-upgrade races.
+            'transaction_mode' => 'IMMEDIATE',
         ],
     ],
 

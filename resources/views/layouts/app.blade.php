@@ -69,6 +69,24 @@
             ])
         </header>
 
+        @php
+            $rolePreview = app(\App\Services\RolePreviewContext::class);
+            $previewRoleLabel = match ($rolePreview->previewRole()) {
+                'supervisor' => 'Супервайзер',
+                'cleaner' => 'Клинер',
+                default => null,
+            };
+        @endphp
+        @if($previewRoleLabel)
+            <div class="flex shrink-0 items-center justify-between gap-3 border-y border-[#E7EBF2] bg-[#F4F7FB] px-4 py-2 text-sm text-[#213259]" role="status">
+                <span class="min-w-0 truncate font-medium">Предпросмотр: {{ $previewRoleLabel }}</span>
+                <form method="POST" action="{{ route('role-preview.clear') }}" class="shrink-0">
+                    @csrf
+                    <button type="submit" class="rounded-full px-3 py-1 font-semibold underline underline-offset-2">Выйти из предпросмотра</button>
+                </form>
+            </div>
+        @endif
+
         <main class="min-h-0 flex-1 overflow-y-auto rounded-[50px] bg-white">
             {{ $slot }}
                 </main>

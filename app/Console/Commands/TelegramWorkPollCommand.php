@@ -3,9 +3,11 @@
 namespace App\Console\Commands;
 
 use App\Http\Controllers\TelegramWorkWebhookController;
+use App\Services\Telegram\HtmlBubbles\TelegramHtmlBubblesTargetGuard;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
 use App\Services\Telegram\TelegramPollingFailure;
+use App\Services\Telegram\TelegramPollingHealthMonitor;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use App\Services\Telegram\TelegramUpdatePoller;
@@ -28,7 +30,10 @@ class TelegramWorkPollCommand extends Command
         TelegramAssistantService $assistantService,
         TelegramScheduledControlResponseService $responses,
         TelegramDistrictRouteRegistry $districts,
+        TelegramPollingHealthMonitor $health,
+        TelegramHtmlBubblesTargetGuard $htmlBubblesTarget,
     ): int {
+        $startedAt = hrtime(true);
         $token = (string) config('services.telegram.bot_token');
         $limit = filter_var($this->option('limit'), FILTER_VALIDATE_INT, [
             'options' => ['min_range' => 1, 'max_range' => 100],
@@ -38,18 +43,21 @@ class TelegramWorkPollCommand extends Command
         ]);
 
         if ($token === '') {
+            $health->recordFailure('work', 'configuration', 'MissingBotToken', $this->elapsedMs($startedAt));
             $this->error('Work Telegram bot token is not configured.');
 
             return self::FAILURE;
         }
 
         if ($limit === false) {
+            $health->recordFailure('work', 'configuration', 'InvalidPollingOption', $this->elapsedMs($startedAt));
             $this->error('The --limit option must be an integer from 1 to 100.');
 
             return self::FAILURE;
         }
 
         if ($listenSeconds === false) {
+            $health->recordFailure('work', 'configuration', 'InvalidPollingOption', $this->elapsedMs($startedAt));
             $this->error('The --listen-seconds option must be an integer from 0 to 50.');
 
             return self::FAILURE;
@@ -59,11 +67,13 @@ class TelegramWorkPollCommand extends Command
             $lock = Cache::lock('telegram-work-poll', 3600);
 
             if (! $lock->get()) {
+                $health->recordFailure('work', 'lock', 'ConcurrentPollUnavailable', $this->elapsedMs($startedAt));
                 $this->error('Another Work Telegram poll is still running.');
 
                 return self::FAILURE;
             }
         } catch (Throwable $error) {
+            $health->recordFailure('work', 'lock', class_basename($error), $this->elapsedMs($startedAt));
             Log::warning('Work Telegram polling lock failed', ['exception' => class_basename($error)]);
             $this->error('Work Telegram polling could not acquire its lock.');
 
@@ -74,7 +84,15 @@ class TelegramWorkPollCommand extends Command
             $deadline = microtime(true) + $listenSeconds;
             $offset = null;
             $total = 0;
+            $networkRetries = 0;
             $attempts = 0;
+            $htmlBubblesEnabled = (bool) config('services.telegram.htmlbubbles.enabled', false)
+                && $htmlBubblesTarget->hasSafeConfiguredTarget();
+            $allowedUpdates = ['message', 'edited_message', 'channel_post', 'callback_query'];
+
+            if ($htmlBubblesEnabled) {
+                $allowedUpdates[] = 'widget_query';
+            }
 
             do {
                 $waitSeconds = $listenSeconds > 0
@@ -82,7 +100,7 @@ class TelegramWorkPollCommand extends Command
                     : 0;
                 $result = $poller->poll(
                     $token,
-                    ['message', 'edited_message', 'channel_post', 'callback_query'],
+                    $allowedUpdates,
                     $limit,
                     function (array $update) use ($processor, $ingestService, $assistantService, $responses, $districts): void {
                         $response = $processor->processUpdate(
@@ -102,9 +120,12 @@ class TelegramWorkPollCommand extends Command
                     },
                     $offset,
                     $waitSeconds,
+                    pollerName: 'work',
+                    experimentalWidgets: $htmlBubblesEnabled,
                 );
                 $attempts++;
                 $total += $result['processed'];
+                $networkRetries += $result['network_retries'];
                 if (isset($result['last_update_id'])) {
                     $offset = $result['last_update_id'] + 1;
                 }
@@ -113,24 +134,47 @@ class TelegramWorkPollCommand extends Command
                 }
             } while ($listenSeconds > 0 && microtime(true) < $deadline && $attempts < 100);
         } catch (TelegramPollingFailure $error) {
-            $this->reportFailure($error);
+            $this->reportFailure($error, $health, $this->elapsedMs($startedAt), $networkRetries);
 
             return self::FAILURE;
         } finally {
             $lock->release();
         }
 
+        $durationMs = $this->elapsedMs($startedAt);
+        $health->recordSuccess('work', $durationMs, $total, $networkRetries);
+        Log::info('Work Telegram polling completed', [
+            'duration_ms' => $durationMs,
+            'updates_processed' => $total,
+            'connection_retries' => $networkRetries,
+        ]);
         $this->info('Work Telegram polling completed: '.$total.' update(s) processed.');
 
         return self::SUCCESS;
     }
 
-    private function reportFailure(TelegramPollingFailure $error): void
-    {
+    private function reportFailure(
+        TelegramPollingFailure $error,
+        TelegramPollingHealthMonitor $health,
+        int $durationMs,
+        int $previousConnectionRetries,
+    ): void {
+        $connectionRetries = $previousConnectionRetries + $error->connectionRetries;
+        $health->recordFailure(
+            'work',
+            $error->stage,
+            class_basename($error->getPrevious() ?? $error),
+            $durationMs,
+            $connectionRetries,
+            $error->connectionErrorCode,
+        );
         Log::warning('Work Telegram polling failed', [
             'stage' => $error->stage,
             'update_id' => $error->updateId,
             'exception' => class_basename($error->getPrevious() ?? $error),
+            'duration_ms' => $durationMs,
+            'connection_retries' => $connectionRetries,
+            'connection_error_code' => $error->connectionErrorCode,
         ]);
 
         if ($error->stage === 'process' && $error->updateId !== null) {
@@ -146,5 +190,10 @@ class TelegramWorkPollCommand extends Command
         }
 
         $this->error('Work Telegram polling failed during '.$error->stage.'; pending updates remain available for retry.');
+    }
+
+    private function elapsedMs(int $startedAt): int
+    {
+        return max(0, intdiv(hrtime(true) - $startedAt, 1_000_000));
     }
 }

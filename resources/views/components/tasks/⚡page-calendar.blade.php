@@ -4,6 +4,7 @@ use App\Models\CalendarEvent;
 use App\Models\DayOffRequestDay;
 use App\Models\User;
 use App\Models\VacationRequest;
+use App\Services\Calendar\EmployeeWorkCalendarService;
 use App\Services\Calendar\TaskCalendarEventService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -69,86 +70,99 @@ new class extends Component {
 
     public function getSelectedDayWorkersProperty(): array
     {
-        $selectedDay = $this->selectedDay->copy()->startOfDay();
-        $date = $selectedDay->toDateString();
+        return $this->selectedDayCalendarStaff['cleaner'];
+    }
 
+    public function getSelectedDayCalendarStaffProperty(): array
+    {
+        $selectedDay = $this->selectedDay->copy()->startOfDay();
         $users = User::query()
             ->activeStaff()
-            ->where('role', 'cleaner')
+            ->whereIn('role', ['cleaner', 'supervisor'])
             ->orderBy('name')
             ->get();
+        $projection = app(EmployeeWorkCalendarService::class)
+            ->forEmployees($users, $selectedDay, $selectedDay);
+        $result = [];
 
-        $userIds = $users->pluck('id');
+        foreach (['cleaner', 'supervisor'] as $role) {
+            $roleUsers = $users->where('role', $role)->values();
+            $working = collect();
+            $notWorking = collect();
+            $unknown = collect();
+            $notEmployedCount = 0;
 
-        $dayOffDays = DayOffRequestDay::query()
-            ->with(['request'])
-            ->whereDate('date', $date)
-            ->where('status', 'approved')
-            ->whereIn('user_id', $userIds)
-            ->get()
-            ->keyBy('user_id');
+            foreach ($roleUsers as $user) {
+                $day = $projection->get($user->id, collect())->get($selectedDay->toDateString());
+                $state = $day['state'] ?? 'unknown_schedule';
 
-        $vacationRequests = VacationRequest::query()
-            ->with(['days' => fn ($q) => $q
-                ->where('status', 'approved')
-                ->whereDate('date', $date)
-                ->orderBy('date')
-            ])
-            ->whereIn('user_id', $userIds)
-            ->whereHas('days', fn ($q) => $q
-                ->where('status', 'approved')
-                ->whereDate('date', $date)
-            )
-            ->get()
-            ->keyBy('user_id');
-
-        $notWorking = $users->filter(function ($user) use ($selectedDay, $dayOffDays, $vacationRequests) {
-            return $this->isRegularWeekend($user, $selectedDay)
-                || $dayOffDays->has($user->id)
-                || $vacationRequests->has($user->id);
-        })->map(function ($user) use ($selectedDay, $dayOffDays, $vacationRequests) {
-            if ($vacationRequests->has($user->id)) {
-                $request = $vacationRequests->get($user->id);
-
-                $user->not_working_reason = filled($request?->reason)
-                    ? 'Отпуск: ' . $request->reason
-                    : 'Отпуск';
-            } elseif ($dayOffDays->has($user->id)) {
-                $day = $dayOffDays->get($user->id);
-
-                $user->not_working_reason = filled($day?->request?->reason)
-                    ? 'Выходной: ' . $day->request->reason
-                    : 'Выходной';
-            } elseif ($this->isRegularWeekend($user, $selectedDay)) {
-                $user->not_working_reason = 'Регулярный выходной';
+                if ($state === 'planned_work') {
+                    $working->push($user);
+                } elseif (in_array($state, ['regular_day_off', 'approved_absence'], true)) {
+                    $user->not_working_reason = $state === 'regular_day_off'
+                        ? 'Регулярный выходной'
+                        : $this->projectedAbsenceLabel($day['sources'] ?? []);
+                    $notWorking->push($user);
+                } elseif ($state === 'unknown_schedule') {
+                    $unknown->push($user);
+                } elseif ($state === 'not_employed') {
+                    $notEmployedCount++;
+                }
             }
 
-            return $user;
-        })->values();
+            $total = $roleUsers->count() - $notEmployedCount;
+            $unknownCount = $unknown->count();
 
-        $working = $users
-            ->whereNotIn('id', $notWorking->pluck('id'))
-            ->values();
+            $result[$role] = [
+                'total' => $total,
+                'working_count' => $working->count(),
+                'not_working_count' => $notWorking->count(),
+                'unknown_count' => $unknownCount,
+                'not_employed_count' => $notEmployedCount,
+                'working_percent' => $total > 0 && $unknownCount === 0
+                    ? (int) round(($working->count() / $total) * 100)
+                    : null,
+                'working' => $working,
+                'not_working' => $notWorking,
+                'unknown' => $unknown,
+            ];
+        }
 
-        return [
-            'total' => $users->count(),
-            'working_count' => $working->count(),
-            'not_working_count' => $notWorking->count(),
-            'working_percent' => $users->count() > 0
-                ? (int) round(($working->count() / $users->count()) * 100)
-                : 0,
-            'working' => $working,
-            'not_working' => $notWorking,
-        ];
+        return $result;
+    }
+
+    protected function projectedAbsenceLabel(array $sources): string
+    {
+        foreach ($sources as $source) {
+            if (($source['superseded'] ?? false) || ($source['status'] ?? null) !== 'approved') {
+                continue;
+            }
+
+            return match ($source['type'] ?? null) {
+                'vacation' => 'Отпуск',
+                'day_off' => 'Выходной',
+                default => 'Не работает',
+            };
+        }
+
+        return 'Не работает';
     }
 
     public function getSelectedDaySupervisorsProperty(): Collection
     {
-        return User::query()
-            ->activeStaff()
-            ->where('role', 'supervisor')
-            ->orderBy('name')
-            ->get();
+        return $this->selectedDayCalendarStaff['supervisor']['working'];
+    }
+
+    public function getSelectedDayAbsentSupervisorsProperty(): Collection
+    {
+        return $this->selectedDayCalendarStaff['supervisor']['not_working'];
+    }
+
+    public function getSelectedDayUnknownStaffProperty(): Collection
+    {
+        return $this->selectedDayCalendarStaff['cleaner']['unknown']
+            ->concat($this->selectedDayCalendarStaff['supervisor']['unknown'])
+            ->values();
     }
 
     public function getSelectedDayShiftSummaryProperty(): array
@@ -213,84 +227,47 @@ new class extends Component {
             ->where('role', 'cleaner')
             ->get(['id', 'weekend_days']);
 
-        $cleanerIds = $cleaners->pluck('id');
-        $total = $cleanerIds->count();
-        $notWorkingByDate = [];
-
-        $dayOffDays = DayOffRequestDay::query()
-            ->select(['date', 'user_id', 'status'])
-            ->where('status', 'approved')
-            ->whereBetween('date', [$rangeStart->toDateString(), $rangeEnd->toDateString()])
-            ->whereIn('user_id', $cleanerIds)
-            ->get();
-
-        foreach ($dayOffDays as $day) {
-            $key = Carbon::parse($day->date)->toDateString();
-            $notWorkingByDate[$key][$day->user_id] = true;
-        }
-
-        $vacationRequests = VacationRequest::query()
-            ->select(['id', 'user_id'])
-            ->with(['days' => function ($query) use ($rangeStart, $rangeEnd) {
-                $query
-                    ->select(['id', 'vacation_request_id', 'date', 'status'])
-                    ->where('status', 'approved')
-                    ->whereBetween('date', [$rangeStart->toDateString(), $rangeEnd->toDateString()]);
-            }])
-            ->whereIn('user_id', $cleanerIds)
-            ->whereHas('days', fn ($query) => $query
-                ->where('status', 'approved')
-                ->whereBetween('date', [$rangeStart->toDateString(), $rangeEnd->toDateString()])
-            )
-            ->get();
-
-        foreach ($vacationRequests as $request) {
-            foreach ($request->days as $day) {
-                $key = Carbon::parse($day->date)->toDateString();
-                $notWorkingByDate[$key][$request->user_id] = true;
-            }
-        }
-
+        $projections = app(EmployeeWorkCalendarService::class)
+            ->forEmployees($cleaners, $rangeStart, $rangeEnd);
         $cursor = $rangeStart->copy();
 
         while ($cursor->lte($rangeEnd)) {
             $key = $cursor->toDateString();
+            $states = $projections->map(fn (Collection $dates) => $dates->get($key)['state'] ?? 'unknown_schedule');
+            $states = $states->reject(fn (string $state) => $state === 'not_employed');
+            $notWorking = $states->filter(fn (string $state) => in_array($state, ['regular_day_off', 'approved_absence'], true))->count();
+            $unknown = $states->filter(fn (string $state) => $state === 'unknown_schedule')->count();
 
-            foreach ($cleaners as $cleaner) {
-                if ($this->isRegularWeekend($cleaner, $cursor)) {
-                    $notWorkingByDate[$key][$cleaner->id] = true;
-                }
-            }
-
-            $notWorking = isset($notWorkingByDate[$key]) ? count($notWorkingByDate[$key]) : 0;
-
-            $this->shiftSummaryCache[$key] = $this->makeShiftSummary($total, $notWorking);
+            $this->shiftSummaryCache[$key] = $this->makeShiftSummary($states->count(), $notWorking, $unknown);
 
             $cursor->addDay();
         }
     }
 
-    protected function makeShiftSummary(int $total, int $notWorking): array
+    protected function makeShiftSummary(int $total, int $notWorking, int $unknown = 0): array
     {
-        $working = max($total - $notWorking, 0);
+        $working = max($total - $notWorking - $unknown, 0);
 
-        $percent = $total > 0
+        $percent = $total > 0 && $unknown === 0
             ? (int) round(($working / $total) * 100)
-            : 0;
+            : null;
 
-        $level = match (true) {
+        $level = $unknown > 0 ? 'unknown' : match (true) {
+            $total < 1 => 'unknown',
             $percent < 60 => 'critical',
             $percent < 80 => 'warning',
             default => 'good',
         };
 
         $label = match ($level) {
+            'unknown' => 'График не подтверждён',
             'critical' => 'Критическая смена',
             'warning' => 'Средняя нагрузка',
             default => 'Нормальная смена',
         };
 
         $colors = match ($level) {
+            'unknown' => ['bg' => '#F3F4F6', 'text' => '#4B5563'],
             'critical' => ['bg' => '#FFE1E1', 'text' => '#9F1D1D'],
             'warning' => ['bg' => '#FFF1C7', 'text' => '#8A6500'],
             default => ['bg' => '#E7F6EC', 'text' => '#2F7D4A'],
@@ -300,6 +277,7 @@ new class extends Component {
             'total' => $total,
             'working' => $working,
             'not_working' => $notWorking,
+            'unknown' => $unknown,
             'working_percent' => $percent,
             'level' => $level,
             'label' => $label,
@@ -381,7 +359,7 @@ new class extends Component {
             'strike' => 'Забастовки',
         ];
 
-        $allowed = auth()->user()?->allowedCalendarTypes() ?? [];
+        $allowed = $this->allowedCalendarTypes();
 
         $filters = collect($all)
             ->only($allowed)
@@ -400,16 +378,20 @@ new class extends Component {
 
     protected function allowedCalendarTypes(): array
     {
-        return auth()->user()?->allowedCalendarTypes() ?? [];
+        return app(\App\Services\Authorization\SupervisorPanelAccess::class)
+            ->allowedCalendarTypes(auth()->user());
     }
 
     protected function canViewCalendarType(string $type): bool
     {
+        $user = auth()->user();
         if ($type === 'day_off') {
-            return in_array('vacation', $this->allowedCalendarTypes(), true);
+            return app(\App\Services\Authorization\SupervisorPanelAccess::class)
+                ->canViewCalendarType($user, 'vacation');
         }
 
-        return in_array($type, $this->allowedCalendarTypes(), true);
+        return app(\App\Services\Authorization\SupervisorPanelAccess::class)
+            ->canViewCalendarType($user, $type);
     }
 
     public function getWeeksForMonth(Carbon $month): array
@@ -540,21 +522,15 @@ new class extends Component {
 
     public function getSelectedDayStaffSummaryProperty(): array
     {
-        $supervisors = User::query()
-            ->activeStaff()
-            ->where('role', 'supervisor')
-            ->count();
-
-        $cleaners = User::query()
-            ->activeStaff()
-            ->where('role', 'cleaner')
-            ->count();
+        $supervisors = $this->selectedDayCalendarStaff['supervisor']['total'];
+        $cleaners = $this->selectedDayCalendarStaff['cleaner']['total'];
 
         return [
             'total' => $supervisors + $cleaners,
             'supervisors' => $supervisors,
             'cleaners' => $cleaners,
             'cleaners_not_working' => $this->selectedDayWorkers['not_working_count'],
+            'cleaners_unknown' => $this->selectedDayWorkers['unknown_count'],
         ];
     }
 
@@ -927,15 +903,21 @@ $baseEvents = CalendarEvent::query()
             $regularWeekendUsers = User::query()
                 ->activeStaff()
                 ->where('role', 'cleaner')
-                ->whereNotNull('weekend_days')
                 ->orderBy('name')
                 ->get();
+
+            $regularWeekendProjections = app(EmployeeWorkCalendarService::class)
+                ->forEmployees($regularWeekendUsers, $rangeStart, $rangeEnd);
 
             $cursor = $rangeStart->copy()->startOfDay();
 
             while ($cursor->lte($rangeEnd)) {
                 foreach ($regularWeekendUsers as $user) {
-                    if (! $this->isRegularWeekend($user, $cursor)) {
+                    $state = $regularWeekendProjections
+                        ->get($user->id, collect())
+                        ->get($cursor->toDateString())['state'] ?? 'unknown_schedule';
+
+                    if ($state !== 'regular_day_off') {
                         continue;
                     }
 
@@ -2247,7 +2229,7 @@ $baseEvents = CalendarEvent::query()
                 @if ($daySheetTab === 'people')
                     <div class="rounded-[32px] bg-white px-[14px] py-[14px]">
 
-                        @if ($this->selectedDayWorkers['not_working']->count())
+                        @if ($this->selectedDayWorkers['not_working']->count() + $this->selectedDayAbsentSupervisors->count())
                             <div class="mb-[14px]">
                                 <div class="mb-[8px] flex items-center justify-between">
                                     <p class="text-[16px] font-semibold leading-none text-[#111]">
@@ -2255,12 +2237,12 @@ $baseEvents = CalendarEvent::query()
                                     </p>
 
                                     <span class="rounded-full bg-[#F1F1F1] px-[9px] py-[5px] text-[12px] text-[#777]">
-                                        {{ $this->selectedDayWorkers['not_working_count'] }}
+                                        {{ $this->selectedDayWorkers['not_working_count'] + $this->selectedDayAbsentSupervisors->count() }}
                                     </span>
                                 </div>
 
                                 <div class="space-y-[6px]">
-                                    @foreach ($this->selectedDayWorkers['not_working'] as $user)
+                                    @foreach ($this->selectedDayWorkers['not_working']->concat($this->selectedDayAbsentSupervisors) as $user)
                                         <div class="flex items-center gap-[10px] rounded-[22px] bg-[#FFF6F6] px-[10px] py-[9px]">
                                             <div class="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-white text-[14px] font-semibold text-[#9F1D1D]">
                                                 {{ mb_substr($user->name, 0, 1) }}
@@ -2278,6 +2260,18 @@ $baseEvents = CalendarEvent::query()
                                         </div>
                                     @endforeach
                                 </div>
+                            </div>
+                        @endif
+
+                        @if ($this->selectedDayUnknownStaff->isNotEmpty())
+                            <div class="mb-[14px] rounded-[22px] bg-[#F3F4F6] px-[12px] py-[11px]">
+                                <div class="mb-[7px] flex items-center justify-between">
+                                    <p class="text-[14px] font-semibold text-[#4B5563]">График не подтверждён</p>
+                                    <span class="rounded-full bg-white px-[8px] py-[4px] text-[12px] text-[#4B5563]">{{ $this->selectedDayUnknownStaff->count() }}</span>
+                                </div>
+                                @foreach ($this->selectedDayUnknownStaff as $user)
+                                    <p class="text-[13px] text-[#4B5563]">{{ $user->name }} — {{ $user->role === 'supervisor' ? 'супервайзер' : 'клинер' }}</p>
+                                @endforeach
                             </div>
                         @endif
 
@@ -2332,7 +2326,7 @@ $baseEvents = CalendarEvent::query()
                                 @empty
                                     <div class="rounded-[22px] bg-[#FFF1C7] px-[12px] py-[12px]">
                                         <p class="text-[14px] text-[#8A6500]">
-                                            На эту дату нет работающих клинеров.
+                                            {{ $this->selectedDayWorkers['unknown_count'] > 0 ? 'Нет подтверждённого графика клинеров на эту дату.' : 'На эту дату нет работающих клинеров.' }}
                                         </p>
                                     </div>
                                 @endforelse

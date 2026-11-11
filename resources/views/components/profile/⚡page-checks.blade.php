@@ -1,19 +1,29 @@
 <?php
 
 use App\Models\ControlResponse;
+use App\Services\ProfileActivityTimeline;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
+use Livewire\WithPagination;
 
-new class extends Component {
+new class extends Component
+{
+    use WithPagination;
+
     public string $tab = 'received';
+
+    public string $activityType = 'all';
+
+    public function updated($property): void
+    {
+        if (in_array($property, ['tab', 'activityType'], true)) {
+            $this->resetPage();
+        }
+    }
 
     public function getReceivedProperty()
     {
-        return ControlResponse::query()
-            ->with(['control', 'cleaner', 'supervisor', 'apartment'])
-            ->where('cleaner_id', Auth::id())
-            ->latest('sent_at')
-            ->get();
+        return app(ProfileActivityTimeline::class)->paginateForCleaner((int) Auth::id(), $this->activityType);
     }
 
     public function getConductedProperty()
@@ -121,8 +131,23 @@ new class extends Component {
                     $items = $tab === 'received' ? $this->received : $this->conducted;
                 @endphp
 
+                @if($tab === 'received')
+                    <div class="mb-5 flex flex-wrap gap-2" aria-label="Тип записей">
+                        @foreach(['all' => 'Всё', 'control' => 'Контроли', 'coaching' => 'Коучинги'] as $value => $label)
+                            <button type="button" wire:click="$set('activityType', '{{ $value }}')" aria-pressed="{{ $activityType === $value ? 'true' : 'false' }}" class="rounded-full px-4 py-2 text-sm {{ $activityType === $value ? 'bg-[#213259] text-white' : 'bg-[#F4F7FB] text-[#213259]' }}">{{ $label }}</button>
+                        @endforeach
+                    </div>
+                @endif
+
                 <div class="space-y-[14px]">
                     @forelse($items as $item)
+                        @if($item instanceof \App\Models\Coaching)
+                            <a wire:key="history-coaching-{{ $item->id }}" href="{{ route('page-coachings.show', $item) }}" class="block rounded-[28px] border border-[#2D6494]/25 bg-white p-5">
+                                <div class="flex items-start justify-between gap-3"><span class="font-semibold text-[#213259]">Коучинг</span><span class="shrink-0 text-sm text-black/50">{{ $item->sort_date?->format('d.m.Y') ?? 'Дата не указана' }}</span></div>
+                                <p class="mt-2 text-sm text-black/50">{{ $item->supervisor?->name ?? 'Супервайзер не указан' }}</p>
+                                <p class="mt-3 break-words text-sm leading-relaxed">{{ \Illuminate\Support\Str::limit($item->description ?? '', 180) }}</p>
+                            </a>
+                        @else
                         @php
                             $percent = $this->percent($item);
                             $color = $this->color($item);
@@ -235,12 +260,17 @@ new class extends Component {
                                 </div>
                             </div>
                         </a>
+                        @endif
                     @empty
                         <div class="rounded-[28px] bg-[#F8F8F8] px-[18px] py-[20px] text-center text-[15px] text-black/45">
                             Тут пока пусто
                         </div>
                     @endforelse
                 </div>
+
+                @if($tab === 'received')
+                    <div class="mt-5">{{ $items->links() }}</div>
+                @endif
 
             </div>
         </div>

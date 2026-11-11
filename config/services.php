@@ -2,6 +2,10 @@
 
 return [
 
+    'weatherapi' => [
+        'key' => env('WEATHERAPI_KEY'),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Third Party Services
@@ -50,6 +54,11 @@ return [
         'scheduled_delivery_grace_minutes' => env('TELEGRAM_SCHEDULED_DELIVERY_GRACE_MINUTES', 5),
         // Disabled by default until Rich Message delivery is proven reliable in production.
         'rich_messages_enabled' => env('TELEGRAM_RICH_MESSAGES_ENABLED', false),
+        'htmlbubbles' => [
+            'enabled' => env('TELEGRAM_HTMLBUBBLES_ENABLED', false),
+            'test_chat_id' => env('TELEGRAM_HTMLBUBBLES_TEST_CHAT_ID'),
+            'test_thread_id' => env('TELEGRAM_HTMLBUBBLES_TEST_THREAD_ID'),
+        ],
         'bot_username' => env('TELEGRAM_BOT_USERNAME'),
         'ip_resolve' => in_array(env('TELEGRAM_IP_RESOLVE'), ['v4', 'v6'], true)
             ? env('TELEGRAM_IP_RESOLVE')
@@ -68,6 +77,8 @@ return [
 
         'chat_id_calendar' => env('TELEGRAM_CHAT_ID_CALENDAR'),
         'thread_id_calendar' => env('TELEGRAM_THREAD_ID_CALENDAR'),
+        'chat_id_celebrations' => env('TELEGRAM_CHAT_ID_CELEBRATIONS'),
+        'thread_id_celebrations' => env('TELEGRAM_THREAD_ID_CELEBRATIONS'),
 
         'work_webhook_secret' => env('TELEGRAM_WORK_WEBHOOK_SECRET'),
         'work_polling_enabled' => env('TELEGRAM_WORK_POLLING_ENABLED', false),

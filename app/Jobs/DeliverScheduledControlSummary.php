@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\TelegramScheduledControlSummaryDelivery;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOutboundMonitor;
+use App\Services\Telegram\TelegramScheduledControlSummaryRichFormatter;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
@@ -20,6 +21,7 @@ class DeliverScheduledControlSummary implements ShouldQueue
 
     public function __construct(
         public int $deliveryId,
+        public ?string $operationKey = null,
     ) {}
 
     public function backoff(): array
@@ -46,16 +48,29 @@ class DeliverScheduledControlSummary implements ShouldQueue
         }
 
         try {
+            $richMessage = $delivery->summary['rendered_rich_message'] ?? null;
             $messageId = app(TelegramOutboundMonitor::class)->withContext([
-                'operation_key' => 'scheduled_control_summary:'.$delivery->id,
+                'operation_key' => $this->operationKey ?? 'scheduled_control_summary:'.$delivery->id,
                 'notification_type' => 'scheduled_control_summary',
+                'bot' => 'analytics',
+                'chat_id' => $delivery->chat_id,
+                'message_thread_id' => $delivery->message_thread_id,
                 'source_type' => 'telegram_scheduled_control_summary_delivery',
                 'source_id' => $delivery->id,
-            ], fn () => $telegram->sendAnalyticsMessage(
-                $delivery->chat_id,
-                $delivery->text,
-                $delivery->message_thread_id ?? '',
-            ));
+                'scheduled_for' => $delivery->summary_date,
+            ], fn () => is_array($richMessage)
+                ? $telegram->sendAnalyticsRichMessage(
+                    chatId: $delivery->chat_id,
+                    richMessage: $richMessage,
+                    fallbackHtml: $delivery->text,
+                    threadId: $delivery->message_thread_id,
+                    maxFallbackVisibleLength: TelegramScheduledControlSummaryRichFormatter::FALLBACK_MAX_VISIBLE_CHARACTERS,
+                )
+                : $telegram->sendAnalyticsMessage(
+                    $delivery->chat_id,
+                    $delivery->text,
+                    $delivery->message_thread_id ?? '',
+                ));
         } catch (Throwable $error) {
             $this->markUncertain();
             Log::warning('scheduled_control_summary_outcome_uncertain', [

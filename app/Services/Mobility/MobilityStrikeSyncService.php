@@ -12,10 +12,13 @@ use Illuminate\Support\Str;
 
 class MobilityStrikeSyncService
 {
+    public array $previewItems = [];
+
     public function __construct(private MitStrikeSource $source) {}
 
     public function sync(bool $dryRun = false): array
     {
+        $this->previewItems = [];
         $counts = array_fill_keys(['fetched', 'normalized', 'relevant', 'new', 'updated', 'cancelled', 'unchanged', 'queued', 'already_notified', 'would_queue', 'failed'], 0);
         $counts['targets_configured'] = count($this->targets());
         $counts['analytics_bot_configured'] = filled(config('services.telegram.analytics_bot_token'));
@@ -32,10 +35,12 @@ class MobilityStrikeSyncService
         $counts['normalized'] = count($result['items']);
         $counts['failed'] = $result['invalid'];
         $counts['fetched'] = $result['fetched'];
-        foreach ($result['items'] as $item) {
-            if (! $this->source->relevant($item)) {
-                continue;
-            }
+        $relevantItems = collect($result['items'])
+            ->filter(fn (array $item): bool => $this->source->relevant($item))
+            ->values()
+            ->all();
+        $this->previewItems = $relevantItems;
+        foreach ($relevantItems as $item) {
             if ($item['status'] !== 'cancelled' && $item['ends_at'] < now('Europe/Rome')->toDateString()) {
                 continue;
             }
@@ -137,6 +142,114 @@ class MobilityStrikeSyncService
         return $counts;
     }
 
+    /**
+     * Persist an official operator notice using the existing alert and delivery
+     * ledger. Stable URL identity makes repeated source checks idempotent.
+     */
+    public function syncExternalNotice(array $event): int
+    {
+        $source = (string) ($event['source'] ?? '');
+        $url = (string) ($event['url'] ?? '');
+        if (! in_array($source, ['atm', 'trenord'], true) || $url === '') {
+            return 0;
+        }
+
+        $metadata = (array) ($event['metadata'] ?? []);
+        $status = (string) ($metadata['status'] ?? 'unknown');
+        $identity = sha1($source.'|'.mb_strtolower($url));
+        $version = hash('sha256', json_encode([
+            $event['title'] ?? '', $event['description'] ?? '', $status,
+            $event['starts_at'] ?? null, $event['ends_at'] ?? null, $metadata['duration'] ?? null,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE));
+        $created = false;
+
+        DB::transaction(function () use ($event, $source, $url, $metadata, $status, $identity, $version, &$created): void {
+            $alert = MobilityAlert::query()->where('external_hash', $identity)->lockForUpdate()->first();
+            $old = $alert?->strike_metadata ?? [];
+            if (($old['version'] ?? null) === $version) {
+                return;
+            }
+
+            $kind = $alert === null
+                ? 'new'
+                : match ($status) {
+                    'postponed' => 'postponed',
+                    'cancelled' => 'cancelled',
+                    default => 'updated',
+                };
+            $revision = (int) ($old['revision'] ?? 0) + 1;
+            $metadata = array_merge($metadata, [
+                'identity' => $identity,
+                'version' => $version,
+                'revision' => $revision,
+                'notification_kind' => $kind,
+                'previous' => array_intersect_key($old, array_flip(['status', 'starts_at', 'ends_at', 'duration', 'notes'])),
+            ]);
+
+            $alert ??= new MobilityAlert;
+            $alert->fill([
+                'external_hash' => $identity,
+                'source' => $source,
+                'title' => Str::limit((string) ($event['title'] ?? 'Transport strike notice'), 250, ''),
+                'description' => $event['description'] ?? null,
+                'url' => $url,
+                'type' => 'strike',
+                'risk' => $event['risk'] ?? 'medium',
+                'district' => $event['district'] ?? null,
+                'starts_at' => $event['starts_at'] ?? null,
+                'ends_at' => $event['ends_at'] ?? null,
+                'strike_metadata' => $metadata,
+            ])->save();
+            $created = $created || $alert->wasRecentlyCreated;
+
+            if (! $this->shouldNotifyExternal($metadata, $kind, $alert->starts_at?->toDateString())) {
+                return;
+            }
+
+            foreach ($this->targets() as $target) {
+                $key = $this->deliveryKey($alert->id, $revision, $version, $target);
+                $message = MobilityAlertMessage::firstOrCreate(['delivery_key' => $key], [
+                    'mobility_alert_id' => $alert->id,
+                    'message_type' => 'strike_alert',
+                    'chat_id' => $target['chat'],
+                    'thread_id' => $target['thread'],
+                    'telegram_message_id' => '',
+                    'text' => $this->message($alert, $old),
+                ]);
+                $message = MobilityAlertMessage::query()->lockForUpdate()->findOrFail($message->id);
+                $this->enqueue($message);
+            }
+        });
+
+        return $created ? 1 : 0;
+    }
+
+    private function shouldNotifyExternal(array $metadata, string $kind, ?string $eventDate): bool
+    {
+        $activation = $this->notificationActivation();
+        if (! $activation || ! in_array($metadata['status'] ?? null, ['scheduled', 'updated', 'postponed', 'cancelled'], true)) {
+            return false;
+        }
+
+        try {
+            $published = CarbonImmutable::createFromFormat('!Y-m-d', (string) ($metadata['publication_date'] ?? ''), 'Europe/Rome');
+        } catch (\Throwable) {
+            return false;
+        }
+        if (! $published || $published->toDateString() !== ($metadata['publication_date'] ?? null)
+            || $published->lt($activation) || $published->gt(CarbonImmutable::now('Europe/Rome'))) {
+            return false;
+        }
+
+        if ($kind === 'new') {
+            return ($metadata['status'] ?? null) === 'scheduled'
+                && $eventDate !== null
+                && $eventDate >= CarbonImmutable::now('Europe/Rome')->toDateString();
+        }
+
+        return true;
+    }
+
     private function enqueue(MobilityAlertMessage $message): int
     {
         if ($message->sent_at || ($message->queued_at && $message->queued_at->gt(now()->subHour()))) {
@@ -215,15 +328,17 @@ class MobilityStrikeSyncService
         $old = $item['previous'] ?? $old;
         $heading = match ($item['notification_kind'] ?? 'new') {
             'cancelled' => '✅ Забастовка отменена',
+            'postponed' => '🔄 Забастовка перенесена',
             'updated' => '🔄 Обновление забастовки',
             default => '🚨 Забастовка транспорта',
         };
-        $text = '<b>'.$heading."</b>\nДата: ".$alert->starts_at->format('d.m.Y');
-        if ($alert->ends_at && ! $alert->ends_at->equalTo($alert->starts_at)) {
+        $text = '<b>'.$heading.'</b>';
+        $text .= $alert->starts_at ? "\nДата: ".$alert->starts_at->format('d.m.Y') : "\nДата проведения не подтверждена.";
+        if ($alert->ends_at && $alert->starts_at && ! $alert->ends_at->equalTo($alert->starts_at)) {
             $text .= ' — '.$alert->ends_at->format('d.m.Y');
         }
         foreach (['region' => 'Регион', 'province' => 'Провинция', 'scope' => 'Масштаб', 'operator' => 'Оператор/категория', 'sector' => 'Сектор', 'duration' => 'Продолжительность/часы', 'notes' => 'Уточнения'] as $field => $label) {
-            if ($item[$field] !== '') {
+            if (filled($item[$field] ?? null)) {
                 $text .= "\n".$label.': '.e(Str::limit($item[$field], 300));
                 if (isset($old[$field]) && $old[$field] !== $item[$field]) {
                     $text .= ' (ранее: '.e(Str::limit($old[$field], 150)).')';
@@ -233,10 +348,13 @@ class MobilityStrikeSyncService
         if (($item['notification_kind'] ?? '') === 'updated' && isset($old['starts_at']) && $old['starts_at'] !== $item['starts_at']) {
             $text .= "\nПрежняя дата: ".e($old['starts_at']);
         }
-        if ($item['status'] !== 'cancelled') {
+        if (($item['status'] ?? null) === 'postponed' && empty($item['starts_at'])) {
+            $text .= "\nНовая дата не подтверждена.";
+        }
+        if (! in_array($item['status'] ?? null, ['cancelled', 'postponed'], true)) {
             $text .= "\nВозможны перебои в движении. Планируйте поездки с запасом времени и проверяйте расписание оператора.";
         }
 
-        return $text."\n<a href=\"".e($alert->url).'\">Официальный источник MIT</a>';
+        return $text."\n<a href=\"".e($alert->url).'\">Официальный источник</a>';
     }
 }

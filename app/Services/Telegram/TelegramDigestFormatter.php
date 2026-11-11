@@ -238,21 +238,40 @@ class TelegramDigestFormatter
         $date = Carbon::parse($preview['date'], $preview['timezone'] ?? 'Europe/Rome')->format('d.m.Y');
         $lines = ['🌙 '.htmlspecialchars($district ?: 'TRIS', ENT_QUOTES, 'UTF-8').' — оперативные итоги дня · '.$date];
         $sections = $preview['management_sections'] ?? [];
+        $linen = $preview['linen_report'] ?? [];
+        $districtKey = $preview['district']['key'] ?? null;
+        $cases = collect($linen['cases'] ?? []);
+        if ($districtKey !== null) {
+            $cases = $cases->where('district', $districtKey)->values();
+        }
+        $linenEventKeys = $cases->pluck('event_key')->filter()->unique()->values();
+        $linenManagement = collect($sections)->flatMap(fn (array $items, string $section): array => collect($items)
+            ->map(fn (array $item): array => ['section' => $section, 'item' => $item])
+            ->all())
+            ->filter(fn (array $entry): bool => $linenEventKeys->contains($entry['item']['event_key'] ?? null))
+            ->keyBy(fn (array $entry): string => (string) $entry['item']['event_key']);
         foreach ([
             'technical_faults' => '🔧 Технические неисправности',
             'unresolved_problems' => '⚠️ Значимые нерешённые проблемы',
             'instruction_gaps' => '📚 Вопросы клинеров и инструкции',
             'praise' => '👏 Поводы для похвалы',
         ] as $key => $label) {
-            if (empty($sections[$key])) {
+            $sectionItems = collect($sections[$key] ?? [])
+                ->reject(fn (array $item): bool => $linenEventKeys->contains($item['event_key'] ?? null))
+                ->values();
+            if ($sectionItems->isEmpty()) {
                 continue;
             }
             $lines[] = '';
             $lines[] = $label;
-            foreach ($sections[$key] as $item) {
+            foreach ($sectionItems as $item) {
                 $location = trim((string) ($item['location'] ?? ''));
                 $summary = html_entity_decode(trim((string) ($item['summary'] ?? '')), ENT_QUOTES | ENT_HTML5, 'UTF-8');
                 $lines[] = '• '.htmlspecialchars(($location !== '' ? $location.' — ' : '').$summary, ENT_COMPAT, 'UTF-8');
+                $classificationLabels = $this->managementClassificationLabels($item['classifications'] ?? []);
+                if ($classificationLabels->count() > 1) {
+                    $lines[] = '  Классификации: '.htmlspecialchars($classificationLabels->implode(' · '), ENT_COMPAT, 'UTF-8');
+                }
                 $author = trim((string) ($item['author'] ?? ''));
                 $time = filled($item['reported_at'] ?? null)
                     ? Carbon::parse($item['reported_at'])->setTimezone('Europe/Rome')->format('H:i') : null;
@@ -260,28 +279,37 @@ class TelegramDigestFormatter
                     $lines[] = '  👤 '.htmlspecialchars($author ?: 'Автор не указан', ENT_QUOTES, 'UTF-8').($time !== null ? ' · '.$time : '');
                 }
                 if ($key === 'technical_faults' || $key === 'unresolved_problems') {
+                    $printedSourceUrls = [];
                     foreach ($item['follow_ups'] ?? [] as $followUp) {
                         $lines[] = '  Что произошло: '.htmlspecialchars($followUp['text'], ENT_COMPAT, 'UTF-8');
-                        $lines[] = '  🔗 '.$followUp['source_url'];
+                        if (filled($followUp['source_url'] ?? null)) {
+                            $lines[] = '  🔗 '.$followUp['source_url'];
+                            $printedSourceUrls[] = $followUp['source_url'];
+                        }
                     }
-                    $lines[] = '  Статус: '.(in_array($item['status'] ?? null, ['open', 'reopened'], true) ? 'решение не подтверждено' : 'решено');
+                    $status = $this->managementStatusLabel($item);
+                    $lines[] = '  Статус: '.$status;
                     if (filled($item['next_action'] ?? null)) {
-                        $lines[] = '  Предложение: '.htmlspecialchars((string) $item['next_action'], ENT_COMPAT, 'UTF-8');
+                        $action = $status === 'требуется уточнение' ? 'Требуется уточнение.' : (string) $item['next_action'];
+                        $lines[] = '  Предложение: '.htmlspecialchars($action, ENT_COMPAT, 'UTF-8');
+                    }
+
+                    foreach (collect($item['source_urls'] ?? [$item['source_url'] ?? null])->filter()->unique() as $sourceUrl) {
+                        if (! in_array($sourceUrl, $printedSourceUrls, true)) {
+                            $lines[] = '  🔗 '.$sourceUrl;
+                        }
+                    }
+                } else {
+                    foreach (collect($item['source_urls'] ?? [$item['source_url'] ?? null])->filter()->unique() as $sourceUrl) {
+                        $lines[] = '  🔗 '.$sourceUrl;
                     }
                 }
                 if ($key === 'instruction_gaps') {
                     $lines[] = '  Предложение: '.htmlspecialchars((string) $item['recommendation'], ENT_COMPAT, 'UTF-8');
                 }
-                $lines[] = '  🔗 '.$item['source_url'];
             }
         }
 
-        $linen = $preview['linen_report'];
-        $districtKey = $preview['district']['key'] ?? null;
-        $cases = collect($linen['cases'] ?? []);
-        if ($districtKey !== null) {
-            $cases = $cases->where('district', $districtKey);
-        }
         $linenDistrict = $districtKey === null ? null : ($linen['districts'][$districtKey] ?? null);
         $linenIncomplete = $districtKey === null
             ? ($linen['incomplete'] ?? true)
@@ -289,31 +317,54 @@ class TelegramDigestFormatter
         if ($cases->isNotEmpty()) {
             $lines[] = '';
             $lines[] = '🧺 Брак белья';
+            $caseCount = $cases->count();
+            $itemDetailCount = $cases->sum(fn (array $case): int => count($case['details'] ?? []));
             $knownUnits = $districtKey === null
                 ? (int) ($linen['known_units'] ?? 0)
                 : (int) ($linenDistrict['known_units'] ?? 0);
+            $lines[] = 'Случаев: '.$caseCount.' · позиций белья: '.$itemDetailCount.'.';
             if ($knownUnits > 0) {
-                $lines[] = 'Подтверждено: '.$knownUnits.' шт.';
+                $lines[] = 'Подтверждённых единиц: '.$knownUnits.'.';
             }
             foreach ($cases as $case) {
+                $management = $linenManagement->get((string) ($case['event_key'] ?? ''))['item'] ?? null;
+                $sourceUrls = collect($case['source_urls'] ?? [$case['source_url'] ?? null])
+                    ->merge($management['source_urls'] ?? [])
+                    ->merge(collect($management['follow_ups'] ?? [])->pluck('source_url'))
+                    ->filter()->unique()->values();
+                $managementLabels = $this->managementClassificationLabels($management['classifications'] ?? []);
                 $details = collect($case['details'])->map(fn (array $detail): string => $detail['quantity'] === null
                     ? $detail['item'].' — количество не указано'
                     : $detail['quantity'].' × '.$detail['item'])->implode(', ');
                 $lines[] = '• '.htmlspecialchars(($case['location'] ?: $case['district_label']).' — '.$details.', '.$case['defect'], ENT_COMPAT, 'UTF-8')
                     .(($case['quantity_confidence'] ?? null) === 'uncertain_duplicate'
                         ? ' — возможный повтор, количество не входит в итог' : '');
-                if (filled($case['source_url'] ?? null)) {
-                    $lines[] = '  🔗 '.$case['source_url'];
+                if ($managementLabels->isNotEmpty()) {
+                    $lines[] = '  Классификации: брак белья · '.htmlspecialchars($managementLabels->implode(' · '), ENT_COMPAT, 'UTF-8');
+                    $lines[] = '  Статус: '.$this->managementStatusLabel($management);
+                    if (filled($management['next_action'] ?? null)) {
+                        $action = $this->managementStatusLabel($management) === 'требуется уточнение'
+                            ? 'Требуется уточнение.'
+                            : (string) $management['next_action'];
+                        $lines[] = '  Предложение: '.htmlspecialchars($action, ENT_COMPAT, 'UTF-8');
+                    }
+                }
+                foreach ($sourceUrls as $sourceUrl) {
+                    $lines[] = '  🔗 '.$sourceUrl;
                 }
             }
         }
 
         $quality = $preview['data_quality']['source_status'] ?? 'unavailable';
-        if ($quality !== 'available') {
+        if ($quality === 'incomplete') {
             $lines[] = '';
-            $lines[] = $quality === 'incomplete'
-                ? '⚠️ Входящие сообщения обработаны не полностью; показаны доступные результаты.'
-                : '⚠️ Нет входящих данных за этот день. Отсутствие данных не подтверждает отсутствие проблем.';
+            $lines[] = '⚠️ Входящие сообщения обработаны не полностью; показаны доступные результаты.';
+        } elseif ($quality === 'no_messages') {
+            $lines[] = '';
+            $lines[] = '⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.';
+        } elseif ($quality !== 'available') {
+            $lines[] = '';
+            $lines[] = '⚠️ Источник данных недоступен или не настроен; отсутствие данных не подтверждает отсутствие проблем.';
         }
         if ($quality === 'available' && $linenIncomplete) {
             $lines[] = '';
@@ -325,6 +376,28 @@ class TelegramDigestFormatter
         }
 
         return implode("\n", $lines);
+    }
+
+    private function managementStatusLabel(array $item): string
+    {
+        return match (true) {
+            ($item['status'] ?? null) === 'resolved' && ($item['resolution_confirmed'] ?? false) => 'решение подтверждено',
+            ($item['status'] ?? null) === 'resolved' => 'требуется уточнение',
+            ($item['confidence'] ?? null) === 'low' || filled($item['uncertainty'] ?? null) => 'требуется уточнение',
+            in_array($item['status'] ?? null, ['open', 'reopened'], true) => 'решение не подтверждено',
+            default => 'требуется уточнение',
+        };
+    }
+
+    private function managementClassificationLabels(array $classifications): Collection
+    {
+        return collect($classifications)->map(fn (string $classification): ?string => match ($classification) {
+            'technical_faults' => 'техническая неисправность',
+            'unresolved_problems' => 'значимая проблема',
+            'instruction_gaps' => 'вопрос по инструкции',
+            'praise' => 'подтверждённое полезное действие',
+            default => null,
+        })->filter()->values();
     }
 
     private function renderEditorialEvening(array $preview, string $district): string
@@ -341,9 +414,11 @@ class TelegramDigestFormatter
         $lines[] = 'За сегодня:';
         if ($problems->isEmpty()) {
             $lines[] = match ($preview['data_quality']['source_status'] ?? null) {
-                'unavailable' => '⚠️ Нет входящих данных за этот день. Отсутствие данных не подтверждает отсутствие проблем.',
+                'unavailable' => '⚠️ Источник входящих сообщений недоступен; полнота сводки не подтверждена.',
+                'no_messages' => '⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.',
                 'incomplete' => '⚠️ Входящие сообщения обработаны не полностью. Сводка может быть неполной.',
-                default => '✅ Новых значимых событий не зафиксировано.',
+                'available' => '✅ Новых значимых событий не зафиксировано.',
+                default => '⚠️ Статус источника данных неизвестен; полнота сводки не подтверждена.',
             };
 
             return implode("\n", $lines);
@@ -372,9 +447,15 @@ class TelegramDigestFormatter
             }
         }
 
-        if (($preview['data_quality']['source_status'] ?? null) === 'incomplete') {
+        $sourceNotice = match ($preview['data_quality']['source_status'] ?? null) {
+            'unavailable' => '⚠️ Источник входящих сообщений недоступен; полнота сводки не подтверждена.',
+            'no_messages' => '⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.',
+            'incomplete' => '⚠️ Входящие сообщения обработаны не полностью. Сводка может быть неполной.',
+            default => null,
+        };
+        if ($sourceNotice !== null) {
             $lines[] = '';
-            $lines[] = '⚠️ Входящие сообщения обработаны не полностью. Сводка может быть неполной.';
+            $lines[] = $sourceNotice;
         }
 
         return implode("\n", $lines);

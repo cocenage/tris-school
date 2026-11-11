@@ -1,7 +1,9 @@
 <?php
 
+use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramLinenDefectReportBuilder;
+use App\Services\Telegram\TelegramLinenDefectReportFormatter;
 use App\Services\Telegram\TelegramOperationalEventObserver;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use Carbon\Carbon;
@@ -115,6 +117,117 @@ it('filters ingested Telegram messages and OI evidence by the UTC instants of th
     'spring DST change' => ['2026-03-29', '2026-03-28 23:00:00', '2026-03-29 18:30:00'],
     'autumn DST change' => ['2026-10-25', '2026-10-24 22:00:00', '2026-10-25 19:30:00'],
 ]);
+
+it('counts linen cases details and confirmed units independently when quantities are unknown', function () {
+    foreach ([
+        ['6101', 'Брак простыни и наволочки с пятнами.'],
+        ['6102', 'Брак полотенца с дыркой.'],
+    ] as [$messageId, $text]) {
+        $message = TelegramOperationalTestDatabase::message(
+            $text,
+            sentAt: '2026-11-01 15:47:00',
+            messageId: $messageId,
+            threadId: '6100',
+        );
+        $message->topic?->update(['title' => 'Via Test 23']);
+        app(TelegramOperationalEventObserver::class)->observe($message);
+    }
+
+    $report = app(TelegramLinenDefectReportBuilder::class)->build('2026-11-01');
+
+    expect($report['cases'])->toHaveCount(2)
+        ->and($report['case_count'])->toBe(2)
+        ->and($report['item_detail_count'])->toBe(3)
+        ->and($report['unknown_quantity_details'])->toBe(3)
+        ->and($report['known_units'])->toBe(0)
+        ->and($report['cases'][0]['quantity_confidence'])->toBe('unknown')
+        ->and($report['cases'][1]['quantity_confidence'])->toBe('unknown');
+
+    $text = app(TelegramLinenDefectReportFormatter::class)->format($report, 'navigli');
+
+    expect($text)->toContain('Случаев: 2 · позиций белья: 3.', 'Количество не указано для позиций: 3')
+        ->not->toContain('Случаи без указанного количества: 3');
+});
+
+it('combines reply-linked linen evidence into one case while preserving every source link', function () {
+    $first = TelegramOperationalTestDatabase::message(
+        'Брак простыни с пятнами.',
+        sentAt: '2026-11-01 15:47:00',
+        messageId: '6151',
+        threadId: '6150',
+    );
+    $first->topic?->update(['title' => 'Via Test 23']);
+    $firstEvent = app(TelegramOperationalEventObserver::class)->observe($first);
+
+    $reply = TelegramOperationalTestDatabase::message(
+        'Брак простыни с пятнами.',
+        sentAt: '2026-11-01 15:48:00',
+        messageId: '6152',
+        raw: ['message' => ['reply_to_message' => ['message_id' => 6151]]],
+        threadId: '6150',
+    );
+    $replyEvent = app(TelegramOperationalEventObserver::class)->observe($reply);
+    $report = app(TelegramLinenDefectReportBuilder::class)->build('2026-11-01');
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-11-01', [
+        'district' => ['key' => 'navigli', 'label' => 'Navigli', 'chat_id' => '-1001'],
+    ]);
+    $preview['linen_report'] = $report;
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence($preview);
+
+    expect($replyEvent['event_key'])->toBe($firstEvent['event_key'])
+        ->and($report['cases'])->toHaveCount(1)
+        ->and($report['cases'][0]['event_key'])->toBe($firstEvent['event_key'])
+        ->and($report['cases'][0]['details'])->toBe([['item' => 'простыня', 'quantity' => null]])
+        ->and($report['cases'][0]['source_urls'])->toHaveCount(2)
+        ->and(substr_count($text, 'Via Test 23'))->toBe(1)
+        ->and($text)->toContain('Классификации: брак белья · значимая проблема')
+        ->and(substr_count($text, 'https://t.me/c/1/6151'))->toBe(1)
+        ->and(substr_count($text, 'https://t.me/c/1/6152'))->toBe(1);
+});
+
+it('keeps unlinked linen reports as separate cases even at the same location and minute', function () {
+    foreach ([['6161', '15:47:00'], ['6162', '15:48:00']] as [$messageId, $time]) {
+        $message = TelegramOperationalTestDatabase::message(
+            'Брак простыни с пятнами.',
+            sentAt: '2026-11-01 '.$time,
+            messageId: $messageId,
+            threadId: '6160',
+        );
+        $message->topic?->update(['title' => 'Via Test 23']);
+        app(TelegramOperationalEventObserver::class)->observe($message);
+    }
+
+    $report = app(TelegramLinenDefectReportBuilder::class)->build('2026-11-01');
+
+    expect($report['cases'])->toHaveCount(2)
+        ->and(collect($report['cases'])->pluck('event_key')->unique())->toHaveCount(2)
+        ->and(collect($report['cases'])->pluck('location')->unique()->all())->toBe(['Via Test 23']);
+});
+
+it('keeps courier collection and a textile defect as separate OI events at one address', function () {
+    $courier = TelegramOperationalTestDatabase::message(
+        'Курьер забрал только 1 из 2 комплектов грязного белья.',
+        sentAt: '2026-11-01 15:47:00',
+        messageId: '6201',
+        threadId: '6200',
+    );
+    $courier->topic?->update(['title' => 'Via Test 23']);
+    $courierResult = app(TelegramOperationalEventObserver::class)->observe($courier);
+
+    $defect = TelegramOperationalTestDatabase::message(
+        'Брак пододеяльника с пятнами.',
+        sentAt: '2026-11-01 15:48:00',
+        messageId: '6202',
+        threadId: '6200',
+    );
+    $defectResult = app(TelegramOperationalEventObserver::class)->observe($defect);
+    $report = app(TelegramLinenDefectReportBuilder::class)->build('2026-11-01');
+
+    expect($courierResult['event_key'])->not->toBe($defectResult['event_key'])
+        ->and($report['cases'])->toHaveCount(1)
+        ->and($report['cases'][0]['event_key'])->toBe($defectResult['event_key'])
+        ->and($report['cases'][0]['details'])->toBe([['item' => 'пододеяльник', 'quantity' => null]]);
+});
 
 it('includes both absolute instants that share the repeated Rome clock time in autumn', function () {
     foreach (['2026-10-25 00:30:00', '2026-10-25 01:30:00'] as $index => $utcTime) {

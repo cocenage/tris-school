@@ -101,13 +101,61 @@ it('includes a confirmed strike during the report date plus seven day window wit
         ->not->toContain('Trenord', 'TRENORD', 'MIT', 'Источник:', 'Como', 'География:', 'Сфера:');
 });
 
+it('suppresses an MIT event only when an official operator postponement matches its date, mode, and union', function (): void {
+    morningStrike(['starts_at' => '2026-10-30', 'ends_at' => '2026-10-30'], ['unions' => 'USB']);
+    morningStrike([
+        'source' => 'atm',
+        'title' => 'Sciopero di venerdì 30 ottobre rimandato dal Ministero',
+        'description' => 'USB: lo sciopero è stato rimandato.',
+        'starts_at' => '2026-10-30',
+        'ends_at' => '2026-10-30',
+        'district' => 'Milano',
+        'external_hash' => 'atm-postponement',
+    ], [
+        'status' => 'postponed',
+        'operator' => 'ATM Milano',
+        'sector' => 'Trasporto pubblico locale',
+        'notes' => 'USB: lo sciopero è stato rimandato.',
+    ]);
+
+    $builder = app(MobilityStrikesSummaryBuilder::class);
+    $summary = $builder->build('2026-10-30', 'navigli', 0);
+    $morning = app(MobilityStrikesSummaryFormatter::class)->formatMorningSection($summary);
+    $preview = app(MobilityStrikesSummaryFormatter::class)->format($summary);
+
+    expect($summary['strikes'])->toHaveCount(1)
+        ->and($summary['strikes'][0]['status'])->toBe('postponed')
+        ->and($morning)->toBe('')
+        ->and($preview)->toContain('забастовка перенесена', 'Первоначальная дата: 30.10.2026')
+        ->not->toContain('Возможны перебои');
+});
+
+it('does not suppress a same-day MIT event when the operator notice cannot be tied to the same union', function (): void {
+    morningStrike([], ['unions' => 'AL-COBAS']);
+    morningStrike([
+        'source' => 'atm',
+        'title' => 'Sciopero di venerdì 24 ottobre rimandato',
+        'description' => 'USB: lo sciopero è stato rimandato.',
+        'district' => 'Milano',
+        'external_hash' => 'atm-unrelated-postponement',
+    ], [
+        'status' => 'postponed',
+        'operator' => 'ATM Milano',
+        'sector' => 'Trasporto pubblico locale',
+        'notes' => 'USB: lo sciopero è stato rimandato.',
+    ]);
+
+    expect(app(MobilityStrikesSummaryBuilder::class)->build('2026-10-24', 'navigli', 0)['strikes'])
+        ->toHaveCount(2);
+});
+
 it('limits an ATM strike to Milan districts and excludes events beyond the seven day horizon', function (): void {
     morningStrike([
         'source' => 'atm',
         'title' => 'Sciopero ATM Milano 24/10/2026',
         'district' => 'Milano',
         'external_hash' => 'atm-milan',
-        'strike_metadata' => null,
+        'strike_metadata' => ['status' => 'scheduled', 'operator' => 'ATM Milano', 'sector' => 'Trasporto pubblico locale'],
     ], []);
     morningStrike([
         'source' => 'atm',
@@ -116,7 +164,7 @@ it('limits an ATM strike to Milan districts and excludes events beyond the seven
         'ends_at' => '2026-10-28',
         'district' => 'Milano',
         'external_hash' => 'atm-outside-window',
-        'strike_metadata' => null,
+        'strike_metadata' => ['status' => 'scheduled', 'operator' => 'ATM Milano', 'sector' => 'Trasporto pubblico locale'],
     ], []);
 
     $builder = app(MobilityStrikesSummaryBuilder::class);
@@ -170,16 +218,76 @@ it('omits duration text that is not a confirmed time range', function (): void {
         ->not->toContain('24 ORE', '06:00', '08:45', '15:00', 'ATM', 'MIT');
 });
 
-it('does not certify an empty strike overview from an empty successful HTML page', function (): void {
+it('marks a successful but unrecognized source structure without calling it empty', function (): void {
     config(['services.telegram.mobility_admin_targets' => null]);
     Http::fake(fn () => Http::response('<html><body></body></html>'));
 
     app(MobilityAlertSyncService::class)->sync();
 
     $status = app(MobilityStrikeSourceStatus::class)->forReport();
-    expect($status['sources']['atm']['available'])->toBeFalse()
-        ->and($status['sources']['trenord_news']['available'])->toBeFalse()
-        ->and($status['sources']['telegram_undergroundstatus']['available'])->toBeFalse();
+    expect($status['sources']['atm']['status'])->toBe('unrecognized')
+        ->and($status['sources']['atm']['available'])->toBeFalse()
+        ->and($status['sources']['trenord_news']['status'])->toBe('unrecognized')
+        ->and($status['sources']['telegram_undergroundstatus']['status'])->toBe('unrecognized');
+});
+
+it('distinguishes a recognized source with no strike notices from an unavailable source', function (): void {
+    $mit = '<table><tr><th>Inizio</th><th>Categoria</th></tr></table>';
+    Http::fake(function ($request) use ($mit) {
+        if ($request->url() === config('mobility.strike_source_url')) {
+            return Http::response($mit);
+        }
+        if (str_contains($request->url(), 't.me/s/undergroundstatus')) {
+            return Http::response('<div class="tgme_channel_info">Metro status</div>');
+        }
+
+        return Http::response('<html><body>ATM Trenord <a href="/info">Informazioni aggiornate sul servizio</a></body></html>');
+    });
+
+    app(MobilityAlertSyncService::class)->sync();
+
+    $sources = app(MobilityStrikeSourceStatus::class)->forReport()['sources'];
+    expect($sources['mit']['status'])->toBe('checked_empty')
+        ->and($sources['atm']['status'])->toBe('checked_empty')
+        ->and($sources['trenord_news']['status'])->toBe('checked_empty')
+        ->and($sources['telegram_undergroundstatus']['status'])->toBe('checked_empty');
+});
+
+it('stores an ATM postponement from the announcement body and excludes it from the active morning digest', function (): void {
+    config(['mobility.strike_notifications_enabled' => false]);
+    $mit = '<table><tr><th>ID</th><th>Inizio</th><th>Categoria</th><th>Settore*</th></tr></table>';
+    $listing = '<html><body>ATM Milano <a href="/it/ViaggiaConNoi/InfoTraffico/Pagine/Sciopero.aspx">Sciopero di venerdì 30 ottobre rimandato dal Ministero dei Trasporti - 26/10</a></body></html>';
+    $detail = '<html><main>Con ordinanza del Ministero lo sciopero USB previsto per venerdì 30 ottobre è stato rimandato. Nuova data non indicata.</main></html>';
+    Http::fake(function ($request) use ($mit, $listing, $detail) {
+        if ($request->url() === config('mobility.strike_source_url')) {
+            return Http::response($mit);
+        }
+        if (str_contains($request->url(), 'atm.it/it/viaggiaconnoi/infotraffico/pagine/default2.aspx')) {
+            return Http::response($listing);
+        }
+        if (str_contains($request->url(), 'atm.it/it/ViaggiaConNoi/InfoTraffico/Pagine/Sciopero.aspx')) {
+            return Http::response($detail);
+        }
+        if (str_contains($request->url(), 't.me/s/undergroundstatus')) {
+            return Http::response('<div class="tgme_channel_info">Metro status</div>');
+        }
+
+        return Http::response('<html><body>Trenord <a href="/info">Informazioni generali per i viaggiatori</a></body></html>');
+    });
+
+    app(MobilityAlertSyncService::class)->sync();
+
+    $alert = MobilityAlert::query()->where('source', 'atm')->sole();
+    $summary = app(MobilityStrikesSummaryBuilder::class)->build('2026-10-30', 'navigli', 7);
+    $morning = app(MobilityStrikesSummaryFormatter::class)->formatMorningSection($summary);
+    $preview = app(MobilityStrikesSummaryFormatter::class)->format($summary);
+
+    expect($alert->strike_metadata['status'])->toBe('postponed')
+        ->and($alert->starts_at?->toDateString())->toBe('2026-10-30')
+        ->and($alert->strike_metadata['publication_date'])->toBe('2026-10-26')
+        ->and($morning)->toBe('')
+        ->and($preview)->toContain('забастовка перенесена', 'Первоначальная дата: 30.10.2026')
+        ->and($summary['source_status']['state'])->toBe('complete');
 });
 
 it('does not report a positive zero state when source completeness is unknown or partial', function (): void {

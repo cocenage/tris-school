@@ -8,7 +8,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use RuntimeException;
+use Illuminate\Support\Str;
 
 class DeliverMobilityAlert implements ShouldQueue
 {
@@ -27,27 +27,79 @@ class DeliverMobilityAlert implements ShouldQueue
 
     public function handle(TelegramBotService $bot): void
     {
-        // Serialize duplicate/recovered jobs against the durable reservation.
-        DB::transaction(function () use ($bot): void {
+        // Claim in a short transaction. Never keep SQLite's write lock during
+        // the Telegram HTTP request; uncertain results are not retried blindly.
+        $claimed = DB::transaction(function (): bool {
             $message = MobilityAlertMessage::query()->lockForUpdate()->find($this->messageId);
-            if (! $message || $message->sent_at || $message->deleted_at) {
-                return;
+            if (! $message || $message->sent_at || $message->deleted_at
+                || in_array($message->delivery_status, ['sent', 'uncertain'], true)) {
+                return false;
             }
-            try {
-                $id = $bot->sendAnalyticsMessage($message->chat_id, $message->text, $message->thread_id ?? '');
-            } catch (\Throwable $error) {
-                Log::warning('Mobility strike delivery transport failed', [
-                    'reservation_id' => $message->id, 'failed' => 1, 'error_class' => get_class($error),
-                ]);
-                // Do not persist transport exception URLs containing bot tokens.
-                throw new RuntimeException('Mobility Telegram transport failed.');
+
+            if ($message->delivery_status === 'sending') {
+                if ($message->attempted_at?->lte(now()->subMinutes(2))) {
+                    $message->forceFill([
+                        'delivery_status' => 'uncertain',
+                        'error_code' => 'worker_interrupted_during_send',
+                    ])->save();
+                }
+
+                return false;
             }
-            if (! $id) {
-                Log::warning('Mobility strike delivery failed', ['reservation_id' => $message->id, 'failed' => 1]);
-                throw new RuntimeException('Mobility Telegram delivery did not return a message ID.');
-            }
-            $message->forceFill(['telegram_message_id' => (string) $id, 'sent_at' => now()])->save();
-            Log::info('Mobility strike delivered', ['reservation_id' => $message->id, 'sent' => 1]);
+
+            $message->forceFill([
+                'delivery_status' => 'sending',
+                'attempted_at' => now(),
+                'error_code' => null,
+            ])->save();
+
+            return true;
         });
+
+        if (! $claimed) {
+            return;
+        }
+
+        $message = MobilityAlertMessage::find($this->messageId);
+        if (! $message) {
+            return;
+        }
+
+        try {
+            $id = $bot->sendAnalyticsMessage($message->chat_id, $message->text, $message->thread_id ?? '');
+        } catch (\Throwable $error) {
+            $this->markUncertain($message, class_basename($error));
+            Log::warning('Mobility strike delivery result is uncertain.', [
+                'reservation_id' => $message->id,
+                'error_class' => class_basename($error),
+            ]);
+
+            return;
+        }
+
+        if (! $id) {
+            $this->markUncertain($message, 'telegram_receipt_missing');
+            Log::warning('Mobility strike delivery returned no Telegram receipt.', [
+                'reservation_id' => $message->id,
+            ]);
+
+            return;
+        }
+
+        $message->forceFill([
+            'telegram_message_id' => (string) $id,
+            'sent_at' => now(),
+            'delivery_status' => 'sent',
+            'error_code' => null,
+        ])->save();
+        Log::info('Mobility strike delivered', ['reservation_id' => $message->id, 'sent' => 1]);
+    }
+
+    private function markUncertain(MobilityAlertMessage $message, string $errorCode): void
+    {
+        $message->forceFill([
+            'delivery_status' => 'uncertain',
+            'error_code' => Str::limit(preg_replace('/[^A-Za-z0-9_]+/', '_', $errorCode), 80, ''),
+        ])->save();
     }
 }

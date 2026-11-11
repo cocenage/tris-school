@@ -17,12 +17,18 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 class AccessRelationManager extends RelationManager
 {
     protected static string $relationship = 'accessGrants';
 
     protected static ?string $title = 'Доступ сотрудников';
+
+    public static function canViewForRecord(Model $ownerRecord, string $pageClass): bool
+    {
+        return app(ApartmentAccessService::class)->canManage(auth()->user());
+    }
 
     public function form(Schema $schema): Schema
     {
@@ -49,7 +55,7 @@ class AccessRelationManager extends RelationManager
                     ->label('Сотрудник')
                     ->searchable()
                     ->sortable()
-                    ->description(fn (ApartmentUserAccess $record): string => $record->user?->telegram_username ? '@' . $record->user->telegram_username : ($record->user?->email ?? '—')),
+                    ->description(fn (ApartmentUserAccess $record): string => $record->user?->telegram_username ? '@'.$record->user->telegram_username : ($record->user?->email ?? '—')),
                 TextColumn::make('user.role')->label('Роль')->badge(),
                 TextColumn::make('expires_at')
                     ->label('Срок')
@@ -65,17 +71,25 @@ class AccessRelationManager extends RelationManager
                 TextColumn::make('created_at')->label('Дата выдачи')->dateTime('d.m.Y H:i')->sortable(),
             ])
             ->headerActions([
-                $this->grantAction(),
-                $this->grantManyAction(),
+                $this->grantAction()->authorize(fn (): bool => $this->canManage()),
+                $this->grantManyAction()->authorize(fn (): bool => $this->canManage()),
             ])
             ->actions([
-                EditAction::make()->label('Изменить')->visible(fn (): bool => $this->canManage()),
-                DeleteAction::make()->label('Отозвать')->requiresConfirmation()->visible(fn (): bool => $this->canManage()),
+                EditAction::make()
+                    ->label('Изменить')
+                    ->authorize(fn (): bool => $this->canManage())
+                    ->visible(fn (): bool => $this->canManage()),
+                DeleteAction::make()
+                    ->label('Отозвать')
+                    ->authorize(fn (): bool => $this->canManage())
+                    ->requiresConfirmation()
+                    ->visible(fn (): bool => $this->canManage()),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
                     DeleteBulkAction::make()
                         ->label('Отозвать доступ')
+                        ->authorize(fn (): bool => $this->canManage())
                         ->requiresConfirmation()
                         ->visible(fn (): bool => $this->canManage()),
                 ]),
@@ -117,7 +131,7 @@ class AccessRelationManager extends RelationManager
                 ->orderBy('name')
                 ->get(['id', 'name', 'email', 'telegram_username'])
                 ->mapWithKeys(fn (User $user): array => [
-                    $user->id => trim($user->name . ($user->telegram_username ? ' (@' . $user->telegram_username . ')' : '') . ($user->email ? ' — ' . $user->email : '')),
+                    $user->id => trim($user->name.($user->telegram_username ? ' (@'.$user->telegram_username.')' : '').($user->email ? ' — '.$user->email : '')),
                 ])
                 ->all())
             ->searchable()

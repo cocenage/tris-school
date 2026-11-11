@@ -16,7 +16,8 @@ class TelegramLinenDefectReportFormatter
             fn (array $case): bool => $districtKey === null || $case['district'] === $districtKey,
         );
         $known = $districts->sum('known_units');
-        $unknown = $cases->sum(fn (array $case): int => count(array_filter(
+        $itemDetailCount = $cases->sum(fn (array $case): int => count($case['details']));
+        $unknownQuantityDetails = $cases->sum(fn (array $case): int => count(array_filter(
             $case['details'], fn (array $detail): bool => $detail['quantity'] === null,
         )));
         $incomplete = ($districtKey === null && ($report['incomplete'] ?? false))
@@ -25,6 +26,11 @@ class TelegramLinenDefectReportFormatter
             );
         $date = Carbon::parse($report['date'], $report['timezone'])->format('d.m.Y');
         $lines = ['🧺 TRIS — Брак белья · '.$date, ''];
+
+        if ($cases->isNotEmpty()) {
+            $lines[] = 'Случаев: '.(int) ($report['case_count'] ?? $cases->count())
+                .' · позиций белья: '.(int) ($report['item_detail_count'] ?? $itemDetailCount).'.';
+        }
 
         if ($known > 0) {
             $lines[] = '<b>Всего:</b> '.$known.' шт. с указанным количеством';
@@ -36,8 +42,8 @@ class TelegramLinenDefectReportFormatter
             $lines[] = 'Количество бракованных единиц не указано.';
         }
 
-        if ($unknown > 0) {
-            $lines[] = 'Случаи без указанного количества: '.$unknown.' (не входят в итог).';
+        if ($unknownQuantityDetails > 0) {
+            $lines[] = 'Количество не указано для позиций: '.$unknownQuantityDetails.' (они не входят в итог единиц).';
         }
 
         if ($known > 0) {
@@ -62,15 +68,22 @@ class TelegramLinenDefectReportFormatter
                     .htmlspecialchars($details.', '.$case['defect'], ENT_QUOTES, 'UTF-8')
                     .(($case['quantity_confidence'] ?? null) === 'uncertain_duplicate'
                         ? ' — возможный повтор, количество не входит в итог' : '');
-                if ($case['source_url'] !== null) {
-                    $lines[] = '🔗 '.$case['source_url'];
+                foreach (collect($case['source_urls'] ?? [$case['source_url'] ?? null])->filter()->unique() as $sourceUrl) {
+                    $lines[] = '🔗 '.$sourceUrl;
                 }
             }
         }
 
         if ($incomplete) {
             $lines[] = '';
-            $lines[] = '⚠️ Данные неполные: нет входящих сообщений или OI обработал их не полностью.';
+            $statuses = $districts->pluck('source_status')->unique();
+            if ($statuses->contains('no_messages')) {
+                $lines[] = '⚠️ Входящие сообщения не зарегистрированы; полнота получения данных не подтверждена.';
+            } elseif ($statuses->contains('unavailable')) {
+                $lines[] = '⚠️ Источник данных недоступен или не настроен.';
+            } else {
+                $lines[] = '⚠️ Входящие сообщения обработаны не полностью; отчёт может быть неполным.';
+            }
         }
 
         return implode("\n", $lines);

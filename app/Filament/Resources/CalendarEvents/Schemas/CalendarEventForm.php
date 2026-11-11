@@ -3,6 +3,8 @@
 namespace App\Filament\Resources\CalendarEvents\Schemas;
 
 use App\Models\CalendarEvent;
+use App\Services\Authorization\SupervisorPanelAccess;
+use Filament\Facades\Filament;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -28,8 +30,18 @@ class CalendarEventForm
 
                         Select::make('type')
                             ->label('Тип события')
-                            ->options(CalendarEvent::typeOptions())
+                            ->options(fn (): array => Filament::getCurrentPanel()?->getId() === 'education'
+                                ? array_intersect_key(
+                                    CalendarEvent::typeOptions(),
+                                    array_flip(app(SupervisorPanelAccess::class)->allowedCalendarTypes(auth()->user())),
+                                )
+                                : CalendarEvent::typeOptions())
                             ->required()
+                            ->rules([function (string $attribute, mixed $value, \Closure $fail): void {
+                                if (is_string($value) && ! app(SupervisorPanelAccess::class)->canViewCalendarType(auth()->user(), $value)) {
+                                    $fail('У вас нет доступа к этой категории календаря.');
+                                }
+                            }])
                             ->native(false),
 
                         Toggle::make('is_active')
@@ -51,12 +63,12 @@ class CalendarEventForm
                     ->schema([
                         DatePicker::make('start_date')
                             ->label('Дата начала')
-                 
+
                             ->required(),
 
                         DatePicker::make('end_date')
                             ->label('Дата окончания')
-                    
+
                             ->afterOrEqual('start_date')
                             ->placeholder('Один день'),
                     ])

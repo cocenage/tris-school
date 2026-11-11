@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class TelegramOutboundOperation extends Model
 {
@@ -16,4 +17,9 @@ class TelegramOutboundOperation extends Model
         'error_code' => 'integer',
         'attempts' => 'integer',
     ];
+
+    public function events(): HasMany
+    {
+        return $this->hasMany(TelegramOutboundOperationEvent::class, 'operation_id')->orderBy('id');
+    }
 }

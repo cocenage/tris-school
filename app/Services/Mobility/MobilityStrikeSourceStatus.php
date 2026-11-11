@@ -22,16 +22,31 @@ class MobilityStrikeSourceStatus
 
     public function recordRun(array $sources, ?CarbonImmutable $checkedAt = null): void
     {
+        $checkedAt ??= CarbonImmutable::now('Europe/Rome');
+        $previous = Cache::get(self::CACHE_KEY, []);
         $statuses = [];
         foreach (self::SOURCES as $key => $label) {
+            $raw = $sources[$key] ?? false;
+            $status = is_array($raw)
+                ? (string) ($raw['status'] ?? 'unavailable')
+                : ((bool) $raw ? 'checked' : 'unavailable');
+            $available = in_array($status, ['checked', 'checked_empty', 'events_found'], true);
+            $lastSuccessfulAt = $available
+                ? (string) (data_get($raw, 'last_successful_at') ?: $checkedAt->toIso8601String())
+                : data_get($previous, 'sources.'.$key.'.last_successful_at');
+
             $statuses[$key] = [
                 'label' => $label,
-                'available' => (bool) ($sources[$key] ?? false),
+                'available' => $available,
+                'status' => $status,
+                'event_count' => is_array($raw) ? max(0, (int) ($raw['event_count'] ?? 0)) : 0,
+                'last_successful_at' => $lastSuccessfulAt,
+                'issue' => is_array($raw) ? ($raw['issue'] ?? null) : null,
             ];
         }
 
         Cache::put(self::CACHE_KEY, [
-            'checked_at' => ($checkedAt ?? CarbonImmutable::now('Europe/Rome'))->toIso8601String(),
+            'checked_at' => $checkedAt->toIso8601String(),
             'sources' => $statuses,
         ], now()->addDay());
     }
@@ -87,6 +102,10 @@ class MobilityStrikeSourceStatus
             'sources' => collect(self::SOURCES)->map(fn (string $label): array => [
                 'label' => $label,
                 'available' => null,
+                'status' => 'unknown',
+                'event_count' => null,
+                'last_successful_at' => null,
+                'issue' => null,
             ])->all(),
             'unavailable' => array_values(self::SOURCES),
         ];
@@ -97,9 +116,19 @@ class MobilityStrikeSourceStatus
         $normalized = [];
         foreach (self::SOURCES as $key => $label) {
             $available = data_get($sources, $key.'.available', data_get($sources, $key));
+            $status = data_get($sources, $key.'.status');
+            if (! is_string($status)) {
+                $status = $available === true ? 'checked' : ($available === false ? 'unavailable' : 'unknown');
+            }
             $normalized[$key] = [
                 'label' => $label,
-                'available' => is_bool($available) ? $available : null,
+                'available' => in_array($status, ['checked', 'checked_empty', 'events_found'], true)
+                    ? true
+                    : (in_array($status, ['unavailable', 'unrecognized'], true) ? false : null),
+                'status' => $status,
+                'event_count' => data_get($sources, $key.'.event_count'),
+                'last_successful_at' => data_get($sources, $key.'.last_successful_at'),
+                'issue' => data_get($sources, $key.'.issue'),
             ];
         }
 

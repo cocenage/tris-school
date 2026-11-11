@@ -73,11 +73,11 @@ class ControlsTable
                                     'main' => $record->main,
                                 ],
                             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-                        }, Str::slug($record->name ?: 'control') . '.json');
+                        }, Str::slug($record->name ?: 'control').'.json');
                     }),
             ])
             ->bulkActions([
-                DeleteBulkAction::make(),
+                DeleteBulkAction::make()->authorize('deleteAny', Control::class),
             ]);
     }
 }

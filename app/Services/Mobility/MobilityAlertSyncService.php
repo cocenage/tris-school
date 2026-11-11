@@ -13,7 +13,13 @@ class MobilityAlertSyncService
 {
     public array $strikeReport = [];
 
+    public array $sourcePreview = [];
+
     private array $strikeSourceStatuses = [];
+
+    private array $previewEvents = [];
+
+    private bool $dryRun = false;
 
     public function splitTelegramStatusEvents(string $title): array
     {
@@ -248,11 +254,14 @@ class MobilityAlertSyncService
         ]));
     }
 
-    public function sync(): int
+    public function sync(bool $dryRun = false): int
     {
+        $this->dryRun = $dryRun;
+        $this->sourcePreview = [];
+        $this->previewEvents = [];
         $this->strikeSourceStatuses = array_fill_keys([
             'mit', 'atm', 'trenord_news', 'trenord_strikes', 'trenord_home', 'telegram_undergroundstatus',
-        ], false);
+        ], ['status' => 'unavailable', 'event_count' => 0]);
 
         try {
             return $this->syncMitStrikes()
@@ -260,20 +269,44 @@ class MobilityAlertSyncService
                 + $this->syncTrenord()
                 + $this->syncUndergroundStatus();
         } finally {
-            try {
-                app(MobilityStrikeSourceStatus::class)->recordRun($this->strikeSourceStatuses);
-            } catch (\Throwable $exception) {
-                Log::warning('Mobility strike source status could not be stored.', [
-                    'exception' => class_basename($exception),
-                ]);
+            $this->sourcePreview = [
+                'checked_at' => now('Europe/Rome')->toIso8601String(),
+                'sources' => $this->strikeSourceStatuses,
+                'events' => $this->previewEvents,
+            ];
+            if (! $this->dryRun) {
+                try {
+                    app(MobilityStrikeSourceStatus::class)->recordRun($this->strikeSourceStatuses);
+                } catch (\Throwable $exception) {
+                    Log::warning('Mobility strike source status could not be stored.', [
+                        'exception' => class_basename($exception),
+                    ]);
+                }
             }
         }
     }
 
     protected function syncMitStrikes(): int
     {
-        $this->strikeReport = app(MobilityStrikeSyncService::class)->sync();
-        $this->strikeSourceStatuses['mit'] = ($this->strikeReport['failed'] ?? 1) === 0;
+        $sync = app(MobilityStrikeSyncService::class);
+        $this->strikeReport = $sync->sync(dryRun: $this->dryRun);
+        $failed = ($this->strikeReport['failed'] ?? 1) > 0;
+        $this->strikeSourceStatuses['mit'] = [
+            'status' => $failed ? 'unavailable' : (($this->strikeReport['relevant'] ?? 0) > 0 ? 'events_found' : 'checked_empty'),
+            'event_count' => max(0, (int) ($this->strikeReport['relevant'] ?? 0)),
+            'issue' => $failed ? 'fetch_or_parse_failed' : null,
+        ];
+        foreach ($sync->previewItems as $item) {
+            $this->previewEvents[] = [
+                'source' => 'mit',
+                'status' => $item['status'] ?? 'unknown',
+                'starts_at' => $item['starts_at'] ?? null,
+                'ends_at' => $item['ends_at'] ?? null,
+                'operator' => $item['operator'] ?? null,
+                'sector' => $item['sector'] ?? null,
+                'url' => config('mobility.strike_source_url'),
+            ];
+        }
 
         return $this->strikeReport['new'];
     }
@@ -282,7 +315,7 @@ class MobilityAlertSyncService
     {
         return $this->syncGenericPage(
             source: 'atm',
-            url: 'https://www.atm.it/it/Pagine/default.aspx',
+            url: 'https://www.atm.it/it/viaggiaconnoi/infotraffico/pagine/default2.aspx',
             healthKey: 'atm',
         );
     }
@@ -293,7 +326,7 @@ class MobilityAlertSyncService
 
         foreach ([
             'trenord_news' => 'https://www.trenord.it/news/',
-            'trenord_strikes' => 'https://www.trenord.it/assistenza/informazioni-utili/in-caso-di-sciopero/',
+            'trenord_strikes' => 'https://www.trenord.it/news/trenord-informa/avvisi/sciopero/',
             'trenord_home' => 'https://www.trenord.it/',
         ] as $healthKey => $url) {
             $created += $this->syncGenericPage(
@@ -311,8 +344,7 @@ class MobilityAlertSyncService
         $url = 'https://t.me/s/undergroundstatus';
 
         try {
-            $response = Http::withoutVerifying()
-                ->connectTimeout(10)
+            $response = Http::connectTimeout(10)
                 ->timeout(20)
                 ->retry(1, 1000)
                 ->withHeaders([
@@ -321,7 +353,7 @@ class MobilityAlertSyncService
                 ])
                 ->get($url);
         } catch (\Throwable $e) {
-            $this->strikeSourceStatuses['telegram_undergroundstatus'] = false;
+            $this->strikeSourceStatuses['telegram_undergroundstatus'] = ['status' => 'unavailable', 'event_count' => 0, 'issue' => 'request_failed'];
             Log::warning('Mobility telegram source failed', [
                 'source' => 'telegram_undergroundstatus',
                 'url' => $url,
@@ -332,7 +364,7 @@ class MobilityAlertSyncService
         }
 
         if (! $response->successful()) {
-            $this->strikeSourceStatuses['telegram_undergroundstatus'] = false;
+            $this->strikeSourceStatuses['telegram_undergroundstatus'] = ['status' => 'unavailable', 'event_count' => 0, 'issue' => 'http_'.$response->status()];
             Log::warning('Mobility telegram source bad status', [
                 'source' => 'telegram_undergroundstatus',
                 'url' => $url,
@@ -348,7 +380,9 @@ class MobilityAlertSyncService
             $matches
         );
 
-        $this->strikeSourceStatuses['telegram_undergroundstatus'] = ($matches[1] ?? []) !== [];
+        $recognized = str_contains($response->body(), 'tgme_widget_message')
+            || str_contains($response->body(), 'tgme_channel_info');
+        $eventCount = 0;
 
         $created = 0;
 
@@ -374,6 +408,7 @@ class MobilityAlertSyncService
             ]];
 
             foreach ($events as $event) {
+                $eventCount++;
                 $eventTitle = $event['title'];
                 $eventDescription = $event['description'];
                 $eventDate = now()->startOfDay();
@@ -384,6 +419,12 @@ class MobilityAlertSyncService
                     $event['type'],
                     $eventDate->toDateString(),
                 );
+
+                if ($this->dryRun) {
+                    $created++;
+
+                    continue;
+                }
 
                 $alert = MobilityAlert::firstOrCreate(
                     ['external_hash' => $hash],
@@ -415,6 +456,12 @@ class MobilityAlertSyncService
             }
         }
 
+        $this->strikeSourceStatuses['telegram_undergroundstatus'] = [
+            'status' => ! $recognized ? 'unrecognized' : ($eventCount > 0 ? 'events_found' : 'checked_empty'),
+            'event_count' => $eventCount,
+            'issue' => $recognized ? null : 'expected_channel_markup_not_found',
+        ];
+
         Log::info('Mobility telegram source finished', [
             'source' => 'telegram_undergroundstatus',
             'created' => $created,
@@ -432,8 +479,7 @@ class MobilityAlertSyncService
     ): int {
         $healthKey ??= $source;
         try {
-            $response = Http::withoutVerifying()
-                ->connectTimeout(10)
+            $response = Http::connectTimeout(10)
                 ->timeout(20)
                 ->retry(1, 1000)
                 ->withHeaders([
@@ -442,7 +488,7 @@ class MobilityAlertSyncService
                 ])
                 ->get($url);
         } catch (\Throwable $e) {
-            $this->strikeSourceStatuses[$healthKey] = false;
+            $this->strikeSourceStatuses[$healthKey] = ['status' => 'unavailable', 'event_count' => 0, 'issue' => 'request_failed'];
             Log::warning('Mobility source request failed', [
                 'source' => $source,
                 'url' => $url,
@@ -453,7 +499,7 @@ class MobilityAlertSyncService
         }
 
         if (! $response->successful()) {
-            $this->strikeSourceStatuses[$healthKey] = false;
+            $this->strikeSourceStatuses[$healthKey] = ['status' => 'unavailable', 'event_count' => 0, 'issue' => 'http_'.$response->status()];
             Log::warning('Mobility source returned bad status', [
                 'source' => $source,
                 'url' => $url,
@@ -465,11 +511,12 @@ class MobilityAlertSyncService
         }
 
         $items = $this->extractLinks($url, $response->body());
-        $this->strikeSourceStatuses[$healthKey] = collect($items)->contains(fn (array $item): bool => preg_match('/scioper|\bstrike\b/iu', $item['title']) === 1
-            && $this->extractDate($item['title']) !== null
-        );
+        $recognized = $this->sourcePageRecognized($source, $response->body());
 
         $created = 0;
+        $strikeCount = 0;
+        $detailFailed = false;
+        $detailChecks = 0;
 
         foreach ($items as $item) {
             $title = $this->cleanTitle($item['title']);
@@ -478,9 +525,77 @@ class MobilityAlertSyncService
                 continue;
             }
 
-            $eventDate = $this->extractDate($title) ?? now()->startOfDay();
+            $type = $forcedType ?? $this->detectType($title, $source);
+            $isStrike = $type === 'strike';
+            $body = '';
+            $normalized = ['status' => 'unknown', 'starts_at' => null, 'ends_at' => null];
+
+            if ($isStrike) {
+                $strikeCount++;
+                if ($detailChecks < 10) {
+                    $detailChecks++;
+                    $body = $this->fetchAnnouncementText($item['url'], $url);
+                    if ($body === null) {
+                        $detailFailed = true;
+                    }
+                } else {
+                    $detailFailed = true;
+                }
+
+                $publicationDate = $this->publicationDate($title);
+                $normalized = app(MobilityStrikeAnnouncementParser::class)->normalize($title, $body, $publicationDate);
+                $eventDate = $normalized['starts_at'];
+                $eventEnd = $normalized['ends_at'];
+                $metadata = [
+                    'status' => $normalized['status'],
+                    'operator' => $source === 'atm' ? 'ATM Milano' : 'Trenord',
+                    'sector' => $source === 'atm' ? 'Trasporto pubblico locale' : 'Ferroviario',
+                    'region' => 'Lombardia',
+                    'scope' => 'Regionale',
+                    'publication_date' => $publicationDate,
+                    'duration' => $this->confirmedDuration($title.' '.$body),
+                    'notes' => Str::limit($body, 1200, ''),
+                ];
+                $this->previewEvents[] = [
+                    'source' => $source,
+                    'title' => Str::limit($title, 250, ''),
+                    'status' => $normalized['status'],
+                    'starts_at' => $eventDate,
+                    'ends_at' => $eventEnd,
+                    'url' => $item['url'],
+                ];
+
+                if ($this->dryRun) {
+                    $created++;
+
+                    continue;
+                }
+
+                $created += app(MobilityStrikeSyncService::class)->syncExternalNotice([
+                    'source' => $source,
+                    'title' => $title,
+                    'description' => $body !== '' ? Str::limit($body, 5000, '') : null,
+                    'url' => $item['url'],
+                    'type' => 'strike',
+                    'risk' => in_array($normalized['status'], ['cancelled', 'postponed'], true) ? 'low' : 'high',
+                    'district' => $this->detectDistrict($title.' '.$body),
+                    'starts_at' => $eventDate,
+                    'ends_at' => $eventEnd,
+                    'metadata' => $metadata,
+                ]);
+
+                continue;
+            }
+
+            $eventDate = $this->extractDate($title) ?? now('Europe/Rome')->startOfDay();
 
             $hash = $this->fingerprint($source, $title, $eventDate->toDateString());
+
+            if ($this->dryRun) {
+                $created++;
+
+                continue;
+            }
 
             $alert = MobilityAlert::firstOrCreate(
                 ['external_hash' => $hash],
@@ -511,6 +626,12 @@ class MobilityAlertSyncService
             }
         }
 
+        $this->strikeSourceStatuses[$healthKey] = [
+            'status' => ! $recognized ? 'unrecognized' : ($detailFailed ? 'unavailable' : ($strikeCount > 0 ? 'events_found' : 'checked_empty')),
+            'event_count' => $strikeCount,
+            'issue' => ! $recognized ? 'expected_page_structure_not_found' : ($detailFailed ? 'announcement_detail_unavailable' : null),
+        ];
+
         Log::info('Mobility source finished', [
             'source' => $source,
             'url' => $url,
@@ -518,6 +639,92 @@ class MobilityAlertSyncService
         ]);
 
         return $created;
+    }
+
+    private function sourcePageRecognized(string $source, string $html): bool
+    {
+        if (preg_match('/<html\b|<body\b|<main\b|<article\b/i', $html) !== 1) {
+            return false;
+        }
+
+        $text = mb_strtolower($html);
+        $brand = $source === 'atm' ? 'atm' : 'trenord';
+
+        return str_contains($text, $brand) || str_contains($text, 'scioper') || str_contains($text, 'agitaz');
+    }
+
+    private function fetchAnnouncementText(string $url, string $sourceUrl): ?string
+    {
+        $target = parse_url($url);
+        $source = parse_url($sourceUrl);
+        if (($target['scheme'] ?? null) !== 'https'
+            || ($target['host'] ?? null) === null
+            || strcasecmp((string) $target['host'], (string) ($source['host'] ?? '')) !== 0) {
+            return null;
+        }
+
+        try {
+            $response = Http::connectTimeout(8)
+                ->timeout(15)
+                ->withHeaders(['User-Agent' => 'Mozilla/5.0 (compatible; TRIS Mobility Alert Bot)'])
+                ->get($url);
+        } catch (\Throwable $exception) {
+            Log::warning('Mobility strike detail request failed.', [
+                'source_host' => $target['host'],
+                'error_class' => class_basename($exception),
+            ]);
+
+            return null;
+        }
+
+        if (! $response->successful()) {
+            Log::warning('Mobility strike detail request returned bad status.', [
+                'source_host' => $target['host'],
+                'status' => $response->status(),
+            ]);
+
+            return null;
+        }
+
+        $document = new \DOMDocument;
+        $previous = libxml_use_internal_errors(true);
+        $document->loadHTML('<?xml encoding="UTF-8">'.$response->body());
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        foreach (['article', 'main'] as $tag) {
+            $nodes = $document->getElementsByTagName($tag);
+            if ($nodes->length > 0) {
+                return Str::limit($this->cleanTitle($nodes->item(0)?->textContent ?? ''), 8000, '');
+            }
+        }
+
+        return Str::limit($this->cleanTitle($document->getElementsByTagName('body')->item(0)?->textContent ?? ''), 8000, '');
+    }
+
+    private function publicationDate(string $title): ?string
+    {
+        if (preg_match('/(?:[-·]|aggiornato\s+il)\s*(?<day>\d{1,2})\/(?<month>\d{1,2})(?:\/(?<year>20\d{2}))?\s*$/iu', $title, $match) !== 1) {
+            return null;
+        }
+
+        $year = (int) ($match['year'] ?? now('Europe/Rome')->year);
+        $month = (int) $match['month'];
+        $day = (int) $match['day'];
+        if (! checkdate($month, $day, $year)) {
+            return null;
+        }
+
+        return Carbon::create($year, $month, $day, 0, 0, 0, 'Europe/Rome')?->toDateString();
+    }
+
+    private function confirmedDuration(string $text): ?string
+    {
+        if (preg_match('/(?<!\d)(?:[01]?\d|2[0-3]):[0-5]\d\s*[-–—]\s*(?:[01]?\d|2[0-3]):[0-5]\d(?!\d)/u', $text, $match) !== 1) {
+            return null;
+        }
+
+        return trim((string) preg_replace('/\s*[-–—]\s*/u', '–', $match[0]));
     }
 
     protected function extractLinks(string $baseUrl, string $html): array

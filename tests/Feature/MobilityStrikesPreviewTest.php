@@ -140,7 +140,8 @@ it('marks a persisted strike revision as updated', function (): void {
 it('collapses a matching provider notice into the one MIT event', function (): void {
     strikeAlert([
         'source' => 'atm', 'title' => 'Sciopero ATM Milano 07/10/2026 08:45–15:00',
-        'external_hash' => 'atm-provider', 'strike_metadata' => null,
+        'external_hash' => 'atm-provider',
+        'strike_metadata' => ['status' => 'scheduled', 'operator' => 'ATM Milano', 'sector' => 'Trasporto pubblico locale'],
     ]);
     strikeAlert(['external_hash' => 'mit-event'], ['duration' => '08:45–15:00']);
 

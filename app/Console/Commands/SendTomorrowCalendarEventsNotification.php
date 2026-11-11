@@ -5,10 +5,12 @@ namespace App\Console\Commands;
 use App\Services\Calendar\CalendarEventsService;
 use App\Services\Calendar\CalendarSummaryService;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramDigestBuildJournal;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
+use Throwable;
 
 class SendTomorrowCalendarEventsNotification extends Command
 {
@@ -20,19 +22,83 @@ class SendTomorrowCalendarEventsNotification extends Command
         CalendarEventsService $calendarEventsService,
         CalendarSummaryService $calendarSummaryService,
         TelegramBotService $telegramBotService,
+        TelegramDigestBuildJournal $journal,
     ): int {
-        $timezone = config('app.timezone', 'Europe/Stockholm');
+        $timezone = config('app.timezone', 'Europe/Rome');
 
         Carbon::setLocale('ru');
 
         $tomorrow = now($timezone)->addDay()->startOfDay();
 
-        $events = collect($calendarEventsService->getEventsForDay($tomorrow));
-        $summary = $calendarSummaryService->build($tomorrow);
+        $chatId = config('services.telegram.chat_id_calendar');
+        $threadId = config('services.telegram.thread_id_calendar');
+        $context = [
+            'operation_key' => 'calendar:tomorrow:'.$tomorrow->toDateString(),
+            'notification_type' => 'calendar', 'bot' => 'work',
+            'chat_id' => $chatId ? (string) $chatId : null, 'message_thread_id' => $threadId,
+            'source_type' => 'CalendarDate', 'source_id' => $tomorrow->toDateString(),
+        ];
+        $journalContext = $this->option('dry-run') ? null : $context;
 
-        $events = $this->appendNotWorkingEvents($events, $summary);
+        if ($journalContext !== null) {
+            $journal->reserve($journalContext);
+        }
 
-        $message = $this->buildMessage($tomorrow, $events, $summary);
+        try {
+            $sourceEvents = collect($calendarEventsService->getEventsForDay($tomorrow, 'peak'));
+        } catch (Throwable $exception) {
+            if ($journalContext !== null) {
+                $journal->record($journalContext, 'calendar_source', 'source_error');
+            }
+
+            throw $exception;
+        }
+
+        if ($journalContext !== null) {
+            $journal->record(
+                $journalContext,
+                'calendar_source',
+                $sourceEvents->isEmpty() ? 'no_input' : 'loaded',
+                ['input_count' => $sourceEvents->count()],
+            );
+        }
+
+        $events = $sourceEvents->where('type', 'peak')->values();
+        if ($journalContext !== null) {
+            $includedCount = $events->count();
+            $journal->record($journalContext, 'calendar_filter', $includedCount > 0 ? 'complete' : 'no_significant_events', [
+                'input_count' => $sourceEvents->count(),
+                'filtered_count' => $sourceEvents->count() - $includedCount,
+                'included_count' => $includedCount,
+            ]);
+        }
+
+        try {
+            $summary = $calendarSummaryService->build($tomorrow);
+        } catch (Throwable $exception) {
+            if ($journalContext !== null) {
+                $journal->record($journalContext, 'calendar_source', 'source_error');
+            }
+
+            throw $exception;
+        }
+
+        try {
+            $message = $this->buildMessage($tomorrow, $events, $summary);
+        } catch (Throwable $exception) {
+            if ($journalContext !== null) {
+                $journal->record($journalContext, 'calendar_format', 'calculation_error');
+            }
+
+            throw $exception;
+        }
+
+        if ($journalContext !== null) {
+            $messagePresent = trim($message) !== '';
+            $journal->record($journalContext, 'calendar_format', $messagePresent ? 'built' : 'no_message', [
+                'message_present' => $messagePresent,
+            ]);
+        }
 
         if ($this->option('dry-run')) {
             $this->line($message);
@@ -40,23 +106,13 @@ class SendTomorrowCalendarEventsNotification extends Command
             return self::SUCCESS;
         }
 
-        $chatId = config('services.telegram.chat_id_calendar');
-        $threadId = config('services.telegram.thread_id_calendar');
-
         if (! $chatId) {
             $this->error('Не настроен services.telegram.chat_id_calendar');
 
             return self::FAILURE;
         }
 
-        $context = [
-            'operation_key' => 'calendar:tomorrow:'.$tomorrow->toDateString(),
-            'notification_type' => 'calendar', 'bot' => 'work',
-            'chat_id' => (string) $chatId, 'message_thread_id' => $threadId,
-            'source_type' => 'CalendarDate', 'source_id' => $tomorrow->toDateString(),
-        ];
         $monitor = app(TelegramOutboundMonitor::class);
-        $monitor->expect($context);
         $monitor->withContext($context, fn () => $telegramBotService->sendMessage(
             chatId: $chatId,
             text: $message,
@@ -78,13 +134,11 @@ class SendTomorrowCalendarEventsNotification extends Command
         $lines[] = '';
 
         $this->appendShiftBlock($lines, $summary);
-        $this->appendNotWorkingBlock($lines, $summary);
+        $this->appendStaffingBlock($lines, $summary);
+        $peaks = $events->where('type', 'peak')->values();
 
-        $events = $this->removeDuplicatedNotWorkingEvents($events, $summary);
-        $grouped = $events->groupBy(fn (array $event) => $event['type'] ?? 'other');
-
-        if ($events->isNotEmpty()) {
-            $this->appendEventsBlock($lines, $events, $grouped);
+        if ($peaks->isNotEmpty()) {
+            $this->appendPeakBlock($lines, $peaks);
         }
 
         return trim(implode("\n", $lines));
@@ -103,17 +157,15 @@ class SendTomorrowCalendarEventsNotification extends Command
             return;
         }
 
-        $lines[] = '👥 <b>Смена</b>';
-        $lines[] = 'Работают: <b>'.($shift['working'] ?? 0).' из '.($shift['total'] ?? 0).'</b>';
-        $lines[] = 'Не работают: <b>'.($shift['not_working'] ?? 0).'</b>';
-        $indicator = match ($shift['level'] ?? null) {
-            'good' => '🟢 ',
-            'warning' => '🟡 ',
-            'critical' => '🔴 ',
-            default => '',
+        $lines[] = match ($shift['level'] ?? null) {
+            'good' => '🟢 Смена: лёгкая',
+            'warning' => '🟡 Смена: средняя',
+            'critical' => '🔴 Смена: тяжёлая',
+            'unknown' => (int) ($shift['total'] ?? 0) > 0
+                ? 'ℹ️ Смена: график клинеров подтверждён не полностью'
+                : 'ℹ️ Смена: нет данных',
+            default => 'ℹ️ Смена: нет данных',
         };
-        $lines[] = 'Статус: <b>'.$indicator.e($shift['label'] ?? 'Без статуса').'</b>';
-        $lines[] = '';
     }
 
     protected function appendNotWorkingBlock(array &$lines, array $summary): void
@@ -164,40 +216,115 @@ class SendTomorrowCalendarEventsNotification extends Command
         $lines[] = '';
     }
 
-    protected function appendEventsBlock(array &$lines, Collection $events, Collection $grouped): void
+    protected function appendStaffingBlock(array &$lines, array $summary): void
     {
-        $lines[] = '📌 <b>События</b>';
-        $lines[] = 'Всего событий: <b>'.$events->count().'</b>';
-        $lines[] = '';
-
-        $knownTypes = $this->eventTypeOrder();
-
-        $unknownTypes = $grouped
-            ->keys()
-            ->reject(fn ($type) => in_array($type, $knownTypes, true))
-            ->sort()
-            ->values()
-            ->all();
-
-        $typesToRender = [
-            ...$knownTypes,
-            ...$unknownTypes,
+        $roles = [
+            'cleaner' => [
+                'title' => '🧹 <b>Клинеры</b>',
+                'all_available' => 'Все клинеры доступны',
+            ],
+            'supervisor' => [
+                'title' => '👔 <b>Супервайзеры</b>',
+            ],
         ];
 
-        foreach ($typesToRender as $type) {
-            $items = $grouped->get($type, collect());
+        foreach ($roles as $role => $labels) {
+            $staff = data_get($summary, "workers.by_role.{$role}");
+            $total = (int) data_get($staff, 'total', 0);
 
-            if ($items->isEmpty()) {
+            if ($total < 1) {
+                $lines[] = $labels['title'].': нет данных о составе';
+                $lines[] = '';
+
                 continue;
             }
 
-            $lines[] = $this->typeIcon($type).' <b>'.e($this->typeLabel($type)).'</b>';
+            $available = (int) data_get($staff, 'available_count', 0);
+            $unknown = (int) data_get($staff, 'unknown_count', 0);
+            $availablePeople = collect(data_get($staff, 'available', []))
+                ->sortBy(fn (array $person) => mb_strtolower((string) ($person['name'] ?? '')))
+                ->values();
+            $absent = collect(data_get($staff, 'absent', []))
+                ->sortBy(fn (array $person) => mb_strtolower((string) ($person['name'] ?? '')))
+                ->values();
 
-            foreach ($items as $event) {
-                $lines[] = $this->formatTelegramEventLine($event);
+            $lines[] = $labels['title'].' — доступно: <b>'.$available.' из '.$total.'</b>';
+
+            if ($unknown > 0) {
+                $lines[] = 'График не подтверждён у <b>'.$unknown.'</b>'.($unknown === 1 ? ' сотрудника' : ' сотрудников');
+            }
+
+            if ($role === 'supervisor') {
+                $people = $availablePeople
+                    ->map(fn (array $person) => [
+                        'name' => (string) ($person['name'] ?? 'Без имени'),
+                        'status' => 'working',
+                    ])
+                    ->concat($absent->map(fn (array $person) => [
+                        'name' => (string) ($person['name'] ?? 'Без имени'),
+                        'status' => (string) ($person['reason'] ?? 'unknown'),
+                    ]))
+                    ->concat(collect(data_get($staff, 'unknown', []))->map(fn (array $person) => [
+                        'name' => (string) ($person['name'] ?? 'Без имени'),
+                        'status' => 'schedule_unknown',
+                    ]))
+                    ->sortBy(fn (array $person) => mb_strtolower($person['name']))
+                    ->values();
+
+                foreach ($people as $person) {
+                    [$indicator, $status] = match ($person['status']) {
+                        'working' => ['✅', 'работает'],
+                        'regular_weekend' => ['💤', 'рег. выходной'],
+                        'day_off' => ['💤', 'выходной'],
+                        'vacation' => ['🌴', 'отпуск'],
+                        'unpaid_leave' => ['💤', 'неоплачиваемый отпуск'],
+                        'schedule_unknown' => ['ℹ️', 'график не подтверждён'],
+                        default => ['💤', 'отсутствует'],
+                    };
+
+                    $lines[] = $indicator.' '.e($person['name']).' — '.$status;
+                }
+            } else {
+                if ($absent->isEmpty()) {
+                    if ($unknown === 0) {
+                        $lines[] = $labels['all_available'];
+                    } else {
+                        foreach (collect(data_get($staff, 'unknown', [])) as $person) {
+                            $lines[] = '• '.e((string) ($person['name'] ?? 'Без имени')).' — график не подтверждён';
+                        }
+                    }
+                    $lines[] = '';
+
+                    continue;
+                }
+
+                $lines[] = 'Не работают: <b>'.(int) data_get($staff, 'absent_count', $absent->count()).'</b>';
+
+                foreach ($absent as $person) {
+                    $reason = match ($person['reason'] ?? null) {
+                        'vacation' => 'отпуск',
+                        'day_off' => 'выходной',
+                        'regular_weekend' => 'регулярный выходной',
+                        'unpaid_leave' => 'неоплачиваемый отпуск',
+                        default => 'отсутствие без уточнённой категории',
+                    };
+
+                    $lines[] = '• '.e($person['name'] ?? 'Без имени').' — '.$reason;
+                }
             }
 
             $lines[] = '';
+        }
+    }
+
+    protected function appendPeakBlock(array &$lines, Collection $events): void
+    {
+        $lines[] = '🔥 <b>Пики загрузки</b>';
+        $lines[] = 'Всего: <b>'.$events->count().'</b>';
+        $lines[] = '';
+
+        foreach ($events as $event) {
+            $lines[] = $this->formatTelegramEventLine($event);
         }
     }
 

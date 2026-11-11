@@ -34,7 +34,7 @@ class ScheduledControlResponseClassifier
         $text = (string) preg_replace('/\s+/u', ' ', $text);
         foreach ([
             'problem' => '/(?:^нет\b|\bне все\b|\bне (?:начал\p{L}*|заверш\p{L}*|приехал\p{L}*|проверен\p{L}*|готов\p{L}*|работает|получил\p{L}*)\b|\bесть проблем\p{L}*\b|\bне хватает\b|\b(?:опозда\p{L}*|задерж\p{L}*|позже)\b.{0,30}\b(?:(?:(?:примерно|около)\s+)?на\s+\d{1,3}\s+минут\p{L}*|минут\p{L}*\s+на\s+\d{1,3})\b)/u',
-            'partial' => '/(?:\b\d+ из \d+\b|\bпочти все\b|\bодна осталась\b|\bвсе(?:\s+\p{L}+){0,3}\s+кроме\b)/u',
+            'partial' => '/(?:^частич\p{L}*|\b\d+ из \d+\b|\bпочти все\b|\bодна осталась\b|\bвсе(?:\s+\p{L}+){0,3}\s+кроме\b)/u',
             'unclear' => '/(?:\bсейчас уточню\b|\bне знаю\b|\bпроверяем\b|\?)/u',
             'confirmed' => '/^(?:да(?: все (?:хорошо|ок|начались|начали|проверен\p{L}*|завершено|завершили))?|все (?:хорошо|ок|начались|начали|проверен\p{L}*|завершено|завершили)|готово|проверен\p{L}*|сделано|завершено)$/u',
         ] as $classification => $pattern) {
@@ -87,7 +87,7 @@ class ScheduledControlResponseClassifier
             ->all();
     }
 
-    private function districtClassification(array $line): string
+    public function districtClassification(array $line): string
     {
         $text = mb_strtolower(str_replace('ё', 'е', (string) $line['text']));
         if (preg_match('/\b(?:нет|не\s+(?:начал\p{L}*|заверш\p{L}*|закончил\p{L}*|приехал\p{L}*|забрал\p{L}*|выплатил\p{L}*|проверил\p{L}*)|опозда\p{L}*|задерж\p{L}*|проблем\p{L}*)\b/u', $text) === 1) {
@@ -95,6 +95,9 @@ class ScheduledControlResponseClassifier
         }
         if (in_array($line['marker'], ['🔴', '❌'], true)) {
             return 'problem';
+        }
+        if (preg_match('/\b\d+\s+из\s+\d+\b|\bпочти\s+все\b|\bчастич\p{L}*\b/u', $text) === 1) {
+            return 'partial';
         }
         if (preg_match('/\b(?:да|не\s+было|начал\p{L}*|заверш\p{L}*|закончил\p{L}*|заканч\p{L}*|готов\p{L}*|проверен\p{L}*|приехал\p{L}*|получил\p{L}*|выплатил\p{L}*)\b/u', $text) === 1) {
             return 'confirmed';

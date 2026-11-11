@@ -130,6 +130,7 @@ it('renders a clean empty state and never falls back to diagnostic sections', fu
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'district' => $district === null ? null : ['label' => $district],
         'date' => '2026-09-30', 'daily_problems' => [],
+        'data_quality' => ['source_status' => 'available'],
         'sections' => [['key' => 'attention', 'items' => [['summary' => 'Старый дефект.']]]],
         'editorial_sections' => [['key' => 'carry_over', 'items' => [['summary' => 'Старый дефект.']]]],
     ]);
@@ -163,6 +164,7 @@ it('omits human problem cards without a source quote or meaningful location', fu
             'event_key' => 'current', 'summary' => 'Не работает свет.',
             'author_name' => null, 'source_time' => null, 'quote' => null, 'source_url' => null,
         ]],
+        'data_quality' => ['source_status' => 'available'],
     ]);
 
     expect($text)->toBe("🌙 TRIS — проблемы за день · 30.09.2026\n\nЗа сегодня:\n✅ Новых значимых событий не зафиксировано.")
@@ -191,4 +193,81 @@ it('does not claim a complete empty report when the linen source failed', functi
 
     expect($text)->toContain('Данные о браке белья неполные')
         ->not->toContain('значимых выводов не выявлено');
+});
+
+it('distinguishes unconfirmed resolution from uncertain or unsupported status', function (string $status, string $confidence, ?string $uncertainty, bool $resolutionConfirmed, string $expectedStatus) {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-11-01',
+        'timezone' => 'Europe/Rome',
+        'district' => ['key' => 'lodi', 'label' => 'Lodi'],
+        'management_sections' => ['technical_faults' => [[
+            'event_key' => 'hood-1',
+            'location' => 'Via Test 23',
+            'summary' => 'Не работает вытяжка.',
+            'author' => null,
+            'reported_at' => '2026-11-01T15:47:00+01:00',
+            'source_url' => 'https://t.me/c/1/1',
+            'source_urls' => ['https://t.me/c/1/1'],
+            'follow_ups' => [],
+            'status' => $status,
+            'confidence' => $confidence,
+            'uncertainty' => $uncertainty,
+            'resolution_confirmed' => $resolutionConfirmed,
+        ]]],
+        'data_quality' => ['source_status' => 'available'],
+        'linen_report' => [
+            'cases' => [],
+            'districts' => ['lodi' => ['source_status' => 'available', 'known_units' => 0]],
+            'incomplete' => false,
+        ],
+    ]);
+
+    expect($text)->toContain('Статус: '.$expectedStatus);
+})->with([
+    'clear open event' => ['open', 'high', null, false, 'решение не подтверждено'],
+    'low confidence event' => ['open', 'low', 'Нужно уточнение.', false, 'требуется уточнение'],
+    'explicit resolution' => ['resolved', 'high', null, true, 'решение подтверждено'],
+    'resolved without resolution evidence' => ['resolved', 'high', null, false, 'требуется уточнение'],
+]);
+
+it('counts only linen cases belonging to the current district', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-11-01',
+        'timezone' => 'Europe/Rome',
+        'district' => ['key' => 'lodi', 'label' => 'Lodi'],
+        'management_sections' => [],
+        'data_quality' => ['source_status' => 'available'],
+        'linen_report' => [
+            'case_count' => 2,
+            'item_detail_count' => 3,
+            'known_units' => 0,
+            'incomplete' => false,
+            'districts' => ['lodi' => ['source_status' => 'available', 'known_units' => 0]],
+            'cases' => [
+                ['district' => 'lodi', 'district_label' => 'Lodi', 'location' => 'Via Lodi 1', 'details' => [['item' => 'простыня', 'quantity' => null]], 'defect' => 'брак/повреждение', 'source_url' => 'https://t.me/c/1/1'],
+                ['district' => 'navigli', 'district_label' => 'Navigli', 'location' => 'Via Navigli 2', 'details' => [['item' => 'полотенце', 'quantity' => null], ['item' => 'наволочка', 'quantity' => null]], 'defect' => 'брак/повреждение', 'source_url' => 'https://t.me/c/2/2'],
+            ],
+        ],
+    ]);
+
+    expect($text)->toContain('Случаев: 1 · позиций белья: 1.')
+        ->not->toContain('Случаев: 2 · позиций белья: 3.', 'Via Navigli 2');
+});
+
+it('distinguishes an unavailable source from a configured source with no recorded messages', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-11-01',
+        'timezone' => 'Europe/Rome',
+        'district' => ['key' => 'lodi', 'label' => 'Lodi'],
+        'management_sections' => [],
+        'data_quality' => ['source_status' => 'unavailable'],
+        'linen_report' => [
+            'cases' => [],
+            'districts' => ['lodi' => ['source_status' => 'unavailable', 'known_units' => 0]],
+            'incomplete' => true,
+        ],
+    ]);
+
+    expect($text)->toContain('Источник данных недоступен или не настроен')
+        ->not->toContain('Входящие сообщения не зарегистрированы');
 });

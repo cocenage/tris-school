@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Http\Controllers\TelegramAnalyticsWebhookController;
 use App\Services\Telegram\TelegramPollingFailure;
+use App\Services\Telegram\TelegramPollingHealthMonitor;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramUpdatePoller;
 use Illuminate\Console\Command;
@@ -20,19 +21,23 @@ class TelegramAnalyticsPollCommand extends Command
         TelegramUpdatePoller $poller,
         TelegramAnalyticsWebhookController $processor,
         TelegramScheduledControlResponseService $responses,
+        TelegramPollingHealthMonitor $health,
     ): int {
+        $startedAt = hrtime(true);
         $token = (string) config('services.telegram.analytics_bot_token');
         $limit = filter_var($this->option('limit'), FILTER_VALIDATE_INT, [
             'options' => ['min_range' => 1, 'max_range' => 100],
         ]);
 
         if ($token === '') {
+            $health->recordFailure('analytics', 'configuration', 'MissingBotToken', $this->elapsedMs($startedAt));
             $this->error('Analytics Telegram bot token is not configured.');
 
             return self::FAILURE;
         }
 
         if ($limit === false) {
+            $health->recordFailure('analytics', 'configuration', 'InvalidPollingOption', $this->elapsedMs($startedAt));
             $this->error('The --limit option must be an integer from 1 to 100.');
 
             return self::FAILURE;
@@ -50,24 +55,44 @@ class TelegramAnalyticsPollCommand extends Command
                         throw new RuntimeException('analytics_update_processing_failed');
                     }
                 },
+                pollerName: 'analytics',
             );
         } catch (TelegramPollingFailure $error) {
-            $this->reportFailure($error);
+            $this->reportFailure($error, $health, $this->elapsedMs($startedAt));
 
             return self::FAILURE;
         }
 
+        $durationMs = $this->elapsedMs($startedAt);
+        $health->recordSuccess('analytics', $durationMs, $result['processed'], $result['network_retries']);
+        Log::info('Analytics Telegram polling completed', [
+            'duration_ms' => $durationMs,
+            'updates_processed' => $result['processed'],
+            'connection_retries' => $result['network_retries'],
+        ]);
         $this->info('Analytics Telegram polling completed: '.$result['processed'].' update(s) processed.');
 
         return self::SUCCESS;
     }
 
-    private function reportFailure(TelegramPollingFailure $error): void
+    private function reportFailure(TelegramPollingFailure $error, TelegramPollingHealthMonitor $health, int $durationMs): void
     {
+        $connectionRetries = $error->connectionRetries;
+        $health->recordFailure(
+            'analytics',
+            $error->stage,
+            class_basename($error->getPrevious() ?? $error),
+            $durationMs,
+            $connectionRetries,
+            $error->connectionErrorCode,
+        );
         Log::warning('Analytics Telegram polling failed', [
             'stage' => $error->stage,
             'update_id' => $error->updateId,
             'exception' => class_basename($error->getPrevious() ?? $error),
+            'duration_ms' => $durationMs,
+            'connection_retries' => $connectionRetries,
+            'connection_error_code' => $error->connectionErrorCode,
         ]);
 
         if ($error->stage === 'process' && $error->updateId !== null) {
@@ -77,5 +102,10 @@ class TelegramAnalyticsPollCommand extends Command
         }
 
         $this->error('Analytics Telegram polling failed during '.$error->stage.'; pending updates remain available for retry.');
+    }
+
+    private function elapsedMs(int $startedAt): int
+    {
+        return max(0, intdiv(hrtime(true) - $startedAt, 1_000_000));
     }
 }

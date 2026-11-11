@@ -10,7 +10,13 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('calendar:notify-tomorrow')
-    ->dailyAt('6:00');
+    ->dailyAt('6:00')
+    ->timezone('Europe/Rome');
+
+Schedule::command('calendar:notify-celebrations')
+    ->dailyAt('06:05')
+    ->timezone('Europe/Rome')
+    ->withoutOverlapping();
 
 Schedule::command('tasks:check-deadlines')->everyFifteenMinutes();
 
@@ -31,10 +37,6 @@ Schedule::command('telegram:evening-intelligence-send')
     ->dailyAt('20:30')
     ->timezone('Europe/Rome')
     ->withoutOverlapping();
-
-Schedule::command('tris-mare:sync')
-    ->dailyAt('20:15')
-    ->timezone('Europe/Rome');
 
 Schedule::command('telegram:scheduled-messages-send')
     ->everyMinute()
@@ -60,6 +62,10 @@ if ((bool) config('services.telegram.work_polling_enabled', false)) {
 Schedule::command('telegram:scheduled-controls-summary-send --only-if-due')
     ->everyFifteenMinutes()
     ->timezone('Europe/Rome')
+    ->withoutOverlapping();
+
+Schedule::command('controls:dispatch-completion-notifications')
+    ->everyMinute()
     ->withoutOverlapping();
 
 app(EmergencyScheduleRegistrar::class)->register(app(Illuminate\Console\Scheduling\Schedule::class));
