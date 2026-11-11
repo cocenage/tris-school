@@ -22,6 +22,11 @@ new class extends Component {
             return;
         }
 
+        if (auth()->user()->status === 'registration_draft') {
+            $this->redirectRoute('access.registration', navigate: true);
+            return;
+        }
+
         $this->hasWriteAccess = ! is_null(auth()->user()->telegram_write_access_granted_at);
     }
 };

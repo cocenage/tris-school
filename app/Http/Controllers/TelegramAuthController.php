@@ -24,7 +24,8 @@ class TelegramAuthController extends Controller
         $user = $authService->loginOrCreate($telegramUser);
         $redirect = $authService->redirectRouteFor($user);
 
-        if (preg_match('/^control_result_([1-9][0-9]*)$/D', (string) ($telegramUser['start_param'] ?? ''), $match)) {
+        if ($user->status !== 'registration_draft'
+            && preg_match('/^control_result_([1-9][0-9]*)$/D', (string) ($telegramUser['start_param'] ?? ''), $match)) {
             abort_unless($user->status === 'approved' && $user->is_active
                 && in_array($user->role, ['cleaner', 'supervisor', 'admin'], true), 403);
 

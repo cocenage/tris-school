@@ -13,7 +13,7 @@ class ListUsers extends ListRecords
 {
     protected static string $resource = UserResource::class;
 
-    public function getDefaultActiveTab(): string | int | null
+    public function getDefaultActiveTab(): string|int|null
     {
         return 'employees';
     }
@@ -24,7 +24,7 @@ class ListUsers extends ListRecords
             ...parent::getFormActions(),
 
             Action::make('back')
-                   ->icon('heroicon-m-arrow-left')
+                ->icon('heroicon-m-arrow-left')
                 ->label('Назад')
                 ->color('gray')
                 ->outlined()
@@ -71,7 +71,7 @@ class ListUsers extends ListRecords
 
             'all' => Tab::make('Все')
                 ->icon('heroicon-m-circle-stack')
-                ->badge(fn (): int => UserResource::getModel()::query()->count()),
+                ->badge(fn (): int => UserResource::getEloquentQuery()->count()),
         ];
     }
 
