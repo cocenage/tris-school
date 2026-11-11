@@ -11,10 +11,10 @@ class RolePreviewController extends Controller
 {
     public function store(Request $request, RolePreviewContext $context): RedirectResponse
     {
-        abort_unless($context->actualRole() === 'admin' && auth()->user()?->status === 'approved', 403);
+        abort_unless($context->canManagePreview(), 403);
 
         $validated = $request->validate([
-            'role' => ['required', Rule::in(['admin', 'supervisor', 'cleaner'])],
+            'role' => ['required', Rule::in($context->availableRoles())],
         ]);
 
         $context->start($validated['role']);

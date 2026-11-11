@@ -21,6 +21,7 @@ use Filament\Http\Middleware\Authenticate;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
@@ -29,11 +30,14 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function () {
     $this->withoutVite();
+    $this->compiledViewsPath = sys_get_temp_dir().DIRECTORY_SEPARATOR.'tris-role-preview-'.bin2hex(random_bytes(8));
+    File::ensureDirectoryExists($this->compiledViewsPath);
     config([
         'database.default' => 'sqlite',
         'database.connections.sqlite.database' => ':memory:',
         'database.connections.sqlite.url' => null,
         'cache.default' => 'array',
+        'view.compiled' => $this->compiledViewsPath,
     ]);
     DB::purge('sqlite');
 
@@ -110,7 +114,11 @@ beforeEach(function () {
 
     Schema::connection('sqlite')->create('day_off_requests', function (Blueprint $table): void {
         $table->id();
+        $table->unsignedBigInteger('user_id')->nullable();
         $table->string('status')->default('pending');
+        $table->timestamp('answer_seen_at')->nullable();
+        $table->timestamp('answered_at')->nullable();
+        $table->text('admin_comment')->nullable();
         $table->timestamps();
     });
 
@@ -127,6 +135,9 @@ beforeEach(function () {
         $table->id();
         $table->unsignedBigInteger('user_id');
         $table->string('status')->default('pending');
+        $table->timestamp('answer_seen_at')->nullable();
+        $table->timestamp('answered_at')->nullable();
+        $table->text('admin_comment')->nullable();
         $table->timestamps();
     });
 
@@ -134,6 +145,24 @@ beforeEach(function () {
         $table->id();
         $table->unsignedBigInteger('vacation_request_id');
         $table->date('date');
+        $table->timestamps();
+    });
+
+    foreach (['inventory_requests', 'salary_questions', 'schedule_questions', 'feedback_suggestions'] as $tableName) {
+        Schema::connection('sqlite')->create($tableName, function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('user_id')->nullable();
+            $table->string('status')->default('pending');
+            $table->timestamp('answer_seen_at')->nullable();
+            $table->timestamp('answered_at')->nullable();
+            $table->text('admin_comment')->nullable();
+            $table->timestamps();
+        });
+    }
+
+    Schema::connection('sqlite')->create('inventory_request_lines', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('inventory_request_id');
         $table->timestamps();
     });
 
@@ -175,6 +204,10 @@ beforeEach(function () {
 
 afterEach(function () {
     DB::purge('sqlite');
+
+    if (isset($this->compiledViewsPath)) {
+        File::deleteDirectory($this->compiledViewsPath);
+    }
 });
 
 it('keeps the authenticated admin role separate from the session UI preview', function () {
@@ -203,19 +236,43 @@ it('keeps the authenticated admin role separate from the session UI preview', fu
         ->and($context->effectiveUiRole())->toBe('admin');
 });
 
-it('allows only an approved real admin to change the role preview session', function () {
+it('allows admins and supervisors to choose only their permitted role previews', function () {
     $this->actingAs($this->admin)
         ->post(route('role-preview.store'), ['role' => 'supervisor'])
         ->assertRedirect(route('page-profile'));
 
     expect(session(RolePreviewContext::SESSION_KEY))->toBe('supervisor');
 
-    $this->actingAs($this->cleaner)
-        ->post(route('role-preview.store'), ['role' => 'admin'])
-        ->assertForbidden();
+    $this->post(route('role-preview.store'), ['role' => 'cleaner'])
+        ->assertRedirect(route('page-profile'));
+
+    expect(session(RolePreviewContext::SESSION_KEY))->toBe('cleaner');
+
+    $this->post(route('role-preview.store'), ['role' => 'admin'])
+        ->assertRedirect(route('page-profile'));
+
+    expect(session()->has(RolePreviewContext::SESSION_KEY))->toBeFalse();
 
     $this->actingAs($this->supervisor)
         ->post(route('role-preview.store'), ['role' => 'cleaner'])
+        ->assertRedirect(route('page-profile'));
+
+    expect(session(RolePreviewContext::SESSION_KEY))->toBe('cleaner')
+        ->and(app(RolePreviewContext::class)->actualRole())->toBe('supervisor')
+        ->and($this->supervisor->fresh()->role)->toBe('supervisor');
+
+    $this->post(route('role-preview.store'), ['role' => 'admin'])
+        ->assertRedirect()
+        ->assertSessionHasErrors('role');
+
+    $this->post(route('role-preview.store'), ['role' => 'supervisor'])
+        ->assertRedirect(route('page-profile'));
+
+    expect(session()->has(RolePreviewContext::SESSION_KEY))->toBeFalse()
+        ->and(app(RolePreviewContext::class)->effectiveUiRole())->toBe('supervisor');
+
+    $this->actingAs($this->cleaner)
+        ->post(route('role-preview.store'), ['role' => 'admin'])
         ->assertForbidden();
 
     expect($this->cleaner->fresh()->role)->toBe('cleaner');
@@ -231,6 +288,40 @@ it('lets the real admin exit preview and returns the UI to the real role', funct
     expect(session()->has(RolePreviewContext::SESSION_KEY))->toBeFalse()
         ->and(app(RolePreviewContext::class)->effectiveUiRole())->toBe('admin')
         ->and($this->admin->fresh()->role)->toBe('admin');
+});
+
+it('lets a supervisor exit cleaner preview and keeps the supervisor panel available', function () {
+    DB::table('user_panel_accesses')->insert([
+        'user_id' => $this->supervisor->id,
+        'panel' => 'education',
+        'can_access' => true,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->actingAs($this->supervisor)
+        ->post(route('role-preview.store'), ['role' => 'cleaner'])
+        ->assertRedirect(route('page-profile'));
+
+    $this->post(route('role-preview.clear'))
+        ->assertRedirect(route('page-profile'));
+
+    expect(session()->has(RolePreviewContext::SESSION_KEY))->toBeFalse()
+        ->and(app(RolePreviewContext::class)->effectiveUiRole())->toBe('supervisor')
+        ->and($this->supervisor->fresh()->role)->toBe('supervisor');
+
+    $this->get('/admin/supervisor')->assertOk();
+});
+
+it('uses cleaner navigation during supervisor preview without granting the admin panel', function () {
+    $this->actingAs($this->supervisor)
+        ->post(route('role-preview.store'), ['role' => 'cleaner'])
+        ->assertRedirect(route('page-profile'));
+
+    $this->get('/coachings')->assertRedirect(route('page-coachings.history'));
+    $this->get('/admin')->assertForbidden();
+
+    expect($this->supervisor->fresh()->role)->toBe('supervisor');
 });
 
 it('exits preview when the real admin enters Filament and can save a record there', function () {
@@ -271,7 +362,7 @@ it('exits preview when the real admin enters Filament and can save a record ther
     expect($program->fresh()->name)->toBe('Updated by Filament');
 });
 
-it('blocks form updates and allows explicit read navigation', function () {
+it('blocks form updates while allowing known read filters and navigation', function () {
     $guard = app(BlockRolePreviewWrites::class);
     $component = fn (string $name, array $updates = [], array $calls = []): array => [
         'snapshot' => json_encode(['memo' => ['name' => $name]], JSON_THROW_ON_ERROR),
@@ -284,6 +375,21 @@ it('blocks form updates and allows explicit read navigation', function () {
     ]))->toBeTrue()
         ->and($guard->containsWriteOperation([
             $component('forms.page-control', ['answers.0.0.value' => 'yes']),
+        ]))->toBeTrue()
+        ->and($guard->containsWriteOperation([
+            $component('page-coachings', ['dateFrom' => '2026-11-01', 'employeeFilter' => '3']),
+        ]))->toBeFalse()
+        ->and($guard->containsWriteOperation([
+            $component('profile.page-checks', ['tab' => 'received', 'activityType' => 'coaching']),
+        ]))->toBeFalse()
+        ->and($guard->containsWriteOperation([
+            $component('profile.page-all-checks', ['search' => 'Rossi', 'activityPeriod' => '30']),
+        ]))->toBeFalse()
+        ->and($guard->containsWriteOperation([
+            $component('profile.page-employee-history', [], [['method' => 'nextPage', 'params' => []]]),
+        ]))->toBeFalse()
+        ->and($guard->containsWriteOperation([
+            $component('page-coachings', ['description' => 'Injected content']),
         ]))->toBeTrue()
         ->and($guard->containsWriteOperation([
             $component('tasks.page-calendar', [], [['method' => 'openDay', 'params' => ['2026-10-25']]]),
@@ -330,6 +436,7 @@ it('installs the guard on Livewire updates and blocks writes without blocking or
     app(RolePreviewContext::class)->start('cleaner');
 
     $request = Request::create('/livewire/update', 'POST');
+    $request->setRouteResolver(fn () => $updateRoute);
     expect(fn () => app(BlockRolePreviewWrites::class)->handle($request, fn () => response()->noContent()))
         ->toThrow(HttpException::class);
 
@@ -351,6 +458,8 @@ it('installs the guard on Livewire updates and blocks writes without blocking or
     expect(app(BlockRolePreviewWrites::class)
         ->handle($request, fn () => response()->noContent())
         ->getStatusCode())->toBe(204);
+
+    $this->post(route('form-guides.seen'))->assertForbidden();
 });
 
 it('does not allow a preview session to reach a persistence action', function () {
@@ -361,10 +470,20 @@ it('does not allow a preview session to reach a persistence action', function ()
         ->toThrow(HttpException::class);
 });
 
-it('shows the preview selector only to the actual admin', function () {
+it('shows the preview selector to admins and supervisors with their allowed choices', function () {
     Livewire::actingAs($this->admin)
         ->test('page-profile')
-        ->assertSee('Режим просмотра');
+        ->assertSee('Режим просмотра')
+        ->assertSee('<option value="admin"', false)
+        ->assertSee('<option value="supervisor"', false)
+        ->assertSee('<option value="cleaner"', false);
+
+    Livewire::actingAs($this->supervisor)
+        ->test('page-profile')
+        ->assertSee('Режим просмотра')
+        ->assertSee('<option value="supervisor"', false)
+        ->assertSee('<option value="cleaner"', false)
+        ->assertDontSee('<option value="admin"', false);
 
     Livewire::actingAs($this->cleaner)
         ->test('page-profile')
@@ -386,14 +505,68 @@ it('changes the visible profile interface during preview without changing the re
         ->and($this->admin->fresh()->canAccessPanel(Filament::getPanel('admin')))->toBeTrue();
 });
 
-it('shows a safe empty state instead of employee records during a role preview', function () {
-    $this->actingAs($this->admin)
+it('shows permitted application records in preview without marking them as read', function () {
+    $requestId = DB::table('day_off_requests')->insertGetId([
+        'user_id' => $this->supervisor->id,
+        'status' => 'approved',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    DB::table('day_off_request_days')->insert([
+        'day_off_request_id' => $requestId,
+        'user_id' => $this->supervisor->id,
+        'date' => '2026-11-12',
+        'status' => 'approved',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->actingAs($this->supervisor)
         ->withSession([RolePreviewContext::SESSION_KEY => 'cleaner'])
-        ->get(route('page-checks.control'))
+        ->get(route('page-profile.applications'))
         ->assertOk()
         ->assertSee('Предпросмотр: Клинер')
         ->assertSee('Выйти из предпросмотра')
-        ->assertSee('Данные сотрудников скрыты');
+        ->assertSee('Мои заявки')
+        ->assertSee('Выходной')
+        ->assertSee('одобрено')
+        ->assertDontSee('Данные сотрудников скрыты');
+
+    expect(DB::table('day_off_requests')->where('id', $requestId)->value('answer_seen_at'))->toBeNull()
+        ->and($this->supervisor->fresh()->role)->toBe('supervisor');
+});
+
+it('renders accessible coaching records and filters in cleaner preview without exposing write actions', function () {
+    Schema::connection('sqlite')->create('coachings', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('user_id');
+        $table->unsignedBigInteger('supervisor_id')->nullable();
+        $table->date('inspection_date')->nullable();
+        $table->text('reason')->nullable();
+        $table->string('status')->default('sent');
+        $table->timestamps();
+    });
+
+    DB::table('coachings')->insert([
+        'user_id' => $this->cleaner->id,
+        'supervisor_id' => $this->supervisor->id,
+        'inspection_date' => '2026-11-10',
+        'reason' => 'Accessible coaching entry',
+        'status' => 'sent',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->actingAs($this->supervisor)
+        ->withSession([RolePreviewContext::SESSION_KEY => 'cleaner'])
+        ->get(route('page-coachings.history'))
+        ->assertOk()
+        ->assertSee('История коучингов')
+        ->assertSee('Accessible coaching entry')
+        ->assertSee('Сотрудник')
+        ->assertSee('С даты')
+        ->assertDontSee('Записать коучинг')
+        ->assertDontSee('Данные сотрудников скрыты');
 });
 
 it('renames the education panel without widening its explicit access grants', function () {

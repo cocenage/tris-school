@@ -348,17 +348,19 @@ $this->profileRequired = false;
                     && app(\App\Services\Authorization\SupervisorPanelAccess::class)->hasGeneralCalendarAccess($user)));
     @endphp
 
-    @if($user?->isAdmin())
+    @if(in_array($user?->role, ['admin', 'supervisor'], true))
         <section class="mb-[20px] rounded-[24px] border border-[#E7EBF2] bg-[#F8FAFC] p-4">
             <h2 class="text-[16px] font-semibold text-[#213259]">Режим просмотра</h2>
-            <p class="mt-1 text-[13px] leading-[1.4] text-black/55">Показывает клиентский интерфейс выбранной роли. Данные и права администратора не меняются.</p>
+            <p class="mt-1 text-[13px] leading-[1.4] text-black/55">Показывает интерфейс выбранной роли. Данные и права пользователя не меняются.</p>
             <form method="POST" action="{{ route('role-preview.store') }}" class="mt-3 flex items-center gap-2">
                 @csrf
                 <label for="ui-role-preview" class="sr-only">Роль для предпросмотра</label>
                 <select id="ui-role-preview" name="role" class="min-w-0 flex-1 rounded-xl border border-[#D8DEE8] bg-white px-3 py-2 text-[14px] text-[#213259]">
-                    <option value="admin" @selected($rolePreview->effectiveUiRole() === 'admin')>Администратор</option>
-                    <option value="supervisor" @selected($rolePreview->effectiveUiRole() === 'supervisor')>Супервайзер</option>
-                    <option value="cleaner" @selected($rolePreview->effectiveUiRole() === 'cleaner')>Клинер</option>
+                    @foreach(['admin' => 'Администратор', 'supervisor' => 'Супервайзер', 'cleaner' => 'Клинер'] as $role => $label)
+                        @if(in_array($role, $rolePreview->availableRoles(), true))
+                            <option value="{{ $role }}" @selected($rolePreview->effectiveUiRole() === $role)>{{ $label }}</option>
+                        @endif
+                    @endforeach
                 </select>
                 <button type="submit" class="shrink-0 rounded-xl bg-[#213259] px-4 py-2 text-[14px] font-semibold text-white">Показать</button>
             </form>

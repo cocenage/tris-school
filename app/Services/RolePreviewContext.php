@@ -8,7 +8,10 @@ class RolePreviewContext
 {
     public const SESSION_KEY = 'ui_role_preview';
 
-    private const PREVIEW_ROLES = ['supervisor', 'cleaner'];
+    private const PREVIEW_ROLES = [
+        'admin' => ['supervisor', 'cleaner'],
+        'supervisor' => ['cleaner'],
+    ];
 
     public function actualRole(): ?string
     {
@@ -17,7 +20,7 @@ class RolePreviewContext
 
     public function previewRole(): ?string
     {
-        if (! $this->isAuthorizedAdmin()) {
+        if (! $this->canManagePreview()) {
             if (session()->has(self::SESSION_KEY)) {
                 session()->forget(self::SESSION_KEY);
             }
@@ -27,7 +30,7 @@ class RolePreviewContext
 
         $role = session()->get(self::SESSION_KEY);
 
-        if (! in_array($role, self::PREVIEW_ROLES, true)) {
+        if (! in_array($role, $this->previewRolesForCurrentUser(), true)) {
             if (session()->has(self::SESSION_KEY)) {
                 session()->forget(self::SESSION_KEY);
             }
@@ -50,24 +53,41 @@ class RolePreviewContext
 
     public function start(string $role): void
     {
-        abort_unless($this->isAuthorizedAdmin(), 403);
+        abort_unless($this->canManagePreview(), 403);
 
-        if ($role === 'admin') {
+        if ($role === $this->actualRole()) {
             $this->clear();
 
             return;
         }
 
-        abort_unless(in_array($role, self::PREVIEW_ROLES, true), 422);
+        abort_unless(in_array($role, $this->previewRolesForCurrentUser(), true), 422);
 
         session()->put(self::SESSION_KEY, $role);
     }
 
     public function clear(): void
     {
-        abort_unless($this->isAuthorizedAdmin(), 403);
+        abort_unless($this->canManagePreview(), 403);
 
         session()->forget(self::SESSION_KEY);
+    }
+
+    public function availableRoles(): array
+    {
+        if (! $this->canManagePreview()) {
+            return [];
+        }
+
+        return [$this->actualRole(), ...$this->previewRolesForCurrentUser()];
+    }
+
+    public function canManagePreview(): bool
+    {
+        $user = Auth::user();
+
+        return $user?->status === 'approved'
+            && array_key_exists($user->role, self::PREVIEW_ROLES);
     }
 
     public function assertWritable(): void
@@ -75,10 +95,8 @@ class RolePreviewContext
         abort_if($this->isActive(), 403, 'Действия недоступны в режиме предпросмотра.');
     }
 
-    private function isAuthorizedAdmin(): bool
+    private function previewRolesForCurrentUser(): array
     {
-        $user = Auth::user();
-
-        return $user?->role === 'admin' && $user->status === 'approved';
+        return self::PREVIEW_ROLES[$this->actualRole()] ?? [];
     }
 }

@@ -2,6 +2,7 @@
 
 use App\Models\Coaching;
 use App\Models\User;
+use App\Services\RolePreviewContext;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
 use Livewire\WithPagination;
@@ -62,7 +63,7 @@ new class extends Component
 
 <div class="h-full overflow-y-auto bg-white px-5 pb-10 pt-5">
     <div class="mx-auto max-w-2xl space-y-5">
-        @if(in_array(auth()->user()->role, ['admin', 'supervisor'], true))
+        @if(in_array(app(RolePreviewContext::class)->effectiveUiRole(), ['admin', 'supervisor'], true))
             <a href="{{ route('page-coachings.create') }}" class="flex min-h-12 items-center justify-center rounded-full bg-[#213259] px-5 font-semibold text-white">Записать коучинг</a>
         @endif
         @if(auth()->user()->canViewAllStaffActivity())

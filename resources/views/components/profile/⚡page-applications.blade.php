@@ -6,6 +6,7 @@ use App\Models\InventoryRequest;
 use App\Models\SalaryQuestion;
 use App\Models\ScheduleQuestion;
 use App\Models\VacationRequest;
+use App\Services\RolePreviewContext;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Livewire\Component;
@@ -14,6 +15,10 @@ new class extends Component
 {
     public function mount(): void
     {
+        if (app(RolePreviewContext::class)->isActive()) {
+            return;
+        }
+
         foreach ([
             DayOffRequest::class,
             VacationRequest::class,

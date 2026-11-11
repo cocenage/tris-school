@@ -11,8 +11,10 @@ use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
 use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
+use App\Http\Middleware\BlockRolePreviewWrites;
 use App\Http\Middleware\SafeguardRolePreviewData;
 use App\Models\Instruction;
+use App\Services\RolePreviewContext;
 use Filament\Facades\Filament;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\Auth;
@@ -86,7 +88,7 @@ Route::match(['GET', 'HEAD'], '/admin/education/{path?}', function (?string $pat
     return redirect()->to($target.($query ? '?'.$query : ''));
 })->where('path', '.*')->name('education.legacy-redirect');
 
-Route::middleware(['auth', 'approved'])->group(function () {
+Route::middleware(['auth', 'approved', BlockRolePreviewWrites::class])->group(function () {
     Route::post('/ui/role-preview', [RolePreviewController::class, 'store'])
         ->name('role-preview.store');
     Route::post('/ui/role-preview/exit', [RolePreviewController::class, 'clear'])
@@ -106,7 +108,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
 
     Route::livewire('/checks', 'page-checks')->name('page-checks');
     Route::get('/coachings', function () {
-        return redirect()->route(in_array(Auth::user()?->role, ['admin', 'supervisor'], true)
+        $uiRole = app(RolePreviewContext::class)->effectiveUiRole();
+
+        return redirect()->route(in_array($uiRole, ['admin', 'supervisor'], true)
             ? 'page-coachings.create'
             : 'page-coachings.history');
     })->name('page-coachings');
