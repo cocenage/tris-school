@@ -2,6 +2,7 @@
 
 namespace App\Services\Authorization;
 
+use App\Models\CalendarEvent;
 use App\Models\User;
 use Filament\Facades\Filament;
 
@@ -23,9 +24,11 @@ class SupervisorPanelAccess
             return $this->canUseSupervisorPanel($user);
         }
 
-        $adminPanel = Filament::getPanel('admin');
+        $panel = Filament::getCurrentPanel();
 
-        return $adminPanel !== null && $user->canAccessPanel($adminPanel);
+        return $panel !== null
+            ? $user->canAccessPanel($panel)
+            : $user->canViewAllStaffActivity();
     }
 
     public function canManageCurrentRequestSurface(?User $user): bool
@@ -38,9 +41,11 @@ class SupervisorPanelAccess
             return $user->isAdmin();
         }
 
-        $adminPanel = Filament::getPanel('admin');
+        $panel = Filament::getCurrentPanel();
 
-        return $adminPanel !== null && $user->canAccessPanel($adminPanel);
+        return $panel !== null
+            ? $user->canAccessPanel($panel)
+            : $user->canViewAllStaffActivity();
     }
 
     public function canUseCurrentQualityControlSurface(?User $user): bool
@@ -92,12 +97,11 @@ class SupervisorPanelAccess
             return [];
         }
 
-        $types = $user->allowedCalendarTypes();
         if ($user->role === 'supervisor') {
-            $types = array_values(array_diff($types, ['finance']));
+            return array_keys(CalendarEvent::typeOptions());
         }
 
-        return array_values(array_unique($types));
+        return array_values(array_unique($user->allowedCalendarTypes()));
     }
 
     public function canViewCalendarType(?User $user, string $type): bool

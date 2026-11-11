@@ -3,9 +3,13 @@
 use App\Models\Apartment;
 use App\Models\ApartmentInformationAttachment;
 use App\Models\ApartmentUserAccess;
+use App\Models\CalendarEvent;
 use App\Models\User;
+use App\Policies\SupervisorCalendarEventPolicy;
 use App\Services\Apartments\ApartmentAccessService;
+use App\Services\Authorization\SupervisorPanelAccess;
 use Carbon\Carbon;
+use Filament\Facades\Filament;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
@@ -112,7 +116,7 @@ function apartmentTestUser(string $role, string $name): User
 {
     return User::create([
         'name' => $name,
-        'email' => strtolower($role) . '-' . uniqid() . '@example.test',
+        'email' => strtolower($role).'-'.uniqid().'@example.test',
         'role' => $role,
         'status' => 'approved',
         'is_active' => true,
@@ -134,7 +138,7 @@ function grantApartmentAccess(Apartment $apartment, User $user, ?Carbon $expires
     ]);
 }
 
-it('shows all apartments to admins and never derives staff access from old controls', function () {
+it('shows all apartments to admins and published apartments to supervisors without deriving cleaner access from old controls', function () {
     $admin = apartmentTestUser('admin', 'Admin');
     $cleaner = apartmentTestUser('cleaner', 'Cleaner');
     $supervisor = apartmentTestUser('supervisor', 'Supervisor');
@@ -150,12 +154,61 @@ it('shows all apartments to admins and never derives staff access from old contr
     $access = app(ApartmentAccessService::class);
     expect($access->visibleQuery($admin)->pluck('id')->all())->toHaveCount(3)
         ->and($access->visibleQuery($cleaner)->pluck('id')->all())->toBe([])
-        ->and($access->visibleQuery($supervisor)->pluck('id')->all())->toBe([]);
+        ->and($access->visibleQuery($supervisor)->orderBy('id')->pluck('id')->all())->toBe([$first->id, $second->id]);
 
     grantApartmentAccess($first, $cleaner, null, $admin);
     expect($access->visibleQuery($cleaner)->pluck('id')->all())->toBe([$first->id]);
 });
 
+it('lets supervisors view published apartments but not drafts or apartment management', function () {
+    $supervisor = apartmentTestUser('supervisor', 'Supervisor');
+    $published = apartmentTestRecord('Published');
+    $draft = apartmentTestRecord('Draft', 'draft');
+    $inactive = apartmentTestRecord('Inactive', 'published', false);
+    $access = app(ApartmentAccessService::class);
+
+    expect($access->canView($supervisor, $published))->toBeTrue()
+        ->and($access->canView($supervisor, $draft))->toBeFalse()
+        ->and($access->canView($supervisor, $inactive))->toBeFalse()
+        ->and($access->canManage($supervisor))->toBeFalse();
+
+    $this->withoutVite();
+    $this->actingAs($supervisor)->get(route('page-apartments'))->assertOk();
+    $this->actingAs($supervisor)->get(route('page-apartments.show', $published))->assertOk();
+    $this->actingAs($supervisor)->get(route('page-apartments.show', $draft))->assertForbidden();
+    $this->actingAs($supervisor)->get(route('page-apartments.show', $inactive))->assertForbidden();
+});
+
+it('gives supervisors user-calendar access without opening Filament administration', function () {
+    $supervisor = apartmentTestUser('supervisor', 'Supervisor');
+    $supervisor->panelAccesses()->create(['panel' => 'education', 'can_access' => true]);
+
+    $access = app(SupervisorPanelAccess::class);
+
+    expect($access->canUseCurrentQualityControlSurface($supervisor))->toBeTrue()
+        ->and($access->canAccessCurrentRequestSurface($supervisor))->toBeTrue()
+        ->and($access->canManageCurrentRequestSurface($supervisor))->toBeTrue()
+        ->and($access->allowedCalendarTypes($supervisor))->toContain('finance')
+        ->and($access->canViewCalendarType($supervisor, 'finance'))->toBeTrue()
+        ->and(app(SupervisorCalendarEventPolicy::class)->view($supervisor, new CalendarEvent(['type' => 'finance'])))->toBeTrue()
+        ->and($supervisor->canAccessPanel(Filament::getPanel('education')))->toBeTrue()
+        ->and($supervisor->canAccessPanel(Filament::getPanel('admin')))->toBeFalse()
+        ->and($supervisor->canAccessPanel(Filament::getPanel('finance')))->toBeFalse();
+
+    $this->actingAs($supervisor)->get('/admin')->assertForbidden();
+});
+
+it('keeps cleaners from receiving supervisor site permissions and preserves administrator panel access', function () {
+    $cleaner = apartmentTestUser('cleaner', 'Cleaner');
+    $admin = apartmentTestUser('admin', 'Admin');
+    $access = app(SupervisorPanelAccess::class);
+
+    expect($cleaner->canViewAllStaffActivity())->toBeFalse()
+        ->and($access->canUseCurrentQualityControlSurface($cleaner))->toBeFalse()
+        ->and($access->canAccessCurrentRequestSurface($cleaner))->toBeFalse()
+        ->and($access->canManageCurrentRequestSurface($cleaner))->toBeFalse()
+        ->and($admin->canAccessPanel(Filament::getPanel('admin')))->toBeTrue();
+});
 it('allows only active explicit grants and blocks drafts for staff', function () {
     $admin = apartmentTestUser('admin', 'Admin');
     $cleaner = apartmentTestUser('cleaner', 'Cleaner');

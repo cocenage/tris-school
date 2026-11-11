@@ -22,12 +22,17 @@ class ApartmentAccessService
             return Apartment::query();
         }
 
-        return Apartment::query()
+        $visible = Apartment::query()
             ->where('is_active', true)
-            ->where('information_status', 'published')
-            ->whereHas('accessGrants', fn (Builder $grants): Builder => $grants
-                ->where('user_id', $user->id)
-                ->active());
+            ->where('information_status', 'published');
+
+        if ($user->canViewAllStaffActivity()) {
+            return $visible;
+        }
+
+        return $visible->whereHas('accessGrants', fn (Builder $grants): Builder => $grants
+            ->where('user_id', $user->id)
+            ->active());
     }
 
     public function canView(?User $user, Apartment $apartment): bool
