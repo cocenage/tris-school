@@ -60,6 +60,15 @@ it('persists completion idempotently and moves to the remaining lesson', functio
     $this->get(route('learning.show', 'instructions'))->assertOk()->assertSee('Курс завершён')->assertSee('100%');
 });
 
+it('opens a legacy lesson whose instruction has no update date', function (): void {
+    DB::table('instructions')->where('id', $this->first->id)->update(['updated_at' => null]);
+
+    $this->get(route('learning.lesson', ['instructions', 'first']))
+        ->assertOk()
+        ->assertSee('Действующий материал.')
+        ->assertDontSee('Обновлено');
+});
+
 it('keeps progress private to each user', function (): void {
     $this->post(route('learning.complete', ['instructions', 'first']))->assertRedirect();
     $other = new User(['status' => 'approved', 'role' => 'supervisor', 'is_active' => true]);
