@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>TRIS Academy Prototype</title>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">TRIS ACADEMY · ПРОТОТИП</p>
+    <h1>Академия под рукой</h1>
+    <p>Открой рабочий раздел с существующими правами доступа и входом через Telegram.</p>
+    <label class="switch"><input id="remote" type="checkbox"> Открывать настроенную Академию</label>
+    <p id="target"></p>
+    <nav id="navigation" aria-label="Рабочие разделы"></nav>
+    <form id="link-form">
+      <label for="work-link">Рабочая ссылка на контроль или квартиру</label>
+      <input id="work-link" type="text" placeholder="/profile/checks/42" autocomplete="off">
+      <button>Открыть ссылку</button>
+    </form>
+    <p id="status" role="status" aria-live="polite"></p>
+    <section id="fixture" hidden>
+      <h2>Локальная проверка маршрута</h2>
+      <code id="route"></code>
+      <p>Это проверка запуска и выбора раздела. Для проверки входа и рабочих данных открой настроенную Академию.</p>
+    </section>
+  </main>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

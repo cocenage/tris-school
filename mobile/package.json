@@ -1,0 +1,23 @@
+{
+  "name": "tris-academy-mobile-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "test": "node --test test/*.test.mjs",
+    "android:sync": "npm run build && cap sync android",
+    "android:open": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.2",
+    "@capacitor/browser": "8.0.5",
+    "@capacitor/cli": "8.6.2",
+    "@capacitor/core": "8.6.2",
+    "vite": "7.3.8"
+  }
+}

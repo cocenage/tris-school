@@ -1,0 +1,7 @@
+{
+  "appId": "eu.trisservice.academy.prototype",
+  "appName": "TRIS Academy Prototype",
+  "webDir": "dist",
+  "server": { "cleartext": false, "allowNavigation": [] },
+  "android": { "allowMixedContent": false }
+}
