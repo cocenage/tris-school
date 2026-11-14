@@ -1,143 +1,49 @@
 <?php
 
-
 use Livewire\Component;
 
-new class extends Component {
-
-};
+new class extends Component {};
 ?>
 
-@php
-    $applicationsBadge = app(\App\Services\UserApplicationBadgeService::class)
-        ->label(auth()->id());
-@endphp
+@if (auth()->user()?->isApproved())
+    @php
+        $home = request()->routeIs('page-home');
+        $activeTab = match (true) {
+            request()->routeIs('page-applications*', 'page-profile.applications') => 'applications',
+            request()->routeIs('page-checks*', 'page-coachings*', 'page-profile.checks*', 'page-profile.all-checks', 'page-profile.employee-history') => 'checks',
+            request()->routeIs('page-tasks*', 'page-profile.calendar', 'page-profile.employee-calendars', 'employees.calendar') => 'calendar',
+            request()->routeIs('page-profile') => 'profile',
+            default => 'home',
+        };
+        $notificationBadge = app(\App\Services\RolePreviewContext::class)->isActive()
+            ? null
+            : app(\App\Services\UserApplicationBadgeService::class)->label(auth()->id());
+        $tabs = [
+            'checks' => ['page-checks', 'Контроли', 'heroicon-o-clipboard-document-check'],
+            'calendar' => ['page-tasks.calendar', 'Календарь', 'heroicon-o-calendar-days'],
+            'home' => ['page-home', 'Главная', null],
+            'applications' => ['page-applications', 'Заявки', 'heroicon-o-clipboard-document-list'],
+            'profile' => ['page-profile', 'Профиль', 'heroicon-o-user'],
+        ];
+    @endphp
 
-<nav class="w-full h-full p-[15px] relative">
-    <svg width="0" height="0" class="absolute">
-        <defs>
-            <linearGradient id="nav-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%">
-                    <animate attributeName="stop-color" values="#213259;#2D6494;#368DC4;#5BBEFF;#213259" dur="6s"
-                        repeatCount="indefinite" />
-                </stop>
-
-                <stop offset="50%">
-                    <animate attributeName="stop-color" values="#368DC4;#5BBEFF;#213259;#2D6494;#368DC4" dur="6s"
-                        repeatCount="indefinite" />
-                </stop>
-
-                <stop offset="100%">
-                    <animate attributeName="stop-color" values="#5BBEFF;#213259;#2D6494;#368DC4;#5BBEFF" dur="6s"
-                        repeatCount="indefinite" />
-                </stop>
-            </linearGradient>
-        </defs>
-    </svg>
-
-    <div class="flex items-center justify-between">
-
-        <a href="{{ route('page-home') }}" class="group flex flex-col items-center justify-center gap-[5px]">
-
-            <x-heroicon-s-home class="w-[20px] h-[20px] transition-all duration-300
-                {{ request()->routeIs('page-home*')
-    ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-                }}" />
-
-            <span class="text-[12px] font-medium transition-all duration-300
-                {{ request()->routeIs('page-home*')
-    ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-                }}">
-                Главная
-            </span>
-        </a>
-
-        <a href="{{ route('page-checks') }}" class="group flex flex-col items-center justify-center gap-[5px]">
-
-            <x-heroicon-s-clipboard-document-check class="w-[20px] h-[20px] transition-all duration-300
-                {{ request()->routeIs('page-checks*')
-    ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-                }}" />
-
-            <span class="text-[12px] font-medium transition-all duration-300
-                {{ request()->routeIs('page-checks*')
-    ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-                }}">
-                Контроли
-            </span>
-        </a>
-
-
-
-
-        <a href="{{ route('page-tasks') }}"
-            class="group flex flex-col items-center justify-center gap-[5px]">
-
-            <x-heroicon-s-calendar-days class="w-[20px] h-[20px] transition-all duration-300
-                   {{ request()->routeIs('page-tasks.calendar')
-    ? '[&>*]:fill-[url(#nav-gradient)]'
-    : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-                }}" />
-
-            <span class="text-[12px] font-medium transition-all duration-300
-                   {{ request()->routeIs('page-tasks*')
-    ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-    : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-                }}">
-                Календарь
-            </span>
-        </a>
-
-<a href="{{ route('page-applications') }}" class="group  flex flex-col items-center justify-center gap-[5px]">
-
-    <x-heroicon-s-clipboard-document-list class="w-[20px] h-[20px] transition-all duration-300
-        {{ request()->routeIs('page-applications*')
-            ? '[&>*]:fill-[url(#nav-gradient)]'
-            : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-        }}" />
-
-    <span class="text-[12px] font-medium transition-all duration-300
-        {{ request()->routeIs('page-applications*')
-            ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-            : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-        }}">
-        Заявки
-    </span>
-
-</a>
-
- <a href="{{ route('page-profile') }}" class="group relative flex flex-col items-center justify-center gap-[5px]">
-
-    <div class="relative">
-        <x-heroicon-s-user class="w-[20px] h-[20px] transition-all duration-300
-            {{ request()->routeIs('page-profile*')
-                ? '[&>*]:fill-[url(#nav-gradient)]'
-                : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-            }}" />
-
-        @if($applicationsBadge)
-            <span class="absolute -top-[5px] -right-[10px] z-20 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF)] p-[5px] text-[10px] leading-none text-white border-1 border-white">
-                {{ $applicationsBadge }}
-            </span>
-        @endif
-    </div>
-
-    <span class="text-[12px] font-medium transition-all duration-300
-        {{ request()->routeIs('page-profile*')
-            ? 'bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF,#213259)] bg-[length:250%_250%] animate-[gradientOrbit_6s_ease-in-out_infinite] bg-clip-text text-transparent'
-            : 'text-zinc-400 group-hover:text-[#7D7D7D]'
-        }}">
-        Профиль
-    </span>
-
-</a>
-
-
-
-
-    </div>
-</nav>
+    <nav aria-label="Основная навигация" class="grid grid-cols-5 items-center gap-1 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        @foreach ($tabs as $key => [$routeName, $label, $icon])
+            @php($active = $activeTab === $key)
+            <a href="{{ route($routeName) }}" aria-label="{{ $label }}" @if ($active) aria-current="{{ $home ? 'page' : 'location' }}" @endif
+                class="relative flex min-h-12 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-0.5 text-[11px] font-medium leading-tight {{ $active ? 'bg-[#E7EBF2] text-[#213259]' : 'text-[#515967] hover:bg-white' }}">
+                @if ($icon)
+                    <x-dynamic-component :component="$icon" class="size-5" />
+                @else
+                    <span aria-hidden="true" class="rounded-full bg-[#213259] px-2.5 py-1 text-[11px] font-bold tracking-wide text-white">TRIS</span>
+                @endif
+                @if ($home || $active)
+                    <span>{{ $label }}</span>
+                @endif
+                @if ($key === 'profile' && $notificationBadge)
+                    <span aria-hidden="true" class="absolute right-1 top-1 rounded-full bg-[#213259] px-1.5 py-0.5 text-[9px] leading-none text-white">{{ $notificationBadge }}</span>
+                @endif
+            </a>
+        @endforeach
+    </nav>
+@endif

@@ -17,6 +17,11 @@ return [
     | a conventional file to locate the various service credentials.
     |
     */
+    'cleaning_schedule' => [
+        'url' => env('CLEANING_SCHEDULE_URL'),
+        'token' => env('CLEANING_SCHEDULE_TOKEN'),
+    ],
+
     'day_off' => [
         'profile_url' => env('DAY_OFF_PROFILE_URL'),
         'admin_chat_url' => env('DAY_OFF_ADMIN_CHAT_URL'),
