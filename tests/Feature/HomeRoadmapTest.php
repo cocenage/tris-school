@@ -24,7 +24,10 @@ it('shows the current role action and opens unread application answers from home
         ->assertOk()
         ->assertSee('Создать заявку')
         ->assertSee('Ответы на заявки')
+        ->assertSee(route('page-profile'), false)
         ->assertSee(route('page-profile.applications'), false)
+        ->assertSee(route('learning.index'), false)
+        ->assertSee(route('page-home.instructions'), false)
         ->assertSee(route('page-apartments'), false)
         ->assertDontSee('Начать контроль');
 

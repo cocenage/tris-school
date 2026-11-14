@@ -9,7 +9,6 @@ use App\Services\Search\AcademySearch;
 use App\Services\Search\AcademySearchStatistics;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Livewire\Livewire;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -39,10 +38,6 @@ beforeEach(function () {
         '2026_11_15_120000_create_academy_search_statistics_table.php',
     ] as $migration) {
         (require database_path('migrations/'.$migration))->up();
-    }
-    if (! Route::has('learning.lesson')) {
-        Route::get('/learning/{course}/lessons/{lesson}', fn () => 'lesson')->name('learning.lesson');
-        Route::getRoutes()->refreshNameLookups();
     }
 });
 

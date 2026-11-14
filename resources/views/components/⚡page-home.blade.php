@@ -94,11 +94,9 @@ new class extends Component
     </section>
 
     <nav aria-label="Разделы Академии" class="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        @if (Route::has('learning.index'))
-            <a href="{{ route('learning.index') }}" class="flex min-h-16 items-center gap-3 rounded-3xl bg-[#F4F7FB] p-3 font-medium text-[#213259] hover:bg-[#E7EBF2]">
-                <x-heroicon-o-academic-cap class="size-5 shrink-0" /> Обучение
-            </a>
-        @endif
+        <a href="{{ route('learning.index') }}" class="flex min-h-16 items-center gap-3 rounded-3xl bg-[#F4F7FB] p-3 font-medium text-[#213259] hover:bg-[#E7EBF2]">
+            <x-heroicon-o-academic-cap class="size-5 shrink-0" /> Обучение
+        </a>
         <a href="{{ route('page-home.instructions') }}" class="flex min-h-16 items-center gap-3 rounded-3xl bg-[#F4F7FB] p-3 font-medium text-[#213259] hover:bg-[#E7EBF2]">
             <x-heroicon-o-book-open class="size-5 shrink-0" /> Инструкции
         </a>

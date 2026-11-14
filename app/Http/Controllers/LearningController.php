@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\Learning\LearningCatalog;
+use App\Services\RolePreviewContext;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -39,6 +40,7 @@ class LearningController extends Controller
 
     public function complete(Request $request, LearningCatalog $catalog, string $course, string $lesson): RedirectResponse
     {
+        app(RolePreviewContext::class)->assertWritable();
         abort_unless($course === LearningCatalog::COURSE_SLUG, 404);
         $instruction = $catalog->lessons($request->user())->where('slug', $lesson)->firstOrFail();
         $catalog->record($request->user(), $instruction, true);
