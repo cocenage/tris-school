@@ -49,6 +49,14 @@ class TelegramShiftPreviewCommand extends Command
         foreach ($preview['districts'] as $district) {
             $this->line($district['label'].' · Дежурный: '.($district['duty']['name'] ?? 'нет подтверждённого назначения'));
             $this->line($formatter->eveningIntelligence($district['report']));
+            foreach ($district['situations'] as $situation) {
+                $this->line('Ситуация: '.($situation['summary'] ?? $situation['event_key']));
+                $this->line('Ответственный: '.($situation['assignee']['name'] ?? 'не назначен').' · '.$situation['assignment_status']);
+                $this->line('Решение: '.($situation['decision'] ?: 'ожидается'));
+                if ($situation['source_status'] === 'unavailable') {
+                    $this->warn('Источник ситуации недоступен для выбранного дня и района.');
+                }
+            }
         }
         $this->line('Read-only preview. Telegram actions = 0. Mutations = 0.');
 
