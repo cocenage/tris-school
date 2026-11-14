@@ -46,7 +46,7 @@ Never run `migrate`, replay, import, or seed merely to validate bootstrap. Inspe
 
 ## Current operational caveats
 
-- `config/database.php` reads `DB_ANALYTICS_DATABASE`, while `.env.example` currently advertises `ANALYTICS_DB_DATABASE`. Resolve this in a separately scoped configuration task; do not guess or edit a live environment.
+- `config/database.php` reads `DB_ANALYTICS_DATABASE`. See [Local SQLite on Windows and Herd](development.md#local-sqlite-on-windows-and-herd) for initializing empty local databases or upgrading an existing checkout.
 - Queue defaults to the database driver locally; `composer dev` starts a live queue listener.
 - Operational observer and evening delivery have feature flags, but a disabled flag is not permission to run delivery-capable commands.
 - No CI workflow is present, so FULL VERIFY must be run and reported locally before release-sensitive changes.

@@ -172,6 +172,10 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-tasks.show');
 
     Route::livewire('/profile/calendar', 'profile.page-calendar')->name('page-profile.calendar');
+    Route::livewire('/profile/employee-calendars', 'profile.page-employee-calendars')->name('page-profile.employee-calendars');
+    Route::livewire('/profile/employees/{employee}/calendar', 'profile.page-calendar')
+        ->whereNumber('employee')
+        ->name('employees.calendar');
 });
 
 Route::post('/telegram/analytics-webhook/{secret}', TelegramAnalyticsWebhookController::class)

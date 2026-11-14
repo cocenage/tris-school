@@ -7,6 +7,7 @@ use App\Models\CalendarEvent;
 use App\Models\DayOffRequestDay;
 use App\Models\VacationRequest;
 use App\Services\RolePreviewContext;
+use App\Services\Authorization\SupervisorPanelAccess;
 use App\Services\Calendar\EmployeeWorkCalendarManagementService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -274,11 +275,16 @@ $this->profileRequired = false;
 };
 ?>
 
+@php
+    $user = auth()->user();
+    $rolePreview = app(RolePreviewContext::class);
+    $effectiveUiRole = $rolePreview->effectiveUiRole();
+    $canSeeGeneralCalendar = ! $rolePreview->isActive()
+        && ($user->isAdmin() || ($user->role === 'supervisor'
+            && app(SupervisorPanelAccess::class)->hasGeneralCalendarAccess($user)));
+@endphp
+
 <x-slot:header>
-    @php
-        $user = auth()->user();
-        $effectiveUiRole = app(RolePreviewContext::class)->effectiveUiRole();
-    @endphp
 
     <div class="flex items-center gap-[10px] p-[15px]">
         <div class="h-[60px] w-[60px] shrink-0 overflow-hidden rounded-full bg-[#E1E1E1]">
@@ -403,6 +409,23 @@ $this->profileRequired = false;
                 <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
             </a>
         @endif
+
+        @can('view-employee-calendars')
+            <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
+
+            <a
+                href="{{ route('page-profile.employee-calendars') }}"
+                class="group flex items-center justify-between px-5 py-5 transition-colors duration-200 hover:bg-[#FAFAFA] active:bg-[#F3F3F3]"
+            >
+                <div class="flex min-w-0 items-center gap-4">
+                    <x-heroicon-o-calendar-days class="h-[24px] w-[24px]" />
+
+                    <span class="truncate text-[18px]">Календари сотрудников</span>
+                </div>
+
+                <x-heroicon-o-chevron-right class="h-[18px] w-[18px] stroke-2 transition-transform duration-200 group-hover:translate-x-[2px]" />
+            </a>
+        @endcan
 
         @if($canSeeGeneralCalendar)
             <div class="mx-[15px] h-px bg-[#ECECEC]"></div>
