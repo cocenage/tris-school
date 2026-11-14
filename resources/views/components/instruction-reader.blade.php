@@ -19,9 +19,11 @@
 >
     <article class="mx-auto w-full max-w-[768px] pb-8">
         <header>
-            <div class="mb-[18px] text-[15px] leading-none text-[#4B5563]">
-                Обновлено {{ $instruction->updated_at->translatedFormat('j F, Y') }}
-            </div>
+            @if ($instruction->updated_at)
+                <div class="mb-[18px] text-[15px] leading-none text-[#4B5563]">
+                    Обновлено {{ $instruction->updated_at->translatedFormat('j F, Y') }}
+                </div>
+            @endif
 
             <h1 class="article-title">
                 {{ $instruction->title }}
