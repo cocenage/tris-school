@@ -14,6 +14,61 @@ php artisan about
 
 Do **not** use `composer setup` as a harmless bootstrap check: the existing script creates `.env`, generates a key, and runs migrations. Environment creation, key generation, and migration require an explicit setup task and a confirmed non-production target.
 
+### Local SQLite on Windows and Herd
+
+Use PowerShell from the project root. Install the locked dependencies and build the assets:
+
+```powershell
+composer install
+npm ci
+npm run build
+```
+
+Make sure the local Laravel configuration has an application key and points to local SQLite files. Verify the configured `DB_DATABASE` and `DB_ANALYTICS_DATABASE` paths before running schema commands. The following commands assume the default paths. Set up a new `.env` and run `php artisan key:generate` only on a fresh checkout that has no `.env` yet.
+
+```powershell
+foreach ($database in 'database/database.sqlite', 'database/telegram_analytics.sqlite') {
+    if (-not (Test-Path $database)) {
+        New-Item -ItemType File -Path $database -ErrorAction Stop | Out-Null
+    }
+}
+php artisan config:clear
+```
+
+For a **new, empty analytics file in a fresh checkout**, run the base Telegram migrations against `analytics` first. These migration files predate the explicit analytics connection used by later migrations. Running them in the default connection alone leaves `analytics.telegram_topics` missing.
+
+```powershell
+$telegramMigrations = @(
+    '2026_05_21_082853_create_telegram_chats_table.php',
+    '2026_05_21_082854_create_telegram_topics_table.php',
+    '2026_05_21_082855_create_telegram_users_table.php',
+    '2026_05_21_082857_create_telegram_messages_table.php',
+    '2026_05_21_082906_create_telegram_attachments_table.php',
+    '2026_05_21_101806_fix_telegram_chats_table.php'
+)
+$analyticsPaths = $telegramMigrations | ForEach-Object { "--path=database/migrations/$_" }
+php artisan migrate --database=analytics @analyticsPaths
+if ($LASTEXITCODE -ne 0) { throw 'Analytics bootstrap failed' }
+```
+
+For an **existing checkout**, back up the SQLite files before upgrading. Keep the analytics file that belongs to the primary database. If it held Telegram data, restore the matching copy or point `DB_ANALYTICS_DATABASE` to it.
+
+If the analytics file was **never used and can start empty**, create it and run the base Telegram migrations above. Then check `php artisan migrate:status --database=sqlite`. For each migration in the list below marked **Ran** in the primary ledger, rebuild its analytics schema by passing its path to `php artisan migrate --database=analytics --path=database/migrations/<filename>` in the listed order. Leave the **Pending** migrations for the primary migration command. This restores the local schema only.
+
+- `2026_07_31_161000_create_telegram_assistant_requests_tables.php`
+- `2026_09_16_000000_create_telegram_operational_event_ledger.php`
+- `2026_09_20_000000_add_apartment_context_to_telegram_operational_events.php`
+- `2026_11_01_000000_add_source_bot_to_telegram_operational_observations.php`
+
+Once the analytics database is ready, run the pending primary migrations. This also runs analytics changes that explicitly select that connection. The primary schema includes `coachings`, which the profile activity pages query.
+
+```powershell
+php artisan migrate --database=sqlite
+php artisan migrate:status --database=sqlite
+```
+
+For a smoke test, sign in with local approved test accounts. Check **Профиль → Мой календарь** as a cleaner and **Профиль → Календари сотрудников** as an administrator. Keep both SQLite files when switching branches or updating the checkout.
+
 Run development processes only when requested:
 
 ```powershell

@@ -1,11 +1,13 @@
 <?php
 
 use App\Models\User;
+use App\Services\RolePreviewContext;
 use App\Services\UserApplicationBadgeService;
 use Carbon\Carbon;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Livewire\Features\SupportLockedProperties\CannotUpdateLockedPropertyException;
 use Livewire\Livewire;
 
 beforeEach(function () {
@@ -54,6 +56,13 @@ beforeEach(function () {
         $table->string('panel');
         $table->boolean('can_access')->default(false);
         $table->timestamps();
+    });
+
+    Schema::create('user_calendar_type_accesses', function (Blueprint $table) {
+        $table->id();
+        $table->foreignId('user_id');
+        $table->string('type');
+        $table->boolean('can_view');
     });
 
     Schema::create('day_off_requests', function (Blueprint $table) {
@@ -109,6 +118,7 @@ afterEach(function () {
         'vacation_request_days',
         'vacation_requests',
         'calendar_events',
+        'user_calendar_type_accesses',
         'user_panel_accesses',
         'day_off_request_days',
         'day_off_requests',
@@ -138,8 +148,7 @@ it('shows only the authenticated employee calendar and keeps it read-only', func
         ->assertSee('Рабочий день по графику');
 
     expect(method_exists($component->instance(), 'save'))->toBeFalse()
-        ->and(method_exists($component->instance(), 'updateSchedule'))->toBeFalse()
-        ->and(property_exists($component->instance(), 'employeeId'))->toBeFalse();
+        ->and(method_exists($component->instance(), 'updateSchedule'))->toBeFalse();
 });
 
 it('denies users outside the employee roles and rejects dates outside the visible month', function () {
@@ -198,3 +207,95 @@ it('requires a reason before saving a changed employment date and appends its au
         ->and($version->actor_id)->toBe($employee->id)
         ->and($version->reason)->toBe('Дата уточнена по документам');
 });
+
+it('opens an active employee calendar from the client profile and lets the admin switch months', function () {
+    $admin = createCalendarPageUser('admin', 'Администратор календаря');
+    $supervisor = createCalendarPageUser('supervisor', 'Доступный супервайзер');
+    $inactive = createCalendarPageUser('cleaner', 'Уволенный клинер', false);
+    $pending = createCalendarPageUser('cleaner', 'Ожидающий клинер', true, 'pending');
+    $this->actingAs($admin)
+        ->get(route('page-profile'))
+        ->assertOk()
+        ->assertSee('Календари сотрудников')
+        ->assertSee(route('page-profile.employee-calendars'));
+
+    $this->get(route('page-profile.employee-calendars'))
+        ->assertOk()
+        ->assertSee('Клинер календаря')
+        ->assertSee($supervisor->name)
+        ->assertSee(route('employees.calendar', ['employee' => 21]))
+        ->assertDontSee($inactive->name)
+        ->assertDontSee($pending->name)
+        ->assertDontSee(route('employees.calendar', $admin));
+
+    $this->get(route('employees.calendar', ['employee' => 21]))
+        ->assertOk()
+        ->assertSee('Клинер календаря')
+        ->assertSee(route('page-profile.employee-calendars'));
+
+    Livewire::test('profile.page-calendar', ['employee' => 21])
+        ->call('nextMonth')
+        ->assertSet('month', '2026-12')
+        ->call('selectDate', '2026-12-05')
+        ->assertSee('5 декабря 2026');
+
+    foreach ([$inactive, $pending, $admin] as $employee) {
+        $this->get(route('employees.calendar', $employee))->assertNotFound();
+    }
+});
+
+it('checks the calendar grant at page entry and again on Livewire requests', function () {
+    $cleaner = User::findOrFail(21);
+    $supervisor = createCalendarPageUser('supervisor', 'Проверяющий супервайзер');
+
+    foreach ([$cleaner, $supervisor] as $viewer) {
+        $this->actingAs($viewer)->get(route('page-profile.employee-calendars'))->assertForbidden();
+        $this->get(route('employees.calendar', $cleaner))->assertForbidden();
+        $this->get(route('page-profile.calendar'))->assertOk();
+    }
+
+    $permission = $supervisor->calendarPermission()->create(['can_view_all_calendars' => true]);
+    $this->actingAs($supervisor)->get(route('page-profile.employee-calendars'))->assertOk();
+    $this->get(route('employees.calendar', $cleaner))->assertOk();
+
+    $calendar = Livewire::test('profile.page-calendar', ['employee' => $cleaner->id]);
+    $permission->update(['can_view_all_calendars' => false]);
+    $calendar->call('nextMonth')->assertForbidden();
+});
+
+it('rejects changing the employee on a hydrated calendar', function () {
+    $admin = createCalendarPageUser('admin', 'Администратор календаря');
+    $supervisor = createCalendarPageUser('supervisor', 'Другой сотрудник');
+
+    Livewire::actingAs($admin)
+        ->test('profile.page-calendar', ['employee' => 21])
+        ->set('employeeId', $supervisor->id);
+})->throws(CannotUpdateLockedPropertyException::class);
+
+it('protects employee calendar data during role preview', function () {
+    $admin = createCalendarPageUser('admin', 'Администратор календаря');
+    $this->actingAs($admin);
+    $calendar = Livewire::test('profile.page-calendar', ['employee' => 21]);
+
+    $this->withSession([RolePreviewContext::SESSION_KEY => 'cleaner']);
+    $this->get(route('page-profile'))->assertOk()->assertDontSee('Календари сотрудников');
+    $this->get(route('page-profile.employee-calendars'))->assertForbidden();
+    $this->get(route('employees.calendar', ['employee' => 21]))->assertForbidden();
+    $calendar->call('nextMonth')->assertForbidden();
+});
+
+function createCalendarPageUser(string $role, string $name, bool $active = true, string $status = 'approved'): User
+{
+    $id = DB::table('users')->insertGetId([
+        'name' => $name,
+        'role' => $role,
+        'status' => $status,
+        'is_active' => $active,
+        'birthday' => '1990-02-03',
+        'work_started_at' => '2020-04-15',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    return User::findOrFail($id);
+}

@@ -1,7 +1,11 @@
 <?php
 
+use App\Models\User;
 use App\Services\Calendar\EmployeeWorkCalendarService;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Gate;
+use Livewire\Attributes\Computed;
+use Livewire\Attributes\Locked;
 use Livewire\Component;
 
 new class extends Component
@@ -10,9 +14,12 @@ new class extends Component
 
     public string $selectedDate = '';
 
-    public function mount(): void
+    #[Locked]
+    public ?int $employeeId = null;
+
+    public function mount(?int $employee = null): void
     {
-        abort_unless(in_array(auth()->user()->role, ['cleaner', 'supervisor'], true), 403);
+        $this->employeeId = $employee;
 
         $this->month = now(config('app.timezone', 'Europe/Rome'))->startOfMonth()->format('Y-m');
         $this->selectedDate = now(config('app.timezone', 'Europe/Rome'))->toDateString();
@@ -66,14 +73,32 @@ new class extends Component
         return $month->startOfMonth();
     }
 
-    public function getCalendarProperty(): array
+    #[Computed]
+    public function employee(): User
+    {
+        if ($this->employeeId !== null) {
+            Gate::authorize('view-employee-calendars');
+
+            return User::query()->activeStaff()
+                ->whereIn('role', ['cleaner', 'supervisor'])
+                ->findOrFail($this->employeeId);
+        }
+
+        $user = auth()->user();
+        abort_unless($user?->isApproved() && in_array($user->role, ['cleaner', 'supervisor'], true), 403);
+
+        return $user;
+    }
+
+    #[Computed]
+    public function calendar(): array
     {
         Carbon::setLocale('ru');
 
         $month = $this->validMonth();
         $start = $month->copy()->startOfWeek(Carbon::MONDAY);
         $end = $month->copy()->endOfMonth()->endOfWeek(Carbon::SUNDAY);
-        $projection = app(EmployeeWorkCalendarService::class)->forEmployee(auth()->user(), $start, $end);
+        $projection = app(EmployeeWorkCalendarService::class)->forEmployee($this->employee, $start, $end);
         $days = collect();
 
         for ($cursor = $start->copy(); $cursor->lte($end); $cursor->addDay()) {
@@ -130,10 +155,10 @@ new class extends Component
 
 <x-slot:header>
     <div class="flex h-[70px] items-center gap-3 px-4 text-[#213259]">
-        <a href="{{ route('page-profile') }}" aria-label="Назад" class="p-2">
+        <a href="{{ route($employeeId === null ? 'page-profile' : 'page-profile.employee-calendars') }}" aria-label="Назад" class="p-2">
             <x-heroicon-o-arrow-left class="size-5" />
         </a>
-        <span class="text-[18px] leading-none">Мой календарь</span>
+        <span class="min-w-0 truncate text-[18px] leading-none">{{ $employeeId === null ? 'Мой календарь' : $this->employee->name }}</span>
     </div>
 </x-slot:header>
 
