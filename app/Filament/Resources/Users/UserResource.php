@@ -120,6 +120,7 @@ class UserResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
+            ->where('status', '!=', 'registration_draft')
             ->orderByRaw("
                 CASE status
                     WHEN 'pending' THEN 0

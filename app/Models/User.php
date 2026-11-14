@@ -37,6 +37,7 @@ class User extends Authenticatable implements FilamentUser
 
         'birthday',
         'work_started_at',
+        'registration_draft',
         'dip',
         'is_active',
 
@@ -62,6 +63,7 @@ class User extends Authenticatable implements FilamentUser
             'telegram_access_approved_notified_at' => 'datetime',
             'birthday' => 'date',
             'work_started_at' => 'date',
+            'registration_draft' => 'array',
             'dip' => 'boolean',
             'is_active' => 'boolean',
             'email_verified_at' => 'datetime',

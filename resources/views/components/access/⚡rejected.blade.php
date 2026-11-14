@@ -14,6 +14,7 @@ new class extends Component {
             $this->redirectRoute(match (auth()->user()->status) {
                 'approved' => 'page-home',
                 'pending' => 'access.pending',
+                'registration_draft' => 'access.registration',
                 default => 'landing.page',
             }, navigate: true);
         }

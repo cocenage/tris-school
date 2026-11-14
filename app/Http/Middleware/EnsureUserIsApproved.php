@@ -20,6 +20,7 @@ class EnsureUserIsApproved
             return redirect()->route(match ($user->status) {
                 'pending' => 'access.pending',
                 'rejected' => 'access.rejected',
+                'registration_draft' => 'access.registration',
                 default => 'landing.page',
             });
         }

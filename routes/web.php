@@ -31,6 +31,7 @@ Route::get('/', function () {
         'approved' => 'page-home',
         'pending' => 'access.pending',
         'rejected' => 'access.rejected',
+        'registration_draft' => 'access.registration',
         default => 'landing.page',
     }, $previewParameters);
 })->name('landing');
@@ -54,6 +55,10 @@ Route::post('/logout', LogoutController::class)
 Route::livewire('/access/pending', 'access.pending')
     ->middleware('auth')
     ->name('access.pending');
+
+Route::livewire('/access/registration', 'access.registration')
+    ->middleware('auth')
+    ->name('access.registration');
 
 Route::livewire('/access/rejected', 'access.rejected')
     ->middleware('auth')

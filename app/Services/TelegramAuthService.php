@@ -14,7 +14,7 @@ class TelegramAuthService
             'telegram_id' => $telegramUser['telegram_id'],
         ]);
 
-        $isNew = !$user->exists;
+        $isNew = ! $user->exists;
 
         $firstName = $telegramUser['first_name'] ?? null;
         $lastName = $telegramUser['last_name'] ?? null;
@@ -29,9 +29,10 @@ class TelegramAuthService
 
         if ($isNew) {
             $user->role = 'cleaner';
-            $user->status = 'pending';
+            $user->status = 'registration_draft';
             $user->is_active = true;
             $user->password = Str::password(32);
+            $user->registration_draft = [];
         }
 
         $user->save();
@@ -51,7 +52,7 @@ class TelegramAuthService
 
     public function markWriteAccessGranted(User $user): void
     {
-        if (!$user->telegram_write_access_granted_at) {
+        if (! $user->telegram_write_access_granted_at) {
             $user->telegram_write_access_granted_at = now();
             $user->save();
         }
@@ -62,6 +63,7 @@ class TelegramAuthService
         return match ($user->status) {
             'approved' => route('page-home'),
             'pending' => route('access.pending'),
+            'registration_draft' => route('access.registration'),
             'rejected' => route('access.rejected'),
             default => route('landing.page'),
         };

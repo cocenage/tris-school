@@ -13,7 +13,7 @@ new class extends Component {
     {
         $user = auth()->user();
 
-        if (! $user) {
+        if (! $user?->isApproved()) {
             return;
         }
 
@@ -45,9 +45,7 @@ new class extends Component {
 
         $user = auth()->user();
 
-        if (! $user) {
-            return;
-        }
+        abort_unless($user?->isApproved(), 403);
 
         $user->forceFill([
             'name' => trim($validated['name']),

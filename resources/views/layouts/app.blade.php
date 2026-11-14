@@ -91,9 +91,9 @@
             {{ $slot }}
                 </main>
 
-   @auth
-    <livewire:access.required />
-@endauth
+        @if (auth()->user()?->isApproved())
+            <livewire:access.required />
+        @endif
 
         <x-ui.toast />
 
