@@ -1341,7 +1341,7 @@ it('submits a negative Focus answer without corrective UI while preserving exist
         ->call('setAnswer', 0, 0, 'no')
         ->assertDontSee('Что исправить')
         ->assertDontSee('К проверке ответов')
-        ->assertSee('Завершить контроль')
+        ->assertSee('Перейти к проверке')
         ->call('review', 0)
         ->assertSet('stage', 'review')
         ->call('submit')

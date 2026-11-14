@@ -162,3 +162,15 @@ it('uses the sent status consistently in the Filament response form', function (
         ->toContain('ControlResponse::STATUS_SENT')
         ->not->toContain("default('submitted')");
 });
+
+it('makes Focus progress and the final review action clear on mobile', function () {
+    $view = file_get_contents(base_path('resources/views/components/forms/⚡page-control-focus.blade.php'));
+
+    expect($view)
+        ->toContain('aria-label="Прогресс ответов"')
+        ->toContain(':aria-valuenow="completedCount"')
+        ->toContain('width: ${completedPercent}%')
+        ->toContain('Перейти к проверке')
+        ->toContain('Отправляем контроль…')
+        ->toContain('aria-label="Прогресс загрузки файла"');
+});

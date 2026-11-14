@@ -1279,6 +1279,7 @@ new class extends Component
 
     @if($stage !== 'done')
         <div class="mb-5">
+            @if(in_array($stage, ['questions', 'review'], true))
             <div class="flex justify-between text-xs font-semibold text-[#475569]">
                 @if($stage === 'questions')
                     <span x-text="`Комната ${activeRoomIndex + 1} из ${roomCount}`"></span>
@@ -1288,13 +1289,10 @@ new class extends Component
                     <span x-text="`${completedPercent}%`"></span>
                 @endif
             </div>
-            <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-[#E8EDF3]">
-                @if($stage === 'questions')
-                    <div class="h-full rounded-full bg-[#285B86] transition-[width] duration-200" :style="`width: ${roomCount ? ((activeRoomIndex + 1) / roomCount) * 100 : 0}%`"></div>
-                @else
-                    <div class="h-full rounded-full bg-[#285B86] transition-[width] duration-200" :style="`width: ${completedPercent}%`"></div>
-                @endif
+            <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-[#E8EDF3]" role="progressbar" aria-label="Прогресс ответов" aria-valuemin="0" :aria-valuemax="totalQuestions" :aria-valuenow="completedCount">
+                <div class="h-full rounded-full bg-[#285B86] transition-[width] duration-200" :style="`width: ${completedPercent}%`"></div>
             </div>
+            @endif
             @if($stage === 'questions')
                 <nav class="-mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1" aria-label="Переход между комнатами">
                     @foreach($this->rooms as $roomIndex => $room)
@@ -1304,7 +1302,7 @@ new class extends Component
                             :class="activeRoomIndex === {{ $roomIndex }} ? 'border-[#285B86] bg-[#EAF2F8] text-[#194C75]' : 'border-[#E2E8F0] bg-white text-[#475569]'"
                             aria-label="{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}"
                             class="flex min-h-10 min-w-10 shrink-0 items-center justify-center gap-1 rounded-full border px-3 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#285B86]">
-                            {{ $roomIndex + 1 }}
+                            {{ $roomIndex + 1 }}. {{ $room['title'] ?? 'Комната' }}
                             <span x-show="Object.values(questionCompletion[{{ $roomIndex }}] || {}).some(Boolean)" aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-[#16834B]"></span>
                         </button>
                     @endforeach
@@ -1398,7 +1396,7 @@ new class extends Component
                                 @error("answers.$roomIndex.$questionIndex") <p class="mt-2 text-sm text-[#B42318]">{{ $message }}</p> @enderror
 
                                 @if(in_array($type, ['options', 'both'], true))
-                                    <div class="mt-3 grid grid-cols-1 gap-2" x-data="{ selected: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.selected') }">
+                                    <div class="mt-3 grid {{ $binaryOptions ? 'grid-cols-2' : 'grid-cols-1' }} gap-2" x-data="{ selected: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.selected') }">
                                         @foreach(($question['answer_options_scored'] ?? []) as $optionIndex => $option)
                                             @php
                                                 $value = (string) ($option['value'] ?? $option['label'] ?? 'option_'.$optionIndex);
@@ -1470,7 +1468,7 @@ new class extends Component
                                                 <video x-show="item.kind === 'video'" :src="item.preview" muted preload="metadata" class="h-20 w-full rounded-lg object-cover"></video>
                                                 <p class="truncate px-1 pt-1 text-[10px] font-medium" x-text="item.name"></p>
                                                 <p class="px-1 text-[10px]" :class="item.status === 'ошибка' ? 'text-[#B42318]' : 'text-[#64748B]'" x-text="item.error || (item.status === 'загрузка' ? 'Загрузка · ' + item.progress + '%' : item.status)"></p>
-                                                <progress x-show="item.status === 'загрузка'" :value="item.progress" max="100" class="mt-1 w-full"></progress>
+                                                <progress x-show="item.status === 'загрузка'" aria-label="Прогресс загрузки файла" :value="item.progress" max="100" class="mt-1 w-full"></progress>
                                                 <div class="flex gap-2 px-1 text-[10px] font-semibold">
                                                     <button x-show="item.status === 'ожидание' || item.status === 'загрузка'" type="button" @click="cancel(item)" class="text-[#475569]">Отменить</button>
                                                     <button x-show="item.status === 'ошибка' || item.status === 'отменено'" type="button" @click="retry(item)" class="text-[#285B86]">Повторить</button>
@@ -1487,10 +1485,10 @@ new class extends Component
             @endforeach
         </div>
         <div class="sticky bottom-0 z-10 -mx-4 mt-3 grid grid-cols-2 gap-2 border-t border-[#EEF1F4] bg-white/95 px-4 pt-2.5 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur-sm">
-            <button type="button" x-on:click="previousRoom()" class="min-h-11 rounded-xl bg-[#F1F5F9] px-3 text-sm font-semibold">← Назад</button>
+            <button type="button" x-on:click="previousRoom()" class="min-h-11 rounded-xl bg-[#F1F5F9] px-3 text-sm font-semibold"><span x-show="activeRoomIndex === 0">← К данным</span><span x-show="activeRoomIndex > 0">← Назад</span></button>
             <button type="button" x-on:click="nextRoom()" class="min-h-11 rounded-xl bg-[#285B86] px-3 text-sm font-semibold text-white">
                 <span x-show="activeRoomIndex + 1 !== roomCount">Далее →</span>
-                <span x-show="activeRoomIndex + 1 === roomCount">Завершить контроль</span>
+                <span x-show="activeRoomIndex + 1 === roomCount">Перейти к проверке</span>
             </button>
         </div>
     @elseif($stage === 'review')
@@ -1556,7 +1554,7 @@ new class extends Component
             <div class="mt-6 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
                 <button type="button" wire:click="previous" class="min-h-12 rounded-2xl bg-[#F1F5F9] px-3 font-semibold">Назад</button>
                 <button type="button" wire:click="submit" wire:loading.attr="disabled" :disabled="busy || ['dirty', 'saving', 'error'].includes(clientDraftState) || {{ $isSubmitting || $pendingMediaCount > 0 ? 'true' : 'false' }}"
-                    class="min-h-12 rounded-2xl bg-[#285B86] px-3 font-semibold text-white disabled:opacity-50">Отправить контроль</button>
+                    class="min-h-12 rounded-2xl bg-[#285B86] px-3 font-semibold text-white disabled:opacity-50"><span wire:loading.remove wire:target="submit">Отправить контроль</span><span wire:loading wire:target="submit">Отправляем контроль…</span></button>
             </div>
         </section>
     @elseif($stage === 'done')
