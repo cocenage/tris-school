@@ -182,6 +182,7 @@ new class extends Component
     $applicationTotal = array_sum($applications ?? []);
     $otherApplications = $applicationTotal - $applicationCounts->sum();
     $learning = $stats['learning'];
+    $mare = $stats['mare'];
 @endphp
 
 <section aria-labelledby="profile-statistics-title" class="mb-5 space-y-2 text-[#192C42]">
@@ -318,7 +319,7 @@ new class extends Component
         </button>
     @endif
 
-    @if($applications !== null || $learning !== null)
+    @if($applications !== null || $learning !== null || $mare)
         <div
             class="divide-y divide-[#DBE5EC] rounded-2xl border border-[#DBE5EC] bg-white">
             @if($applications !== null)
@@ -364,6 +365,33 @@ new class extends Component
                         <a href="{{ $learning['resume'] ? route('learning.lesson', [LearningCatalog::COURSE_SLUG, $learning['resume']->slug]) : route('learning.index') }}"
                             class="inline-flex min-h-11 items-center text-sm text-[#24577C] underline">{{ $learning['resume'] ? 'Открыть урок' : 'Открыть обучение' }}</a>
                     </div>
+                </details>
+            @endif
+            @if($mare)
+                <details wire:key="profile-statistics-mare" wire:ignore.self class="group px-3">
+                    <summary class="flex min-h-12 cursor-pointer list-none items-center justify-between gap-2 py-2 text-sm [&::-webkit-details-marker]:hidden">
+                        <span>
+                            <strong class="block font-semibold">TRIS Mare 2026</strong>
+                            <span class="block text-xs text-[#506479]">{{ $mare->total_points.' баллов'.($mare->rating > 0 ? ' · '.$mare->rating.'-е место' : '') }}</span>
+                        </span>
+                        <span class="text-lg text-[#24577C] group-open:rotate-90" aria-hidden="true">›</span>
+                    </summary>
+                    <dl class="grid grid-cols-2 gap-2 border-t border-[#DBE5EC] py-2 text-xs text-[#506479]">
+                        <div><dt>За день</dt><dd>{{ $mare->daily_points }}</dd></div>
+                        <div><dt>За неделю</dt><dd>{{ $mare->weekly_points }}</dd></div>
+                        <div><dt>Прогресс программы</dt><dd>{{ $mare->progress_percent }}%</dd></div>
+                        <div><dt>Дней в программе</dt><dd>{{ $mare->working_days }}</dd></div>
+                    </dl>
+                    @if(filled($mare->status))<p class="pb-1 text-xs text-[#526579]">{{ $mare->status }}</p>@endif
+                    @if(filled($mare->comment))<p class="pb-1 text-xs text-[#526579]">{{ $mare->comment }}</p>@endif
+                    @if($mare->synced_at)<p class="pb-2 text-xs text-[#526579]">Обновлено {{ $mare->synced_at->format('d.m.Y') }}</p>@endif
+                    <ul class="space-y-1 pb-2 text-xs text-[#526579]">
+                        @foreach($mare->daily_history ?? [] as $item)
+                            @if(is_array($item) && isset($item['date'], $item['points']))
+                                <li>{{ $item['date'] }} · {{ $item['points'] }} баллов @if(filled($item['comment'] ?? null)) · {{ $item['comment'] }} @endif</li>
+                            @endif
+                        @endforeach
+                    </ul>
                 </details>
             @endif
         </div>

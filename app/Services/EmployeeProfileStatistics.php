@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\TrisMareSnapshot;
 use App\Models\User;
 use App\Services\Calendar\EmployeeWorkCalendarService;
 use App\Services\Calendar\EmployeeWorkCalendarStatisticsService;
@@ -85,6 +86,9 @@ class EmployeeProfileStatistics
             ] : null,
             'applications' => UserApplicationBadgeService::statusCounts($employee->id, $tables),
             'learning' => $progress,
+            'mare' => $hasTables(['tris_mare_snapshots'])
+                ? TrisMareSnapshot::query()->where('user_id', $employee->id)->latest('synced_at')->latest('id')->first()
+                : null,
         ];
     }
 }
