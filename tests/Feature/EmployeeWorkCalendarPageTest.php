@@ -325,7 +325,7 @@ it('renders personal statistics at the profile entry point and switches the sele
         ->assertSee('Рабочий день по графику');
 });
 
-it('combines employee-owned activity, application statuses, learning and Mare without leaking another employee data', function () {
+it('shows personal activity, applications and learning while keeping the retired Mare program hidden', function () {
     $employee = User::findOrFail(21);
     $other = createCalendarPageUser('cleaner', 'Чужой профиль');
     $supervisor = createCalendarPageUser('supervisor', 'Автор контроля');
@@ -394,7 +394,7 @@ it('combines employee-owned activity, application statuses, learning and Mare wi
         $stats = Livewire::actingAs($employee)->test('profile.personal-statistics')
             ->assertSee('2 всего')->assertSee('Частично одобрено · 2')->assertDontSee('Отклонено ·')
             ->assertSee('1 из 2 уроков · 50%')->assertSee('Второй урок')
-            ->assertSee('TRIS Mare 2026')->assertSee('320 баллов · 2-е место')->assertSee('03.08.2026')->assertDontSee('999 баллов')
+            ->assertDontSee('TRIS Mare 2026')->assertDontSee('320 баллов')->assertDontSee('999 баллов')
             ->call('selectDay', '2026-11-11')->assertSee('Одобренный отпуск')
             ->call('selectDay', '2026-11-12')->assertSee('Есть заявка на согласовании')
             ->call('chooseMode', 'quality')
