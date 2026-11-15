@@ -37,7 +37,9 @@ beforeEach(function () {
         'alpha' => ['label' => 'Alpha', 'chat_id' => '-1001', 'latitude' => 45, 'longitude' => 9],
         'beta' => ['label' => 'Beta', 'chat_id' => '-1002', 'latitude' => 45, 'longitude' => 9],
     ]]);
-    $this->mock(TelegramBotService::class)->shouldNotReceive('sendMessage');
+    $bot = $this->mock(TelegramBotService::class);
+    $bot->shouldNotReceive('sendMessage');
+    $bot->shouldNotReceive('sendRichMessage');
 });
 
 afterEach(function () {
@@ -104,6 +106,26 @@ it('restricts assignment management to admins for every write action', function 
 it('rejects invalid preview dates', function (string $date) {
     expect(Artisan::call('telegram:shift-preview', ['--date' => $date]))->toBe(1);
 })->with(['', '2026-02-30', '2026-6-1']);
+
+it('previews the opening Rich Message without treating unavailable cleaning counts as zero or sending', function () {
+    $user = User::create(['name' => 'Дежурный <Alpha>', 'role' => 'supervisor']);
+    ShiftDuty::create(['date' => '2026-06-17', 'district_key' => 'alpha', 'user_id' => $user->id]);
+    $observer = app(TelegramOperationalEventObserver::class);
+    $observer->observe(TelegramOperationalTestDatabase::message('Не работает свет в ванной.', '2026-06-17 09:00:00', '700'));
+    $problem = TelegramOperationalTestDatabase::message('Не работает замок в квартире', '2026-06-17 08:00:00', '701');
+    $observer->observe($problem);
+    $observer->observe(TelegramOperationalTestDatabase::message('Замок в квартире исправлен', '2026-06-17 08:20:00', '702',
+        ['message' => ['reply_to_message' => ['message_id' => 701]]]));
+
+    expect(Artisan::call('telegram:shift-preview', ['--date' => '2026-06-17', '--opening' => true, '--json' => true]))->toBe(0);
+    $preview = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($preview['rich_message']['markdown'])
+        ->toContain('# ОКС · Открытие смены', 'Дежурный &lt;Alpha&gt;', 'Дежурный не назначен', 'Расписание уборок недоступно', '<details>', 'Не работает свет')
+        ->not->toContain('Нет уборок', 'Не работает замок')
+        ->and($preview['fallback_html'])->toContain('<b>ОКС · Открытие смены</b>', 'Дежурный &lt;Alpha&gt;')
+        ->and($preview['mode'])->toBe(['read_only' => true, 'telegram_actions' => 0, 'mutations' => 0]);
+});
 
 it('creates and validates explicit duties through the admin action', function () {
     $admin = User::create(['name' => 'Synthetic Admin', 'role' => 'admin', 'status' => 'approved', 'is_active' => true]);
