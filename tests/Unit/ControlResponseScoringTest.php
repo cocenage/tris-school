@@ -2,8 +2,9 @@
 
 use App\Models\ControlResponse;
 use Illuminate\Support\Facades\Storage;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 function controlQuestion(array $overrides = []): array
 {
@@ -41,6 +42,18 @@ it('scores a negative answer as an ordinary error', function () {
             'has_critical_failure' => false,
             'result_zone' => 'yellow',
         ]);
+});
+
+it('puts a negative two-point answer into the red zone even outside the bedroom', function () {
+    $schema = [['title' => 'Кухня', 'items' => [controlQuestion([
+        'answer_options_scored' => [
+            ['value' => 'yes', 'label' => 'Да', 'points' => 2],
+            ['value' => 'no', 'label' => 'Нет', 'points' => 0],
+        ],
+    ])]]];
+
+    expect(ControlResponse::calculateScores($schema, [[['selected' => 'no']]]))
+        ->toMatchArray(['penalty_points' => 2, 'errors_count' => 1, 'has_critical_failure' => true, 'result_zone' => 'red']);
 });
 
 it('identifies positive and negative scored options for corrective fields', function () {

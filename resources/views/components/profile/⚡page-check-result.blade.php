@@ -64,16 +64,6 @@ new class extends Component {
             $error['corrective'] = is_array($answer['corrective'] ?? null)
                 ? $answer['corrective']
                 : ['repeats' => null, 'action' => '', 'recheck' => null];
-            $error['media'] = array_values(array_filter(array_map(function (mixed $photo): array {
-                if (! is_array($photo)) {
-                    return [];
-                }
-
-                $photo['url'] = ControlResponse::resolveMediaUrl($photo);
-
-                return $photo;
-            }, is_array($error['media'] ?? null) ? $error['media'] : []), fn (array $photo): bool => filled($photo['url'] ?? null)));
-
             return $error;
         }, $errors);
     }
@@ -216,7 +206,7 @@ new class extends Component {
                                 <div class="col-span-2 rounded-[18px] bg-[#FFF1F0] px-[13px] py-[11px]">
                                     <div class="text-[#D92D20]/70">Критическая ошибка</div>
                                     <div class="mt-[3px] font-semibold text-[#D92D20]">
-                                        Первые два вопроса блока “Спальные места”
+                                        {{ $record->result_zone_reason ?: 'Требует внимания' }}
                                     </div>
                                 </div>
                             @endif
@@ -262,57 +252,93 @@ new class extends Component {
                 @endif
 
                 @if($mediaItems !== [])
-                    <section class="mb-[18px]">
-                        <h2 class="mb-[10px] text-[16px] font-semibold text-[#111111]">Фото и видео</h2>
-                        <div class="space-y-[12px]">
+                    <section
+                        aria-labelledby="control-media-title"
+                        x-data="controlMediaGallery"
+                        class="mb-[18px]"
+                    >
+                        <h2 id="control-media-title" class="mb-[10px] text-[16px] font-semibold text-[#111111]">
+                            Фото и видео <span class="text-sm font-normal text-[#596476]">· {{ array_sum(array_map(fn ($item) => count($item['media']), $mediaItems)) }}</span>
+                        </h2>
+                        <div class="space-y-2">
                             @foreach($mediaItems as $item)
-                                <div class="rounded-[18px] bg-[#F8F8F8] p-[12px]">
-                                    <div class="text-[13px] font-semibold">{{ $item['room'] }} · {{ $item['question'] }}</div>
-                                    <div class="mt-[10px] grid grid-cols-2 gap-[8px] min-[420px]:grid-cols-3">
+                                <details class="rounded-[18px] bg-[#F8F8F8]">
+                                    <summary class="cursor-pointer px-4 py-3 text-sm font-semibold">
+                                        {{ $item['room'] }} · {{ $item['question'] }} <span class="font-normal text-[#596476]">({{ count($item['media']) }})</span>
+                                    </summary>
+                                    <div class="grid grid-cols-2 gap-2 px-3 pb-3 min-[420px]:grid-cols-3">
                                         @foreach($item['media'] as $file)
-                                            @php $fileComment = trim((string) ($file['comment'] ?? '')); @endphp
-                                            @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
-                                                <figure x-data="{ playbackFailed: false }" class="min-w-0 overflow-hidden rounded-[14px] bg-white">
-                                                    <video src="{{ $file['url'] }}" controls preload="metadata" x-on:error="playbackFailed = true" class="aspect-[4/3] w-full object-cover"></video>
-                                                    <p x-show="playbackFailed" x-cloak class="px-2 pt-1 text-[11px]">Браузер не воспроизводит это видео.</p>
-                                                    <a href="{{ $file['url'] }}?download=1" class="block px-2 pt-1 text-[11px] font-semibold underline">Оригинал видео</a>
-                                                    @if($fileComment !== '')
-                                                        <figcaption class="whitespace-pre-wrap break-words px-2 py-2 text-[13px] leading-[1.4] text-[#263238]">{{ $fileComment }}</figcaption>
+                                            @php
+                                                $fileComment = trim((string) ($file['comment'] ?? ''));
+                                                $isVideo = str_starts_with((string) ($file['mime'] ?? ''), 'video/');
+                                            @endphp
+                                            <figure class="min-w-0 overflow-hidden rounded-[14px] bg-white">
+                                                <button
+                                                    type="button"
+                                                    data-control-media
+                                                    data-url="{{ $file['url'] }}"
+                                                    data-kind="{{ $isVideo ? 'video' : 'image' }}"
+                                                    data-caption="{{ $fileComment }}"
+                                                    x-on:click="open($el)"
+                                                    aria-label="{{ $isVideo ? 'Открыть видео' : 'Открыть фото' }} {{ $loop->iteration }}: {{ $item['question'] }}"
+                                                    class="block w-full overflow-hidden rounded-[14px] bg-[#EDF1F5] text-[#344054] focus-visible:outline-2 focus-visible:outline-[#285B86]"
+                                                >
+                                                    @if($isVideo)
+                                                        <span class="grid aspect-[4/3] place-content-center justify-items-center gap-1 text-xs">
+                                                            <x-heroicon-o-play-circle class="size-8" />Видео
+                                                        </span>
+                                                    @else
+                                                        <img src="{{ $file['thumbnail_url'] }}" alt="" loading="lazy" decoding="async" class="aspect-[4/3] w-full object-cover">
                                                     @endif
-                                                </figure>
-                                            @else
-                                                <figure x-data="{ zoomOpen: false }" class="min-w-0 overflow-hidden rounded-[14px] bg-white">
-                                                    <button type="button" x-on:click="zoomOpen = true" aria-label="Увеличить фото" class="block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#285B86]">
-                                                        <img src="{{ $file['url'] }}" alt="Фото к вопросу" loading="lazy" decoding="async" class="aspect-[4/3] w-full object-cover">
-                                                    </button>
-                                                    @if($fileComment !== '')
-                                                        <figcaption class="break-words px-2 py-2 text-[13px] leading-[1.4] text-[#263238]">{{ $fileComment }}</figcaption>
-                                                    @endif
-                                                    <div x-show="zoomOpen" x-cloak x-on:click.self="zoomOpen = false" x-on:keydown.escape.window="zoomOpen = false" role="dialog" aria-modal="true" aria-label="Увеличенное фото" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-3 sm:p-6">
-                                                        <div class="max-h-full w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-3 sm:p-4">
-                                                            <div class="mb-2 flex justify-end">
-                                                                <button type="button" x-on:click="zoomOpen = false" aria-label="Закрыть увеличенное фото" class="min-h-11 min-w-11 rounded-full bg-[#F1F5F9] text-xl font-semibold text-[#17201A]">×</button>
-                                                            </div>
-                                                            <img src="{{ $file['url'] }}" alt="Фото к вопросу" class="mx-auto max-h-[68dvh] w-auto max-w-full rounded-xl object-contain">
-                                                            @if($fileComment !== '')
-                                                                <p class="mx-auto mt-3 max-w-3xl whitespace-pre-wrap break-words text-[14px] leading-[1.5] text-[#17201A]">{{ $fileComment }}</p>
-                                                            @endif
-                                                        </div>
-                                                    </div>
-                                                </figure>
-                                            @endif
+                                                </button>
+                                                @if($fileComment !== '')
+                                                    <figcaption class="line-clamp-2 whitespace-pre-wrap break-words px-2 py-2 text-[13px] leading-[1.4] text-[#263238]">{{ $fileComment }}</figcaption>
+                                                @endif
+                                            </figure>
                                         @endforeach
                                     </div>
-                                </div>
+                                </details>
                             @endforeach
                         </div>
+
+                        <dialog x-ref="viewer" role="dialog" aria-modal="true" aria-label="Фото и видео контроля"
+                            x-on:close="reset()" x-on:click.self="close()"
+                            x-on:keydown="handleKey($event)"
+                            class="m-auto max-h-[96dvh] w-[min(98vw,900px)] max-w-full overflow-y-auto rounded-2xl border-0 bg-[#101823] p-3 text-white backdrop:bg-black/80 sm:p-5">
+                            <template x-if="current">
+                                <div>
+                                    <div class="mb-2 flex items-center justify-between gap-2">
+                                        <span class="text-sm" aria-live="polite" x-text="`${index + 1} / ${items.length}`"></span>
+                                        <button type="button" x-on:click="close()" autofocus aria-label="Закрыть просмотр" class="min-h-11 min-w-11 rounded-full bg-white/10 text-2xl">×</button>
+                                    </div>
+                                    <div class="grid min-h-[40dvh] touch-pan-y touch-pinch-zoom place-items-center overflow-hidden rounded-xl bg-black"
+                                        x-on:pointerdown="beginSwipe($event)" x-on:pointerup="endSwipe($event)" x-on:pointercancel="cancelSwipe()">
+                                        <template x-if="current.kind === 'video' && !failed">
+                                            <video :src="current.url" controls playsinline preload="none" x-on:error="failed = true" class="max-h-[62dvh] w-full"></video>
+                                        </template>
+                                        <template x-if="current.kind === 'image' && !failed">
+                                            <img :src="current.url" alt="Фото к вопросу" draggable="false" x-on:error="failed = true" class="mx-auto max-h-[62dvh] max-w-full object-contain">
+                                        </template>
+                                        <p x-show="failed" x-cloak class="p-4 text-center text-sm">Этот файл не открывается в браузере. Можно скачать оригинал.</p>
+                                    </div>
+                                    <p x-show="current.caption" x-text="current.caption" class="mt-3 whitespace-pre-wrap break-words text-sm leading-relaxed"></p>
+                                    <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+                                        <button type="button" x-on:click="step(-1)" :disabled="index === 0" aria-label="Предыдущее вложение" class="min-h-11 min-w-11 rounded-full bg-white/10 disabled:opacity-30">←</button>
+                                        <a :href="current.url + '?download=1'" class="inline-flex min-h-11 items-center rounded-full bg-white/10 px-4 text-sm font-semibold">Скачать оригинал</a>
+                                        <button type="button" x-on:click="step(1)" :disabled="index === items.length - 1" aria-label="Следующее вложение" class="min-h-11 min-w-11 rounded-full bg-white/10 disabled:opacity-30">→</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </dialog>
                     </section>
                 @endif
 
                 @if(empty($errors))
-                    <div class="rounded-[28px] bg-[#F0FDF4] px-[18px] py-[20px] text-center text-[15px] font-semibold text-[#166534]">
-                        Ошибок нет. Контроль в зелёной зоне.
-                    </div>
+                    @if($record->result_zone === 'green')
+                        <div class="rounded-[28px] bg-[#F0FDF4] px-[18px] py-[20px] text-center text-[15px] font-semibold text-[#166534]">
+                            Ошибок нет. Контроль в зелёной зоне.
+                        </div>
+                    @endif
                 @else
                     <div class="mb-[10px] text-[16px] font-semibold text-[#111111]">
                         Ошибки контроля

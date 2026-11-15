@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Control;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
+use App\Services\Controls\ControlImageThumbnail;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -30,7 +31,7 @@ class ControlMediaController
 
         $file = $draft->responses[$room][$question]['media'][$media] ?? null;
 
-        return $this->serve($file, $control->id, $request->user()->id, $request->boolean('download'));
+        return $this->serve($file, $control->id, $request->user()->id, $request->boolean('download'), $request->boolean('thumbnail'));
     }
 
     public function result(Request $request, ControlResponse $controlResponse, int $room, int $question, int $media): BinaryFileResponse
@@ -41,10 +42,10 @@ class ControlMediaController
 
         $file = $controlResponse->responses[$room][$question]['media'][$media] ?? null;
 
-        return $this->serve($file, $controlResponse->control_id, null, $request->boolean('download'));
+        return $this->serve($file, $controlResponse->control_id, null, $request->boolean('download'), $request->boolean('thumbnail'));
     }
 
-    private function serve(mixed $file, int $controlId, ?int $supervisorId = null, bool $download = false): BinaryFileResponse
+    private function serve(mixed $file, int $controlId, ?int $supervisorId = null, bool $download = false, bool $thumbnail = false): BinaryFileResponse
     {
         abort_unless(is_array($file), 404);
 
@@ -65,6 +66,15 @@ class ControlMediaController
             'Cache-Control' => 'private, no-store',
             'X-Content-Type-Options' => 'nosniff',
         ];
+
+        if ($thumbnail && ! $download) {
+            $preview = app(ControlImageThumbnail::class)->path($disk->path($path), $headers['Content-Type']);
+            if ($preview !== null) {
+                return response()->file($preview, array_replace($headers, ['Content-Type' => 'image/jpeg']));
+            }
+
+            return response()->file(resource_path('images/control-media-placeholder.png'), array_replace($headers, ['Content-Type' => 'image/png']));
+        }
 
         if ($download) {
             $name = basename(str_replace('\\', '/', (string) ($file['original_name'] ?? basename($path))));

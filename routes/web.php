@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ApartmentAttachmentController;
 use App\Http\Controllers\ControlMediaController;
+use App\Http\Controllers\FocusMediaUploadController;
 use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\LogoutController;
@@ -113,6 +114,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/coachings/history', 'page-coachings')->middleware(SafeguardRolePreviewData::class)->name('page-coachings.history');
     Route::livewire('/coachings/create', 'forms.page-coaching-create')->middleware(SafeguardRolePreviewData::class)->name('page-coachings.create');
     Route::livewire('/coachings/{coaching}', 'profile.page-coaching-result')->middleware(SafeguardRolePreviewData::class)->whereNumber('coaching')->name('page-coachings.show');
+    Route::post('/checks/control/focus/upload', FocusMediaUploadController::class)
+        ->middleware(['signed', 'throttle:60,1'])
+        ->name('page-checks.control.focus-upload');
     Route::get('/checks/control/draft-media/{control}/{room}/{question}/{media}', [ControlMediaController::class, 'draft'])
         ->middleware(SafeguardRolePreviewData::class)
         ->whereNumber(['room', 'question', 'media'])
