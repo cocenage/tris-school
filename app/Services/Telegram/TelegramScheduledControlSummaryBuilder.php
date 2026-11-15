@@ -33,6 +33,7 @@ class TelegramScheduledControlSummaryBuilder
         $query = TelegramScheduledMessageDelivery::query()
             ->with(['responses.telegramMessage.topic.apartment', 'followups', 'scheduledMessage' => fn ($query) => $query->withTrashed()])
             ->whereNotNull('control_type')->where('control_type', '!=', '')->where('control_type', '!=', 'control_question')
+            ->where('control_type', '!=', ScheduledControlTypes::SHIFT_OPENING)
             ->where('scheduled_for', '>=', $start->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->where('scheduled_for', '<', $end->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->when($scheduledMessageId !== null, fn ($query) => $query->where('scheduled_message_id', $scheduledMessageId))
@@ -234,6 +235,9 @@ class TelegramScheduledControlSummaryBuilder
         $districts = [];
 
         foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+            if (! in_array($key, ScheduledControlTypes::activeDistricts($delivery->sequence_context ?? []), true)) {
+                continue;
+            }
             $states = [];
             $firstProblem = null;
             $resolvedAt = null;

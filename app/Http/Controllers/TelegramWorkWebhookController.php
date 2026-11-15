@@ -19,6 +19,7 @@ use App\Services\Telegram\TelegramRichMessageBuilder;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
 use App\Services\Telegram\TelegramScheduledMessageDeliveryService;
+use App\Services\Telegram\TelegramShiftOpening;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use App\Services\Telegram\TelegramWorkActionFreshness;
 use App\Services\TelegramUserNotificationService;
@@ -236,6 +237,12 @@ class TelegramWorkWebhookController extends Controller
 
             if (str_starts_with($data, 'dayoffday:')) {
                 return $this->handleDayOffDayCallback($callbackQuery);
+            }
+
+            if (str_starts_with($data, 'oks:')) {
+                $this->answerCallback($callbackQuery, app(TelegramShiftOpening::class)->answer($callbackQuery, app(TelegramBotService::class)));
+
+                return response()->json(['ok' => true]);
             }
 
             if (str_starts_with($data, 'sc:') || str_starts_with($data, 'scf:')) {
