@@ -4,6 +4,7 @@ use App\Models\Instruction;
 use App\Models\InstructionCategory;
 use App\Models\User;
 use App\Services\Learning\LearningCatalog;
+use App\Services\RolePreviewContext;
 use App\Services\UserApplicationBadgeService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Auth;
@@ -75,6 +76,17 @@ it('keeps progress private to each user', function (): void {
     $other->id = 2;
     $this->actingAs($other)->get(route('learning.index'))->assertOk()->assertSee('0 из 2');
     expect(app(LearningCatalog::class)->progress($other, app(LearningCatalog::class)->lessons($other)->get())['records'])->toBeEmpty();
+});
+
+it('hides learning progress and blocks completion during role preview', function (): void {
+    $this->reader->role = 'admin';
+    $this->post(route('learning.complete', ['instructions', 'first']))->assertRedirect();
+
+    $this->withSession([RolePreviewContext::SESSION_KEY => 'cleaner']);
+    $this->get(route('learning.index'))->assertOk()->assertDontSee('1 из 2');
+    $this->get(route('learning.lesson', ['instructions', 'second']))->assertOk()->assertDontSee('Второй материал');
+    $this->post(route('learning.complete', ['instructions', 'second']))->assertForbidden();
+    expect(DB::table('learning_lesson_progress')->count())->toBe(1);
 });
 
 it('excludes inaccessible materials and rejects direct reads and completion', function (string $state): void {
