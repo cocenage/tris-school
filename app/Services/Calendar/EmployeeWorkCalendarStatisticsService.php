@@ -5,6 +5,7 @@ namespace App\Services\Calendar;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Support\Collection;
 use Illuminate\Validation\ValidationException;
 
 class EmployeeWorkCalendarStatisticsService
@@ -48,40 +49,11 @@ class EmployeeWorkCalendarStatisticsService
 
         $projection = $this->calendar->forEmployees($employees, $start, $end);
         $rows = $employees->map(function (User $employee) use ($projection): array {
-            $counts = array_fill_keys(self::METRICS, 0);
-
-            foreach ($projection->get($employee->id, collect()) as $day) {
-                $sources = collect($day['sources'] ?? []);
-                $activeManual = $sources->filter(fn (array $source): bool => ($source['type'] ?? null) === 'manual_adjustment'
-                    && ! ($source['is_reversal'] ?? false)
-                    && ! ($source['superseded'] ?? false));
-                $activeRequests = $sources->filter(fn (array $source): bool => in_array($source['type'] ?? null, ['day_off', 'vacation'], true)
-                    && ($source['status'] ?? null) === 'approved'
-                    && ! ($source['superseded'] ?? false));
-
-                match ($day['state']) {
-                    'planned_work' => $counts['planned_workdays']++,
-                    'regular_day_off' => $counts['regular_off_days']++,
-                    'unknown_schedule' => $counts['unknown_schedule_days']++,
-                    'not_employed' => $counts['not_employed_days']++,
-                    'approved_absence' => $this->countAbsence($counts, $activeRequests, $activeManual),
-                    default => null,
-                };
-
-                if ($day['pending']) {
-                    $counts['pending_request_days']++;
-                }
-
-                if ($activeManual->isNotEmpty()) {
-                    $counts['manual_change_days']++;
-                }
-            }
-
             return [
                 'employee_id' => $employee->id,
                 'employee_name' => $employee->name,
                 'role' => $employee->role,
-                ...$counts,
+                ...$this->summarizeDays($projection->get($employee->id, collect())),
             ];
         });
 
@@ -102,21 +74,59 @@ class EmployeeWorkCalendarStatisticsService
         ];
     }
 
-    private function countAbsence(array &$counts, $approvedRequests, $activeManual): void
+    public function summarizeDays(iterable $days): array
     {
-        $counts['approved_absence_days']++;
+        $counts = array_fill_keys(self::METRICS, 0);
 
-        // A day is assigned to one category only, even when several sources overlap.
-        if ($activeManual->contains(fn (array $source): bool => ($source['category'] ?? null) === 'unpaid_leave')) {
-            $counts['approved_unpaid_leave_days']++;
-        } elseif ($approvedRequests->contains(fn (array $source): bool => ($source['type'] ?? null) === 'vacation')
-            || $activeManual->contains(fn (array $source): bool => ($source['category'] ?? null) === 'vacation')) {
-            $counts['approved_vacation_days']++;
-        } elseif ($approvedRequests->contains(fn (array $source): bool => ($source['type'] ?? null) === 'day_off')
-            || $activeManual->contains(fn (array $source): bool => ($source['category'] ?? null) === 'day_off')) {
-            $counts['approved_day_off_days']++;
-        } else {
-            $counts['other_approved_absence_days']++;
+        foreach ($days as $day) {
+            $counts[$this->metricForDay($day)]++;
+
+            if ($day['state'] === 'approved_absence') {
+                $counts['approved_absence_days']++;
+            }
+
+            if ($day['pending']) {
+                $counts['pending_request_days']++;
+            }
+
+            if ($this->activeManualChanges(collect($day['sources'] ?? []))->isNotEmpty()) {
+                $counts['manual_change_days']++;
+            }
         }
+
+        return $counts;
+    }
+
+    public function metricForDay(array $day): string
+    {
+        return match ($day['state']) {
+            'planned_work' => 'planned_workdays',
+            'regular_day_off' => 'regular_off_days',
+            'not_employed' => 'not_employed_days',
+            'approved_absence' => $this->absenceMetric(collect($day['sources'] ?? [])),
+            default => 'unknown_schedule_days',
+        };
+    }
+
+    private function activeManualChanges(Collection $sources): Collection
+    {
+        return $sources->filter(fn (array $source): bool => ($source['type'] ?? null) === 'manual_adjustment'
+            && ! ($source['is_reversal'] ?? false)
+            && ! ($source['superseded'] ?? false));
+    }
+
+    private function absenceMetric(Collection $sources): string
+    {
+        $manual = $this->activeManualChanges($sources);
+        $requests = $sources->filter(fn (array $source): bool => in_array($source['type'] ?? null, ['day_off', 'vacation'], true)
+            && ($source['status'] ?? null) === 'approved'
+            && ! ($source['superseded'] ?? false));
+
+        return match (true) {
+            $manual->contains('category', 'unpaid_leave') => 'approved_unpaid_leave_days',
+            $requests->contains('type', 'vacation') || $manual->contains('category', 'vacation') => 'approved_vacation_days',
+            $requests->contains('type', 'day_off') || $manual->contains('category', 'day_off') => 'approved_day_off_days',
+            default => 'other_approved_absence_days',
+        };
     }
 }

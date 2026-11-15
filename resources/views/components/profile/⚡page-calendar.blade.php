@@ -21,8 +21,22 @@ new class extends Component
     {
         $this->employeeId = $employee;
 
-        $this->month = now(config('app.timezone', 'Europe/Rome'))->startOfMonth()->format('Y-m');
-        $this->selectedDate = now(config('app.timezone', 'Europe/Rome'))->toDateString();
+        $today = now(config('app.timezone', 'Europe/Rome'));
+        $this->month = $today->format('Y-m');
+        $this->selectedDate = $today->toDateString();
+
+        $requestedMonth = request()->query('month');
+        if ($employee === null && is_string($requestedMonth)) {
+            $this->month = $requestedMonth;
+            $month = $this->validMonth();
+            $this->selectedDate = $month->isSameMonth($today) ? $today->toDateString() : $month->toDateString();
+            $day = request()->query('day');
+
+            if (is_string($day) && str_starts_with($day, $month->format('Y-m').'-')
+                && validator(['day' => $day], ['day' => ['date_format:Y-m-d']])->passes()) {
+                $this->selectedDate = $day;
+            }
+        }
     }
 
     public function previousMonth(): void

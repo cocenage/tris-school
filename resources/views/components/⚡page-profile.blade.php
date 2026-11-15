@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Storage;
 use Livewire\Component;
 use App\Services\UserApplicationBadgeService;
+use App\Services\EmployeeProfileStatistics;
 use App\Models\CalendarEvent;
 use App\Models\DayOffRequestDay;
 use App\Models\VacationRequest;
@@ -346,6 +347,10 @@ $this->profileRequired = false;
     x-on:open-profile-edit.window="$wire.openProfileEdit()"
     class="w-full bg-white p-[15px]"
 >
+    @if(EmployeeProfileStatistics::canView($user))
+        <livewire:profile.personal-statistics />
+    @endif
+
     <div class="mb-[10px]">
         <span class="text-[16px] opacity-50">
             Рабочие инструменты

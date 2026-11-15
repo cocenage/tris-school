@@ -29,13 +29,30 @@ class ProfileActivityTimeline
         $query->when($dateFrom, fn ($q) => $q->whereDate('sort_date', '>=', $dateFrom))
             ->when($dateTo, fn ($q) => $q->whereDate('sort_date', '<=', $dateTo));
         $page = $query->orderByDesc('sort_date')->orderBy('item_type')->orderByDesc('id')->paginate($perPage);
-        $rows = $page->getCollection();
+        $page->setCollection($this->hydrateActivities($page->getCollection()));
+
+        return $page;
+    }
+
+    public function forCleanerBetween(int $cleanerId, string $from, string $through): Collection
+    {
+        $rows = $this->query()->where('cleaner_id', $cleanerId)
+            ->whereDate('sort_date', '>=', $from)
+            ->whereDate('sort_date', '<=', $through)
+            ->orderByDesc('sort_date')->orderBy('item_type')->orderByDesc('id')->get();
+
+        return $this->hydrateActivities($rows);
+    }
+
+    private function hydrateActivities(Collection $rows): Collection
+    {
         $models = [];
         foreach (['control' => ControlResponse::class, 'coaching' => Coaching::class] as $kind => $class) {
             $ids = $rows->where('item_type', $kind)->pluck('id');
             $models[$kind] = $ids->isEmpty() ? collect() : $class::query()->with(['cleaner', 'supervisor', 'control', 'apartment'])->whereIn('id', $ids)->get()->keyBy('id');
         }
-        $page->setCollection($rows->map(function ($row) use ($models) {
+
+        return $rows->map(function ($row) use ($models) {
             $model = $models[$row->item_type]->get($row->id);
             if ($model) {
                 $model->setAttribute('item_type', $row->item_type);
@@ -43,9 +60,7 @@ class ProfileActivityTimeline
             }
 
             return $model;
-        })->filter()->values());
-
-        return $page;
+        })->filter()->values();
     }
 
     public function statisticsForCleaners(array $ids, ?string $from = null): Collection

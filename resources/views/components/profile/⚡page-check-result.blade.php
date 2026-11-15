@@ -110,15 +110,28 @@ new class extends Component {
 };
 ?>
 
+@php
+    $statsBack = request()->query('stats_view') === 'quality'
+        && (int) $controlResponse->cleaner_id === (int) auth()->id()
+        ? route('page-profile', request()->only(['stats_month', 'stats_view', 'stats_day'])).'#profile-statistics-title'
+        : null;
+@endphp
+
 <x-slot:header>
     <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
-        <button
-            type="button"
-            onclick="history.back()"
-            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259]"
-        >
-            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2]" />
-        </button>
+        @if($statsBack)
+            <a href="{{ $statsBack }}" aria-label="Назад к статистике" class="flex size-11 items-center justify-center rounded-full text-[#213259]">
+                <x-heroicon-o-arrow-left class="size-5 stroke-2" />
+            </a>
+        @else
+            <button
+                type="button"
+                onclick="history.back()"
+                class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259]"
+            >
+                <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2]" />
+            </button>
+        @endif
 
         <span class="text-[18px] leading-none">
             Результат контроля

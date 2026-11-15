@@ -281,6 +281,7 @@ it('protects employee calendar data during role preview', function () {
     $this->get(route('page-profile'))->assertOk()->assertDontSee('Календари сотрудников');
     $this->get(route('page-profile.employee-calendars'))->assertForbidden();
     $this->get(route('employees.calendar', ['employee' => 21]))->assertForbidden();
+    $this->get(route('page-profile'))->assertOk()->assertDontSee('Моя статистика');
     $calendar->call('nextMonth')->assertForbidden();
 });
 
@@ -299,3 +300,126 @@ function createCalendarPageUser(string $role, string $name, bool $active = true,
 
     return User::findOrFail($id);
 }
+
+it('renders personal statistics at the profile entry point and switches the selected month', function () {
+    $employee = User::findOrFail(21);
+
+    $this->actingAs($employee)
+        ->get(route('page-profile'))
+        ->assertOk()
+        ->assertSee('Моя статистика')
+        ->assertSee('Ближайший рабочий день');
+
+    Livewire::actingAs($employee)->test('profile.personal-statistics')
+        ->assertSet('month', '2026-11')
+        ->call('selectDay', '2026-11-05')
+        ->assertSee('Рабочий день по графику')
+        ->call('changeMonth', -1)
+        ->assertSet('month', '2026-10')
+        ->assertSee('График не зафиксирован')
+        ->assertSee('Ближайший рабочий день');
+});
+
+it('combines employee-owned activity, application statuses, learning and Mare without leaking another employee data', function () {
+    $employee = User::findOrFail(21);
+    $other = createCalendarPageUser('cleaner', 'Чужой профиль');
+    $supervisor = createCalendarPageUser('supervisor', 'Автор контроля');
+
+    foreach (['controls', 'apartments'] as $name) {
+        Schema::create($name, function (Blueprint $table): void {
+            $table->id();
+            $table->string('name');
+        });
+    }
+    $apartment = DB::table('apartments')->insertGetId(['name' => 'Orti 12']);
+    $otherApartment = DB::table('apartments')->insertGetId(['name' => 'Чужая квартира']);
+    foreach ([
+        '2026_04_20_185550_create_control_responses_table.php',
+        '2026_06_09_215456_add_control_score_details_to_control_responses_table.php',
+        '2026_10_24_000000_create_coachings_table.php',
+        '2026_04_27_033156_create_instruction_categories_table.php',
+        '2026_04_27_033240_create_instructions_table.php',
+        '2026_11_15_000100_create_learning_lesson_progress_table.php',
+        '2026_06_12_210833_create_tris_mare_snapshots_table.php',
+    ] as $migration) {
+        (require database_path('migrations/'.$migration))->up();
+    }
+    $control = DB::table('controls')->insertGetId(['name' => 'Контроль качества']);
+    foreach ([
+        [$employee->id, $apartment, '2026-11-07', 92],
+        [$employee->id, $apartment, '2026-10-07', 30],
+        [$other->id, $otherApartment, '2026-11-07', 42],
+    ] as [$cleaner, $flat, $date, $score]) {
+        DB::table('control_responses')->insert([
+            'control_id' => $control, 'cleaner_id' => $cleaner, 'supervisor_id' => $supervisor->id,
+            'apartment_id' => $flat, 'inspection_date' => $date, 'score_percent' => $score,
+            'total_points' => $score, 'max_points' => 100, 'result_zone' => 'yellow', 'errors_count' => 2, 'penalty_points' => 3,
+        ]);
+    }
+    $novemberControl = DB::table('control_responses')->where('cleaner_id', $employee->id)->where('inspection_date', '2026-11-07')->value('id');
+    $coaching = DB::table('coachings')->insertGetId([
+        'user_id' => $employee->id, 'supervisor_id' => $supervisor->id, 'apartment_id' => $apartment,
+        'inspection_date' => '2026-11-07', 'reason' => 'Проверка ванной',
+    ]);
+    foreach (['inventory_requests', 'salary_questions', 'schedule_questions', 'feedback_suggestions'] as $tableName) {
+        Schema::create($tableName, function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('user_id');
+            $table->string('status');
+        });
+    }
+    DB::table('day_off_requests')->insert(['user_id' => $employee->id, 'status' => 'partially_approved']);
+    $vacation = DB::table('vacation_requests')->insertGetId(['user_id' => $employee->id, 'status' => 'partially_approved']);
+    DB::table('vacation_request_days')->insert([
+        ['vacation_request_id' => $vacation, 'user_id' => $employee->id, 'date' => '2026-11-11', 'status' => 'approved'],
+        ['vacation_request_id' => $vacation, 'user_id' => $employee->id, 'date' => '2026-11-12', 'status' => 'pending'],
+    ]);
+    DB::table('salary_questions')->insert(['user_id' => $other->id, 'status' => 'rejected']);
+    $lesson = DB::table('instructions')->insertGetId(['title' => 'Первый урок', 'slug' => 'first', 'status' => 'published', 'is_public' => true]);
+    DB::table('instructions')->insert(['title' => 'Второй урок', 'slug' => 'next', 'status' => 'published', 'is_public' => true]);
+    DB::table('learning_lesson_progress')->insert([
+        'user_id' => $employee->id, 'instruction_id' => $lesson, 'last_opened_at' => now(), 'completed_at' => now(),
+    ]);
+    DB::table('tris_mare_snapshots')->insert([
+        ['user_id' => $employee->id, 'employee_name' => $employee->name, 'total_points' => 320, 'rating' => 2, 'daily_history' => json_encode([['date' => '03.08.2026', 'points' => 10, 'comment' => 'Смена']])],
+        ['user_id' => $other->id, 'employee_name' => $other->name, 'total_points' => 999, 'rating' => 1, 'daily_history' => null],
+    ]);
+
+    try {
+        $stats = Livewire::actingAs($employee)->test('profile.personal-statistics')
+            ->assertSee('Частично одобрено · 2')->assertDontSee('Отклонено ·')
+            ->assertSee('Уроки · 1 из 2 · 50%')->assertSee('Второй урок')
+            ->assertSee('TRIS Mare 2026 · 320 баллов')->assertSee('03.08.2026')->assertDontSee('999 баллов')
+            ->call('selectDay', '2026-11-11')->assertSee('Одобренный отпуск')
+            ->call('selectDay', '2026-11-12')->assertSee('Есть заявка на согласовании')
+            ->call('chooseMode', 'quality')
+            ->assertSee('Средний результат · 92%')->assertSee('Ошибки · 2')->assertSee('Штрафные баллы · 3')
+            ->assertSee('Контроль и коучинг')->assertSee('Orti 12')->assertSee('Автор контроля')
+            ->assertDontSee('Чужая квартира')->assertDontSee('Средний результат · 30%')
+            ->assertSee(route('page-coachings.show', [$coaching, 'stats_month' => '2026-11', 'stats_view' => 'quality', 'stats_day' => '2026-11-07']));
+
+        $stats->call('changeMonth', -1)->assertSee('Средний результат · 30%');
+
+        $this->get(route('page-profile.calendar', ['month' => '2026-10', 'day' => '2026-10-17']))
+            ->assertOk()->assertSee('17 октября 2026');
+        $this->get(route('page-profile.calendar', ['month' => '2026-10', 'day' => ['2026-10-17']]))
+            ->assertOk()->assertSee('1 октября 2026');
+
+        $returnState = ['stats_month' => '2026-11', 'stats_view' => 'quality', 'stats_day' => '2026-11-07'];
+        $this->get(route('page-coachings.show', [$coaching, ...$returnState]))
+            ->assertOk()->assertSee('Назад к статистике')->assertSee('#profile-statistics-title');
+        $this->get(route('page-profile.checks.result', [$novemberControl, ...$returnState]))
+            ->assertOk()->assertSee('Назад к статистике')->assertSee('#profile-statistics-title');
+
+        $this->get(route('page-profile', [...$returnState, 'stats_month' => '2026-10', 'stats_day' => '2026-10-07']))
+            ->assertOk()->assertSee('Средний результат · 30%')->assertSee('Orti 12');
+
+    } finally {
+        foreach (['tris_mare_snapshots', 'learning_lesson_progress', 'instructions', 'instruction_categories',
+            'feedback_suggestions', 'schedule_questions', 'salary_questions', 'inventory_requests', 'coachings',
+            'control_responses', 'apartments', 'controls',
+        ] as $name) {
+            Schema::dropIfExists($name);
+        }
+    }
+});
