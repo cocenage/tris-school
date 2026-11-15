@@ -285,6 +285,7 @@ it('sends a single Work Bot result message with a Mini App deep link', function 
     Http::assertSent(fn (HttpRequest $request): bool => $request->url() === 'https://api.telegram.org/bottest-bot-token/sendMessage'
         && data_get($request->data(), 'chat_id') === 'test-recipient-chat'
         && str_contains((string) data_get($request->data(), 'text'), 'Apartment')
+        && str_contains((string) data_get($request->data(), 'text'), '🟢 <b>Контроль качества завершён</b>')
         && str_contains((string) data_get($request->data(), 'text'), 'Ошибки:')
         && data_get($request->data(), 'reply_markup.inline_keyboard.0.0.url')
             === 'https://t.me/tris_test_bot?startapp=control_result_'.$response->id,
@@ -1587,8 +1588,8 @@ it('keeps a media upload attached to its original question after navigating away
         ->call('goToRoom', 0)
         ->assertSet('currentRoomIndex', 0)
         ->assertSee('Фото и видео')
-        ->assertSee('Фото')
-        ->assertSee('Видео')
+        ->assertSee('Прикрепить фото или видео')
+        ->assertSee('accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm"', false)
         ->assertDontSee('Загрузка файлов');
 });
 

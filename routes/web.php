@@ -139,6 +139,7 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/profile/checks', 'profile.page-checks')->middleware(SafeguardRolePreviewData::class)->name('page-profile.checks');
     Route::livewire('/profile/checks/{controlResponse}', 'profile.page-check-result')->middleware(SafeguardRolePreviewData::class)->name('page-profile.checks.result');
     Route::livewire('/profile/all-checks', 'profile.page-all-checks')->middleware(SafeguardRolePreviewData::class)->name('page-profile.all-checks');
+    Route::livewire('/profile/employees/history', 'profile.page-staff-history')->middleware(SafeguardRolePreviewData::class)->name('page-profile.staff-history');
     Route::livewire('/profile/employees/{employee}/history', 'profile.page-employee-history')->middleware(SafeguardRolePreviewData::class)->whereNumber('employee')->name('page-profile.employee-history');
     Route::livewire('/profile/applications', 'profile.page-applications')->middleware(SafeguardRolePreviewData::class)->name('page-profile.applications');
 

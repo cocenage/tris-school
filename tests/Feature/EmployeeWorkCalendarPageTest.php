@@ -56,6 +56,13 @@ beforeEach(function () {
         $table->timestamps();
     });
 
+    Schema::create('user_calendar_type_accesses', function (Blueprint $table) {
+        $table->id();
+        $table->foreignId('user_id');
+        $table->string('type');
+        $table->boolean('can_view');
+    });
+
     Schema::create('day_off_requests', function (Blueprint $table) {
         $table->id();
         $table->foreignId('user_id');
@@ -106,6 +113,7 @@ beforeEach(function () {
 
 afterEach(function () {
     foreach ([
+        'user_calendar_type_accesses',
         'vacation_request_days',
         'vacation_requests',
         'calendar_events',

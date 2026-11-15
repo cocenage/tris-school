@@ -110,9 +110,16 @@ new class extends Component
         $this->restoreDraft();
 
         $this->peopleOptions = User::query()->activeStaff()->whereIn('role', ['cleaner', 'supervisor'])
-            ->orderBy('name')->get(['id', 'name'])->toArray();
+            ->orderBy('name')->get(['id', 'name', 'telegram_avatar_path', 'telegram_photo_url'])
+            ->map(fn (User $user): array => ['id' => $user->id, 'name' => $user->name, 'thumbnail' => $user->avatar_url])
+            ->all();
         $this->apartmentOptions = Apartment::query()->where('is_active', true)
-            ->orderBy('sort_order')->orderBy('name')->get(['id', 'name'])->toArray();
+            ->orderBy('sort_order')->orderBy('name')->get(['id', 'name', 'image'])
+            ->map(fn (Apartment $apartment): array => [
+                'id' => $apartment->id,
+                'name' => $apartment->name,
+                'thumbnail' => filled($apartment->image) ? Storage::disk('public')->url($apartment->image) : null,
+            ])->all();
     }
 
     protected function ensureAuthorized(): void
@@ -995,12 +1002,17 @@ new class extends Component
 
 <x-slot:header>
     <div class="flex h-[64px] items-center justify-between gap-3 px-4">
-        <a href="{{ route('page-checks') }}" class="rounded-full px-3 py-2 text-sm font-semibold text-[#285B86]">← Контроли</a>
-        <span class="truncate text-sm font-semibold text-[#111827]">{{ $control?->name ?? 'Контроль качества' }}</span>
+        <a href="{{ route('page-checks') }}" class="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-full bg-[#EAECF0] px-3 text-sm font-semibold text-[#213259]">
+            <x-heroicon-o-arrow-left class="size-4" />
+            Контроли
+        </a>
+        @if($stage === 'setup')
+            <a href="{{ route('page-checks.control') }}" class="inline-flex min-h-11 items-center px-2 text-sm font-semibold text-[#285B86]">Классический</a>
+        @endif
     </div>
 </x-slot:header>
 
-<div class="mx-auto flex min-h-full w-full max-w-[620px] flex-col bg-white px-4 pb-8 pt-5 text-[#111827]"
+<div class="flex min-h-full flex-col bg-[#E7E8EA] pt-6 text-[#182230] sm:pt-8"
     x-data="{
         activeRoomIndex: @entangle('currentRoomIndex'),
         cleanerId: @entangle('cleaner_id'),
@@ -1026,6 +1038,12 @@ new class extends Component
         updateQuestionCompletion(room, question, selected, custom) {
             this.questionCompletion[room] ||= [];
             this.questionCompletion[room][question] = String(selected ?? '').trim() !== '' || String(custom ?? '').trim() !== '';
+        },
+        roomProgress(index) {
+            const questions = Object.values(this.questionCompletion[index] || {});
+            const completed = questions.filter(Boolean).length;
+            if (questions.length > 0 && completed === questions.length) return 'complete';
+            return completed > 0 ? 'partial' : 'empty';
         },
         get completedCount() {
             return Object.values(this.questionCompletion).reduce((count, questions) =>
@@ -1156,18 +1174,21 @@ new class extends Component
             this.enqueueMutation(() => this.$wire.backToSetup());
         },
         scrollToActiveRoom() {
-            const room = this.$refs.roomTop;
-            if (!room) return;
-            const top = room.getBoundingClientRect().top + window.scrollY - 72;
-            window.scrollTo({ top: Math.max(0, top), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+            this.$refs.roomTop?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+            this.$nextTick(() => {
+                const activeChip = this.$refs.roomTabs?.querySelector('[aria-current=step]');
+                const tabs = this.$refs.roomTabs;
+                if (activeChip && tabs) {
+                    tabs.scrollLeft += activeChip.getBoundingClientRect().left - tabs.getBoundingClientRect().left
+                        - (tabs.clientWidth - activeChip.offsetWidth) / 2;
+                }
+            });
         },
         focusQuestion(detail) {
             this.activeRoomIndex = detail.room;
             window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
                 const question = document.getElementById(`focus-question-${detail.room}-${detail.question}`);
-                if (!question) return;
-                const top = question.getBoundingClientRect().top + window.scrollY - 72;
-                window.scrollTo({ top: Math.max(0, top), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+                question?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
             }));
         },
         add(event, room, question) {
@@ -1258,6 +1279,7 @@ new class extends Component
         get busy() { return this.uploads.some(item => ['ожидание', 'загрузка', 'загружено'].includes(item.status)); }
     }"
     x-on:focus-question-selected.window="focusQuestion($event.detail)">
+    <div class="mx-auto w-full max-w-[640px] flex-1 rounded-t-[36px] bg-white px-4 pb-7 pt-4 sm:px-6">
     @if($draftSchemaConflict)
         <div role="alert" class="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
             <p class="font-semibold">{{ $draftError ?: 'Схема контроля изменилась. Старый черновик сохранён без переноса ответов.' }}</p>
@@ -1268,54 +1290,57 @@ new class extends Component
     @elseif(filled($draftSchemaNotice))
         <div role="status" class="mb-4 rounded-2xl bg-blue-50 p-4 text-sm text-blue-900">{{ $draftSchemaNotice }}</div>
     @endif
-    <div class="mb-4 flex items-start justify-between gap-3">
-        <div class="min-w-0">
-            <h1 class="mt-1 truncate text-[22px] font-bold leading-tight">{{ $stage === 'review' ? 'Проверка контроля' : ($control?->name ?? 'Контроль качества') }}</h1>
-        </div>
-        @if($stage === 'setup')
-            <a href="{{ route('page-checks.control') }}" class="shrink-0 rounded-full bg-[#F1F5F9] px-3 py-2 text-xs font-semibold text-[#285B86]">Classic</a>
-        @endif
-    </div>
+    @if(in_array($stage, ['setup', 'questions'], true))
+        <nav x-ref="roomTabs" class="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6" aria-label="Этапы контроля">
+            @if($stage === 'setup')
+                <span aria-current="step" class="inline-flex min-h-10 shrink-0 items-center rounded-full bg-[#626B76] px-3.5 text-sm font-semibold text-white">Данные</span>
+            @else
+                <button type="button" x-on:click="enqueueMutation(() => $wire.backToSetup())"
+                    class="min-h-10 shrink-0 rounded-full bg-[#E9ECF0] px-3.5 text-sm font-semibold text-[#344054]">Данные</button>
+            @endif
+            @foreach($this->rooms as $roomIndex => $room)
+                @php
+                    $roomTitle = $room['title'] ?? 'Комната '.($roomIndex + 1);
+                @endphp
+                @if($stage === 'setup')
+                    <span class="inline-flex min-h-10 shrink-0 items-center rounded-full px-3.5 text-sm font-semibold"
+                        :class="roomProgress({{ $roomIndex }}) === 'complete' ? 'bg-[#DCEFE5] text-[#235D3E]' : (roomProgress({{ $roomIndex }}) === 'partial' ? 'bg-[#DCE8F7] text-[#284E89]' : 'bg-[#F0F1F3] text-[#596476]')">
+                        {{ $roomTitle }}
+                    </span>
+                @else
+                    <button type="button" x-on:click="goToRoom({{ $roomIndex }})"
+                        :aria-current="activeRoomIndex === {{ $roomIndex }} ? 'step' : null"
+                        :aria-label="@js($roomTitle) + (roomProgress({{ $roomIndex }}) === 'complete' ? ' — заполнена' : (roomProgress({{ $roomIndex }}) === 'partial' ? ' — заполнена частично' : ''))"
+                        :class="activeRoomIndex === {{ $roomIndex }} ? 'bg-[#626B76] text-white' : (roomProgress({{ $roomIndex }}) === 'complete' ? 'bg-[#DCEFE5] text-[#235D3E]' : (roomProgress({{ $roomIndex }}) === 'partial' ? 'bg-[#DCE8F7] text-[#284E89]' : 'bg-[#F0F1F3] text-[#596476]'))"
+                        class="min-h-10 shrink-0 rounded-full px-3.5 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#285B86]">
+                        {{ $roomTitle }}
+                    </button>
+                @endif
+            @endforeach
+        </nav>
+    @endif
+
+    <h1 class="mb-3 break-words text-[26px] font-bold leading-tight tracking-tight">
+        {{ $stage === 'review' ? 'Проверка контроля' : 'Фокус-контроль' }}
+    </h1>
 
     @if($stage !== 'done')
-        <div class="mb-5">
-            <div class="flex justify-between text-xs font-semibold text-[#475569]">
-                @if($stage === 'questions')
-                    <span x-text="`Комната ${activeRoomIndex + 1} из ${roomCount}`"></span>
+        <div class="mb-4">
+            @if($stage !== 'setup')
+                <div class="flex justify-between text-xs font-semibold text-[#475467]">
                     <span>Ответов <span x-text="completedCount"></span> из {{ count($this->questions) }}</span>
-                @else
-                    <span>Отвечено <span x-text="completedCount"></span> из {{ count($this->questions) }}</span>
                     <span x-text="`${completedPercent}%`"></span>
-                @endif
-            </div>
-            <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-[#E8EDF3]">
-                @if($stage === 'questions')
-                    <div class="h-full rounded-full bg-[#285B86] transition-[width] duration-200" :style="`width: ${roomCount ? ((activeRoomIndex + 1) / roomCount) * 100 : 0}%`"></div>
-                @else
+                </div>
+                <div role="progressbar" aria-label="Прогресс ответов" aria-valuemin="0" aria-valuemax="{{ count($this->questions) }}" :aria-valuenow="completedCount"
+                    class="mt-2 h-1.5 overflow-hidden rounded-full bg-[#E8EDF3]">
                     <div class="h-full rounded-full bg-[#285B86] transition-[width] duration-200" :style="`width: ${completedPercent}%`"></div>
-                @endif
-            </div>
-            @if($stage === 'questions')
-                <nav class="-mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1" aria-label="Переход между комнатами">
-                    @foreach($this->rooms as $roomIndex => $room)
-                        <button type="button"
-                            x-on:click="goToRoom({{ $roomIndex }})"
-                            :aria-current="activeRoomIndex === {{ $roomIndex }} ? 'step' : null"
-                            :class="activeRoomIndex === {{ $roomIndex }} ? 'border-[#285B86] bg-[#EAF2F8] text-[#194C75]' : 'border-[#E2E8F0] bg-white text-[#475569]'"
-                            aria-label="{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}"
-                            class="flex min-h-10 min-w-10 shrink-0 items-center justify-center gap-1 rounded-full border px-3 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#285B86]">
-                            {{ $roomIndex + 1 }}
-                            <span x-show="Object.values(questionCompletion[{{ $roomIndex }}] || {}).some(Boolean)" aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-[#16834B]"></span>
-                        </button>
-                    @endforeach
-                </nav>
+                </div>
             @endif
             <p x-show="busy" class="mt-2 text-xs font-semibold text-[#8A6116]" role="status">Загружаем файлы · можно продолжать вопросы</p>
-            <p x-show="!busy" class="mt-2 text-xs" :class="clientDraftState === 'error' ? 'text-[#B42318]' : 'text-[#8A97A8]'" role="status" aria-live="polite">
+            <p x-show="!busy && clientDraftState !== 'idle'" x-cloak class="mt-2 text-xs" :class="clientDraftState === 'error' ? 'text-[#B42318]' : 'text-[#8A97A8]'" role="status" aria-live="polite">
                 <span x-show="clientDraftState === 'dirty'">Изменения не сохранены</span>
                 <span x-show="clientDraftState === 'saving'">Сохранение выполняется…</span>
                 <span x-show="clientDraftState === 'saved'">Изменения сохранены</span>
-                <span x-show="clientDraftState === 'idle'">Черновик ещё не сохранён</span>
                 <span x-show="clientDraftState === 'error'" x-text="clientDraftError"></span>
             </p>
             <button x-show="clientDraftState === 'error'" type="button" x-on:click="flushAutosave()" class="mt-2 text-xs font-semibold text-[#285B86]">Повторить сохранение</button>
@@ -1323,55 +1348,61 @@ new class extends Component
     @endif
 
     @if($stage === 'setup')
-        <section class="space-y-4 rounded-3xl bg-[#F7F9FB] p-4">
-            <div>
-                <h2 class="text-lg font-bold">Перед началом</h2>
-                <p class="mt-1 text-sm text-[#64748B]">Выберите сотрудника, квартиру и даты. Вопросы откроются на следующем экране.</p>
+        <section class="space-y-3.5">
+            <x-controls.setup-select label="Кто убирался" :options="$peopleOptions" model="cleanerId" field="cleaner_id"
+                placeholder="Выберите сотрудника" icon="heroicon-o-user" />
+
+            <fieldset>
+                <legend class="text-sm font-semibold">Закреплён за квартирой? <span aria-hidden="true" class="text-[#285B86]">*</span></legend>
+                <div class="mt-1.5 grid grid-cols-2 gap-2.5">
+                    <button type="button" :aria-pressed="isAssigned ? 'true' : 'false'" x-on:click="isAssigned = true; scheduleAutosave()"
+                        :class="isAssigned ? 'bg-[#DCE8F7] text-[#234E79] ring-1 ring-[#AFC8E6]' : 'bg-[#EAEBED] text-[#344054]'"
+                        class="min-h-12 rounded-full px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-[#285B86]">Да</button>
+                    <button type="button" :aria-pressed="isAssigned ? 'false' : 'true'" x-on:click="isAssigned = false; scheduleAutosave()"
+                        :class="!isAssigned ? 'bg-[#DCE8F7] text-[#234E79] ring-1 ring-[#AFC8E6]' : 'bg-[#EAEBED] text-[#344054]'"
+                        class="min-h-12 rounded-full px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-[#285B86]">Нет</button>
+                </div>
+            </fieldset>
+
+            <x-controls.setup-select label="Квартира" :options="$apartmentOptions" model="apartmentId" field="apartment_id"
+                placeholder="Выберите квартиру" icon="heroicon-o-home-modern" />
+
+            <div class="grid grid-cols-1 gap-2.5 min-[360px]:grid-cols-2">
+                <label class="block min-w-0 text-sm font-semibold">Дата уборки <span aria-hidden="true" class="text-[#285B86]">*</span>
+                    <input type="date" x-model="cleaningDate" x-on:change="scheduleAutosave()" aria-required="true" @error('cleaning_date') aria-invalid="true" @enderror
+                        class="mt-1.5 min-h-12 w-full min-w-0 rounded-full border-0 bg-[#EAEBED] px-3 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]">
+                    @error('cleaning_date') <span class="mt-1.5 block text-xs text-[#B42318]">{{ $message }}</span> @enderror
+                </label>
+                <label class="block min-w-0 text-sm font-semibold">Дата проверки <span aria-hidden="true" class="text-[#285B86]">*</span>
+                    <input type="date" x-model="inspectionDate" x-on:change="scheduleAutosave()" aria-required="true" @error('inspection_date') aria-invalid="true" @enderror
+                        class="mt-1.5 min-h-12 w-full min-w-0 rounded-full border-0 bg-[#EAEBED] px-3 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]">
+                    @error('inspection_date') <span class="mt-1.5 block text-xs text-[#B42318]">{{ $message }}</span> @enderror
+                </label>
             </div>
-            <label class="block text-sm font-semibold">Сотрудник
-                <select x-model="cleanerId" x-on:change="scheduleAutosave()" class="mt-2 w-full rounded-2xl border-[#CBD5E1] text-base">
-                    <option value="">Выберите сотрудника</option>
+
+            <label class="block text-sm font-semibold">Кто убирался до этого <span class="font-normal text-[#596476]">· необязательно</span>
+                <input type="text" x-model="previousCleaner" x-on:input="scheduleAutosave(900)" maxlength="255" list="focus-previous-cleaners" placeholder="Выберите или введите имя"
+                    class="mt-1.5 min-h-12 w-full rounded-full border-0 bg-[#EAEBED] px-4 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]">
+                <datalist id="focus-previous-cleaners">
                     @foreach($peopleOptions as $person)
-                        <option value="{{ $person['id'] }}">{{ $person['name'] }}</option>
+                        <option value="{{ $person['name'] }}"></option>
                     @endforeach
-                </select>
-                @error('cleaner_id') <span class="mt-1 block text-xs text-[#B42318]">{{ $message }}</span> @enderror
+                </datalist>
             </label>
-            <label class="block text-sm font-semibold">Квартира
-                <select x-model="apartmentId" x-on:change="scheduleAutosave()" class="mt-2 w-full rounded-2xl border-[#CBD5E1] text-base">
-                    <option value="">Выберите квартиру</option>
-                    @foreach($apartmentOptions as $apartment)
-                        <option value="{{ $apartment['id'] }}">{{ $apartment['name'] }}</option>
-                    @endforeach
-                </select>
-                @error('apartment_id') <span class="mt-1 block text-xs text-[#B42318]">{{ $message }}</span> @enderror
+            <label class="block text-sm font-semibold">Комментарий <span class="font-normal text-[#596476]">· необязательно</span>
+                <textarea x-model="controlComment" x-on:input="scheduleAutosave(900)" maxlength="2000" rows="2"
+                    class="mt-1.5 w-full rounded-[22px] border-0 bg-[#EAEBED] px-4 py-3 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]"></textarea>
             </label>
-            <div class="grid grid-cols-1 gap-4 min-[360px]:grid-cols-2">
-                <label class="block text-sm font-semibold">Дата уборки
-                    <input type="date" x-model="cleaningDate" x-on:change="scheduleAutosave()" class="mt-2 w-full rounded-2xl border-[#CBD5E1] text-base">
-                    @error('cleaning_date') <span class="mt-1 block text-xs text-[#B42318]">{{ $message }}</span> @enderror
-                </label>
-                <label class="block text-sm font-semibold">Дата проверки
-                    <input type="date" x-model="inspectionDate" x-on:change="scheduleAutosave()" class="mt-2 w-full rounded-2xl border-[#CBD5E1] text-base">
-                    @error('inspection_date') <span class="mt-1 block text-xs text-[#B42318]">{{ $message }}</span> @enderror
-                </label>
-            </div>
-            <label class="flex items-center gap-3 text-sm font-semibold"><input type="checkbox" x-model="isAssigned" x-on:change="scheduleAutosave()" class="rounded border-[#CBD5E1]"> Уборка назначена</label>
-            <label class="block text-sm font-semibold">Предыдущий сотрудник <span class="font-normal text-[#64748B]">· необязательно</span>
-                <input type="text" x-model="previousCleaner" x-on:input="scheduleAutosave(900)" maxlength="255" class="mt-2 w-full rounded-2xl border-[#CBD5E1] text-base">
-            </label>
-            <label class="block text-sm font-semibold">Комментарий <span class="font-normal text-[#64748B]">· необязательно</span>
-                <textarea x-model="controlComment" x-on:input="scheduleAutosave(900)" maxlength="2000" rows="3" class="mt-2 w-full rounded-2xl border-[#CBD5E1] text-base"></textarea>
-            </label>
-            <button type="button" x-on:click="startControl()" class="min-h-12 w-full rounded-2xl bg-[#285B86] px-4 text-base font-semibold text-white">К вопросам →</button>
+            <button type="button" x-on:click="startControl()" class="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#285B86] px-4 text-base font-semibold text-white">
+                К вопросам <x-heroicon-o-arrow-right class="size-4" />
+            </button>
         </section>
     @elseif($stage === 'questions')
         <div class="space-y-3">
             @foreach($this->rooms as $roomIndex => $room)
                 <template x-if="activeRoomIndex === {{ $roomIndex }}">
-                    <section x-ref="roomTop" data-focus-room-page class="min-w-0">
+                    <section x-ref="roomTop" data-focus-room-page class="min-w-0 scroll-mt-4">
                         <div class="mb-2">
-                            <p class="text-xs font-semibold text-[#64748B]">Комната {{ $roomIndex + 1 }} из {{ count($this->rooms) }}</p>
                             <h2 class="mt-1 text-xl font-bold leading-tight text-[#18283D]">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}</h2>
                             <p class="mt-1 truncate text-xs text-[#64748B]">{{ collect($apartmentOptions)->firstWhere('id', $apartment_id)['name'] ?? 'Квартира не выбрана' }}</p>
                         </div>
@@ -1387,7 +1418,7 @@ new class extends Component
                                     ->pluck('label')->map(fn ($label) => mb_strtolower(trim((string) $label)))
                                     ->sort()->values()->all() === ['да', 'нет'];
                             @endphp
-                            <article id="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" wire:key="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" class="border-b border-[#EEF1F4] py-4 last:border-b-0">
+                            <article id="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" wire:key="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" class="scroll-mt-4 border-b border-[#EEF1F4] py-4 last:border-b-0">
                                 <div class="flex items-start justify-between gap-3">
                                     <h3 class="min-w-0 text-base font-semibold leading-snug text-[#18283D]">{{ $question['question'] ?? 'Вопрос' }}</h3>
                                     @if($optional) <span class="shrink-0 pt-0.5 text-[11px] text-[#64748B]">Необязательно</span> @endif
@@ -1428,17 +1459,14 @@ new class extends Component
                                         <h4 class="text-sm font-semibold">Фото и видео</h4>
                                         <span class="text-[11px] text-[#8A97A8]">{{ count($media) }} / 12</span>
                                     </div>
-                                    <div class="mt-2 grid grid-cols-2 gap-2">
-                                        <label class="flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#EEF5FC] px-3 text-xs font-semibold text-[#285B86]">
-                                            Фото
-                                            <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
-                                        </label>
-                                        <label class="flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#EEF5FC] px-3 text-xs font-semibold text-[#285B86]">
-                                            Видео
-                                            <input type="file" multiple accept="video/mp4,video/quicktime,video/webm" class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
-                                        </label>
-                                    </div>
-                                    <p class="mt-1.5 text-[11px] text-[#8A97A8]">Фото до 10 МБ · видео до 12 МБ.</p>
+                                    <label class="mt-2 flex min-h-12 cursor-pointer items-center gap-2.5 rounded-[20px] bg-[#EDF4FB] px-3 text-sm font-semibold text-[#285B86] focus-within:ring-2 focus-within:ring-[#285B86]">
+                                        <span aria-hidden="true" class="grid size-8 place-items-center rounded-full bg-[#285B86] text-white">
+                                            <x-heroicon-o-paper-clip class="size-[18px]" />
+                                        </span>
+                                        Прикрепить фото или видео
+                                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
+                                    </label>
+                                    <p class="mt-1.5 text-xs text-[#596476]">Фото до 10 МБ · видео до 12 МБ.</p>
                                     @error('mediaUpload') <p class="mt-2 text-xs text-[#B42318]">{{ $message }}</p> @enderror
                                     <div class="mt-2 grid grid-cols-2 gap-2 min-[390px]:grid-cols-3" aria-live="polite">
                                         @foreach($media as $mediaIndex => $file)
@@ -1466,11 +1494,25 @@ new class extends Component
                                         @endforeach
                                         <template x-for="item in uploads.filter(file => file.room === {{ $roomIndex }} && file.question === {{ $questionIndex }})" :key="item.id">
                                             <div class="min-w-0 overflow-hidden rounded-xl bg-[#F6F8FB] p-1">
-                                                <img x-show="item.kind === 'image'" :src="item.preview" alt="Локальное превью" class="h-20 w-full rounded-lg object-cover">
-                                                <video x-show="item.kind === 'video'" :src="item.preview" muted preload="metadata" class="h-20 w-full rounded-lg object-cover"></video>
-                                                <p class="truncate px-1 pt-1 text-[10px] font-medium" x-text="item.name"></p>
-                                                <p class="px-1 text-[10px]" :class="item.status === 'ошибка' ? 'text-[#B42318]' : 'text-[#64748B]'" x-text="item.error || (item.status === 'загрузка' ? 'Загрузка · ' + item.progress + '%' : item.status)"></p>
-                                                <progress x-show="item.status === 'загрузка'" :value="item.progress" max="100" class="mt-1 w-full"></progress>
+                                                <div class="relative overflow-hidden rounded-lg bg-[#E7EBEF]">
+                                                    <img x-show="item.kind === 'image'" :src="item.preview" alt="" class="aspect-square w-full object-cover">
+                                                    <video x-show="item.kind === 'video'" :src="item.preview" muted preload="metadata" class="aspect-square w-full object-cover"></video>
+                                                    <template x-if="item.status === 'загрузка'">
+                                                        <div class="absolute inset-0 grid place-items-center bg-black/35">
+                                                            <div class="relative grid size-12 place-items-center rounded-full bg-black/65 text-white"
+                                                                role="progressbar" aria-label="Прогресс загрузки файла" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="item.progress">
+                                                                <svg viewBox="0 0 44 44" aria-hidden="true" class="absolute inset-0 size-full -rotate-90 text-white">
+                                                                    <circle cx="22" cy="22" r="19" stroke="currentColor" stroke-width="2" fill="none" opacity=".3"/>
+                                                                    <circle cx="22" cy="22" r="19" stroke="currentColor" stroke-width="2" fill="none" pathLength="100"
+                                                                        stroke-linecap="round" :stroke-dasharray="item.progress + ' 100'"/>
+                                                                </svg>
+                                                                <span class="text-xs font-semibold tabular-nums" x-text="item.progress + '%'"></span>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                                <p class="truncate px-1 pt-1 text-xs font-medium" x-text="item.name"></p>
+                                                <p class="px-1 text-xs" :class="item.status === 'ошибка' ? 'text-[#B42318]' : 'text-[#596476]'" x-text="item.error || item.status"></p>
                                                 <div class="flex gap-2 px-1 text-[10px] font-semibold">
                                                     <button x-show="item.status === 'ожидание' || item.status === 'загрузка'" type="button" @click="cancel(item)" class="text-[#475569]">Отменить</button>
                                                     <button x-show="item.status === 'ошибка' || item.status === 'отменено'" type="button" @click="retry(item)" class="text-[#285B86]">Повторить</button>
@@ -1486,7 +1528,7 @@ new class extends Component
                 </template>
             @endforeach
         </div>
-        <div class="sticky bottom-0 z-10 -mx-4 mt-3 grid grid-cols-2 gap-2 border-t border-[#EEF1F4] bg-white/95 px-4 pt-2.5 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur-sm">
+        <div class="sticky bottom-0 z-10 -mx-4 mt-3 grid sm:-mx-6 sm:px-6 grid-cols-2 gap-2 border-t border-[#EEF1F4] bg-white/95 px-4 pt-2.5 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur-sm">
             <button type="button" x-on:click="previousRoom()" class="min-h-11 rounded-xl bg-[#F1F5F9] px-3 text-sm font-semibold">← Назад</button>
             <button type="button" x-on:click="nextRoom()" class="min-h-11 rounded-xl bg-[#285B86] px-3 text-sm font-semibold text-white">
                 <span x-show="activeRoomIndex + 1 !== roomCount">Далее →</span>
@@ -1556,15 +1598,22 @@ new class extends Component
             <div class="mt-6 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
                 <button type="button" wire:click="previous" class="min-h-12 rounded-2xl bg-[#F1F5F9] px-3 font-semibold">Назад</button>
                 <button type="button" wire:click="submit" wire:loading.attr="disabled" :disabled="busy || ['dirty', 'saving', 'error'].includes(clientDraftState) || {{ $isSubmitting || $pendingMediaCount > 0 ? 'true' : 'false' }}"
-                    class="min-h-12 rounded-2xl bg-[#285B86] px-3 font-semibold text-white disabled:opacity-50">Отправить контроль</button>
+                    class="min-h-12 rounded-2xl bg-[#285B86] px-3 font-semibold text-white disabled:opacity-50">
+                        <span wire:loading.remove wire:target="submit">Отправить контроль</span>
+                        <span wire:loading wire:target="submit">Отправляем контроль…</span>
+                </button>
             </div>
         </section>
     @elseif($stage === 'done')
         <section class="rounded-3xl bg-[#E7F8EF] p-6 text-center">
             <h2 class="text-xl font-bold text-[#16834B]">Контроль отправлен</h2>
             <p class="mt-2 text-sm">{{ $successMessage }}</p>
-            <a href="{{ route('page-checks') }}" class="mt-5 inline-flex min-h-11 items-center rounded-2xl bg-white px-5 font-semibold text-[#285B86]">К контролям</a>
+            @if($submittedResponseId)
+                <a href="{{ route('page-profile.checks.result', $submittedResponseId) }}" class="mt-5 inline-flex min-h-11 items-center rounded-full bg-[#285B86] px-5 font-semibold text-white">Открыть результат</a>
+            @endif
+            <a href="{{ route('page-profile.checks', ['tab' => 'conducted']) }}" class="mt-2 inline-flex min-h-11 items-center px-4 font-semibold text-[#285B86]">Мои контроли</a>
         </section>
     @endif
 
+    </div>
 </div>

@@ -132,24 +132,6 @@ CheckboxList::make('weekend_days')
         ])
                     ->columns(2),
 
-                Section::make('Права рабочего календаря')
-                    ->description('Отдельные права на просмотр календарей сотрудников, изменение графиков и экспорт.')
-                    ->visible(fn (?User $record): bool => $record?->role === 'supervisor')
-                    ->schema([
-                        Toggle::make('calendar_can_view_all')
-                            ->label('Просмотр календарей всех сотрудников')
-                            ->dehydrated(false)
-                            ->disabled(fn (): bool => ! auth()->user()?->isAdmin()),
-                        Toggle::make('calendar_can_edit')
-                            ->label('Изменение графиков и корректировки')
-                            ->dehydrated(false)
-                            ->disabled(fn (Get $get): bool => ! auth()->user()?->isAdmin() || ! (bool) $get('calendar_can_view_all')),
-                        Toggle::make('calendar_can_export')
-                            ->label('Экспорт календаря и статистики')
-                            ->dehydrated(false)
-                            ->disabled(fn (Get $get): bool => ! auth()->user()?->isAdmin() || ! (bool) $get('calendar_can_view_all')),
-                    ])
-                    ->columns(3),
                 Section::make('Telegram')
                     ->description('Данные, которые пришли из Telegram Mini App')
                     ->schema([

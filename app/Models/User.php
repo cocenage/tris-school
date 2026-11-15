@@ -127,48 +127,17 @@ class User extends Authenticatable implements FilamentUser
 
     public function canViewAllEmployeeCalendars(): bool
     {
-        if ($this->isAdmin()) {
-            return true;
-        }
-
-        if ($this->role !== 'supervisor') {
-            return false;
-        }
-
-        return (bool) $this->employeeCalendarPermission()?->can_view_all_calendars;
+        return $this->isAdmin();
     }
 
     public function canEditEmployeeCalendars(): bool
     {
-        if ($this->isAdmin()) {
-            return true;
-        }
-
-        $permission = $this->employeeCalendarPermission();
-
-        return $this->role === 'supervisor'
-            && (bool) $permission?->can_view_all_calendars
-            && (bool) $permission?->can_edit;
+        return $this->canViewAllEmployeeCalendars();
     }
 
     public function canExportEmployeeCalendars(): bool
     {
-        if ($this->isAdmin()) {
-            return true;
-        }
-
-        $permission = $this->employeeCalendarPermission();
-
-        return $this->role === 'supervisor'
-            && (bool) $permission?->can_view_all_calendars
-            && (bool) $permission?->can_export;
-    }
-
-    private function employeeCalendarPermission(): ?UserCalendarPermission
-    {
-        return $this->relationLoaded('calendarPermission')
-            ? $this->getRelation('calendarPermission')
-            : $this->calendarPermission()->first();
+        return $this->canViewAllEmployeeCalendars();
     }
 
     public function calendarTypeAccesses()

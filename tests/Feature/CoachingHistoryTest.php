@@ -103,12 +103,12 @@ it('allows administrators and supervisors to open an employee combined history',
 it('includes coaching counts in the existing admin roster and preserves its activity filter', function () {
     historyFixture($this->cleaner->id, $this->supervisor->id, 'coaching', '2026-10-24', 'Roster coaching');
     $admin = User::create(['name' => 'Admin', 'role' => 'admin', 'status' => 'approved', 'is_active' => true]);
-    Livewire::actingAs($admin)->test('profile.page-all-checks')
+    Livewire::actingAs($admin)->test('profile.page-staff-history')
         ->assertSee('Timeline cleaner')->assertSee('Коучинги: 1')
         ->set('activityFilter', 'no_items')->assertDontSee('Timeline cleaner')->assertSee('Timeline supervisor')
         ->set('activityFilter', 'has_items')->assertSee('Timeline cleaner')->assertDontSee('Timeline supervisor');
-    Livewire::actingAs($this->cleaner)->test('profile.page-all-checks')->assertForbidden();
-    Livewire::actingAs($this->supervisor)->test('profile.page-all-checks')->assertSee('Timeline cleaner');
+    Livewire::actingAs($this->cleaner)->test('profile.page-staff-history')->assertForbidden();
+    Livewire::actingAs($this->supervisor)->test('profile.page-staff-history')->assertSee('Timeline cleaner');
 });
 
 it('immediately includes a newly saved coaching in the right cleaner history without changing controls', function () {
@@ -133,4 +133,26 @@ it('immediately includes a newly saved coaching in the right cleaner history wit
     Livewire::actingAs($admin)->test('profile.page-employee-history', ['employee' => $other])
         ->assertDontSee('New coaching in employee history');
     expect(DB::table('control_responses')->where('id', $controlId)->first())->toEqual($before);
+});
+
+it('shows individual controls by zone and searches within the permitted lists', function () {
+    $apartment = DB::table('apartments')->insertGetId(['name' => 'Alpini']);
+    $green = historyFixture($this->cleaner->id, $this->supervisor->id, 'control', '2026-10-24', 'Green control');
+    $yellow = historyFixture($this->cleaner->id, $this->supervisor->id, 'control', '2026-10-23', 'Yellow control');
+    $red = historyFixture($this->cleaner->id, $this->supervisor->id, 'control', '2026-10-22', 'Red control');
+    foreach ([$green => 'green', $yellow => 'yellow', $red => 'red'] as $id => $zone) {
+        DB::table('control_responses')->where('id', $id)->update([
+            'result_zone' => $zone,
+            'apartment_id' => $id === $green ? $apartment : null,
+        ]);
+    }
+
+    Livewire::actingAs($this->supervisor)->test('profile.page-all-checks')
+        ->assertSee('Зелёная зона')->assertSee('Жёлтая зона')->assertSee('Красная зона')
+        ->set('zone', 'yellow')->assertSee('Yellow control')->assertDontSee('Green control')
+        ->set('zone', 'all')->set('search', 'Alpini')->assertSee('Green control')->assertDontSee('Yellow control');
+
+    Livewire::actingAs($this->cleaner)->test('profile.page-all-checks')->assertForbidden();
+    Livewire::actingAs($this->cleaner)->test('profile.page-checks')
+        ->set('search', 'Alpini')->assertSee('Green control')->assertDontSee('Red control');
 });

@@ -110,15 +110,20 @@ new class extends Component {
 };
 ?>
 
+@php
+    $canReturnToAll = request()->query('from') === 'all' && Auth::user()?->canViewAllStaffActivity();
+    $backUrl = $canReturnToAll
+        ? route('page-profile.all-checks')
+        : route('page-profile.checks', $controlResponse->supervisor_id === Auth::id() ? ['tab' => 'conducted'] : []);
+@endphp
+
 <x-slot:header>
     <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
-        <button
-            type="button"
-            onclick="history.back()"
-            class="flex h-[36px] w-[36px] items-center justify-center rounded-full text-[#213259]"
-        >
-            <x-heroicon-o-arrow-left class="h-[20px] w-[20px] stroke-[2]" />
-        </button>
+        <a href="{{ $backUrl }}"
+            aria-label="{{ $canReturnToAll ? 'Все контроли' : 'Мои контроли' }}"
+            class="flex size-11 items-center justify-center rounded-full bg-[#EFF1F3] text-[#213259]">
+            <x-heroicon-o-arrow-left class="size-5 stroke-2" />
+        </a>
 
         <span class="text-[18px] leading-none">
             Результат контроля
