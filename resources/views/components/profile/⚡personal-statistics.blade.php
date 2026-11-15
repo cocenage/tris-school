@@ -4,6 +4,7 @@ use App\Services\Calendar\EmployeeWorkCalendarStatisticsService;
 use App\Services\EmployeeProfileStatistics;
 use App\Services\Learning\LearningCatalog;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Collection;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Url;
 use Livewire\Component;
@@ -11,23 +12,30 @@ use Livewire\Component;
 new class extends Component
 {
     private const DAY_TYPES = [
-        'planned_workdays' => ['Рабочий день по графику', 'Рабочие дни по графику', '•', 'bg-[#D9F39C] text-[#223013]'],
-        'regular_off_days' => ['Регулярный выходной', 'Выходные', '–', 'bg-[#2A2D32] text-white'],
-        'approved_day_off_days' => ['Одобренный отгул', 'Отгулы', '◇', 'bg-[#BCDAF5] text-[#172D46]'],
-        'approved_vacation_days' => ['Одобренный отпуск', 'Отпуск', '○', 'bg-[#DECFFF] text-[#2E1E40]'],
-        'approved_unpaid_leave_days' => ['Неоплачиваемый отпуск', 'Неоплачиваемый отпуск', '△', 'bg-[#F1C3A8] text-[#3B281A]'],
-        'other_approved_absence_days' => ['Одобренное отсутствие', 'Прочие отсутствия', '□', 'bg-[#DCE0E6] text-[#2A2D33]'],
-        'unknown_schedule_days' => ['График не зафиксирован', 'График не зафиксирован', '?', 'bg-[#202226] text-[#DBDDE1] border-dashed border-[#6B7280]'],
-        'not_employed_days' => ['До начала работы', 'До начала работы', '–', 'bg-[#202226] text-[#DBDDE1]'],
+        'planned_workdays' => ['Рабочий день по графику', 'Рабочие дни по графику', '•', 'bg-[#E3EFF9] text-[#224C71]'],
+        'regular_off_days' => ['Регулярный выходной', 'Выходные', '–', 'bg-[#F0F2F5] text-[#536477]'],
+        'approved_day_off_days' => ['Одобренный отгул', 'Отгулы', '◇', 'bg-[#DFEEF3] text-[#235A6B]'],
+        'approved_vacation_days' => ['Одобренный отпуск', 'Отпуск', '○', 'bg-[#EDE5F7] text-[#543973]'],
+        'approved_unpaid_leave_days' => ['Неоплачиваемый отпуск', 'Неоплачиваемый отпуск', '△', 'bg-[#F9E8DB] text-[#754607]'],
+        'other_approved_absence_days' => ['Одобренное отсутствие', 'Прочие отсутствия', '□', 'bg-[#E9EDF2] text-[#405064]'],
+        'unknown_schedule_days' => ['График не зафиксирован', 'График не зафиксирован', '?', 'border border-dashed border-[#98A4AF] bg-white text-[#536477]'],
+        'not_employed_days' => ['До начала работы', 'До начала работы', '–', 'bg-white text-[#596A7B]'],
     ];
 
-    #[Url(as: 'stats_month', history: true)]
+    private const QUALITY_TYPES = [
+        'red' => ['Красная зона', '!', 'bg-[#FAE3E6] text-[#822E40]'],
+        'yellow' => ['Жёлтая зона', '△', 'bg-[#FFEFD6] text-[#754607]'],
+        'green' => ['Зелёная зона', '✓', 'bg-[#DFF1E7] text-[#245E40]'],
+        '' => ['Без зоны', '•', 'bg-[#E3EFF9] text-[#224C71]'],
+    ];
+
+    #[Url(as: 'stats_month')]
     public string $month = '';
 
-    #[Url(as: 'stats_view', history: true)]
+    #[Url(as: 'stats_view')]
     public string $mode = 'schedule';
 
-    #[Url(as: 'stats_day', history: true)]
+    #[Url(as: 'stats_day')]
     public string $selectedDay = '';
 
     public function boot(): void
@@ -69,6 +77,20 @@ new class extends Component
         $this->selectedDay = $day;
     }
 
+    public function showUpcomingWorkday(): void
+    {
+        $date = $this->statistics['next_workday'];
+        if ($date === null) {
+            return;
+        }
+
+        $this->mode = 'schedule';
+        $this->month = substr($date, 0, 7);
+        $this->selectedDay = $date;
+        unset($this->period, $this->dates, $this->statistics);
+        $this->dispatch('profile-upcoming-day-selected');
+    }
+
     #[Computed]
     public function period(): CarbonImmutable
     {
@@ -105,6 +127,29 @@ new class extends Component
     {
         return $day ? self::DAY_TYPES[app(EmployeeWorkCalendarStatisticsService::class)->metricForDay($day)] : self::DAY_TYPES['unknown_schedule_days'];
     }
+
+    protected function qualityTypes(): array
+    {
+        return self::QUALITY_TYPES;
+    }
+
+    protected function qualityDay(Collection $entries): array
+    {
+        $controls = $entries->where('item_type', 'control');
+        $hasCoaching = $entries->contains('item_type', 'coaching');
+
+        if ($controls->isEmpty()) {
+            return $hasCoaching
+                ? ['Коучинг', '◇', 'bg-[#E7EDF8] text-[#394B78]']
+                : ['Без записей', '', 'bg-[#F2F5F8] text-[#536477]'];
+        }
+
+        $zones = $controls->pluck('result_zone')->map(fn ($value) => (string) $value)->all();
+        $worst = array_key_first(array_intersect_key(self::QUALITY_TYPES, array_flip($zones))) ?? '';
+        [$label, $symbol, $tone] = self::QUALITY_TYPES[$worst];
+
+        return [($hasCoaching ? 'Контроль и коучинг' : 'Контроль').' · '.$label, $symbol.($hasCoaching ? '◇' : ''), $tone];
+    }
 };
 ?>
 
@@ -120,7 +165,6 @@ new class extends Component
     $activeDate ??= $period->isSameMonth($today) ? $today->toDateString() : $period->toDateString();
     $day = $stats['days']->get($activeDate);
     $entries = $stats['activity']->get($activeDate, collect());
-    $started = auth()->user()->work_started_at;
     $applications = $stats['applications'];
     $applicationGroups = [
         'На рассмотрении' => ['pending', 'new', 'open', ''],
@@ -133,79 +177,72 @@ new class extends Component
         'Рассмотрено' => ['reviewed'],
         'Закрыто' => ['closed'],
     ];
-    $applicationLabels = array_merge(...array_values($applicationGroups));
-    $otherApplications = array_diff_key($applications ?? [], array_flip($applicationLabels));
+    $applicationCounts = collect($applicationGroups)->map(fn (array $statuses) =>
+        array_sum(array_intersect_key($applications ?? [], array_flip($statuses))));
+    $applicationTotal = array_sum($applications ?? []);
+    $otherApplications = $applicationTotal - $applicationCounts->sum();
     $learning = $stats['learning'];
     $mare = $stats['mare'];
 @endphp
 
-<section aria-labelledby="profile-statistics-title" class="mb-5 space-y-3">
-    <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h2 id="profile-statistics-title" class="text-[24px] font-semibold tracking-tight text-[#192C42]">Моя статистика</h2>
-        @if($started && $started->toDateString() <= $today->toDateString())
-            <p class="text-sm text-[#526579]">В TRIS {{ $started->toImmutable()->locale('ru')->diffForHumans($today, ['syntax' => \Carbon\CarbonInterface::DIFF_ABSOLUTE, 'parts' => 2]) }}</p>
-        @endif
-    </div>
-
-    @if($stats['next_workday'])
-        <a class="flex min-h-11 items-center justify-between gap-2 rounded-2xl bg-[#E9F2F9] px-3 py-2 text-sm text-[#214F75]" href="{{ route('page-profile.calendar', ['month' => substr($stats['next_workday'], 0, 7), 'day' => $stats['next_workday']]) }}">
-            <span>Ближайший рабочий день</span>
-            <strong>{{ $stats['next_workday'] === $today->toDateString() ? 'Сегодня, ' : '' }}{{ $this->dateLabel($stats['next_workday']) }} <span aria-hidden="true">›</span></strong>
-        </a>
-    @endif
-
-    <div class="overflow-hidden rounded-[26px] bg-[#191B1E] p-3 text-[#F4F4F5] sm:p-4">
-        <div role="group" aria-label="Раздел статистики" class="grid grid-cols-2 gap-1 rounded-full border border-white/15 p-1">
+<section aria-labelledby="profile-statistics-title" class="mb-5 space-y-2 text-[#192C42]">
+    <div class="rounded-[22px] border border-[#DBE5EC] bg-white p-3 sm:p-4">
+        <h2 id="profile-statistics-title" tabindex="-1" x-data
+            x-on:profile-upcoming-day-selected.window="$nextTick(() => $el.focus())"
+            class="mb-2 scroll-mt-4 text-base font-semibold">Моя статистика</h2>
+        <div role="group" aria-label="Раздел статистики" class="grid grid-cols-2 gap-1 rounded-xl bg-[#EDF2F6] p-1">
             @foreach(['schedule' => 'График', 'quality' => 'Качество'] as $value => $label)
                 @php
                     $pressed = $isQuality === ($value === 'quality');
                 @endphp
                 <button type="button" wire:click="chooseMode('{{ $value }}')" aria-pressed="{{ $pressed ? 'true' : 'false' }}"
-                    @class(['min-h-11 rounded-full px-2 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-[#D9F39C]', 'bg-white text-[#191B1E]' => $pressed])>{{ $label }}</button>
+                    @class(['min-h-11 rounded-lg px-2 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-[#24577C]', 'bg-white text-[#24577C] shadow-sm' => $pressed])>{{ $label }}</button>
             @endforeach
         </div>
         <div class="mt-3 flex items-center justify-between gap-2">
             <h3 class="text-[15px] font-semibold">{{ $period->locale('ru')->translatedFormat('F Y') }}</h3>
             <div class="flex shrink-0 gap-1">
                 <button type="button" wire:click="changeMonth(-1)" aria-label="Предыдущий месяц" @disabled($period->year === 2000 && $period->month === 1)
-                    class="size-11 rounded-full bg-white/10 text-xl focus-visible:outline-2 focus-visible:outline-[#D9F39C] disabled:opacity-40">‹</button>
+                    class="size-11 rounded-xl bg-[#F2F5F8] text-xl text-[#24577C] focus-visible:outline-2 focus-visible:outline-[#24577C] disabled:opacity-40">‹</button>
                 <button type="button" wire:click="changeMonth(1)" aria-label="Следующий месяц" @disabled($period->year === 2100 && $period->month === 12)
-                    class="size-11 rounded-full bg-white/10 text-xl focus-visible:outline-2 focus-visible:outline-[#D9F39C] disabled:opacity-40">›</button>
+                    class="size-11 rounded-xl bg-[#F2F5F8] text-xl text-[#24577C] focus-visible:outline-2 focus-visible:outline-[#24577C] disabled:opacity-40">›</button>
             </div>
         </div>
 
         @if(($isQuality && $quality === null) || (! $isQuality && $schedule === null))
-            <p class="mt-4 text-sm text-[#CDD0D6]">Данные пока недоступны.</p>
+            <p class="mt-4 text-sm text-[#506479]">Данные пока недоступны.</p>
         @else
             <p class="mt-1 flex flex-wrap items-baseline gap-x-3" aria-live="polite">
-                <strong class="text-[42px] font-semibold leading-none tabular-nums">{{ $isQuality ? $quality['controls'] : $schedule['planned_workdays'] }}</strong>
-                <span class="text-sm text-[#CDD0D6]">{{ $isQuality ? 'Контроли за месяц' : 'Рабочие дни по графику' }}</span>
+                <strong class="text-[36px] font-semibold leading-none tabular-nums">{{ $isQuality ? $quality['controls'] : $schedule['planned_workdays'] }}</strong>
+                <span class="text-sm text-[#506479]">{{ $isQuality ? 'Контроли за месяц' : 'Рабочие дни по графику' }}</span>
             </p>
 
-            <ul class="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[#E2E3E7]">
+            <ul class="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[#506479]">
                 @if($isQuality)
-                    <li>◇ Коучинги · {{ $quality['coachings'] }}</li>
+                    <li><span aria-hidden="true" class="rounded bg-[#E7EDF8] px-1 text-[#394B78]">◇</span> Коучинги · {{ $quality['coachings'] }}</li>
                     @if($quality['average'] !== null)<li>Средний результат · {{ $quality['average'] }}%</li>@endif
-                    @foreach(['green' => 'Зелёная зона', 'yellow' => 'Жёлтая зона', 'red' => 'Красная зона', '' => 'Без зоны'] as $zone => $label)
-                        @if($count = $quality['zones']->get($zone, 0))<li>{{ $label }} · {{ $count }}</li>@endif
+                    @foreach($this->qualityTypes() as $zone => [$label, $symbol, $tone])
+                        @if($count = $quality['zones']->get($zone, 0))
+                            <li><span aria-hidden="true" class="rounded px-1 {{ $tone }}">{{ $symbol }}</span> {{ $label }} · {{ $count }}</li>
+                        @endif
                     @endforeach
                     @if($quality['penalties'] || $quality['errors'])
                         <li>Ошибки · {{ $quality['errors'] }}</li><li>Штрафные баллы · {{ $quality['penalties'] }}</li>
                     @endif
                 @else
-                    @foreach($this->dayTypes() as $key => [, $label, $symbol])
+                    @foreach($this->dayTypes() as $key => [, $label, $symbol, $tone])
                         @if($key !== 'planned_workdays' && $schedule[$key] > 0)
-                            <li aria-label="{{ $label }}: {{ $schedule[$key] }}">{{ $symbol }} {{ $label }} · {{ $schedule[$key] }}</li>
+                            <li aria-label="{{ $label }}: {{ $schedule[$key] }}"><span aria-hidden="true" class="rounded px-1 {{ $tone }}">{{ $symbol }}</span> {{ $label }} · {{ $schedule[$key] }}</li>
                         @endif
                     @endforeach
-                    @if($schedule['pending_request_days'] > 0)<li>◷ На согласовании · {{ $schedule['pending_request_days'] }}</li>@endif
+                    @if($schedule['pending_request_days'] > 0)<li><span aria-hidden="true" class="rounded bg-[#FFEFD6] px-1 text-[#754607]">◷</span> На согласовании · {{ $schedule['pending_request_days'] }}</li>@endif
                     @if($schedule['manual_change_days'] > 0)<li>Дни с корректировками · {{ $schedule['manual_change_days'] }}</li>@endif
                 @endif
             </ul>
 
             <div class="mt-3 grid grid-cols-7 gap-0.5 sm:gap-1" role="group" aria-label="Дни месяца">
                 @foreach(['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'] as $weekday)
-                    <span class="pb-1 text-center text-[11px] text-[#C9CCD3]" aria-hidden="true">{{ $weekday }}</span>
+                    <span class="pb-1 text-center text-[11px] text-[#506479]" aria-hidden="true">{{ $weekday }}</span>
                 @endforeach
                 @for($blank = 1; $blank < $period->dayOfWeekIso; $blank++)
                     <span aria-hidden="true"></span>
@@ -214,32 +251,30 @@ new class extends Component
                     @php
                         $calendarDay = $stats['days']->get($date);
                         $dailyEntries = $stats['activity']->get($date, collect());
-                        $hasControl = $dailyEntries->contains('item_type', 'control');
-                        $hasCoaching = $dailyEntries->contains('item_type', 'coaching');
-                        [$label, , $symbol, $tone] = $isQuality
-                            ? [
-                                $hasControl && $hasCoaching ? 'Контроль и коучинг' : ($hasControl ? 'Контроль' : ($hasCoaching ? 'Коучинг' : 'Без записей')),
-                                '',
-                                ($hasControl ? '✓' : '').($hasCoaching ? '◇' : ''),
-                                $hasControl ? 'bg-[#D9F39C] text-[#223013]' : ($hasCoaching ? 'bg-[#DECFFF] text-[#2E1E40]' : 'bg-[#2A2D32] text-white'),
-                            ]
-                            : $this->dayType($calendarDay);
+                        if ($isQuality) {
+                            [$label, $symbol, $tone] = $this->qualityDay($dailyEntries);
+                        } else {
+                            [$label, , $symbol, $tone] = $this->dayType($calendarDay);
+                        }
                         $pending = ! $isQuality && ($calendarDay['pending'] ?? false);
                     @endphp
                     <button type="button" wire:key="profile-statistics-{{ $date }}" wire:click="selectDay('{{ $date }}')"
                         aria-label="{{ $this->dateLabel($date) }} · {{ $label }}{{ $pending ? ' · заявка на согласовании' : '' }}"
                         aria-pressed="{{ $activeDate === $date ? 'true' : 'false' }}"
-                        @class(['grid min-h-11 min-w-0 content-center justify-items-center rounded-lg border border-transparent px-0 text-xs font-semibold tabular-nums focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#D9F39C]', $tone, 'ring-2 ring-inset ring-[#7DA7DC]' => $activeDate === $date])>
+                        @class(['relative min-h-11 min-w-0 rounded-lg px-0 text-xs font-semibold tabular-nums focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#24577C]', $tone, 'ring-2 ring-inset ring-[#24577C]' => $activeDate === $date])>
                         {{ $loop->iteration }}
-                        @if($pending || $symbol !== '')
-                            <span aria-hidden="true" class="text-[11px] leading-none">{{ $pending ? '◷' : $symbol }}</span>
+                        @if($symbol !== '')
+                            <span aria-hidden="true" class="absolute right-0.5 top-0.5 text-[9px] leading-none">{{ $symbol }}</span>
+                        @endif
+                        @if($pending)
+                            <span aria-hidden="true" class="absolute top-0.5 left-0.5 rounded-sm bg-[#FFEFD6] px-0.5 text-[9px] leading-none text-[#754607]">◷</span>
                         @endif
                     </button>
                 @endforeach
             </div>
 
-            <div class="mt-3 border-t border-white/15 pt-3" aria-live="polite">
-                <p class="text-xs text-[#CDD0D6]">{{ $this->dateLabel($activeDate, 'l, j F') }}</p>
+            <div class="mt-3 border-t border-[#DBE5EC] pt-3" aria-live="polite">
+                <p class="text-xs text-[#506479]">{{ $this->dateLabel($activeDate, 'l, j F') }}</p>
                 @if($isQuality)
                     @forelse($entries as $entry)
                         @php
@@ -247,11 +282,11 @@ new class extends Component
                             $isControl = $entry->item_type === 'control';
                             $url = route($isControl ? 'page-profile.checks.result' : 'page-coachings.show', [$entry, ...$params]);
                         @endphp
-                        <a href="{{ $url }}" class="mt-2 block min-h-11 rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">
+                        <a href="{{ $url }}" class="mt-2 block min-h-11 rounded-xl bg-[#F1F5F8] px-3 py-2 text-sm hover:bg-[#E4EFF8]">
                             <span class="font-semibold">{{ $isControl ? 'Контроль' : 'Коучинг' }} @if($entry->apartment) · {{ $entry->apartment->name }} @endif</span>
-                            @if($entry->supervisor)<span class="block text-xs text-[#CDD0D6]">{{ $entry->supervisor->name }}</span>@endif
+                            @if($entry->supervisor)<span class="block text-xs text-[#506479]">{{ $entry->supervisor->name }}</span>@endif
                             @if($isControl)
-                                <span class="block text-xs text-[#CDD0D6]">
+                                <span class="block text-xs text-[#506479]">
                                     {{ $entry->result_zone_label }}
                                     @if($entry->max_points > 0)
                                         · {{ $entry->score_percent ?? (int) round(100 * $entry->total_points / $entry->max_points) }}%
@@ -268,47 +303,80 @@ new class extends Component
                     @endforelse
                 @else
                     <p class="mt-1 text-sm font-semibold">{{ $this->dayType($day)[0] }}</p>
-                    @if($day['pending'] ?? false)<p class="mt-1 text-sm text-[#F6D08C]">Есть заявка на согласовании</p>@endif
-                    <a class="mt-1 inline-flex min-h-11 items-center text-sm text-[#D9F39C] underline"
+                    @if($day['pending'] ?? false)<p class="mt-1 text-sm text-[#754607]">Есть заявка на согласовании</p>@endif
+                    <a class="mt-1 inline-flex min-h-11 items-center text-sm text-[#24577C] underline"
                         href="{{ route('page-profile.calendar', ['month' => $period->format('Y-m'), 'day' => $activeDate]) }}">Открыть мой календарь</a>
                 @endif
             </div>
         @endif
     </div>
 
+    @if($stats['next_workday'])
+        <button type="button" wire:click="showUpcomingWorkday"
+            class="flex min-h-11 w-full items-center justify-between gap-2 rounded-xl bg-[#E4EFF8] px-3 py-2 text-left text-sm text-[#24577C]">
+            <span>Ближайший рабочий день</span>
+            <strong class="shrink-0">{{ $stats['next_workday'] === $today->toDateString() ? 'Сегодня, ' : '' }}{{ $this->dateLabel($stats['next_workday']) }} <span aria-hidden="true">›</span></strong>
+        </button>
+    @endif
+
     @if($applications !== null || $learning !== null || $mare)
-        <div class="divide-y divide-[#E0E7EE] rounded-[22px] bg-[#F3F6F9] px-3 text-[#192C42]">
+        <div
+            class="divide-y divide-[#DBE5EC] rounded-2xl border border-[#DBE5EC] bg-white">
             @if($applications !== null)
-                <a href="{{ route('page-profile.applications') }}" class="flex min-h-11 items-center justify-between gap-2 py-3">
-                    <div>
-                        <h3 class="text-sm font-semibold">Заявки</h3>
-                        <p class="text-xs text-[#526579]">
-                            @foreach($applicationGroups as $label => $statuses)
-                                @php($count = array_sum(array_intersect_key($applications, array_flip($statuses))))
-                                @if($count > 0)<span class="mr-2 inline-block">{{ $label }} · {{ $count }}</span>@endif
-                            @endforeach
-                            @if($otherApplications !== [])<span>Другие статусы · {{ array_sum($otherApplications) }}</span>@endif
-                            @if($applications === [])Заявок пока нет@endif
-                        </p>
+                <details wire:key="profile-statistics-applications" wire:ignore.self class="group px-3">
+                    <summary class="flex min-h-12 cursor-pointer list-none items-center justify-between gap-2 py-2 text-sm [&::-webkit-details-marker]:hidden">
+                        <span>
+                            <strong class="block font-semibold">Заявки</strong>
+                            <span class="block text-xs text-[#506479]">
+                                @if($applicationTotal)
+                                    @if($applicationCounts['На рассмотрении']){{ $applicationCounts['На рассмотрении'] }} на рассмотрении · @endif{{ $applicationTotal }} всего
+                                @else
+                                    Заявок пока нет
+                                @endif
+                            </span>
+                        </span>
+                        <span class="text-lg text-[#24577C] group-open:rotate-90" aria-hidden="true">›</span>
+                    </summary>
+                    <div class="border-t border-[#DBE5EC] pt-2 text-xs text-[#506479]">
+                        @if($applicationTotal)
+                            <p>За всё время</p>
+                            <ul class="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                                @foreach($applicationCounts as $label => $count)
+                                    @if($count > 0)<li>{{ $label }} · {{ $count }}</li>@endif
+                                @endforeach
+                                @if($otherApplications > 0)<li>Другие статусы · {{ $otherApplications }}</li>@endif
+                            </ul>
+                        @endif
+                        <a href="{{ route('page-profile.applications') }}" class="inline-flex min-h-11 items-center text-sm text-[#24577C] underline">Открыть мои заявки</a>
                     </div>
-                    <span aria-hidden="true">›</span>
-                </a>
+                </details>
             @endif
             @if($learning !== null)
-                <a href="{{ $learning['resume'] ? route('learning.lesson', [LearningCatalog::COURSE_SLUG, $learning['resume']->slug]) : route('learning.index') }}"
-                    class="flex min-h-11 items-center justify-between gap-2 py-3">
-                    <div>
-                        <h3 class="text-sm font-semibold">Обучение</h3>
-                        <p class="text-xs text-[#526579]">{{ $learning['total'] ? 'Уроки · '.$learning['completed'].' из '.$learning['total'].' · '.$learning['percent'].'%' : 'Уроков пока нет' }}</p>
-                        @if($learning['resume'])<p class="mt-0.5 text-xs text-[#526579]">Дальше · {{ $learning['resume']->title }}</p>@endif
+                <details wire:key="profile-statistics-learning" wire:ignore.self class="group px-3">
+                    <summary class="flex min-h-12 cursor-pointer list-none items-center justify-between gap-2 py-2 text-sm [&::-webkit-details-marker]:hidden">
+                        <span>
+                            <strong class="block font-semibold">Обучение</strong>
+                            <span class="block text-xs text-[#506479]">{{ $learning['total'] ? $learning['completed'].' из '.$learning['total'].' уроков · '.$learning['percent'].'%' : 'Уроков пока нет' }}</span>
+                        </span>
+                        <span class="text-lg text-[#24577C] group-open:rotate-90" aria-hidden="true">›</span>
+                    </summary>
+                    <div class="border-t border-[#DBE5EC] pt-2 text-xs text-[#506479]">
+                        @if($learning['resume'])<p>Дальше · {{ $learning['resume']->title }}</p>@endif
+                        <a href="{{ $learning['resume'] ? route('learning.lesson', [LearningCatalog::COURSE_SLUG, $learning['resume']->slug]) : route('learning.index') }}"
+                            class="inline-flex min-h-11 items-center text-sm text-[#24577C] underline">{{ $learning['resume'] ? 'Открыть урок' : 'Открыть обучение' }}</a>
                     </div>
-                    <span aria-hidden="true">›</span>
-                </a>
+                </details>
             @endif
             @if($mare)
-                <details class="py-2">
-                    <summary class="min-h-11 cursor-pointer py-2 text-sm font-semibold">TRIS Mare 2026 · {{ $mare->total_points }} баллов @if($mare->rating > 0) · {{ $mare->rating }}-е место @endif</summary>
-                    <dl class="grid grid-cols-2 gap-2 pb-2 text-xs text-[#526579]">
+                <details wire:key="profile-statistics-mare" wire:ignore.self class="group px-3">
+                    <summary class="flex min-h-12 cursor-pointer list-none items-center justify-between gap-2 py-2 text-sm [&::-webkit-details-marker]:hidden">
+                        <span>
+                            <strong class="block font-semibold">TRIS Mare 2026</strong>
+                            <span class="block text-xs text-[#506479]">{{ $mare->total_points.' баллов'.($mare->rating > 0 ? ' · '.$mare->rating.'-е место' : '') }}</span>
+                        </span>
+                        <span class="text-lg text-[#24577C] group-open:rotate-90" aria-hidden="true">›</span>
+                    </summary>
+                    <dl class="grid grid-cols-2 gap-2 border-t border-[#DBE5EC] py-2 text-xs text-[#506479]">
                         <div><dt>За день</dt><dd>{{ $mare->daily_points }}</dd></div>
                         <div><dt>За неделю</dt><dd>{{ $mare->weekly_points }}</dd></div>
                         <div><dt>Прогресс программы</dt><dd>{{ $mare->progress_percent }}%</dd></div>

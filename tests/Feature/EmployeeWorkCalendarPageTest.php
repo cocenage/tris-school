@@ -317,7 +317,12 @@ it('renders personal statistics at the profile entry point and switches the sele
         ->call('changeMonth', -1)
         ->assertSet('month', '2026-10')
         ->assertSee('График не зафиксирован')
-        ->assertSee('Ближайший рабочий день');
+        ->assertSee('Ближайший рабочий день')
+        ->call('showUpcomingWorkday')
+        ->assertSet('month', '2026-11')
+        ->assertSet('mode', 'schedule')
+        ->assertSet('selectedDay', '2026-11-04')
+        ->assertSee('Рабочий день по графику');
 });
 
 it('combines employee-owned activity, application statuses, learning and Mare without leaking another employee data', function () {
@@ -387,14 +392,14 @@ it('combines employee-owned activity, application statuses, learning and Mare wi
 
     try {
         $stats = Livewire::actingAs($employee)->test('profile.personal-statistics')
-            ->assertSee('Частично одобрено · 2')->assertDontSee('Отклонено ·')
-            ->assertSee('Уроки · 1 из 2 · 50%')->assertSee('Второй урок')
-            ->assertSee('TRIS Mare 2026 · 320 баллов')->assertSee('03.08.2026')->assertDontSee('999 баллов')
+            ->assertSee('2 всего')->assertSee('Частично одобрено · 2')->assertDontSee('Отклонено ·')
+            ->assertSee('1 из 2 уроков · 50%')->assertSee('Второй урок')
+            ->assertSee('TRIS Mare 2026')->assertSee('320 баллов · 2-е место')->assertSee('03.08.2026')->assertDontSee('999 баллов')
             ->call('selectDay', '2026-11-11')->assertSee('Одобренный отпуск')
             ->call('selectDay', '2026-11-12')->assertSee('Есть заявка на согласовании')
             ->call('chooseMode', 'quality')
             ->assertSee('Средний результат · 92%')->assertSee('Ошибки · 2')->assertSee('Штрафные баллы · 3')
-            ->assertSee('Контроль и коучинг')->assertSee('Orti 12')->assertSee('Автор контроля')
+            ->assertSee('Контроль и коучинг · Жёлтая зона')->assertSee('Orti 12')->assertSee('Автор контроля')
             ->assertDontSee('Чужая квартира')->assertDontSee('Средний результат · 30%')
             ->assertSee(route('page-coachings.show', [$coaching, 'stats_month' => '2026-11', 'stats_view' => 'quality', 'stats_day' => '2026-11-07']));
 
@@ -413,6 +418,16 @@ it('combines employee-owned activity, application statuses, learning and Mare wi
 
         $this->get(route('page-profile', [...$returnState, 'stats_month' => '2026-10', 'stats_day' => '2026-10-07']))
             ->assertOk()->assertSee('Средний результат · 30%')->assertSee('Orti 12');
+
+        DB::table('control_responses')->insert([
+            'control_id' => $control, 'cleaner_id' => $employee->id, 'supervisor_id' => $supervisor->id,
+            'apartment_id' => $apartment, 'inspection_date' => '2026-11-07', 'score_percent' => 90,
+            'total_points' => 90, 'max_points' => 100, 'result_zone' => 'red', 'errors_count' => 1, 'penalty_points' => 2,
+        ]);
+
+        $stats->call('changeMonth', 1)
+            ->assertSee('Контроль и коучинг · Красная зона')
+            ->assertSee('90%')->assertSee('92%');
 
     } finally {
         foreach (['tris_mare_snapshots', 'learning_lesson_progress', 'instructions', 'instruction_categories',

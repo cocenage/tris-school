@@ -280,6 +280,9 @@ $this->profileRequired = false;
     $user = auth()->user();
     $rolePreview = app(RolePreviewContext::class);
     $effectiveUiRole = $rolePreview->effectiveUiRole();
+    $canSeePersonalStatistics = EmployeeProfileStatistics::canView($user);
+    $today = EmployeeProfileStatistics::today();
+    $started = $user->work_started_at;
     $canSeeGeneralCalendar = ! $rolePreview->isActive()
         && ($user->isAdmin() || ($user->role === 'supervisor'
             && app(SupervisorPanelAccess::class)->hasGeneralCalendarAccess($user)));
@@ -287,8 +290,8 @@ $this->profileRequired = false;
 
 <x-slot:header>
 
-    <div class="flex items-center gap-[10px] p-[15px]">
-        <div class="h-[60px] w-[60px] shrink-0 overflow-hidden rounded-full bg-[#E1E1E1]">
+    <div @class(['flex items-center gap-3 p-[15px]', 'bg-[#F3F6F9] text-[#192C42]' => $canSeePersonalStatistics])>
+        <div @class(['size-[60px] shrink-0 overflow-hidden rounded-full', 'bg-[#E4EFF8]' => $canSeePersonalStatistics, 'bg-[#E1E1E1]' => ! $canSeePersonalStatistics])>
             @if($user?->telegram_photo_url)
                 <img
                     src="{{ $user->telegram_photo_url }}"
@@ -302,7 +305,7 @@ $this->profileRequired = false;
                     class="h-full w-full object-cover"
                 >
             @else
-                <div class="flex h-full w-full items-center justify-center text-[20px] font-medium text-[#666666]">
+                <div @class(['flex h-full w-full items-center justify-center text-[20px] font-medium', 'text-[#24577C]' => $canSeePersonalStatistics, 'text-[#666666]' => ! $canSeePersonalStatistics])>
                     {{ mb_substr($user?->name ?? 'U', 0, 1) }}
                 </div>
             @endif
@@ -314,7 +317,7 @@ $this->profileRequired = false;
                     {{ $user->name }}
                 </span>
 
-                <span class="text-[18px] opacity-50">
+                <span @class(['text-xs text-[#506479]' => $canSeePersonalStatistics, 'text-[18px] opacity-50' => ! $canSeePersonalStatistics])>
                     @switch($effectiveUiRole)
                         @case('admin')
                             Администратор
@@ -328,11 +331,15 @@ $this->profileRequired = false;
                         @default
                             {{ $effectiveUiRole }}
                     @endswitch
+                    @if($canSeePersonalStatistics && $started && $started->toDateString() <= $today->toDateString())
+                        · В TRIS {{ $started->toImmutable()->locale('ru')->diffForHumans($today, ['syntax' => \Carbon\CarbonInterface::DIFF_ABSOLUTE, 'parts' => 2]) }}
+                    @endif
                 </span>
             </div>
 
             <button
                 type="button"
+                aria-label="Редактировать профиль"
                 onclick="window.dispatchEvent(new CustomEvent('open-profile-edit'))"
                 class="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full bg-[#F8F7F5] text-[#213259] active:scale-[0.96]"
             >
@@ -345,9 +352,9 @@ $this->profileRequired = false;
 <div
     x-data="{ profileSheetOpen: @entangle('profileEditOpen').live }"
     x-on:open-profile-edit.window="$wire.openProfileEdit()"
-    class="w-full bg-white p-[15px]"
+    @class(['w-full p-[15px]', 'bg-[#F3F6F9]' => $canSeePersonalStatistics, 'bg-white' => ! $canSeePersonalStatistics])
 >
-    @if(EmployeeProfileStatistics::canView($user))
+    @if($canSeePersonalStatistics)
         <livewire:profile.personal-statistics />
     @endif
 
