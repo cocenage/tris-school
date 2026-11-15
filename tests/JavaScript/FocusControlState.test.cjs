@@ -84,3 +84,29 @@ test('the gallery swipes photos while keeping vertical scrolling and video contr
     gallery.step(-1);
     assert.equal(gallery.index, 1);
 });
+
+test('opening from a finding shows only its evidence and restores focus to that finding', async () => {
+    const { controlMediaGallery } = await import('../../resources/js/control-media-gallery.js');
+    const gallery = controlMediaGallery();
+    const makeGroup = (key, files) => ({
+        dataset: { mediaGroup: key, mediaTitle: 'Проверить поверхность' },
+        querySelectorAll: () => files.map(url => ({ dataset: { url } })),
+    });
+    const first = makeGroup('0-0', ['/other']);
+    const second = makeGroup('1-0', ['/photo', '/video']);
+    const focus = [];
+    const trigger = { dataset: { findingMedia: '1-0' }, focus: () => focus.push('finding') };
+    gallery.$el = { querySelectorAll: () => [first, second] };
+    gallery.$refs = { viewer: { showModal() {}, querySelector: () => ({ focus: () => focus.push('viewer') }) } };
+    gallery.$nextTick = callback => callback();
+
+    gallery.openFinding(trigger);
+    assert.equal(gallery.current.url, '/photo');
+    assert.equal(gallery.title, 'Проверить поверхность');
+    gallery.step(1);
+    assert.equal(gallery.current.url, '/video');
+    gallery.step(1);
+    assert.equal(gallery.current.url, '/video');
+    gallery.reset();
+    assert.deepEqual(focus, ['viewer', 'finding']);
+});

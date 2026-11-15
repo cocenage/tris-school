@@ -65,16 +65,14 @@ new class extends Component {
                 ? $answer['corrective']
                 : ['repeats' => null, 'action' => '', 'recheck' => null];
             return $error;
-        }, $errors);
+        }, collect($errors)->sortByDesc('is_critical')->values()->all());
     }
 
-    protected function roomSummary(): array
+    protected function roomSummary(array $errors): array
     {
         $schema = is_array($this->controlResponse->schema_snapshot)
             ? $this->controlResponse->schema_snapshot
             : [];
-        $errors = $this->errors();
-
         return collect($schema)
             ->map(function (mixed $room, int $roomIndex) use ($errors): array {
                 if (! is_array($room)) {
@@ -129,7 +127,8 @@ new class extends Component {
     $zoneLabel = $this->zoneLabel();
     $errors = $this->errors();
     $mediaItems = $record->mediaItems();
-    $roomSummary = $this->roomSummary();
+    $mediaByQuestion = collect($mediaItems)->keyBy(fn (array $item) => $item['room_index'].'-'.$item['question_index']);
+    $roomSummary = $this->roomSummary($errors);
 
     $apartmentName = $record->apartment?->name ?? 'Квартира не указана';
     $comment = trim((string) ($record->comment ?? ''));
@@ -138,7 +137,7 @@ new class extends Component {
 <div class="flex h-full min-h-0 flex-col bg-[#F4F7FB]">
     <div class="flex-1 min-h-0 overflow-y-auto">
         <div class="min-h-full rounded-t-[38px] bg-white">
-            <div class="p-[20px] pb-[40px]">
+            <div x-data="controlMediaGallery" class="p-[20px] pb-[40px]">
 
                 <div
                     class="mb-[18px] overflow-hidden border-[2px] bg-white"
@@ -223,6 +222,82 @@ new class extends Component {
                     </div>
                 </div>
 
+                @if($errors !== [] || $record->result_zone === 'green')
+                    <section aria-labelledby="control-findings-title" class="mb-[18px]">
+                        <h2 id="control-findings-title" class="mb-[10px] text-[16px] font-semibold text-[#111111]">
+                            Замечания <span class="text-sm font-normal text-[#596476]">· {{ count($errors) }}</span>
+                        </h2>
+
+                        @if(empty($errors))
+                            <p class="rounded-[28px] bg-[#F0FDF4] px-[18px] py-[20px] text-center text-[15px] font-semibold text-[#166534]">
+                                Ошибок нет
+                            </p>
+                        @else
+                            <div class="space-y-[12px]">
+                                @foreach($errors as $error)
+                                    @php
+                                        $questionKey = $error['room_index'].'-'.$error['question_index'];
+                                        $evidenceCount = count($mediaByQuestion->get($questionKey)['media'] ?? []);
+                                        $corrective = is_array($error['corrective'] ?? null) ? $error['corrective'] : [];
+                                    @endphp
+
+                                    <div class="overflow-hidden rounded-[26px] border border-[#FECACA] bg-white">
+                                        <div class="flex items-center justify-between gap-[12px] bg-[#FEE2E2] px-[16px] py-[12px]">
+                                            <div class="min-w-0 truncate text-[15px] font-bold text-[#991B1B]">
+                                                {{ $error['room_title'] ?? 'Комната' }}
+                                            </div>
+
+                                            <div class="shrink-0 rounded-full bg-white px-[10px] py-[5px] text-[12px] font-bold text-[#991B1B]">
+                                                −{{ (int) ($error['penalty_points'] ?? 0) }}
+                                            </div>
+                                        </div>
+
+                                        <div class="p-[15px]">
+                                            @if(! empty($error['is_critical']))
+                                                <div class="mb-[10px] inline-flex rounded-full bg-[#D92D20] px-[10px] py-[5px] text-[12px] font-bold text-white">
+                                                    Критическая ошибка
+                                                </div>
+                                            @endif
+
+                                            <div class="text-[13px] font-medium leading-[1.35] text-black/45">
+                                                {{ $error['question'] ?? 'Вопрос' }}
+                                            </div>
+
+                                            <div class="mt-[8px] text-[15px] font-semibold leading-[1.35] text-[#111111]">
+                                                {{ $error['selected_label'] ?? '—' }}
+                                            </div>
+
+                                            @if(filled($corrective['action'] ?? null) || ($corrective['repeats'] ?? null) !== null || ($corrective['recheck'] ?? null) !== null)
+                                                <div class="mt-[12px] rounded-[18px] bg-[#FFFAEB] px-[12px] py-[10px] text-[13px] text-[#6B4F12]">
+                                                    <div class="font-semibold">Корректирующие действия</div>
+                                                    @if(filled($corrective['action'] ?? null))
+                                                        <div class="mt-[4px]"><span class="font-semibold">Что сделать:</span> {{ $corrective['action'] }}</div>
+                                                    @endif
+                                                    @if(($corrective['repeats'] ?? null) !== null)
+                                                        <div class="mt-[3px]">Ошибка повторяется: {{ $corrective['repeats'] ? 'да' : 'нет' }}</div>
+                                                    @endif
+                                                    @if(($corrective['recheck'] ?? null) !== null)
+                                                        <div class="mt-[3px]">Повторный контроль: {{ $corrective['recheck'] ? 'нужен' : 'не нужен' }}</div>
+                                                    @endif
+                                                </div>
+                                            @endif
+
+                                            @if($evidenceCount > 0)
+                                                <button type="button" data-finding-media="{{ $questionKey }}" x-on:click="openFinding($el)"
+                                                    aria-haspopup="dialog" class="mt-3 inline-flex min-h-11 items-center gap-2 rounded-full bg-[#EDF4FF] px-4 text-sm font-semibold text-[#204579]">
+                                                    <x-heroicon-o-paper-clip class="size-4" />
+                                                    Фото и видео · {{ $evidenceCount }}
+                                                    <span class="sr-only">— {{ $error['room_title'] }}, {{ $error['question'] }}</span>
+                                                </button>
+                                            @endif
+                                        </div>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
+                    </section>
+                @endif
+
                 @if(! empty($roomSummary))
                     <div class="mb-[18px]">
                         <div class="mb-[10px] text-[16px] font-semibold text-[#111111]">
@@ -254,7 +329,6 @@ new class extends Component {
                 @if($mediaItems !== [])
                     <section
                         aria-labelledby="control-media-title"
-                        x-data="controlMediaGallery"
                         class="mb-[18px]"
                     >
                         <h2 id="control-media-title" class="mb-[10px] text-[16px] font-semibold text-[#111111]">
@@ -262,7 +336,9 @@ new class extends Component {
                         </h2>
                         <div class="space-y-2">
                             @foreach($mediaItems as $item)
-                                <details class="rounded-[18px] bg-[#F8F8F8]">
+                                <details data-media-group="{{ $item['room_index'] }}-{{ $item['question_index'] }}"
+                                    data-media-title="{{ $item['room'] }} · {{ $item['question'] }}"
+                                    class="rounded-[18px] bg-[#F8F8F8]">
                                     <summary class="cursor-pointer px-4 py-3 text-sm font-semibold">
                                         {{ $item['room'] }} · {{ $item['question'] }} <span class="font-normal text-[#596476]">({{ count($item['media']) }})</span>
                                     </summary>
@@ -308,7 +384,10 @@ new class extends Component {
                             <template x-if="current">
                                 <div>
                                     <div class="mb-2 flex items-center justify-between gap-2">
-                                        <span class="text-sm" aria-live="polite" x-text="`${index + 1} / ${items.length}`"></span>
+                                        <div class="min-w-0 text-sm">
+                                            <p class="break-words font-semibold" x-text="title"></p>
+                                            <span class="text-white/75" aria-live="polite" x-text="`${index + 1} / ${items.length}`"></span>
+                                        </div>
                                         <button type="button" x-on:click="close()" autofocus aria-label="Закрыть просмотр" class="min-h-11 min-w-11 rounded-full bg-white/10 text-2xl">×</button>
                                     </div>
                                     <div class="grid min-h-[40dvh] touch-pan-y touch-pinch-zoom place-items-center overflow-hidden rounded-xl bg-black"
@@ -332,71 +411,6 @@ new class extends Component {
                         </dialog>
                     </section>
                 @endif
-
-                @if(empty($errors))
-                    @if($record->result_zone === 'green')
-                        <div class="rounded-[28px] bg-[#F0FDF4] px-[18px] py-[20px] text-center text-[15px] font-semibold text-[#166534]">
-                            Ошибок нет. Контроль в зелёной зоне.
-                        </div>
-                    @endif
-                @else
-                    <div class="mb-[10px] text-[16px] font-semibold text-[#111111]">
-                        Ошибки контроля
-                    </div>
-
-                    <div class="space-y-[12px]">
-                        @foreach($errors as $error)
-                            @php
-                                $corrective = is_array($error['corrective'] ?? null) ? $error['corrective'] : [];
-                            @endphp
-
-                            <div class="overflow-hidden rounded-[26px] border border-[#FECACA] bg-white">
-                                <div class="flex items-center justify-between gap-[12px] bg-[#FEE2E2] px-[16px] py-[12px]">
-                                    <div class="min-w-0 truncate text-[15px] font-bold text-[#991B1B]">
-                                        {{ $error['room_title'] ?? 'Комната' }}
-                                    </div>
-
-                                    <div class="shrink-0 rounded-full bg-white px-[10px] py-[5px] text-[12px] font-bold text-[#991B1B]">
-                                        −{{ (int) ($error['penalty_points'] ?? 0) }}
-                                    </div>
-                                </div>
-
-                                <div class="p-[15px]">
-                                    @if(! empty($error['is_critical']))
-                                        <div class="mb-[10px] inline-flex rounded-full bg-[#D92D20] px-[10px] py-[5px] text-[12px] font-bold text-white">
-                                            Критическая ошибка
-                                        </div>
-                                    @endif
-
-                                    <div class="text-[13px] font-medium leading-[1.35] text-black/45">
-                                        {{ $error['question'] ?? 'Вопрос' }}
-                                    </div>
-
-                                    <div class="mt-[8px] text-[15px] font-semibold leading-[1.35] text-[#111111]">
-                                        {{ $error['selected_label'] ?? '—' }}
-                                    </div>
-
-                                    @if(filled($corrective['action'] ?? null) || ($corrective['repeats'] ?? null) !== null || ($corrective['recheck'] ?? null) !== null)
-                                        <div class="mt-[12px] rounded-[18px] bg-[#FFFAEB] px-[12px] py-[10px] text-[13px] text-[#6B4F12]">
-                                            <div class="font-semibold">Корректирующие действия</div>
-                                            @if(filled($corrective['action'] ?? null))
-                                                <div class="mt-[4px]"><span class="font-semibold">Что сделать:</span> {{ $corrective['action'] }}</div>
-                                            @endif
-                                            @if(($corrective['repeats'] ?? null) !== null)
-                                                <div class="mt-[3px]">Ошибка повторяется: {{ $corrective['repeats'] ? 'да' : 'нет' }}</div>
-                                            @endif
-                                            @if(($corrective['recheck'] ?? null) !== null)
-                                                <div class="mt-[3px]">Повторный контроль: {{ $corrective['recheck'] ? 'нужен' : 'не нужен' }}</div>
-                                            @endif
-                                        </div>
-                                    @endif
-
-                                </div>
-                            </div>
-                        @endforeach
-                    </div>
-                @endif
-
             </div>
         </div>
     </div>

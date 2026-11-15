@@ -1122,6 +1122,40 @@ it('restores, removes and submits Classic draft media without accepting a foreig
     $this->actingAs($cleaner)->get($resultUrl)->assertOk();
 });
 
+it('lists critical findings first and connects evidence to the exact question', function () {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $this->withoutVite();
+    Storage::fake('local');
+
+    $schema = controlWorkflowSchema();
+    $schema[] = $schema[0];
+    $schema[1]['title'] = 'Спальня';
+    $schema[1]['items'][0]['is_critical'] = true;
+    $schema[1]['items'][0]['answer_options_scored'][1]['label'] = 'Критическое замечание';
+
+    $path = "controls/{$control->id}/evidence.mp4";
+    Storage::disk('local')->put($path, 'Fixture');
+
+    $record = ControlResponse::create([
+        'control_id' => $control->id,
+        'cleaner_id' => $cleaner->id,
+        'supervisor_id' => $supervisor->id,
+        'apartment_id' => $apartment,
+        'schema_snapshot' => $schema,
+        'responses' => [
+            [['selected' => 'no', 'custom' => 'Замечание во входной зоне']],
+            [['selected' => 'no', 'media' => [['disk' => 'local', 'path' => $path, 'mime' => 'video/mp4']]]],
+        ],
+        'result_zone' => 'red',
+    ]);
+
+    Livewire::actingAs($cleaner)->test('profile.page-check-result', ['controlResponse' => $record])
+        ->assertSeeInOrder(['Замечания', 'Критическое замечание', 'Замечание во входной зоне', 'Комнаты'])
+        ->assertSeeHtml('data-finding-media="1-0"')
+        ->assertSeeHtml('data-media-group="1-0"')
+        ->assertDontSeeHtml('data-finding-media="0-0"');
+});
+
 it('persists distinct Classic media comments across draft restore and final submission, then reopens the stored JSON result', function () {
     [, $cleaner, $apartment] = mountControlWorkflow();
     $this->withoutVite();

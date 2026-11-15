@@ -5,15 +5,31 @@ export function controlMediaGallery() {
         failed: false,
         swipe: null,
         trigger: null,
+        title: '',
 
         get current() {
             return this.items[this.index] ?? null;
         },
 
         open(trigger) {
-            const buttons = [...this.$el.querySelectorAll('[data-control-media]')];
+            this.openGroup(trigger.closest('[data-media-group]'), trigger);
+        },
+
+        openFinding(trigger) {
+            const groups = [...this.$el.querySelectorAll('[data-media-group]')];
+            const group = groups.find(group => group.dataset.mediaGroup === trigger.dataset.findingMedia);
+            this.openGroup(group, trigger);
+        },
+
+        openGroup(group, trigger) {
+            if (!group) return;
+
+            const buttons = [...group.querySelectorAll('[data-control-media]')];
+            if (!buttons.length) return;
+
             this.items = buttons.map(button => ({ ...button.dataset }));
-            this.index = buttons.indexOf(trigger);
+            this.index = Math.max(0, buttons.indexOf(trigger));
+            this.title = group.dataset.mediaTitle;
             this.trigger = trigger;
             this.failed = false;
             this.$refs.viewer.showModal();
@@ -27,6 +43,7 @@ export function controlMediaGallery() {
         reset() {
             this.index = -1;
             this.items = [];
+            this.title = '';
             this.failed = false;
             this.cancelSwipe();
             this.trigger?.focus();

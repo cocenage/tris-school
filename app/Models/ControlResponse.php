@@ -417,6 +417,8 @@ class ControlResponse extends Model
 
                 if ($media !== []) {
                     $items[] = [
+                        'room_index' => (int) $roomIndex,
+                        'question_index' => (int) $questionIndex,
                         'room' => (string) ($room['title'] ?? 'Комната'),
                         'question' => (string) ($question['question'] ?? 'Вопрос'),
                         'media' => $media,
