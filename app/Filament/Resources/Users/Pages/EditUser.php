@@ -62,11 +62,6 @@ class EditUser extends EditRecord
         $data['calendar_vacation'] = $this->record->hasCalendarTypeAccess('vacation', true);
         $data['calendar_strike'] = $this->record->hasCalendarTypeAccess('strike', true);
 
-        $calendarPermission = $this->record->calendarPermission;
-        $data['calendar_can_view_all'] = (bool) $calendarPermission?->can_view_all_calendars;
-        $data['calendar_can_edit'] = (bool) $calendarPermission?->can_edit;
-        $data['calendar_can_export'] = (bool) $calendarPermission?->can_export;
-
         return $data;
     }
 
@@ -120,15 +115,6 @@ class EditUser extends EditRecord
         $this->saveCalendarTypeAccess('peak', (bool) ($this->data['calendar_peak'] ?? false));
         $this->saveCalendarTypeAccess('vacation', (bool) ($this->data['calendar_vacation'] ?? false));
         $this->saveCalendarTypeAccess('strike', (bool) ($this->data['calendar_strike'] ?? false));
-
-        if (auth()->user()?->isAdmin() && $this->record->role === 'supervisor') {
-            $canViewAll = (bool) ($this->data['calendar_can_view_all'] ?? false);
-            $this->record->calendarPermission()->updateOrCreate([], [
-                'can_view_all_calendars' => $canViewAll,
-                'can_edit' => $canViewAll && (bool) ($this->data['calendar_can_edit'] ?? false),
-                'can_export' => $canViewAll && (bool) ($this->data['calendar_can_export'] ?? false),
-            ]);
-        }
     }
 
     protected function saveCalendarTypeAccess(string $type, bool $canView): void

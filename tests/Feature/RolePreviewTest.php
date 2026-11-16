@@ -1,5 +1,6 @@
 <?php
 
+use App\Filament\Pages\EmployeeWorkCalendarReport;
 use App\Filament\Resources\CalendarEvents\CalendarEventResource;
 use App\Filament\Resources\CalendarEvents\Pages\ListCalendarEvents;
 use App\Filament\Resources\RewardPrograms\Pages\EditRewardProgram;
@@ -553,7 +554,7 @@ it('shows profile links by actual access and excludes finance calendar events fo
     Livewire::actingAs($this->supervisor)
         ->test('page-profile')
         ->assertSee('Мой календарь')
-        ->assertSee('Все проверки')
+        ->assertSee('Все контроли')
         ->assertSee('Рабочий календарь')
         ->assertSee('Панель супервайзера')
         ->assertSee('/admin/supervisor')
@@ -562,19 +563,32 @@ it('shows profile links by actual access and excludes finance calendar events fo
     Livewire::actingAs($this->cleaner)
         ->test('page-profile')
         ->assertSee('Мой календарь')
-        ->assertDontSee('Все проверки')
+        ->assertDontSee('Все контроли')
         ->assertDontSee('Рабочий календарь')
         ->assertDontSee('Панель супервайзера')
         ->assertDontSee('/admin/finance');
 
     Livewire::actingAs($this->admin)
         ->test('page-profile')
-        ->assertSee('Все проверки')
+        ->assertSee('Все контроли')
         ->assertSee('Рабочий календарь')
         ->assertDontSee('/admin/finance');
 
     DB::table('user_calendar_type_accesses')->where('user_id', $this->supervisor->id)->where('type', 'workflow')->delete();
     Livewire::actingAs($this->supervisor)->test('page-profile')->assertDontSee('Рабочий календарь');
+});
+
+it('denies a supervisor the direct employee calendar report URL even with a legacy grant', function () {
+    $this->supervisor->panelAccesses()->create(['panel' => 'education', 'can_access' => true]);
+    $this->supervisor->calendarPermission()->create([
+        'can_view_all_calendars' => true,
+        'can_edit' => true,
+        'can_export' => true,
+    ]);
+
+    $this->actingAs($this->supervisor)
+        ->get(EmployeeWorkCalendarReport::getUrl(panel: 'education'))
+        ->assertForbidden();
 });
 
 it('denies the main admin panel to supervisors despite legacy explicit grants', function () {

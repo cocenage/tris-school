@@ -14,8 +14,10 @@ class TelegramScheduledControlSummaryFormatter
         $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
         $text = $this->formatInteractive($delivery, $states);
         $context = $delivery->sequence_context ?? [];
-        $scope = ($context['stage'] ?? null) === 'second' && is_array($context['eligible_districts'] ?? null)
-            ? $context['eligible_districts'] : null;
+        $scope = ScheduledControlTypes::activeDistricts($context);
+        if (($context['stage'] ?? null) === 'second' && is_array($context['eligible_districts'] ?? null)) {
+            $scope = array_values(array_intersect($scope, $context['eligible_districts']));
+        }
         $keyboard = ScheduledControlTypes::districtKeyboard($delivery->id, $scope, $states);
 
         return [
@@ -30,13 +32,14 @@ class TelegramScheduledControlSummaryFormatter
         $lines = [htmlspecialchars((string) $delivery->scheduledMessage?->message, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), ''];
         $latest = $states ?? app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
         $context = $delivery->sequence_context ?? [];
+        $districts = array_intersect_key(ScheduledControlTypes::DISTRICTS, array_flip(ScheduledControlTypes::activeDistricts($context)));
 
         if (($context['stage'] ?? null) === 'second') {
-            $lines[] = $this->sequenceContextLine($context);
+            $lines[] = $this->sequenceContextLine($context, $districts);
             $lines[] = '';
         }
 
-        foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+        foreach ($districts as $key => $label) {
             $answers = collect($latest[$key] ?? []);
             if (($context['stage'] ?? null) === 'second'
                 && ($context['criteria_matches'] ?? false)
@@ -84,7 +87,7 @@ class TelegramScheduledControlSummaryFormatter
         return implode("\n", $lines);
     }
 
-    private function sequenceContextLine(array $context): string
+    private function sequenceContextLine(array $context, array $districts): string
     {
         $sourceTime = htmlspecialchars((string) ($context['source_time'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $sourceStatus = $context['source_status'] ?? 'missing_delivery';
@@ -98,11 +101,12 @@ class TelegramScheduledControlSummaryFormatter
                 default => 'предыдущий контроль недоступен',
             };
 
-            return 'ℹ️ Контекст '.$sourceTime.': '.$description.'; проверяются все районы.';
+            return 'ℹ️ Контекст '.$sourceTime.': '.$description.($districts === ScheduledControlTypes::DISTRICTS
+                ? '; проверяются все районы.' : '; проверяются районы текущей смены.');
         }
 
         $states = [];
-        foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+        foreach ($districts as $key => $label) {
             $status = $context['previous_states'][$key] ?? 'no_response';
             $statusLabel = match ($status) {
                 'confirmed' => 'Да', 'problem' => 'Нет', 'partial' => 'частично', 'unclear' => 'неясно',
@@ -224,6 +228,8 @@ class TelegramScheduledControlSummaryFormatter
                     'partial' => '🟡 частично',
                     'conflict' => '⚠️ противоречивые ответы',
                     'unclear' => '❔ получен неясный ответ',
+                    'pending' => '⏳ окно ответа ещё открыто',
+                    'not_applicable' => '— не применимо',
                     default => '⚪ нет ответа',
                 };
                 $lines[] = $district['district'].' — '.$description;

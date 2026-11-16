@@ -37,7 +37,7 @@ class TelegramScheduledControlFollowupService
 
         foreach ($deliveries as $delivery) {
             $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
-            foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+            foreach (ScheduledControlTypes::activeDistricts($delivery->sequence_context ?? []) as $district) {
                 $candidate = $this->candidate($delivery, $district, $now, $states);
                 if ($candidate === null || $candidate['due_at']->gt($now)) {
                     continue;
@@ -138,7 +138,7 @@ class TelegramScheduledControlFollowupService
     {
         $message = $delivery->scheduledMessage;
         if ($message === null || ! $message->enabled || $delivery->status !== 'sent' || ! $delivery->sent_at
-            || ! isset(ScheduledControlTypes::DISTRICTS[$district]) || ! $this->destinationUnchanged($delivery, $message)) {
+            || ! in_array($district, ScheduledControlTypes::activeDistricts($delivery->sequence_context ?? []), true) || ! $this->destinationUnchanged($delivery, $message)) {
             return null;
         }
 

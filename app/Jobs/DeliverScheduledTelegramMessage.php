@@ -9,6 +9,7 @@ use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
 use App\Services\Telegram\TelegramScheduledMessageDeliveryService;
+use App\Services\Telegram\TelegramShiftOpening;
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -48,6 +49,12 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         $delivery = TelegramScheduledMessageDelivery::query()->find($this->deliveryId);
 
         if ($delivery === null || in_array($delivery->status, ['sent', 'failed', 'cancelled', 'uncertain', 'skipped'], true)) {
+            return;
+        }
+
+        if ($delivery->control_type === ScheduledControlTypes::SHIFT_OPENING) {
+            $this->deliverOpening($delivery, $telegram);
+
             return;
         }
 
@@ -115,6 +122,53 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         $this->deliver($delivery, $telegram);
     }
 
+    private function deliverOpening(TelegramScheduledMessageDelivery $delivery, TelegramBotService $telegram): void
+    {
+        $anchor = $delivery->scheduledMessage;
+        if (! $anchor?->enabled || $anchor->control_type !== 'schedule_checked'
+            || ! $anchor->telegramChat?->is_enabled || ! $anchor->telegramTopic?->is_enabled
+            || (string) $anchor->telegramTopic->telegram_chat_id !== (string) $anchor->telegram_chat_record_id
+            || (string) $anchor->telegramChat->telegram_chat_id !== (string) $delivery->chat_id
+            || (string) $anchor->telegramTopic->telegram_thread_id !== (string) $delivery->message_thread_id
+            || ! filled(config('services.telegram.bot_token'))) {
+            $this->failDelivery($delivery, 'opening_destination_unavailable');
+
+            return;
+        }
+
+        $payload = app(TelegramShiftOpening::class)->payload($delivery);
+        $claimed = TelegramScheduledMessageDelivery::query()->whereKey($delivery->id)
+            ->whereIn('status', ['pending', 'retrying'])->update(['status' => 'uncertain', 'failure_reason' => 'opening_delivery_unconfirmed']);
+        if ($claimed !== 1) {
+            return;
+        }
+
+        try {
+            $id = app(TelegramOutboundMonitor::class)->withContext([
+                'operation_key' => 'scheduled_delivery:'.$delivery->id,
+                'notification_type' => 'oks_shift_opening',
+                'source_type' => 'telegram_scheduled_message_delivery',
+                'source_id' => $delivery->id,
+                'scheduled_for' => $delivery->scheduled_for,
+            ], fn (): ?int => $telegram->sendRichMessage(
+                (string) $delivery->chat_id, $payload['rich_message'], $payload['fallback_html'],
+                (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'], preferRich: true,
+            ));
+        } catch (Throwable $exception) {
+            Log::warning('OKS opening delivery could not be confirmed.', ['delivery_id' => $delivery->id, 'exception' => class_basename($exception)]);
+
+            return;
+        }
+
+        if ($id !== null) {
+            $now = CarbonImmutable::now('UTC');
+            $delivery->update([
+                'status' => 'sent', 'failure_reason' => null, 'telegram_message_id' => $id,
+                'sent_at' => $now->setTimezone('Europe/Rome'), 'sent_at_utc' => $now->format('Y-m-d H:i:s'),
+            ]);
+        }
+    }
+
     private function deliver(TelegramScheduledMessageDelivery $delivery, TelegramBotService $telegram): void
     {
         $message = $delivery->scheduledMessage;
@@ -126,6 +180,26 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         }
 
         $isWorkControl = $delivery->bot_type === 'work' && array_key_exists((string) $delivery->control_type, ScheduledControlTypes::LABELS);
+        if ($isWorkControl && $delivery->status === 'pending') {
+            $assignments = app(TelegramShiftOpening::class)->assignmentsFor($delivery);
+            if ($assignments === []) {
+                $delivery->update(['status' => 'skipped', 'failure_reason' => 'oks_no_active_districts']);
+
+                return;
+            }
+            if ($assignments !== null) {
+                $context = [...($delivery->sequence_context ?? []), 'oks_assignments' => $assignments];
+                if (($context['stage'] ?? null) === 'second' && ($context['criteria_matches'] ?? false)
+                    && array_intersect(array_keys($assignments), $context['eligible_districts']) === []) {
+                    $delivery->update([
+                        'status' => 'skipped', 'failure_reason' => 'sequential_all_districts_confirmed', 'sequence_context' => $context,
+                    ]);
+
+                    return;
+                }
+                $delivery->update(['sequence_context' => $context]);
+            }
+        }
         if (! filled(config($isWorkControl ? 'services.telegram.bot_token' : 'services.telegram.scheduled_bot_token'))) {
             $this->failDelivery($delivery, $isWorkControl ? 'work_bot_token_missing' : 'scheduled_bot_token_missing');
             Log::warning($isWorkControl ? 'Work Telegram bot token is not configured for a scheduled control.' : 'Scheduled Telegram bot token is not configured.', [
@@ -238,7 +312,8 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
     {
         $delivery = TelegramScheduledMessageDelivery::query()->find($this->deliveryId);
 
-        if ($delivery === null || $delivery->status === 'sent') {
+        if ($delivery === null || $delivery->status === 'sent'
+            || ($delivery->status === 'uncertain' && $delivery->control_type === ScheduledControlTypes::SHIFT_OPENING)) {
             return;
         }
 

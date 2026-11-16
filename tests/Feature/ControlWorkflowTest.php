@@ -24,8 +24,10 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Livewire\Features\SupportFileUploads\FileUploadConfiguration;
 use Livewire\Livewire;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
@@ -285,6 +287,7 @@ it('sends a single Work Bot result message with a Mini App deep link', function 
     Http::assertSent(fn (HttpRequest $request): bool => $request->url() === 'https://api.telegram.org/bottest-bot-token/sendMessage'
         && data_get($request->data(), 'chat_id') === 'test-recipient-chat'
         && str_contains((string) data_get($request->data(), 'text'), 'Apartment')
+        && str_contains((string) data_get($request->data(), 'text'), '🟢 <b>Контроль качества завершён</b>')
         && str_contains((string) data_get($request->data(), 'text'), 'Ошибки:')
         && data_get($request->data(), 'reply_markup.inline_keyboard.0.0.url')
             === 'https://t.me/tris_test_bot?startapp=control_result_'.$response->id,
@@ -1119,6 +1122,40 @@ it('restores, removes and submits Classic draft media without accepting a foreig
     $this->actingAs($cleaner)->get($resultUrl)->assertOk();
 });
 
+it('lists critical findings first and connects evidence to the exact question', function () {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $this->withoutVite();
+    Storage::fake('local');
+
+    $schema = controlWorkflowSchema();
+    $schema[] = $schema[0];
+    $schema[1]['title'] = 'Спальня';
+    $schema[1]['items'][0]['is_critical'] = true;
+    $schema[1]['items'][0]['answer_options_scored'][1]['label'] = 'Критическое замечание';
+
+    $path = "controls/{$control->id}/evidence.mp4";
+    Storage::disk('local')->put($path, 'Fixture');
+
+    $record = ControlResponse::create([
+        'control_id' => $control->id,
+        'cleaner_id' => $cleaner->id,
+        'supervisor_id' => $supervisor->id,
+        'apartment_id' => $apartment,
+        'schema_snapshot' => $schema,
+        'responses' => [
+            [['selected' => 'no', 'custom' => 'Замечание во входной зоне']],
+            [['selected' => 'no', 'media' => [['disk' => 'local', 'path' => $path, 'mime' => 'video/mp4']]]],
+        ],
+        'result_zone' => 'red',
+    ]);
+
+    Livewire::actingAs($cleaner)->test('profile.page-check-result', ['controlResponse' => $record])
+        ->assertSeeInOrder(['Замечания', 'Критическое замечание', 'Замечание во входной зоне', 'Комнаты'])
+        ->assertSeeHtml('data-finding-media="1-0"')
+        ->assertSeeHtml('data-media-group="1-0"')
+        ->assertDontSeeHtml('data-finding-media="0-0"');
+});
+
 it('persists distinct Classic media comments across draft restore and final submission, then reopens the stored JSON result', function () {
     [, $cleaner, $apartment] = mountControlWorkflow();
     $this->withoutVite();
@@ -1178,8 +1215,12 @@ it('persists distinct Classic media comments across draft restore and final subm
         }
     }
 
+    $previewUrl = route('page-checks.control.result-media', [$response, 0, 0, 0, 'thumbnail' => 1]);
+
     $this->actingAs($cleaner)->get($resultUrl)
         ->assertOk()
+        ->assertSee($previewUrl, false)
+        ->assertDontSee('<video src=', false)
         ->assertSee('Замечание из уже сохранённого JSON')
         ->assertSee('Скол на поверхности')
         ->assertSee('Общее замечание к контролю');
@@ -1188,6 +1229,13 @@ it('persists distinct Classic media comments across draft restore and final subm
     $this->actingAs($unauthorized)->get($resultUrl)->assertOk();
     $otherCleaner = User::create(['name' => 'Other cleaner', 'role' => 'cleaner', 'status' => 'approved', 'is_active' => true]);
     $this->actingAs($otherCleaner)->get($resultUrl)->assertForbidden();
+    $this->get($previewUrl)->assertForbidden();
+
+    $thumbnail = $this->actingAs($cleaner)->get($previewUrl)
+        ->assertOk()
+        ->assertHeader('Content-Type', 'image/jpeg')
+        ->baseResponse;
+    expect($thumbnail->getFile()->getPathname())->not->toBe(Storage::disk($draftMedia[0]['disk'])->path($draftMedia[0]['path']));
 });
 
 it('keeps empty photo comments absent and preserves the overall control comment', function () {
@@ -1277,7 +1325,7 @@ it('writes the Focus schema snapshot only when it first becomes available', func
 });
 
 it('shows all questions in the active Focus room and preserves configured question types and answers', function () {
-    [, , , $control] = mountControlWorkflow();
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
     $control->update(['main' => [[
         'title' => 'Ванная',
         'items' => [
@@ -1303,6 +1351,8 @@ it('shows all questions in the active Focus room and preserves configured questi
     ]]]);
 
     Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
         ->call('start')
         ->assertSet('currentRoomIndex', 0)
         ->assertSee('Полотенца на месте?')
@@ -1318,6 +1368,26 @@ it('shows all questions in the active Focus room and preserves configured questi
         ->assertSet('currentRoomIndex', 0)
         ->assertSet('answers.0.0.selected', 'complete')
         ->assertSet('answers.0.1.custom', 'Без замечаний');
+});
+
+it('keeps Focus on the setup screen until staff, apartment and dates are valid', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    Livewire::test('forms.page-control-focus')
+        ->call('start')
+        ->assertSet('stage', 'setup')
+        ->assertHasErrors(['cleaner_id', 'apartment_id'])
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->set('cleaning_date', '2026-02-30')
+        ->set('inspection_date', '2026-03-04')
+        ->call('start')
+        ->assertSet('stage', 'setup')
+        ->assertHasErrors('cleaning_date')
+        ->set('cleaning_date', '2026-03-03')
+        ->call('start')
+        ->assertSet('stage', 'questions')
+        ->assertHasNoErrors();
 });
 
 it('clears pending Focus upload state when an upload is cancelled', function () {
@@ -1550,13 +1620,15 @@ it('does not persist client-supplied media paths in Focus', function () {
 });
 
 it('handles a larger Focus room without losing its answers', function () {
-    [, , , $control] = mountControlWorkflow();
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
     $room = controlWorkflowSchema()[0];
     $room['items'] = array_fill(0, 25, $room['items'][0]);
     $control->update(['main' => [$room]]);
 
     Livewire::test('forms.page-control-focus')
         ->assertCount('questions', 25)
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
         ->call('start')
         ->call('goToQuestion', 0, 24)
         ->assertSet('currentRoomIndex', 0)
@@ -1567,13 +1639,15 @@ it('handles a larger Focus room without losing its answers', function () {
 });
 
 it('keeps a media upload attached to its original question after navigating away', function () {
-    [, , , $control] = mountControlWorkflow();
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
     $room = controlWorkflowSchema()[0];
     $room['items'][] = ['question' => 'Второй вопрос', 'answer_type' => 'text'];
     $control->update(['main' => [$room, ['title' => 'Кухня', 'items' => [['question' => 'Плита', 'answer_type' => 'text']]]]]);
     Storage::fake('local');
 
     Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
         ->call('start')
         ->call('beginMediaUpload')
         ->call('goToRoom', 1)
@@ -1587,8 +1661,8 @@ it('keeps a media upload attached to its original question after navigating away
         ->call('goToRoom', 0)
         ->assertSet('currentRoomIndex', 0)
         ->assertSee('Фото и видео')
-        ->assertSee('Фото')
-        ->assertSee('Видео')
+        ->assertSee('Прикрепить фото или видео')
+        ->assertSee('accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm"', false)
         ->assertDontSee('Загрузка файлов');
 });
 
@@ -1618,6 +1692,40 @@ it('shows missing required questions on Focus review and requires explicit confi
         ->assertSet('submitted', true);
 
     expect(DB::table('control_responses')->count())->toBe(1);
+});
+
+it('accepts a 60 MB video in Focus and clears a rejected temporary upload', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+    Storage::fake('local');
+    config(['livewire.temporary_file_upload.rules' => ['required', 'file', 'max:102400']]);
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('start')
+        ->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->create('large.mp4', 60 * 1024, 'video/mp4'))
+        ->call('attachMedia', 0, 0)
+        ->assertHasNoErrors()
+        ->assertCount('savedMedia.0.0', 1)
+        ->call('beginMediaUpload')
+        ->set('mediaUpload', UploadedFile::fake()->image('too-large.jpg')->size(11 * 1024))
+        ->call('attachMedia', 0, 0)
+        ->assertHasErrors('mediaUpload')
+        ->assertSet('mediaUpload', null)
+        ->assertSet('pendingMediaCount', 0)
+        ->assertCount('savedMedia.0.0', 1);
+});
+
+it('accepts larger files only at the signed Focus upload endpoint', function () {
+    [$supervisor, $cleaner] = mountControlWorkflow();
+    Storage::fake('local');
+    $url = URL::temporarySignedRoute('page-checks.control.focus-upload', now()->addMinutes(5), ['user' => $supervisor->id]);
+    $files = fn () => ['files' => [UploadedFile::fake()->create('video.mp4', 60 * 1024, 'video/mp4')]];
+
+    $this->actingAs($cleaner)->post($url, $files())->assertForbidden();
+    $this->actingAs($supervisor)->post($url, $files())->assertOk()->assertJsonCount(1, 'paths');
+    expect(FileUploadConfiguration::rules())->toContain('max:12288');
 });
 
 it('blocks Focus submission while media is pending and rejects unsupported uploads', function () {

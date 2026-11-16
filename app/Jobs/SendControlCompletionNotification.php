@@ -208,17 +208,22 @@ class SendControlCompletionNotification implements ShouldBeUnique, ShouldQueue
         $escape = static fn (mixed $value): string => htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         $apartment = $response->apartment?->name ?: 'Квартира не указана';
         $date = $response->inspection_date?->format('d.m.Y') ?: '—';
-        $zone = $response->result_zone_label;
+        $zone = match ($response->result_zone) {
+            'green' => '🟢',
+            'yellow' => '🟡',
+            'red' => '🔴',
+            default => '⚪',
+        };
         $reason = trim((string) $response->result_zone_reason);
         $reason = $reason === '' ? '' : "\n".$escape(mb_substr($reason, 0, 400));
         $critical = $response->has_critical_failure ? 'Да' : 'Нет';
 
         return implode("\n", [
-            '✅ <b>Контроль качества завершён</b>',
+            $zone.' <b>Контроль качества завершён</b>',
             '',
             '<b>Квартира:</b> '.$escape($apartment),
             '<b>Дата:</b> '.$escape($date),
-            '<b>Результат:</b> '.$escape($zone).' · '.(int) $response->score_percent.'%',
+            '<b>Результат:</b> '.$escape($response->result_zone_label).' · '.(int) $response->score_percent.'%',
             '<b>Ошибки:</b> '.(int) $response->errors_count.' · <b>Штраф:</b> '.(int) $response->penalty_points,
             '<b>Критическая ошибка:</b> '.$critical,
             $reason,

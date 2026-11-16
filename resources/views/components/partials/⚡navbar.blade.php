@@ -13,7 +13,7 @@ new class extends Component {
         ->label(auth()->id());
 @endphp
 
-<nav class="w-full h-full p-[15px] relative">
+<nav class="w-full h-full px-2.5 py-[15px] relative sm:px-[15px]">
     <svg width="0" height="0" class="absolute">
         <defs>
             <linearGradient id="nav-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -109,6 +109,15 @@ new class extends Component {
     </span>
 
 </a>
+
+        @can('view-academy-analytics')
+            @php($analyticsActive = request()->routeIs('page-analytics'))
+            <a href="{{ route('page-analytics') }}" @if($analyticsActive) aria-current="page" @endif
+                @class(['group flex flex-col items-center justify-center gap-[5px]', 'text-[#213259]' => $analyticsActive, 'text-zinc-500' => ! $analyticsActive])>
+                <x-heroicon-s-chart-bar class="size-5" />
+                <span class="text-[12px] font-medium">Аналитика</span>
+            </a>
+        @endcan
 
  <a href="{{ route('page-profile') }}" class="group relative flex flex-col items-center justify-center gap-[5px]">
 

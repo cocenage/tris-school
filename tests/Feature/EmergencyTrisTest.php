@@ -1,7 +1,6 @@
 <?php
 
 use App\Models\Instruction;
-use App\Services\Emergency\EmergencyPublicationTarget;
 use App\Services\Emergency\EmergencyScheduleRegistrar;
 use App\Services\Emergency\EmergencySitePublisher;
 use App\Services\Emergency\EmergencySnapshotBuilder;
@@ -13,9 +12,6 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use Tests\TestCase;
-
-uses(TestCase::class);
 
 beforeEach(function (): void {
     config([

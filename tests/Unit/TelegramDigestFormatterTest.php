@@ -195,7 +195,7 @@ it('does not claim a complete empty report when the linen source failed', functi
         ->not->toContain('значимых выводов не выявлено');
 });
 
-it('distinguishes unconfirmed resolution from uncertain or unsupported status', function (string $status, string $confidence, ?string $uncertainty, bool $resolutionConfirmed, string $expectedStatus) {
+it('prints the sourced report and keeps inferred statuses out of the district digest', function (string $status, string $confidence, ?string $uncertainty, bool $resolutionConfirmed) {
     $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
         'date' => '2026-11-01',
         'timezone' => 'Europe/Rome',
@@ -203,7 +203,8 @@ it('distinguishes unconfirmed resolution from uncertain or unsupported status', 
         'management_sections' => ['technical_faults' => [[
             'event_key' => 'hood-1',
             'location' => 'Via Test 23',
-            'summary' => 'Не работает вытяжка.',
+            'summary' => 'Редакторский вывод',
+            'reported_text' => 'Не работает вытяжка.',
             'author' => null,
             'reported_at' => '2026-11-01T15:47:00+01:00',
             'source_url' => 'https://t.me/c/1/1',
@@ -222,12 +223,13 @@ it('distinguishes unconfirmed resolution from uncertain or unsupported status', 
         ],
     ]);
 
-    expect($text)->toContain('Статус: '.$expectedStatus);
+    expect($text)->toContain('Не работает вытяжка.', 'https://t.me/c/1/1')
+        ->not->toContain('Редакторский вывод', 'Статус:', 'Классификации:', 'Предложение:');
 })->with([
-    'clear open event' => ['open', 'high', null, false, 'решение не подтверждено'],
-    'low confidence event' => ['open', 'low', 'Нужно уточнение.', false, 'требуется уточнение'],
-    'explicit resolution' => ['resolved', 'high', null, true, 'решение подтверждено'],
-    'resolved without resolution evidence' => ['resolved', 'high', null, false, 'требуется уточнение'],
+    'clear open event' => ['open', 'high', null, false],
+    'low confidence event' => ['open', 'low', 'Нужно уточнение.', false],
+    'explicit resolution' => ['resolved', 'high', null, true],
+    'resolved without resolution evidence' => ['resolved', 'high', null, false],
 ]);
 
 it('counts only linen cases belonging to the current district', function () {
@@ -250,8 +252,8 @@ it('counts only linen cases belonging to the current district', function () {
         ],
     ]);
 
-    expect($text)->toContain('Случаев: 1 · позиций белья: 1.')
-        ->not->toContain('Случаев: 2 · позиций белья: 3.', 'Via Navigli 2');
+    expect($text)->toContain('Via Lodi 1', 'простыня', 'количество не указано')
+        ->not->toContain('Случаев:', 'Via Navigli 2');
 });
 
 it('distinguishes an unavailable source from a configured source with no recorded messages', function () {

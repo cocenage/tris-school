@@ -9,6 +9,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Throwable;
 
 class TelegramScheduledMessageDeliveryService
@@ -20,6 +21,7 @@ class TelegramScheduledMessageDeliveryService
         $timezone = config('app.timezone', 'Europe/Rome');
         $graceMinutes = max(0, (int) config('services.telegram.scheduled_delivery_grace_minutes', 5));
         $result = ['due' => 0, 'queued' => 0, 'failed' => 0, 'duplicate' => 0];
+        $this->queueShiftOpening($now, $graceMinutes, $result);
 
         $messages = TelegramScheduledMessage::query()
             ->enabled()
@@ -27,7 +29,7 @@ class TelegramScheduledMessageDeliveryService
             ->get()
             ->filter(fn (TelegramScheduledMessage $message): bool => $this->isWithinDeliveryWindow($message, $now, $timezone, $graceMinutes));
 
-        $result['due'] = $messages->count();
+        $result['due'] += $messages->count();
 
         foreach ($messages as $message) {
             $scheduledTime = ScheduledControlTypes::scheduledTime((string) $message->control_type, (string) $message->send_time);
@@ -126,6 +128,68 @@ class TelegramScheduledMessageDeliveryService
         }
 
         return $result;
+    }
+
+    private function queueShiftOpening(CarbonImmutable $now, int $graceMinutes, array &$result): void
+    {
+        $time = config('services.telegram.oks_shift_opening_time');
+        if (! is_string($time) || ! preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D', $time)) {
+            return;
+        }
+        $opening = $now->setTimezone('Europe/Rome')->startOfDay()->setTimeFromTimeString($time);
+        if ($now->lt($opening) || $opening->diffInSeconds($now) > $graceMinutes * 60 || ! Schema::hasTable('shift_duties')) {
+            return;
+        }
+
+        $anchors = TelegramScheduledMessage::query()->enabled()
+            ->where('control_type', 'schedule_checked')->whereNotNull('telegram_topic_record_id')
+            ->with(['telegramChat', 'telegramTopic'])->orderBy('id')->get()
+            ->filter(fn (TelegramScheduledMessage $message): bool => in_array($opening->dayOfWeekIso, array_map('intval', $message->weekdays ?? []), true)
+                && ScheduledControlTypes::normalizeTime((string) $message->send_time) > $opening->format('H:i:s')
+                && $message->telegramChat?->is_enabled && $message->telegramTopic?->is_enabled
+                && (string) $message->telegramTopic->telegram_chat_id === (string) $message->telegram_chat_record_id)
+            ->groupBy(fn (TelegramScheduledMessage $message): string => $message->telegram_chat_record_id.':'.$message->telegram_topic_record_id);
+        if ($anchors->count() !== 1) {
+            if ($anchors->isNotEmpty()) {
+                Log::warning('OKS opening skipped because more than one control topic matches.');
+            }
+
+            return;
+        }
+
+        $anchor = $anchors->first()->first();
+        if (! filled($anchor->telegramChat->telegram_chat_id) || ! filled($anchor->telegramTopic->telegram_thread_id)) {
+            return;
+        }
+        $result['due']++;
+
+        try {
+            $delivery = $this->reserveOccurrence($anchor, $opening, ScheduledControlTypes::SHIFT_OPENING);
+            if ($delivery === null) {
+                $result['duplicate']++;
+
+                return;
+            }
+
+            $delivery->update([
+                'chat_id' => $anchor->telegramChat->telegram_chat_id,
+                'message_thread_id' => $anchor->telegramTopic->telegram_thread_id,
+            ]);
+            if (config('queue.connections.'.config('queue.default').'.driver') === 'sync') {
+                $this->fail($delivery, 'queue_connection_sync');
+                $result['failed']++;
+
+                return;
+            }
+            Bus::dispatch(new DeliverScheduledTelegramMessage($delivery->id, $opening->addMinutes(60)));
+            $result['queued']++;
+        } catch (Throwable $exception) {
+            if (isset($delivery)) {
+                $this->fail($delivery, 'queue_dispatch_failed:'.class_basename($exception));
+            }
+            $result['failed']++;
+            Log::warning('OKS opening could not be queued.', ['exception' => class_basename($exception)]);
+        }
     }
 
     public function queueClosingPayments(TelegramScheduledMessageDelivery $cleaningsDelivery): bool
@@ -401,12 +465,14 @@ class TelegramScheduledMessageDeliveryService
     private function reserveOccurrence(
         TelegramScheduledMessage $message,
         CarbonImmutable $scheduledFor,
+        ?string $type = null,
     ): ?TelegramScheduledMessageDelivery {
+        $type ??= (string) $message->control_type;
         try {
             return TelegramScheduledMessageDelivery::query()->create([
                 'scheduled_message_id' => $message->getKey(),
-                'control_type' => $message->control_type,
-                'bot_type' => array_key_exists((string) $message->control_type, ScheduledControlTypes::LABELS) ? 'work' : 'scheduled',
+                'control_type' => $type,
+                'bot_type' => ($type === ScheduledControlTypes::SHIFT_OPENING || array_key_exists($type, ScheduledControlTypes::LABELS)) ? 'work' : 'scheduled',
                 'scheduled_for' => $scheduledFor,
                 'status' => 'pending',
             ]);

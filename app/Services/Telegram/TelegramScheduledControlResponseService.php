@@ -41,6 +41,7 @@ class TelegramScheduledControlResponseService
         $threadId = isset($message['message_thread_id']) ? (string) $message['message_thread_id'] : null;
         $candidates = TelegramScheduledMessageDelivery::query()->where('status', 'sent')->whereNotNull('sent_at')
             ->whereNotNull('control_type')->where('control_type', '!=', '')
+            ->where('control_type', '!=', ScheduledControlTypes::SHIFT_OPENING)
             ->where('chat_id', (string) $chatId)->where('telegram_message_id', $replyId)
             ->where('message_thread_id', $threadId)->limit(2)->get();
 
@@ -74,6 +75,7 @@ class TelegramScheduledControlResponseService
 
         return TelegramScheduledMessageDelivery::query()->where('status', 'sent')->whereNotNull('sent_at')
             ->whereNotNull('control_type')->where('control_type', '!=', '')
+            ->where('control_type', '!=', ScheduledControlTypes::SHIFT_OPENING)
             ->where('chat_id', (string) $chatId)->where('message_thread_id', $threadId)->exists();
     }
 
@@ -179,6 +181,22 @@ class TelegramScheduledControlResponseService
         $authorId = data_get($message, 'from.id');
         $telegramUser = $stored->telegramUser;
         $userId = $telegramUser?->linked_user_id;
+        $assignments = $delivery->sequence_context['oks_assignments'] ?? null;
+        if (is_array($assignments)) {
+            $userId = $authorId === null ? null : User::query()->activeStaff()->where('telegram_id', (string) $authorId)->value('id');
+            $assigned = $userId === null ? [] : array_keys(array_filter($assignments, fn ($assignedId): bool => (int) $assignedId === (int) $userId));
+            $mentioned = $districtKey === null ? $this->districtsFromText($text) : [$districtKey];
+            if ($assigned === [] || array_diff($mentioned, $assigned) !== []) {
+                return null;
+            }
+            if ($districtKey === null && $mentioned === []) {
+                if (count($assigned) === 1) {
+                    $districtKey = $assigned[0];
+                } elseif ($result['classification'] !== 'unclear') {
+                    return null;
+                }
+            }
+        }
         if ($userId === null && $authorId !== null) {
             $userId = User::query()->where('telegram_id', (string) $authorId)->value('id');
         }
@@ -396,6 +414,9 @@ class TelegramScheduledControlResponseService
         }
 
         $telegramUserId = (string) data_get($callbackQuery, 'from.id');
+        if (! $this->canAnswerDistrict($delivery, $districtKey, $telegramUserId)) {
+            return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
+        }
         $callbackId = (string) $callbackQuery['id'];
         $user = User::query()->where('telegram_id', $telegramUserId)->first();
         $authorName = trim((string) data_get($callbackQuery, 'from.first_name').' '.(string) data_get($callbackQuery, 'from.last_name'));
@@ -452,6 +473,14 @@ class TelegramScheduledControlResponseService
 
     private function districtFromText(string $text): ?string
     {
+        $districts = $this->districtsFromText($text);
+
+        return count($districts) === 1 ? $districts[0] : null;
+    }
+
+    /** @return list<string> */
+    private function districtsFromText(string $text): array
+    {
         $matches = [];
         foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
             $aliases = $key === 'como' ? [$label, 'Комо'] : [$label];
@@ -462,7 +491,7 @@ class TelegramScheduledControlResponseService
             }
         }
 
-        return count($matches) === 1 ? array_key_first($matches) : null;
+        return array_keys($matches);
     }
 
     /** @return list<array{district: string, identity: string, classification: string, responded_at: string, response: TelegramScheduledMessageResponse}> */
@@ -511,7 +540,9 @@ class TelegramScheduledControlResponseService
                     }
                 }
                 foreach ($entries as $district => $classification) {
-                    if (! in_array($classification, ['confirmed', 'problem', 'partial', 'unclear'], true)) {
+                    if (! in_array($classification, ['confirmed', 'problem', 'partial', 'unclear'], true)
+                        || (is_array($delivery->sequence_context['oks_assignments'] ?? null)
+                            && (int) $response->user_id !== (int) ($delivery->sequence_context['oks_assignments'][$district] ?? -1))) {
                         continue;
                     }
                     $identity = $response->telegram_user_id !== null ? 'telegram:'.$response->telegram_user_id
@@ -553,7 +584,7 @@ class TelegramScheduledControlResponseService
     public function allDistrictsConfirmed(TelegramScheduledMessageDelivery $delivery): bool
     {
         $states = $this->districtAnswerStates($delivery);
-        foreach (array_keys(ScheduledControlTypes::DISTRICTS) as $district) {
+        foreach (ScheduledControlTypes::activeDistricts($delivery->sequence_context ?? []) as $district) {
             $answers = $states[$district] ?? [];
             if ($answers === [] || collect($answers)->contains(fn (array $answer): bool => $answer['classification'] !== 'confirmed')) {
                 return false;
@@ -561,6 +592,17 @@ class TelegramScheduledControlResponseService
         }
 
         return true;
+    }
+
+    private function canAnswerDistrict(TelegramScheduledMessageDelivery $delivery, string $district, ?string $telegramUserId): bool
+    {
+        $assignments = $delivery->sequence_context['oks_assignments'] ?? null;
+        if (! is_array($assignments)) {
+            return true;
+        }
+
+        return isset($assignments[$district]) && $telegramUserId !== null
+            && User::query()->activeStaff()->whereKey($assignments[$district])->where('telegram_id', $telegramUserId)->exists();
     }
 
     private function classify(string $text): array

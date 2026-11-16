@@ -41,7 +41,7 @@ new class extends Component
 ?>
 
 <x-slot:header>
-    <div class="flex h-[70px] items-center gap-3 px-4 text-[#213259]"><a href="{{ route('page-profile.all-checks') }}" aria-label="Назад" class="p-2"><x-heroicon-o-arrow-left class="size-5" /></a><span role="heading" aria-level="1" class="text-[18px] leading-none">История сотрудника</span></div>
+    <div class="flex h-[70px] items-center gap-3 px-4 text-[#213259]"><a href="{{ route('page-profile.staff-history') }}" aria-label="Назад" class="p-2"><x-heroicon-o-arrow-left class="size-5" /></a><span role="heading" aria-level="1" class="text-[18px] leading-none">История сотрудника</span></div>
 </x-slot:header>
 <div class="h-full overflow-y-auto bg-white px-5 pb-10 pt-5">
     <div class="mx-auto max-w-2xl space-y-5">

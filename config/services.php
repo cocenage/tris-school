@@ -52,6 +52,7 @@ return [
         'scheduled_summary_chat_id' => env('TELEGRAM_SCHEDULED_SUMMARY_CHAT_ID'),
         'scheduled_summary_thread_id' => env('TELEGRAM_SCHEDULED_SUMMARY_THREAD_ID'),
         'scheduled_delivery_grace_minutes' => env('TELEGRAM_SCHEDULED_DELIVERY_GRACE_MINUTES', 5),
+        'oks_shift_opening_time' => env('TELEGRAM_OKS_SHIFT_OPENING_TIME', '09:00'),
         // Disabled by default until Rich Message delivery is proven reliable in production.
         'rich_messages_enabled' => env('TELEGRAM_RICH_MESSAGES_ENABLED', false),
         'htmlbubbles' => [

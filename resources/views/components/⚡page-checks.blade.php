@@ -13,7 +13,15 @@ new class extends Component
 </x-slot:header>
 
 <div class="flex flex-col justify-between h-full w-full">
-    <h1 class="m-[20px]">Проверки</h1>
+    <div class="space-y-3 p-5">
+        <h1 class="text-xl font-semibold">Контроли</h1>
+        <nav class="flex flex-wrap gap-2" aria-label="История контролей">
+            <a href="{{ route('page-profile.checks') }}" class="inline-flex min-h-11 items-center rounded-full bg-[#EFF1F3] px-4 text-sm font-semibold text-[#213259]">Мои контроли</a>
+            @if(auth()->user()?->canViewAllStaffActivity() && ! app(\App\Services\RolePreviewContext::class)->isActive())
+                <a href="{{ route('page-profile.all-checks') }}" class="inline-flex min-h-11 items-center rounded-full bg-[#EFF1F3] px-4 text-sm font-semibold text-[#213259]">Все контроли</a>
+            @endif
+        </nav>
+    </div>
     <div class="px-[20px] pb-[20px] flex flex-col gap-[10px]">
 
       <a href="{{ route('page-checks.control.focus') }}">

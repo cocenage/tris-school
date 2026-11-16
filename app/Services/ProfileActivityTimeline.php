@@ -9,33 +9,54 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class ProfileActivityTimeline
 {
-    private function query(): Builder
+    private function query(string $search = ''): Builder
     {
         $controls = DB::table('control_responses')->selectRaw("'control' AS item_type, id, cleaner_id, COALESCE(NULLIF(inspection_date, ''), NULLIF(cleaning_date, ''), NULLIF(sent_at, ''), created_at) AS sort_date");
         $coachings = DB::table('coachings')->selectRaw("'coaching' AS item_type, id, user_id AS cleaner_id, COALESCE(NULLIF(inspection_date, ''), created_at) AS sort_date");
 
+        $this->applySearch($controls, 'control_responses', 'cleaner_id', 'comment', $search);
+        $this->applySearch($coachings, 'coachings', 'user_id', 'reason', $search);
+
         return DB::query()->fromSub($controls->unionAll($coachings), 'activities');
     }
 
-    public function paginateForCleaner(int $cleanerId, string $type = 'all', ?string $dateFrom = null, ?string $dateTo = null, int $perPage = 20): LengthAwarePaginator
+    public function paginateForCleaner(int $cleanerId, string $type = 'all', ?string $dateFrom = null, ?string $dateTo = null, int $perPage = 20, string $search = ''): LengthAwarePaginator
     {
-        $query = $this->query()->where('cleaner_id', $cleanerId);
+        $query = $this->query($search)->where('cleaner_id', $cleanerId);
         if (in_array($type, ['control', 'coaching'], true)) {
             $query->where('item_type', $type);
         }
         $query->when($dateFrom, fn ($q) => $q->whereDate('sort_date', '>=', $dateFrom))
             ->when($dateTo, fn ($q) => $q->whereDate('sort_date', '<=', $dateTo));
         $page = $query->orderByDesc('sort_date')->orderBy('item_type')->orderByDesc('id')->paginate($perPage);
-        $rows = $page->getCollection();
+        $page->setCollection($this->hydrateActivities($page->getCollection()));
+
+        return $page;
+    }
+
+    public function forCleanerBetween(int $cleanerId, string $from, string $through): Collection
+    {
+        $rows = $this->query()->where('cleaner_id', $cleanerId)
+            ->whereDate('sort_date', '>=', $from)
+            ->whereDate('sort_date', '<=', $through)
+            ->orderByDesc('sort_date')->orderBy('item_type')->orderByDesc('id')->get();
+
+        return $this->hydrateActivities($rows);
+    }
+
+    private function hydrateActivities(Collection $rows): Collection
+    {
         $models = [];
         foreach (['control' => ControlResponse::class, 'coaching' => Coaching::class] as $kind => $class) {
             $ids = $rows->where('item_type', $kind)->pluck('id');
             $models[$kind] = $ids->isEmpty() ? collect() : $class::query()->with(['cleaner', 'supervisor', 'control', 'apartment'])->whereIn('id', $ids)->get()->keyBy('id');
         }
-        $page->setCollection($rows->map(function ($row) use ($models) {
+
+        return $rows->map(function ($row) use ($models) {
             $model = $models[$row->item_type]->get($row->id);
             if ($model) {
                 $model->setAttribute('item_type', $row->item_type);
@@ -43,9 +64,44 @@ class ProfileActivityTimeline
             }
 
             return $model;
-        })->filter()->values());
+        })->filter()->values();
+    }
 
-        return $page;
+    public function paginateControls(string $search = '', string $zone = 'all', ?int $supervisorId = null): LengthAwarePaginator
+    {
+        $query = ControlResponse::query()->with(['control', 'cleaner', 'supervisor', 'apartment']);
+        $this->applySearch($query->getQuery(), 'control_responses', 'cleaner_id', 'comment', $search);
+
+        return $query
+            ->when(in_array($zone, ['green', 'yellow', 'red'], true), fn ($query) => $query->where('result_zone', $zone))
+            ->when($supervisorId !== null, fn ($query) => $query->where('supervisor_id', $supervisorId))
+            ->orderByRaw("COALESCE(NULLIF(inspection_date, ''), NULLIF(cleaning_date, ''), NULLIF(sent_at, ''), created_at) DESC")
+            ->orderByDesc('id')
+            ->paginate(20);
+    }
+
+    private function applySearch(Builder $query, string $table, string $cleanerKey, string $textColumn, string $search): void
+    {
+        $search = Str::substr(trim($search), 0, 100);
+        if ($search === '') {
+            return;
+        }
+
+        $variants = array_unique([$search, Str::lower($search), Str::title($search), Str::upper($search)]);
+        $query->where(function (Builder $query) use ($table, $cleanerKey, $textColumn, $variants): void {
+            foreach ($variants as $variant) {
+                $pattern = '%'.$variant.'%';
+                $query->orWhereLike("{$table}.{$textColumn}", $pattern);
+                foreach (['apartments' => ['apartment_id'], 'users' => [$cleanerKey, 'supervisor_id']] as $related => $keys) {
+                    foreach ($keys as $key) {
+                        $query->orWhereExists(fn (Builder $relatedQuery) => $relatedQuery
+                            ->from($related)
+                            ->whereColumn("{$related}.id", "{$table}.{$key}")
+                            ->whereLike("{$related}.name", $pattern));
+                    }
+                }
+            }
+        });
     }
 
     public function statisticsForCleaners(array $ids, ?string $from = null): Collection

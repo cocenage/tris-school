@@ -107,6 +107,7 @@ class ControlResponse extends Model
         $zoneData = self::resolveResultZoneData(
             penaltyPoints: $analysis['penalty_points'],
             hasCriticalFailure: $analysis['has_critical_failure'],
+            criticalReason: collect($analysis['errors'])->firstWhere('is_critical', true)['critical_reason'] ?? null,
         );
 
         return [
@@ -177,7 +178,13 @@ class ControlResponse extends Model
 
                 $penaltyPoints += $questionPenalty;
 
-                $isCritical = self::isCriticalQuestion($roomTitle, (int) $questionIndex, $question);
+                $criticalReason = match (true) {
+                    self::isSleepingPlacesCriticalQuestion($roomTitle, (int) $questionIndex) => 'Критическая ошибка в первых двух вопросах блока «Спальные места»',
+                    $maxForQuestion === 2 && $selectedPoints === 0 && $selected !== '' => 'Отрицательный ответ на двухбалльный вопрос',
+                    self::isCriticalQuestion($roomTitle, (int) $questionIndex, $question) => 'Ошибка в вопросе, отмеченном как критический',
+                    default => null,
+                };
+                $isCritical = $criticalReason !== null;
 
                 if ($isCritical) {
                     $hasCriticalFailure = true;
@@ -194,6 +201,7 @@ class ControlResponse extends Model
                     'max_points' => $maxForQuestion,
                     'penalty_points' => $questionPenalty,
                     'is_critical' => $isCritical,
+                    'critical_reason' => $criticalReason,
                     'media' => is_array($answer['media'] ?? null) ? $answer['media'] : [],
                 ];
             }
@@ -208,7 +216,7 @@ class ControlResponse extends Model
         ];
     }
 
-    public static function resolveResultZoneData(int $penaltyPoints, bool $hasCriticalFailure): array
+    public static function resolveResultZoneData(int $penaltyPoints, bool $hasCriticalFailure, ?string $criticalReason = null): array
     {
         if ($penaltyPoints <= 0) {
             return [
@@ -220,7 +228,7 @@ class ControlResponse extends Model
         if ($hasCriticalFailure) {
             return [
                 'zone' => 'red',
-                'reason' => 'Критическая ошибка в первых двух вопросах блока “Спальные места”',
+                'reason' => $criticalReason ?? 'Критическая ошибка',
             ];
         }
 
@@ -397,11 +405,20 @@ class ControlResponse extends Model
                             $questionIndex,
                             $mediaIndex,
                         ]),
+                        'thumbnail_url' => route('page-checks.control.result-media', [
+                            $this,
+                            $roomIndex,
+                            $questionIndex,
+                            $mediaIndex,
+                            'thumbnail' => 1,
+                        ]),
                     ];
                 }
 
                 if ($media !== []) {
                     $items[] = [
+                        'room_index' => (int) $roomIndex,
+                        'question_index' => (int) $questionIndex,
                         'room' => (string) ($room['title'] ?? 'Комната'),
                         'question' => (string) ($question['question'] ?? 'Вопрос'),
                         'media' => $media,

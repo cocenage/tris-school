@@ -231,9 +231,11 @@ class TelegramBotService
         ?string $threadId = null,
         ?string $replyToMessageId = null,
         ?array $replyMarkup = null,
+        bool $preferRich = false,
     ): ?int {
         return $this->sendRichMessageUsingToken(
             config('services.telegram.bot_token'), $chatId, $richMessage, $fallbackHtml, $threadId, $replyToMessageId, $replyMarkup,
+            preferRich: $preferRich,
         );
     }
 
@@ -260,6 +262,7 @@ class TelegramBotService
         ?string $replyToMessageId,
         ?array $replyMarkup,
         ?int $maxFallbackVisibleLength = null,
+        bool $preferRich = false,
     ): ?int {
 
         if (! $token) {
@@ -268,7 +271,7 @@ class TelegramBotService
             return null;
         }
 
-        if (! config('services.telegram.rich_messages_enabled', false)) {
+        if (! $preferRich && ! config('services.telegram.rich_messages_enabled', false)) {
             if (! $this->fallbackWithinLimit($fallbackHtml, $maxFallbackVisibleLength)) {
                 return null;
             }
@@ -352,6 +355,7 @@ class TelegramBotService
         string $fallbackHtml,
         ?array $replyMarkup = null,
         bool $forceLegacy = false,
+        bool $preferRich = false,
     ): bool {
         $token = config('services.telegram.bot_token');
 
@@ -359,7 +363,7 @@ class TelegramBotService
             return false;
         }
 
-        if ($forceLegacy || ! config('services.telegram.rich_messages_enabled', false)) {
+        if ($forceLegacy || (! $preferRich && ! config('services.telegram.rich_messages_enabled', false))) {
             return $this->editHtmlMessage(
                 token: $token,
                 chatId: $chatId,

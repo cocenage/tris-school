@@ -29,6 +29,8 @@ class ScheduledControlTypes
 
     public const CLOSING_CLEANINGS = 'cleanings_completed';
 
+    public const SHIFT_OPENING = 'oks_shift_opening';
+
     public const SECOND_CLEANINGS_FINISHING = 'second_cleanings_finishing';
 
     public const CLOSING_PAYMENTS = 'extra_payments_completed';
@@ -64,6 +66,14 @@ class ScheduledControlTypes
     public static function triggersClosingPayments(string $controlType): bool
     {
         return $controlType === self::CLOSING_CLEANINGS;
+    }
+
+    /** @return list<string> */
+    public static function activeDistricts(array $context): array
+    {
+        return is_array($context['oks_assignments'] ?? null)
+            ? array_keys(array_intersect_key(self::DISTRICTS, $context['oks_assignments']))
+            : array_keys(self::DISTRICTS);
     }
 
     /** @return array{pair: string, stage: 'first'|'second', previous_time: string, next_time: string, types: list<string>}|null */

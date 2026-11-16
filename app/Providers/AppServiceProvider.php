@@ -17,6 +17,7 @@ use App\Policies\ApartmentPolicy;
 use App\Policies\QualityControlPolicy;
 use App\Policies\SupervisorCalendarEventPolicy;
 use App\Policies\SupervisorRequestPolicy;
+use App\Services\RolePreviewContext;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use Filament\Facades\Filament;
 use Filament\Navigation\NavigationItem;
@@ -53,6 +54,14 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(RequestSending::class, [TelegramOutboundMonitor::class, 'sending']);
         Event::listen(ResponseReceived::class, [TelegramOutboundMonitor::class, 'received']);
         Event::listen(ConnectionFailed::class, [TelegramOutboundMonitor::class, 'failed']);
+        Gate::define('view-academy-analytics', fn (User $user): bool => $user->is_active
+            && $user->canViewAllStaffActivity()
+            && ! app(RolePreviewContext::class)->isActive());
+
+        Gate::define('view-employee-calendars', fn (User $user): bool => $user->isApproved()
+            && ! app(RolePreviewContext::class)->isActive()
+            && $user->canViewAllEmployeeCalendars());
+
         Gate::policy(Apartment::class, ApartmentPolicy::class);
         Gate::policy(CalendarEvent::class, SupervisorCalendarEventPolicy::class);
         Gate::policy(Control::class, QualityControlPolicy::class);
