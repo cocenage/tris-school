@@ -143,7 +143,7 @@ it('shows only the authenticated employee calendar and keeps it read-only', func
 
     $component = Livewire::actingAs($employee)
         ->test('profile.page-calendar')
-        ->assertSee('График не зафиксирован')
+        ->assertDontSee('График не зафиксирован')
         ->call('selectDate', '2026-11-05')
         ->assertSee('5 ноября 2026')
         ->assertSee('Рабочий день по графику');
@@ -152,10 +152,11 @@ it('shows only the authenticated employee calendar and keeps it read-only', func
         ->and(method_exists($component->instance(), 'updateSchedule'))->toBeFalse();
 });
 
-it('keeps scheduled days white and marks today when another day is selected', function () {
-    Carbon::setTestNow(Carbon::parse('2026-11-05 12:00:00', 'Europe/Rome'));
+it('changes today to green at 19:00 in Milan and keeps tomorrow pale green', function () {
+    Carbon::setTestNow(Carbon::parse('2026-11-05 17:59:59', 'UTC'));
     $employee = User::findOrFail(21);
-    $response = $this->actingAs($employee)->get(route('page-profile.calendar', ['month' => '2026-11', 'day' => '2026-11-06']));
+    $url = route('page-profile.calendar', ['month' => '2026-11', 'day' => '2026-11-06']);
+    $response = $this->actingAs($employee)->get($url);
     $response->assertOk();
 
     $document = new DOMDocument;
@@ -165,12 +166,21 @@ it('keeps scheduled days white and marks today when another day is selected', fu
     $today = $xpath->query('//button[starts-with(@aria-label, "2026-11-05")]')->item(0);
     $tomorrow = $xpath->query('//button[starts-with(@aria-label, "2026-11-06")]')->item(0);
 
-    expect($past->getAttribute('class'))->toContain('bg-white')
-        ->and($tomorrow->getAttribute('class'))->toContain('bg-white')
+    expect($past->getAttribute('class'))->toContain('bg-[#BCE8C7]')
+        ->and($today->getAttribute('class'))->toContain('bg-[#E7F6EC]')
+        ->and($tomorrow->getAttribute('class'))->toContain('bg-[#E7F6EC]')
         ->and($tomorrow->getAttribute('aria-pressed'))->toBe('true')
         ->and($today->getAttribute('class'))->toContain('ring-[#2D6494]')
         ->and($today->getAttribute('aria-current'))->toBe('date')
         ->and($today->getAttribute('aria-pressed'))->toBe('false');
+
+    Carbon::setTestNow(Carbon::parse('2026-11-05 18:00:00', 'UTC'));
+    $document->loadHTML($this->get($url)->assertOk()->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+    $xpath = new DOMXPath($document);
+    $today = $xpath->query('//button[starts-with(@aria-label, "2026-11-05")]')->item(0);
+    $tomorrow = $xpath->query('//button[starts-with(@aria-label, "2026-11-06")]')->item(0);
+    expect($today->getAttribute('class'))->toContain('bg-[#BCE8C7]')
+        ->and($tomorrow->getAttribute('class'))->toContain('bg-[#E7F6EC]');
 });
 
 it('denies users outside the employee roles and rejects dates outside the visible month', function () {
@@ -343,7 +353,7 @@ it('switches the selected month in the personal statistics component', function 
         ->assertSee('Рабочий день по графику')
         ->call('changeMonth', -1)
         ->assertSet('month', '2026-10')
-        ->assertSee('График не зафиксирован')
+        ->assertDontSee('График не зафиксирован')
         ->assertSee('Ближайший рабочий день')
         ->call('showUpcomingWorkday')
         ->assertSet('month', '2026-11')

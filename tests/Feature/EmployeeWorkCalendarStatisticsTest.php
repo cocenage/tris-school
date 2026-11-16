@@ -155,7 +155,8 @@ it('filters by an active employee and rejects an invalid employee or an overlong
     expect($annual['from'])->toBe('2026-01-01')
         ->and($annual['through'])->toBe('2026-12-31')
         ->and($annual['employee_count'])->toBe(2)
-        ->and($annual['totals']['unknown_schedule_days'])->toBeGreaterThan(0);
+        ->and($annual['totals']['unknown_schedule_days'])->toBe(0)
+        ->and($annual['totals']['planned_workdays'])->toBeGreaterThan(600);
 });
 
 it('denies employee calendar reports and exports to supervisors with legacy grants', function () {

@@ -152,6 +152,28 @@ it('appends a future schedule version without changing earlier projections', fun
         ->and($employee->fresh()->weekend_days)->toBe([5]);
 });
 
+it('uses the previous profile schedule before a first future schedule change', function () {
+    $employee = User::findOrFail(21)->replicate();
+    $employee->saveQuietly();
+    app(EmployeeWorkCalendarManagementService::class)->changeSchedule(
+        $employee,
+        ['weekend_days' => [1]],
+        Carbon::parse('2026-11-09', 'Europe/Rome'),
+        User::findOrFail(99),
+        'Изменение графика по согласованию',
+    );
+
+    $calendar = app(EmployeeWorkCalendarService::class)->forEmployee(
+        $employee->fresh(),
+        Carbon::parse('2026-11-08', 'Europe/Rome'),
+        Carbon::parse('2026-11-10', 'Europe/Rome'),
+    );
+
+    expect($calendar['2026-11-08']['state'])->toBe('regular_day_off')
+        ->and($calendar['2026-11-09']['state'])->toBe('regular_day_off')
+        ->and($calendar['2026-11-10']['state'])->toBe('planned_work');
+});
+
 it('rejects a retroactive recurring schedule change and denies supervisors by default', function () {
     $service = app(EmployeeWorkCalendarManagementService::class);
     $employee = User::findOrFail(21);

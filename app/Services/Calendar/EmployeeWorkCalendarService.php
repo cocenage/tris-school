@@ -159,7 +159,7 @@ class EmployeeWorkCalendarService
                     && $source['status'] === 'approved'
                     && ! $source['superseded']);
 
-                $base = $this->baseState($userVersions, $dateKey, (int) $date->dayOfWeekIso);
+                $base = $this->baseState($user, $userVersions, $dateKey, (int) $date->dayOfWeekIso);
                 $adjustedState = $this->adjustedState($activeAdjustments, $dateKey);
                 $state = $adjustedState ?? match (true) {
                     $base['state'] === 'not_employed' => 'not_employed',
@@ -219,33 +219,25 @@ class EmployeeWorkCalendarService
         ];
     }
 
-    private function baseState(Collection $versions, string $date, int $isoDay): array
+    private function baseState(User $user, Collection $versions, string $date, int $isoDay): array
     {
-        $version = $versions->last(fn (EmployeeWorkScheduleVersion $version) => $version->effective_from->toDateString() <= $date);
-        $earliestVersion = $versions->first();
+        $effectiveVersion = $versions->last(fn (EmployeeWorkScheduleVersion $version) => $version->effective_from->toDateString() <= $date);
+        $version = $effectiveVersion ?? $versions->first();
+        $previous = $effectiveVersion === null ? ($version?->previous_values ?? []) : [];
+        $employmentStart = $previous['employment_start_date']
+            ?? ($version?->employment_start_date ?? $user->work_started_at)?->toDateString();
+        $weekendDays = $previous['weekend_days'] ?? $version?->weekend_days ?? $user->weekend_days;
 
-        if (! $version && $earliestVersion?->employment_start_date
-            && $date < $earliestVersion->employment_start_date->toDateString()) {
+        if ($employmentStart && $date < $employmentStart) {
             return [
                 'state' => 'not_employed',
                 'reason' => 'before_employment_start',
                 'schedule_known' => true,
-                'employment_start_date' => $earliestVersion->employment_start_date->toDateString(),
+                'employment_start_date' => $employmentStart,
             ];
         }
 
-        if (! $version) {
-            return [
-                'state' => 'unknown_schedule',
-                'reason' => 'schedule_not_recorded',
-                'schedule_known' => false,
-                'employment_start_date' => $earliestVersion?->employment_start_date?->toDateString(),
-            ];
-        }
-
-        $employmentStart = $version->employment_start_date?->toDateString();
-
-        if (! $employmentStart || ! is_array($version->weekend_days)) {
+        if (! $employmentStart || ! is_array($weekendDays)) {
             return [
                 'state' => 'unknown_schedule',
                 'reason' => 'schedule_incomplete',
@@ -254,19 +246,8 @@ class EmployeeWorkCalendarService
             ];
         }
 
-        if ($date < $employmentStart) {
-            return [
-                'state' => 'not_employed',
-                'reason' => 'before_employment_start',
-                'schedule_known' => true,
-                'employment_start_date' => $employmentStart,
-            ];
-        }
-
-        $weekendDays = array_map('intval', $version->weekend_days);
-
         return [
-            'state' => in_array($isoDay, $weekendDays, true) ? 'regular_day_off' : 'planned_work',
+            'state' => in_array($isoDay, array_map('intval', $weekendDays), true) ? 'regular_day_off' : 'planned_work',
             'reason' => null,
             'schedule_known' => true,
             'employment_start_date' => $employmentStart,
