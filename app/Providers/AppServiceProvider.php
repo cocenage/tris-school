@@ -54,6 +54,10 @@ class AppServiceProvider extends ServiceProvider
         Event::listen(RequestSending::class, [TelegramOutboundMonitor::class, 'sending']);
         Event::listen(ResponseReceived::class, [TelegramOutboundMonitor::class, 'received']);
         Event::listen(ConnectionFailed::class, [TelegramOutboundMonitor::class, 'failed']);
+        Gate::define('view-academy-analytics', fn (User $user): bool => $user->is_active
+            && $user->canViewAllStaffActivity()
+            && ! app(RolePreviewContext::class)->isActive());
+
         Gate::define('view-employee-calendars', fn (User $user): bool => $user->isApproved()
             && ! app(RolePreviewContext::class)->isActive()
             && $user->canViewAllEmployeeCalendars());

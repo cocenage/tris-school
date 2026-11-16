@@ -99,6 +99,10 @@ Route::middleware(['auth', 'approved'])->group(function () {
 
     Route::livewire('/home', 'page-home')->name('page-home');
 
+    Route::livewire('/analytics', 'page-analytics')
+        ->can('view-academy-analytics')
+        ->name('page-analytics');
+
     Route::livewire('/home/instructions', 'home.page-instructions')
         ->name('page-home.instructions');
 
