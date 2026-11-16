@@ -280,7 +280,7 @@ $this->profileRequired = false;
     $user = auth()->user();
     $rolePreview = app(RolePreviewContext::class);
     $effectiveUiRole = $rolePreview->effectiveUiRole();
-    $canSeePersonalStatistics = EmployeeProfileStatistics::canView($user);
+    $showEmployeeProfileHeader = EmployeeProfileStatistics::canView($user);
     $today = EmployeeProfileStatistics::today();
     $started = $user->work_started_at;
     $canSeeGeneralCalendar = ! $rolePreview->isActive()
@@ -289,8 +289,8 @@ $this->profileRequired = false;
 
 <x-slot:header>
 
-    <div @class(['flex items-center gap-3 p-[15px]', 'bg-[#F3F6F9] text-[#192C42]' => $canSeePersonalStatistics])>
-        <div @class(['size-[60px] shrink-0 overflow-hidden rounded-full', 'bg-[#E4EFF8]' => $canSeePersonalStatistics, 'bg-[#E1E1E1]' => ! $canSeePersonalStatistics])>
+    <div @class(['flex items-center gap-3 p-[15px]', 'bg-[#F3F6F9] text-[#192C42]' => $showEmployeeProfileHeader])>
+        <div @class(['size-[60px] shrink-0 overflow-hidden rounded-full', 'bg-[#E4EFF8]' => $showEmployeeProfileHeader, 'bg-[#E1E1E1]' => ! $showEmployeeProfileHeader])>
             @if($user?->telegram_photo_url)
                 <img
                     src="{{ $user->telegram_photo_url }}"
@@ -304,7 +304,7 @@ $this->profileRequired = false;
                     class="h-full w-full object-cover"
                 >
             @else
-                <div @class(['flex h-full w-full items-center justify-center text-[20px] font-medium', 'text-[#24577C]' => $canSeePersonalStatistics, 'text-[#666666]' => ! $canSeePersonalStatistics])>
+                <div @class(['flex h-full w-full items-center justify-center text-[20px] font-medium', 'text-[#24577C]' => $showEmployeeProfileHeader, 'text-[#666666]' => ! $showEmployeeProfileHeader])>
                     {{ mb_substr($user?->name ?? 'U', 0, 1) }}
                 </div>
             @endif
@@ -316,7 +316,7 @@ $this->profileRequired = false;
                     {{ $user->name }}
                 </span>
 
-                <span @class(['text-xs text-[#506479]' => $canSeePersonalStatistics, 'text-[18px] opacity-50' => ! $canSeePersonalStatistics])>
+                <span @class(['text-xs text-[#506479]' => $showEmployeeProfileHeader, 'text-[18px] opacity-50' => ! $showEmployeeProfileHeader])>
                     @switch($effectiveUiRole)
                         @case('admin')
                             Администратор
@@ -330,7 +330,7 @@ $this->profileRequired = false;
                         @default
                             {{ $effectiveUiRole }}
                     @endswitch
-                    @if($canSeePersonalStatistics && $started && $started->toDateString() <= $today->toDateString())
+                    @if($showEmployeeProfileHeader && $started && $started->toDateString() <= $today->toDateString())
                         · В TRIS {{ $started->toImmutable()->locale('ru')->diffForHumans($today, ['syntax' => \Carbon\CarbonInterface::DIFF_ABSOLUTE, 'parts' => 2]) }}
                     @endif
                 </span>
@@ -351,12 +351,8 @@ $this->profileRequired = false;
 <div
     x-data="{ profileSheetOpen: @entangle('profileEditOpen').live }"
     x-on:open-profile-edit.window="$wire.openProfileEdit()"
-    @class(['w-full p-[15px]', 'bg-[#F3F6F9]' => $canSeePersonalStatistics, 'bg-white' => ! $canSeePersonalStatistics])
+    @class(['w-full p-[15px]', 'bg-[#F3F6F9]' => $showEmployeeProfileHeader, 'bg-white' => ! $showEmployeeProfileHeader])
 >
-    @if($canSeePersonalStatistics)
-        <livewire:profile.personal-statistics />
-    @endif
-
     @if($user?->isAdmin())
         <section class="mb-[20px] rounded-[24px] border border-[#E7EBF2] bg-[#F8FAFC] p-4">
             <h2 class="text-[16px] font-semibold text-[#213259]">Режим просмотра</h2>

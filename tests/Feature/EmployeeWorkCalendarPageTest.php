@@ -152,6 +152,27 @@ it('shows only the authenticated employee calendar and keeps it read-only', func
         ->and(method_exists($component->instance(), 'updateSchedule'))->toBeFalse();
 });
 
+it('keeps scheduled days white and marks today when another day is selected', function () {
+    Carbon::setTestNow(Carbon::parse('2026-11-05 12:00:00', 'Europe/Rome'));
+    $employee = User::findOrFail(21);
+    $response = $this->actingAs($employee)->get(route('page-profile.calendar', ['month' => '2026-11', 'day' => '2026-11-06']));
+    $response->assertOk();
+
+    $document = new DOMDocument;
+    $document->loadHTML($response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING);
+    $xpath = new DOMXPath($document);
+    $past = $xpath->query('//button[starts-with(@aria-label, "2026-11-04")]')->item(0);
+    $today = $xpath->query('//button[starts-with(@aria-label, "2026-11-05")]')->item(0);
+    $tomorrow = $xpath->query('//button[starts-with(@aria-label, "2026-11-06")]')->item(0);
+
+    expect($past->getAttribute('class'))->toContain('bg-white')
+        ->and($tomorrow->getAttribute('class'))->toContain('bg-white')
+        ->and($tomorrow->getAttribute('aria-pressed'))->toBe('true')
+        ->and($today->getAttribute('class'))->toContain('ring-[#2D6494]')
+        ->and($today->getAttribute('aria-current'))->toBe('date')
+        ->and($today->getAttribute('aria-pressed'))->toBe('false');
+});
+
 it('denies users outside the employee roles and rejects dates outside the visible month', function () {
     $employee = User::findOrFail(21);
     $component = Livewire::actingAs($employee)->test('profile.page-calendar');
@@ -299,14 +320,22 @@ function createCalendarPageUser(string $role, string $name, bool $active = true,
     return User::findOrFail($id);
 }
 
-it('renders personal statistics at the profile entry point and switches the selected month', function () {
-    $employee = User::findOrFail(21);
+it('keeps the profile focused on its existing tools for employees', function () {
+    foreach ([User::findOrFail(21), createCalendarPageUser('supervisor', 'Супервайзер')] as $employee) {
+        $this->actingAs($employee)
+            ->get(route('page-profile'))
+            ->assertOk()
+            ->assertDontSee('Моя статистика')
+            ->assertDontSee('Заявок пока нет')
+            ->assertDontSee('Уроков пока нет')
+            ->assertSee('Мои контроли')
+            ->assertSee('Мои заявки')
+            ->assertSee('Мой календарь');
+    }
+});
 
-    $this->actingAs($employee)
-        ->get(route('page-profile'))
-        ->assertOk()
-        ->assertSee('Моя статистика')
-        ->assertSee('Ближайший рабочий день');
+it('switches the selected month in the personal statistics component', function () {
+    $employee = User::findOrFail(21);
 
     Livewire::actingAs($employee)->test('profile.personal-statistics')
         ->assertSet('month', '2026-11')
@@ -410,12 +439,12 @@ it('shows personal activity, applications and learning while keeping the retired
 
         $returnState = ['stats_month' => '2026-11', 'stats_view' => 'quality', 'stats_day' => '2026-11-07'];
         $this->get(route('page-coachings.show', [$coaching, ...$returnState]))
-            ->assertOk()->assertSee('Назад к статистике')->assertSee('#profile-statistics-title');
+            ->assertOk()->assertSee(route('page-profile.checks'))->assertDontSee('#profile-statistics-title');
         $this->get(route('page-profile.checks.result', [$novemberControl, ...$returnState]))
-            ->assertOk()->assertSee('Назад к статистике')->assertSee('#profile-statistics-title');
+            ->assertOk()->assertSee(route('page-profile.checks'))->assertDontSee('#profile-statistics-title');
 
         $this->get(route('page-profile', [...$returnState, 'stats_month' => '2026-10', 'stats_day' => '2026-10-07']))
-            ->assertOk()->assertSee('Средний результат · 30%')->assertSee('Orti 12');
+            ->assertOk()->assertDontSee('Моя статистика')->assertDontSee('Средний результат · 30%');
 
         DB::table('control_responses')->insert([
             'control_id' => $control, 'cleaner_id' => $employee->id, 'supervisor_id' => $supervisor->id,

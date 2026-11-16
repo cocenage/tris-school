@@ -1223,7 +1223,7 @@ it('persists distinct Classic media comments across draft restore and final subm
         ->assertDontSee('<video src=', false)
         ->assertSee('Замечание из уже сохранённого JSON')
         ->assertSee('Скол на поверхности')
-        ->assertSee('Общее замечание к контролю');
+        ->assertSeeInOrder(['Резюме', 'Общее замечание к контролю']);
 
     $unauthorized = User::create(['name' => 'Unauthorized', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
     $this->actingAs($unauthorized)->get($resultUrl)->assertOk();
@@ -1404,7 +1404,7 @@ it('clears pending Focus upload state when an upload is cancelled', function () 
 it('submits a negative Focus answer without corrective UI while preserving existing scoring once', function () {
     [, $cleaner, $apartment] = mountControlWorkflow();
 
-    $focus = Livewire::test('forms.page-control-focus')
+    Livewire::test('forms.page-control-focus')
         ->set('cleaner_id', $cleaner->id)
         ->set('apartment_id', $apartment)
         ->call('start')
@@ -1414,6 +1414,8 @@ it('submits a negative Focus answer without corrective UI while preserving exist
         ->assertSee('Завершить контроль')
         ->call('review', 0)
         ->assertSet('stage', 'review')
+        ->assertSee('Резюме контроля')
+        ->set('comment', "Проверьте ключи после уборки.\nОстальное в порядке.")
         ->call('submit')
         ->assertHasNoErrors()
         ->assertSet('stage', 'done')
@@ -1424,6 +1426,11 @@ it('submits a negative Focus answer without corrective UI while preserving exist
         ->and(DB::table('control_response_drafts')->count())->toBe(0)
         ->and(DB::table('control_responses')->value('penalty_points'))->toBe(1)
         ->and(DB::table('control_responses')->value('result_zone'))->toBe('yellow');
+
+    $response = ControlResponse::query()->sole();
+    expect($response->comment)->toBe("Проверьте ключи после уборки.\nОстальное в порядке.");
+    Livewire::actingAs($cleaner)->test('profile.page-check-result', ['controlResponse' => $response])
+        ->assertSeeInOrder(['Резюме', 'Проверьте ключи после уборки.', 'Остальное в порядке.', 'Замечания']);
 });
 
 it('keeps previously saved corrective data when Focus hides that UI', function () {

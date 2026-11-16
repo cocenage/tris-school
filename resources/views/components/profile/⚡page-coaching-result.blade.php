@@ -20,15 +20,19 @@ new class extends Component
 ?>
 
 @php
-    $statsBack = request()->query('stats_view') === 'quality'
-        && (int) $coaching->user_id === (int) auth()->id()
-        ? route('page-profile', request()->only(['stats_month', 'stats_view', 'stats_day'])).'#profile-statistics-title'
-        : null;
+    $isOwnCoaching = (int) $coaching->user_id === (int) auth()->id();
+    $fromOwnStatistics = $isOwnCoaching && request()->query('stats_view') === 'quality';
+    $backUrl = $fromOwnStatistics ? route('page-profile.checks') : route('page-coachings.history');
+    $historyUrl = match (true) {
+        ! $fromOwnStatistics && auth()->user()->canViewAllStaffActivity() => route('page-profile.employee-history', $coaching->user_id),
+        $isOwnCoaching => route('page-profile.checks'),
+        default => $backUrl,
+    };
 @endphp
 
 <x-slot:header>
     <div class="flex h-[70px] items-center gap-3 px-4 text-[#213259]">
-        <a href="{{ $statsBack ?? route('page-coachings.history') }}" aria-label="{{ $statsBack ? 'Назад к статистике' : 'Назад к коучингам' }}" class="p-2"><x-heroicon-o-arrow-left class="size-5" /></a>
+        <a href="{{ $backUrl }}" aria-label="{{ $fromOwnStatistics ? 'Мои контроли' : 'Назад к коучингам' }}" class="p-2"><x-heroicon-o-arrow-left class="size-5" /></a>
         <span role="heading" aria-level="1" class="text-[18px] leading-none">Коучинг</span>
     </div>
 </x-slot:header>
@@ -44,6 +48,6 @@ new class extends Component
         </dl>
         <h3 class="mb-3 mt-8 font-semibold">Что разобрали</h3>
         <p class="whitespace-pre-wrap break-words leading-relaxed">{{ $coaching->description ?: 'Описание не сохранилось в исторической записи.' }}</p>
-        <a href="{{ $statsBack ?? (auth()->user()->canViewAllStaffActivity() ? route('page-profile.employee-history', $coaching->user_id) : (auth()->id() === (int) $coaching->user_id ? route('page-profile.checks') : route('page-coachings.history'))) }}" class="mt-8 inline-block text-sm text-[#213259] underline">Вернуться к истории</a>
+        <a href="{{ $historyUrl }}" class="mt-8 inline-block text-sm text-[#213259] underline">Вернуться к истории</a>
     </div>
 </article>

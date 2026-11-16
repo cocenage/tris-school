@@ -99,20 +99,16 @@ new class extends Component {
 ?>
 
 @php
-    $statsBack = request()->query('stats_view') === 'quality'
-        && (int) $controlResponse->cleaner_id === (int) auth()->id()
-        ? route('page-profile', request()->only(['stats_month', 'stats_view', 'stats_day'])).'#profile-statistics-title'
-        : null;
     $canReturnToAll = request()->query('from') === 'all' && Auth::user()?->canViewAllStaffActivity();
-    $backUrl = $statsBack ?? ($canReturnToAll
+    $backUrl = $canReturnToAll
         ? route('page-profile.all-checks')
-        : route('page-profile.checks', $controlResponse->supervisor_id === Auth::id() ? ['tab' => 'conducted'] : []));
+        : route('page-profile.checks', $controlResponse->supervisor_id === Auth::id() ? ['tab' => 'conducted'] : []);
 @endphp
 
 <x-slot:header>
     <div class="w-full h-[70px] flex items-center justify-between px-[15px]">
         <a href="{{ $backUrl }}"
-            aria-label="{{ $statsBack ? 'Назад к статистике' : ($canReturnToAll ? 'Все контроли' : 'Мои контроли') }}"
+            aria-label="{{ $canReturnToAll ? 'Все контроли' : 'Мои контроли' }}"
             class="flex size-11 items-center justify-center rounded-full bg-[#EFF1F3] text-[#213259]">
             <x-heroicon-o-arrow-left class="size-5 stroke-2" />
         </a>
@@ -135,7 +131,7 @@ new class extends Component {
     $roomSummary = $this->roomSummary($errors);
 
     $apartmentName = $record->apartment?->name ?? 'Квартира не указана';
-    $comment = trim((string) ($record->comment ?? ''));
+    $resume = trim((string) ($record->comment ?? ''));
 @endphp
 
 <div class="flex h-full min-h-0 flex-col bg-[#F4F7FB]">
@@ -215,16 +211,15 @@ new class extends Component {
                             @endif
                         </div>
 
-                        @if($comment !== '')
-                            <div class="mt-[10px] rounded-[18px] bg-[#F8F8F8] px-[13px] py-[12px]">
-                                <div class="text-[13px] text-black/40">Комментарий</div>
-                                <div class="mt-[5px] text-[14px] font-medium leading-[1.4] text-[#111111]">
-                                    {{ $comment }}
-                                </div>
-                            </div>
-                        @endif
                     </div>
                 </div>
+
+                @if($resume !== '')
+                    <section aria-labelledby="control-resume-title" class="mb-[18px] rounded-[18px] bg-[#F8F8F8] px-[14px] py-[12px]">
+                        <h2 id="control-resume-title" class="text-[16px] font-semibold text-[#111111]">Резюме</h2>
+                        <p class="mt-[5px] whitespace-pre-wrap break-words text-[14px] leading-[1.4] text-[#111111]">{{ $resume }}</p>
+                    </section>
+                @endif
 
                 @if($errors !== [] || $record->result_zone === 'green')
                     <section aria-labelledby="control-findings-title" class="mb-[18px]">

@@ -6,7 +6,6 @@ use App\Models\User;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramRichMessageBuilder;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class TelegramUserNotificationService
@@ -135,49 +134,15 @@ class TelegramUserNotificationService
             title: 'Заявка на доступ отправлена',
             status: 'Ожидает подтверждения',
             fallbackHtml: implode("\n", [
-                'вЏі <b>Р—Р°СЏРІРєР° РЅР° РґРѕСЃС‚СѓРї РѕС‚РїСЂР°РІР»РµРЅР°</b>',
+                '⏳ <b>Заявка на доступ отправлена</b>',
                 '',
-                'РњС‹ РїРѕР»СѓС‡РёР»Рё РІР°С€Сѓ Р·Р°СЏРІРєСѓ.',
-                'РџРѕР¶Р°Р»СѓР№СЃС‚Р°, РЅРµ РѕС‚РїСЂР°РІР»СЏР№С‚Рµ РµС‘ РїРѕРІС‚РѕСЂРЅРѕ.',
+                'Мы получили вашу заявку.',
+                'Пожалуйста, не отправляйте её повторно.',
                 '',
-                'РљРѕРіРґР° Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂ РїРѕРґС‚РІРµСЂРґРёС‚ РґРѕСЃС‚СѓРї, РјС‹ РїСЂРёС€Р»С‘Рј СЃРѕРѕР±С‰РµРЅРёРµ Р·РґРµСЃСЊ.',
+                'Когда администратор подтвердит доступ, мы пришлём сообщение здесь.',
             ]),
         ))) {
             Log::warning('Telegram access pending notification failed.', ['user_id' => $user->id]);
-
-            return;
-        }
-
-        $user->forceFill([
-            'telegram_access_pending_notified_at' => now(),
-        ])->saveQuietly();
-
-        return;
-
-        $response = Http::timeout(10)->post(
-            'https://api.telegram.org/bot'.$botToken.'/sendMessage',
-            [
-                'chat_id' => $user->telegram_id,
-                'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
-                'text' => implode("\n", [
-                    '⏳ <b>Заявка на доступ отправлена</b>',
-                    '',
-                    'Мы получили вашу заявку.',
-                    'Пожалуйста, не отправляйте её повторно.',
-                    '',
-                    'Когда администратор подтвердит доступ, мы пришлём сообщение здесь.',
-                ]),
-            ]
-        );
-
-        if (! $response->successful()) {
-            Log::warning('Telegram access pending notification failed.', [
-                'user_id' => $user->id,
-                'telegram_id' => $user->telegram_id,
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
 
             return;
         }
@@ -213,61 +178,19 @@ class TelegramUserNotificationService
             title: 'Доступ одобрен',
             status: 'Одобрено',
             fallbackHtml: implode("\n", [
-                'вњ… <b>Р”РѕСЃС‚СѓРї РѕРґРѕР±СЂРµРЅ</b>',
+                '✅ <b>Доступ одобрен</b>',
                 '',
-                'Р’Р°С€ Р°РєРєР°СѓРЅС‚ РїРѕРґС‚РІРµСЂР¶РґС‘РЅ.',
-                'РўРµРїРµСЂСЊ РІС‹ РјРѕР¶РµС‚Рµ РІРѕР№С‚Рё РІ РїСЂРёР»РѕР¶РµРЅРёРµ.',
+                'Ваш аккаунт подтверждён.',
+                'Теперь вы можете войти в приложение.',
             ]),
             replyMarkup: [
                 'inline_keyboard' => [[[
-                    'text' => 'РћС‚РєСЂС‹С‚СЊ РїСЂРёР»РѕР¶РµРЅРёРµ',
+                    'text' => 'Открыть приложение',
                     'url' => route('landing'),
                 ]]],
             ],
         ))) {
             Log::warning('Telegram access approved notification failed.', ['user_id' => $user->id]);
-
-            return;
-        }
-
-        $user->forceFill([
-            'telegram_access_approved_notified_at' => now(),
-        ])->saveQuietly();
-
-        return;
-
-        $response = Http::timeout(10)->post(
-            'https://api.telegram.org/bot'.$botToken.'/sendMessage',
-            [
-                'chat_id' => $user->telegram_id,
-                'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
-                'text' => implode("\n", [
-                    '✅ <b>Доступ одобрен</b>',
-                    '',
-                    'Ваш аккаунт подтверждён.',
-                    'Теперь вы можете войти в приложение.',
-                ]),
-                'reply_markup' => [
-                    'inline_keyboard' => [
-                        [
-                            [
-                                'text' => 'Открыть приложение',
-                                'url' => route('landing'),
-                            ],
-                        ],
-                    ],
-                ],
-            ]
-        );
-
-        if (! $response->successful()) {
-            Log::warning('Telegram access approved notification failed.', [
-                'user_id' => $user->id,
-                'telegram_id' => $user->telegram_id,
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
 
             return;
         }
