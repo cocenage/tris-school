@@ -20,17 +20,18 @@ class TelegramScheduledControlSummaryRichFormatter
             '',
             '---',
             '',
-            '## ⚠️ Главные проблемы',
         ];
 
         if ($data['problems'] === []) {
             $lines[] = 'Проблем по полученным ответам не выявлено.';
-        } else {
-            foreach ($data['problems'] as $problem) {
+        }
+        foreach ($this->problemGroups($data['problems']) as $label => $problems) {
+            $lines[] = '## '.$label;
+            foreach ($problems as $problem) {
                 $lines[] = '';
                 $lines[] = '**'.$this->richMessages->escapeRichText($problem['district'].' — '.$problem['control_label']).'** · '.$this->richMessages->escapeRichText($problem['status_label']);
                 $lines[] = 'Контроль: '.$this->richMessages->escapeRichText($problem['control_time']).' · обнаружено: '.$this->richMessages->escapeRichText($problem['discovered_time']);
-                $lines[] = 'Не выполнено: '.$this->richMessages->escapeRichText($problem['issue']);
+                $lines[] = 'Ответ: '.$this->richMessages->escapeRichText($problem['issue']);
                 $lines[] = 'Квартира: '.$this->richMessages->escapeRichText($problem['apartment']).' · Причина: '.$this->richMessages->escapeRichText($problem['reason']).' · Автор: '.$this->richMessages->escapeRichText($problem['author']);
                 if ($problem['repeat_summary'] !== '') {
                     $lines[] = 'Повторная проверка: '.$this->richMessages->escapeRichText($problem['repeat_summary']);
@@ -39,13 +40,22 @@ class TelegramScheduledControlSummaryRichFormatter
                 if ($problem['source_url'] !== null) {
                     $lines[] = '[Исходное сообщение ↗]('.$problem['source_url'].')';
                 }
+                if ($problem['resolution_url'] !== null) {
+                    $lines[] = '[Подтверждение ↗]('.$problem['resolution_url'].')';
+                }
             }
+            $lines[] = '';
         }
 
         $lines[] = '';
-        $lines[] = '## ✅ Что выполнено';
-        $lines = [...$lines, ...array_map(fn (string $item): string => '- '.$this->richMessages->escapeRichText($item), $data['completed'] ?: ['Нет подтверждённых контрольных точек.'])];
-
+        if ($data['unanswered'] !== []) {
+            $lines[] = '## Без ответа';
+            $lines = [...$lines, ...array_map(fn (string $line): string => '- '.$this->richMessages->escapeRichText($line), $data['unanswered']), ''];
+        }
+        if ($data['not_applicable'] !== []) {
+            $lines[] = '## Не применимо';
+            $lines = [...$lines, ...array_map(fn (string $line): string => '- '.$this->richMessages->escapeRichText($line), $data['not_applicable']), ''];
+        }
         $lines[] = '';
         $lines[] = '## 📋 Хронология';
         $lines = [...$lines, ...array_map(fn (string $item): string => '- '.$this->richMessages->escapeRichText($item), $data['chronology'] ?: ['Значимых изменений с зафиксированным временем нет.'])];
@@ -78,87 +88,95 @@ class TelegramScheduledControlSummaryRichFormatter
     public function fallbackHtml(array $summary): string
     {
         $data = $this->data($summary);
-        $problems = $data['problems'];
-        $problemCount = count($problems);
-        $prefix = [
-            '<b>🧹 TRIS — Итоги рабочего дня</b>',
-            $this->html($data['date']).' · контролей: '.(int) $data['control_count'],
-            '',
-            '<b>⚠️ Главные проблемы ('.$problemCount.')</b>',
-        ];
-
-        if ($problems === []) {
-            $prefix[] = 'По полученным ответам проблем не выявлено.';
-        }
-
         $metrics = $data['metrics'];
-        $completed = array_slice($data['completed'], 0, 3);
-        $remainingCompleted = max(0, count($data['completed']) - count($completed));
-        $tail = [
-            '',
-            '<b>📊 Итоги дня</b>',
-            'Контролей: '.(int) ($metrics['Контрольных сообщений'] ?? 0)
-                .' · проблем: '.(int) ($metrics['Уникальных проблем'] ?? 0)
-                .' · открытых: '.(int) ($metrics['Открытых проблем'] ?? 0)
-                .' · устранено: '.(int) ($metrics['Подтверждённых устранений'] ?? 0),
-            'Без ответа: '.(int) ($metrics['Контрольных точек без ответа'] ?? 0)
-                .' · противоречий: '.(int) ($metrics['Противоречивых ответов'] ?? 0)
-                .' · повторных фиксаций: '.(int) ($metrics['Повторных проблемных фиксаций'] ?? 0),
-            '',
-            '<b>✅ Ключевые итоги</b>',
+        $lines = [
+            '<b>🧹 TRIS — Итоги рабочего дня</b>',
+            $this->html($data['date']).' · контрольных сообщений: '.$data['control_count'],
+            'Открыто: '.$metrics['Открытых проблем'].' · устранено: '.$metrics['Подтверждённых устранений']
+                .' · ответы расходятся: '.$metrics['Противоречивых ответов'],
         ];
 
-        foreach ($completed ?: ['Нет подтверждённых контрольных точек.'] as $item) {
-            $tail[] = '• '.$this->html($this->compactText($item, 150));
+        $groups = array_map(fn (array $problems): array => array_map($this->problemLine(...), $problems),
+            $this->problemGroups($data['problems']));
+        if ($data['unanswered'] !== []) {
+            $groups['Без ответа · точек: '.$metrics['Контрольных точек без ответа']] = array_map(
+                fn (string $line): string => '• '.$this->html($this->compactText($line, 200)), $data['unanswered']);
+        }
+        if ($data['pending_points'] > 0) {
+            $groups['Окно ответа ещё открыто'] = ['Точек: '.$data['pending_points']];
+        }
+        if ($data['not_applicable'] !== []) {
+            $groups['Не применимо'] = array_map(
+                fn (string $line): string => '• '.$this->html($this->compactText($line, 200)), $data['not_applicable']);
+        }
+        $technical = $data['technical_counts'];
+        if (array_sum($technical) > 0) {
+            $groups['Доставка контролей'] = ['Не доставлено: '.$technical['failed']
+                .' · доставка не подтверждена: '.$technical['uncertain'].' · в очереди: '.$technical['pending']];
         }
 
-        if ($remainingCompleted > 0) {
-            $tail[] = '… и ещё '.$remainingCompleted.' групп результатов в подробной истории.';
+        $groups = array_filter($groups);
+        if ($groups === []) {
+            $lines[] = 'По полученным ответам отрицательных результатов нет.';
+        }
+        $room = intdiv(self::FALLBACK_MAX_VISIBLE_CHARACTERS - 300, max(1, count($groups)));
+        foreach ($groups as $label => $rows) {
+            $lines[] = '';
+            $lines[] = '<b>'.$this->html($label).'</b>';
+            $used = 0;
+            $shown = 0;
+            foreach ($rows as $row) {
+                $used += TelegramRichMessageBuilder::htmlVisibleLength($row) + 1;
+                if ($used > $room - 48) {
+                    break;
+                }
+                $lines[] = $row;
+                $shown++;
+            }
+            if ($shown < count($rows)) {
+                $lines[] = '… ещё записей: '.(count($rows) - $shown).'.';
+            }
         }
 
-        $tail[] = '';
-        $tail[] = 'Подробная история доступна отдельно (ответы, повторные проверки и источники).';
+        return implode("\n", $lines);
+    }
 
-        $selectedProblems = [];
+    private function problemGroups(array $problems): array
+    {
+        $labels = [
+            'problem' => 'Ответили «нет»',
+            'partial' => 'Выполнено частично',
+            'unclear' => 'Устранение не подтверждено',
+            'confirmed' => 'Подтвердили устранение',
+            'conflict' => 'Ответы расходятся',
+        ];
+        $groups = array_fill_keys($labels, []);
         foreach ($problems as $problem) {
-            $candidateProblems = [...$selectedProblems, $this->problemLine($problem)];
-            $omitted = $problemCount - count($candidateProblems);
-            $candidate = [...$prefix, ...$candidateProblems];
-            if ($omitted > 0) {
-                $candidate[] = '… не показано проблемных записей: '.$omitted.'.';
-            }
-            $candidate = [...$candidate, ...$tail];
-
-            if (TelegramRichMessageBuilder::htmlVisibleLength(implode("\n", $candidate)) > self::FALLBACK_MAX_VISIBLE_CHARACTERS) {
-                break;
-            }
-
-            $selectedProblems[] = end($candidateProblems);
+            $groups[$labels[$problem['status']]][] = $problem;
         }
 
-        $omittedProblems = $problemCount - count($selectedProblems);
-        $lines = [...$prefix, ...$selectedProblems];
-        if ($omittedProblems > 0) {
-            $lines[] = '… не показано проблемных записей: '.$omittedProblems.'.';
-        }
-        $html = implode("\n", [...$lines, ...$tail]);
-
-        if (TelegramRichMessageBuilder::htmlVisibleLength($html) > self::FALLBACK_MAX_VISIBLE_CHARACTERS) {
-            return implode("\n", [
-                '<b>🧹 TRIS — Итоги рабочего дня</b>',
-                $this->html($data['date']),
-                'Краткая сводка превышает безопасный размер.',
-                'Подробная история доступна отдельно.',
-            ]);
-        }
-
-        return $html;
+        return array_filter($groups);
     }
 
     private function problemLine(array $problem): string
     {
-        return '• <b>'.$this->html($this->compactText($problem['district'].' — '.$problem['control_label'], 110))
-            .'</b> · '.$this->html($this->compactText($problem['status_label'], 90));
+        $line = '• <b>'.$this->html($this->compactText($problem['district'].' — '.$problem['control_label'], 100)).'</b>';
+        $context = array_filter([$problem['discovered_time'], $problem['apartment']], fn (string $value): bool => $value !== 'Не установлено');
+        if ($context !== []) {
+            $line .= ' · '.$this->html($this->compactText(implode(' · ', $context), 72));
+        }
+        $description = $problem['reason'] !== 'Не установлено' ? $problem['reason'] : $problem['issue'];
+        $line .= ' — '.$this->html($this->compactText($description, 104));
+        if ($problem['source_url'] !== null) {
+            $line .= ' · <a href="'.$problem['source_url'].'">'.($problem['has_negative'] && $problem['initial_status'] === 'problem' ? 'Ответ «нет»' : 'Ответ').'</a>';
+        }
+        if ($problem['resolution_url'] !== null) {
+            $line .= ' → <a href="'.$problem['resolution_url'].'">Подтверждение'.($problem['resolution_time'] !== 'Не установлено' ? ' в '.$problem['resolution_time'] : '').'</a>';
+        } elseif ($problem['status'] === 'confirmed') {
+            $line .= ' → '.$this->html($problem['outcome']);
+        }
+
+        return $line;
     }
 
     private function compactText(string $value, int $maxCharacters): string
@@ -229,7 +247,7 @@ class TelegramScheduledControlSummaryRichFormatter
         }
 
         $stories = array_map(fn (array $story): array => $this->finalizeStory($story), $stories);
-        $problems = array_values(array_filter($stories, fn (array $story): bool => $story['first_problem'] !== null));
+        $problems = array_values(array_filter($stories, fn (array $story): bool => $story['first_problem'] !== null || $story['status'] === 'conflict'));
         usort($problems, fn (array $left, array $right): int => strcmp(
             (string) ($left['first_problem']['responded_at'] ?? ''),
             (string) ($right['first_problem']['responded_at'] ?? ''),
@@ -254,9 +272,11 @@ class TelegramScheduledControlSummaryRichFormatter
         $problemCount = count($problems);
         $repeatCount = array_sum(array_column($problems, 'repeat_count'));
         $resolved = count(array_filter($problems, fn (array $story): bool => $story['status'] === 'confirmed'));
-        $open = $problemCount - $resolved;
+        $open = count(array_filter($problems, fn (array $story): bool => in_array($story['status'], ['problem', 'partial', 'unclear'], true)));
         $conflicts = count(array_filter($stories, fn (array $story): bool => $story['status'] === 'conflict'));
-        $noAnswer = (int) ($totals['districts_without_answer'] ?? $this->noAnswerCount($rows));
+        $unanswered = $this->pointGroups($rows, 'no_response');
+        $notApplicable = $this->pointGroups($rows, 'not_applicable');
+        $noAnswer = array_sum(array_map('count', $unanswered));
 
         $metrics = [
             'Контрольных сообщений' => $sent,
@@ -271,11 +291,19 @@ class TelegramScheduledControlSummaryRichFormatter
         return [
             'date' => $this->displayDate((string) ($summary['date'] ?? '')),
             'control_count' => $sent,
+            'unanswered' => $this->pointLabels($unanswered),
+            'pending_points' => array_sum(array_map('count', $this->pointGroups($rows, 'pending'))),
+            'not_applicable' => $this->pointLabels($notApplicable),
+            'technical_counts' => [
+                'failed' => (int) ($totals['not_delivered'] ?? 0),
+                'uncertain' => (int) ($totals['uncertain_deliveries'] ?? 0),
+                'pending' => (int) ($totals['pending_deliveries'] ?? 0),
+            ],
             'problems' => array_map(fn (array $story): array => $this->problemView($story), $problems),
-            'completed' => $completed,
             'chronology' => $chronology,
             'metrics' => $metrics,
             'details' => [
+                ['title' => '✅ Что выполнено', 'lines' => array_map(fn (string $text): array => ['text' => $text, 'url' => null], $completed)],
                 ['title' => '🔍 Полные ответы по контрольным точкам', 'lines' => $this->answerDetails($rows)],
                 ['title' => '🔁 История повторных проверок', 'lines' => $this->historyDetails($stories)],
                 ['title' => '🔗 Источники', 'lines' => $this->sourceDetails($stories)],
@@ -309,9 +337,11 @@ class TelegramScheduledControlSummaryRichFormatter
                 $resolvedAt = null;
                 $problemEventKeys[(string) ($event['response_id'] ?? $event['source_message_id'] ?? $index)] = true;
             }
-            $hasBad = collect($states)->contains(fn (string $value): bool => in_array($value, ['problem', 'partial'], true));
-            $hasConfirmed = collect($states)->contains('confirmed');
-            if ($hasBad && $hasConfirmed) {
+            $values = collect($states)->unique();
+            $hasBad = $values->contains(fn (string $value): bool => in_array($value, ['problem', 'partial'], true));
+            $hasConfirmed = $values->contains('confirmed');
+            $applicabilityConflict = $values->contains('not_applicable') && $values->count() > 1;
+            if (($hasBad && $hasConfirmed) || $applicabilityConflict) {
                 $conflictAt = $event;
                 $resolvedAt = null;
             } elseif ($firstProblem !== null && $states !== [] && collect($states)->every(fn (string $value): bool => $value === 'confirmed')) {
@@ -325,8 +355,10 @@ class TelegramScheduledControlSummaryRichFormatter
         $hasConfirmed = $values->contains('confirmed');
         $status = match (true) {
             $hasBad && $hasConfirmed => 'conflict',
+            $values->contains('not_applicable') && $values->count() > 1 => 'conflict',
             $values->contains('problem') => 'problem',
             $values->contains('partial') => 'partial',
+            $values->contains('not_applicable') => 'not_applicable',
             $values->contains('unclear') => 'unclear',
             $values->isNotEmpty() => 'confirmed',
             in_array('conflict', $story['base_statuses'], true) => 'conflict',
@@ -353,7 +385,7 @@ class TelegramScheduledControlSummaryRichFormatter
 
     private function problemView(array $story): array
     {
-        $first = $story['first_problem'] ?? [];
+        $first = $story['first_problem'] ?? $story['conflict_at'] ?? [];
         $bad = collect($story['events'])->filter(fn (array $event): bool => in_array($event['status'] ?? null, ['problem', 'partial'], true))->last() ?? $first;
         $controlType = (string) ($first['control_type'] ?? $story['control_types'][0] ?? '');
         $rechecks = collect($story['events'])->filter(fn (array $event): bool => $event !== $first
@@ -377,6 +409,7 @@ class TelegramScheduledControlSummaryRichFormatter
             $author = '@'.ltrim((string) $bad['username'], '@');
         }
         $source = $this->safeSourceUrl($bad['source_url'] ?? null);
+        $resolution = $story['resolved_at'] === null ? null : $rechecks->last(fn (array $event): bool => ($event['status'] ?? null) === 'confirmed' && ($event['responded_at'] ?? null) === $story['resolved_at']);
 
         return [
             'district' => $story['district'],
@@ -389,6 +422,11 @@ class TelegramScheduledControlSummaryRichFormatter
             'author' => filled($author) ? (string) $author : 'Не установлено',
             'repeat_summary' => $repeatSummary,
             'outcome' => $this->outcome($story),
+            'status' => $story['status'],
+            'has_negative' => $story['first_problem'] !== null,
+            'initial_status' => $bad['status'] ?? null,
+            'resolution_url' => $this->safeSourceUrl($resolution['source_url'] ?? null),
+            'resolution_time' => $this->time((string) ($story['resolved_at'] ?? '')),
             'status_label' => match ($story['status']) {
                 'confirmed' => 'устранено и подтверждено',
                 'conflict' => 'Противоречивые ответы · требует уточнения',
@@ -540,9 +578,29 @@ class TelegramScheduledControlSummaryRichFormatter
         };
     }
 
-    private function noAnswerCount($rows): int
+    private function pointGroups($rows, string $status): array
     {
-        return $rows->sum(fn (array $row): int => collect($row['district_history'] ?? [])->where('status', 'no_response')->count());
+        $points = [];
+        foreach ($rows as $row) {
+            if (($row['delivery_status'] ?? null) !== 'sent' || ($row['eligible_for_statistics'] ?? true) === false) {
+                continue;
+            }
+            $label = $this->controlLabel((string) ($row['control_type'] ?? ''));
+            foreach (($row['district_history'] ?? []) as $district) {
+                if (($district['status'] ?? null) === $status) {
+                    $time = $this->time((string) ($row['scheduled_for'] ?? ''));
+                    $points[$district['district'] ?? 'Район не установлен'][] = $label.($time === 'Не установлено' ? '' : ' · '.$time);
+                }
+            }
+        }
+
+        return $points;
+    }
+
+    private function pointLabels(array $points): array
+    {
+        return array_map(fn (string $district, array $labels): string => $district.' — '.implode(', ', $labels),
+            array_keys($points), array_values($points));
     }
 
     private function chronologyTime(?string $value): ?string
@@ -610,6 +668,7 @@ class TelegramScheduledControlSummaryRichFormatter
             'problem' => 'не выполнено',
             'partial' => 'выполнено частично',
             'unclear', 'unknown' => 'ответ неясен',
+            'not_applicable' => 'не применимо',
             default => 'ответ: '.$status,
         };
     }
@@ -648,7 +707,7 @@ class TelegramScheduledControlSummaryRichFormatter
 
     private function safeSourceUrl(mixed $value): ?string
     {
-        return is_string($value) && preg_match('~^https://t\.me/c/\d+/\d+$~', $value) === 1 ? $value : null;
+        return is_string($value) && preg_match('~^https://t\.me/c/\d{1,20}/\d{1,20}$~D', $value) === 1 ? $value : null;
     }
 
     private function html(string $value): string

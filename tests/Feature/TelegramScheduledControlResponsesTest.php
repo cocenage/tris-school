@@ -2076,7 +2076,7 @@ it('sends one reminder only for an unanswered district after twenty minutes', fu
     Bus::assertDispatched(DeliverScheduledControlFollowup::class, 1);
     $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
     $lodi = collect($summary['controls'][0]['district_history'])->firstWhere('district', 'Lodi');
-    expect($lodi['status'])->toBe('no_response')->and($summary['totals']['delays_identified'])->toBe(0);
+    expect($lodi['status'])->toBe('pending')->and($summary['totals']['delays_identified'])->toBe(0);
 });
 
 it('cancels a queued follow-up if the district confirms before the worker sends it', function (): void {
@@ -2463,7 +2463,7 @@ it('does not treat an edited question as a confirmed district answer or as no re
     $text = $formatter->format($summary);
     $interactive = $formatter->formatInteractive($delivery);
     expect($lodi['status'])->toBe('unclear')
-        ->and($summary['totals']['districts_without_answer'])->toBe(4)
+        ->and($summary['totals']['districts_without_answer'])->toBe(0)
         ->and($summary['totals']['districts_unclear'])->toBe(1)
         ->and($text)->toContain('Lodi — ❔ получен неясный ответ')
         ->not->toContain('Lodi — нет ответа')
@@ -3024,4 +3024,56 @@ it('does not carry a previous days answers into a new local date', function (): 
     expect($today->sequence_context['source_status'])->toBe('missing_delivery')
         ->and($today->sequence_context['criteria_matches'])->toBeFalse()
         ->and($today->sequence_context['eligible_districts'])->toBe(array_keys(ScheduledControlTypes::DISTRICTS));
+});
+
+it('keeps early silence and explicit no second cleanings out of unanswered and negative totals', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 14:20:00', 'Europe/Rome'));
+    $control = followupControlFixture(ScheduledControlTypes::SECOND_CLEANINGS_FINISHING, '2026-10-01 14:00:00');
+    captureControlReply(controlReplyPayload($control, 'Lodi — нет вторых уборок', 76519, 702, '2026-10-01 14:15:00'));
+    $builder = app(TelegramScheduledControlSummaryBuilder::class);
+    $early = $builder->build('2026-10-01');
+    $history = collect($early['deliveries'][0]['district_history']);
+
+    expect($history->firstWhere('district', 'Lodi')['status'])->toBe('not_applicable')
+        ->and($history->firstWhere('district', 'Como')['status'])->toBe('pending')
+        ->and($early['totals']['districts_without_answer'])->toBe(0);
+
+    $this->travelTo(Carbon::parse('2026-10-01 15:01:00', 'Europe/Rome'));
+    $final = $builder->build('2026-10-01');
+    $html = app(TelegramScheduledControlSummaryRichFormatter::class)->fallbackHtml($final);
+    expect($final['totals']['districts_without_answer'])->toBe(4)
+        ->and($html)->toContain('Не применимо', 'Lodi — вторые уборки', 'Без ответа · точек: 4')
+        ->and($html)->not->toContain('Ответили «нет»');
+});
+
+it('counts missing follow-up responses only for districts that received the repeat question', function (): void {
+    $this->travelTo(Carbon::parse('2026-10-01 16:00:00', 'Europe/Rome'));
+    $control = followupControlFixture(ScheduledControlTypes::SECOND_CLEANINGS_FINISHING, '2026-10-01 14:30:00');
+    $control->update(['sequence_context' => ['stage' => 'second', 'eligible_districts' => ['lodi']]]);
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-10-01');
+
+    expect(array_column($summary['deliveries'][0]['district_history'], 'district'))->toBe(['Lodi'])
+        ->and($summary['totals']['districts_without_answer'])->toBe(1);
+});
+
+it('reports the saved summary delivery without sending or exposing the destination', function (): void {
+    TelegramScheduledControlSummaryDelivery::query()->create([
+        'summary_date' => '2026-10-01',
+        'chat_id' => '-2001',
+        'message_thread_id' => '17',
+        'delivery_key' => str_repeat('a', 64),
+        'summary_hash' => str_repeat('b', 64),
+        'summary' => [],
+        'text' => 'Not part of delivery diagnostics',
+        'status' => 'sent',
+        'telegram_message_id' => 4321,
+    ]);
+
+    expect(Artisan::call('telegram:control-summary-preview', ['--date' => '2026-10-01', '--delivery-status' => true]))->toBe(0);
+    $output = Artisan::output();
+    expect($output)->not->toContain('-2001', 'Not part of delivery diagnostics')
+        ->and(json_decode($output, true, flags: JSON_THROW_ON_ERROR)['deliveries'][0])->toMatchArray([
+            'status' => 'sent', 'telegram_message_id' => 4321, 'matches_current_destination' => true,
+        ]);
+    Http::assertNothingSent();
 });

@@ -244,6 +244,7 @@ class TelegramEveningIntelligenceBuilder
                 'event_key' => $item['event_key'],
                 'location' => $item['context_label'],
                 'summary' => $item['editorial']['summary'] ?: $text,
+                'reported_text' => $text,
                 'author' => $source['author_name'],
                 'reported_at' => $source['source_time'],
                 'source_url' => $source['source_url'],

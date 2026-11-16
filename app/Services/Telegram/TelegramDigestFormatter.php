@@ -4,6 +4,7 @@ namespace App\Services\Telegram;
 
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use Throwable;
 
 /**
@@ -237,6 +238,7 @@ class TelegramDigestFormatter
     {
         $date = Carbon::parse($preview['date'], $preview['timezone'] ?? 'Europe/Rome')->format('d.m.Y');
         $lines = ['🌙 '.htmlspecialchars($district ?: 'TRIS', ENT_QUOTES, 'UTF-8').' — оперативные итоги дня · '.$date];
+        $sourceEntries = [];
         $sections = $preview['management_sections'] ?? [];
         $linen = $preview['linen_report'] ?? [];
         $districtKey = $preview['district']['key'] ?? null;
@@ -251,62 +253,25 @@ class TelegramDigestFormatter
             ->filter(fn (array $entry): bool => $linenEventKeys->contains($entry['item']['event_key'] ?? null))
             ->keyBy(fn (array $entry): string => (string) $entry['item']['event_key']);
         foreach ([
-            'technical_faults' => '🔧 Технические неисправности',
-            'unresolved_problems' => '⚠️ Значимые нерешённые проблемы',
+            'technical_faults' => '🔧 Техника',
+            'unresolved_problems' => '📌 Сообщения по работе',
             'instruction_gaps' => '📚 Вопросы клинеров и инструкции',
             'praise' => '👏 Поводы для похвалы',
         ] as $key => $label) {
             $sectionItems = collect($sections[$key] ?? [])
                 ->reject(fn (array $item): bool => $linenEventKeys->contains($item['event_key'] ?? null))
-                ->values();
+                ->filter(fn (array $item): bool => filled($item['reported_text'] ?? null)
+                    && filled($item['source_url'] ?? null));
             if ($sectionItems->isEmpty()) {
                 continue;
             }
-            $lines[] = '';
-            $lines[] = $label;
             foreach ($sectionItems as $item) {
                 $location = trim((string) ($item['location'] ?? ''));
-                $summary = html_entity_decode(trim((string) ($item['summary'] ?? '')), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                $lines[] = '• '.htmlspecialchars(($location !== '' ? $location.' — ' : '').$summary, ENT_COMPAT, 'UTF-8');
-                $classificationLabels = $this->managementClassificationLabels($item['classifications'] ?? []);
-                if ($classificationLabels->count() > 1) {
-                    $lines[] = '  Классификации: '.htmlspecialchars($classificationLabels->implode(' · '), ENT_COMPAT, 'UTF-8');
-                }
-                $author = trim((string) ($item['author'] ?? ''));
-                $time = filled($item['reported_at'] ?? null)
-                    ? Carbon::parse($item['reported_at'])->setTimezone('Europe/Rome')->format('H:i') : null;
-                if ($author !== '' || $time !== null) {
-                    $lines[] = '  👤 '.htmlspecialchars($author ?: 'Автор не указан', ENT_QUOTES, 'UTF-8').($time !== null ? ' · '.$time : '');
-                }
-                if ($key === 'technical_faults' || $key === 'unresolved_problems') {
-                    $printedSourceUrls = [];
-                    foreach ($item['follow_ups'] ?? [] as $followUp) {
-                        $lines[] = '  Что произошло: '.htmlspecialchars($followUp['text'], ENT_COMPAT, 'UTF-8');
-                        if (filled($followUp['source_url'] ?? null)) {
-                            $lines[] = '  🔗 '.$followUp['source_url'];
-                            $printedSourceUrls[] = $followUp['source_url'];
-                        }
-                    }
-                    $status = $this->managementStatusLabel($item);
-                    $lines[] = '  Статус: '.$status;
-                    if (filled($item['next_action'] ?? null)) {
-                        $action = $status === 'требуется уточнение' ? 'Требуется уточнение.' : (string) $item['next_action'];
-                        $lines[] = '  Предложение: '.htmlspecialchars($action, ENT_COMPAT, 'UTF-8');
-                    }
-
-                    foreach (collect($item['source_urls'] ?? [$item['source_url'] ?? null])->filter()->unique() as $sourceUrl) {
-                        if (! in_array($sourceUrl, $printedSourceUrls, true)) {
-                            $lines[] = '  🔗 '.$sourceUrl;
-                        }
-                    }
-                } else {
-                    foreach (collect($item['source_urls'] ?? [$item['source_url'] ?? null])->filter()->unique() as $sourceUrl) {
-                        $lines[] = '  🔗 '.$sourceUrl;
-                    }
-                }
-                if ($key === 'instruction_gaps') {
-                    $lines[] = '  Предложение: '.htmlspecialchars((string) $item['recommendation'], ENT_COMPAT, 'UTF-8');
-                }
+                $sourceEntries[$label][] = [
+                    '• '.htmlspecialchars(($location !== '' ? $location.' — ' : '').$this->compactSourceText($item['reported_text']), ENT_QUOTES, 'UTF-8'),
+                    '  🔗 '.$item['source_url'],
+                    ...$this->managementFollowUps($item),
+                ];
             }
         }
 
@@ -315,44 +280,44 @@ class TelegramDigestFormatter
             ? ($linen['incomplete'] ?? true)
             : ($linenDistrict === null || ($linenDistrict['source_status'] ?? null) !== 'available');
         if ($cases->isNotEmpty()) {
-            $lines[] = '';
-            $lines[] = '🧺 Брак белья';
-            $caseCount = $cases->count();
-            $itemDetailCount = $cases->sum(fn (array $case): int => count($case['details'] ?? []));
-            $knownUnits = $districtKey === null
-                ? (int) ($linen['known_units'] ?? 0)
-                : (int) ($linenDistrict['known_units'] ?? 0);
-            $lines[] = 'Случаев: '.$caseCount.' · позиций белья: '.$itemDetailCount.'.';
-            if ($knownUnits > 0) {
-                $lines[] = 'Подтверждённых единиц: '.$knownUnits.'.';
-            }
             foreach ($cases as $case) {
-                $management = $linenManagement->get((string) ($case['event_key'] ?? ''))['item'] ?? null;
-                $sourceUrls = collect($case['source_urls'] ?? [$case['source_url'] ?? null])
-                    ->merge($management['source_urls'] ?? [])
-                    ->merge(collect($management['follow_ups'] ?? [])->pluck('source_url'))
-                    ->filter()->unique()->values();
-                $managementLabels = $this->managementClassificationLabels($management['classifications'] ?? []);
+                $management = $linenManagement->get((string) ($case['event_key'] ?? ''))['item'] ?? [];
                 $details = collect($case['details'])->map(fn (array $detail): string => $detail['quantity'] === null
                     ? $detail['item'].' — количество не указано'
                     : $detail['quantity'].' × '.$detail['item'])->implode(', ');
-                $lines[] = '• '.htmlspecialchars(($case['location'] ?: $case['district_label']).' — '.$details.', '.$case['defect'], ENT_COMPAT, 'UTF-8')
-                    .(($case['quantity_confidence'] ?? null) === 'uncertain_duplicate'
-                        ? ' — возможный повтор, количество не входит в итог' : '');
-                if ($managementLabels->isNotEmpty()) {
-                    $lines[] = '  Классификации: брак белья · '.htmlspecialchars($managementLabels->implode(' · '), ENT_COMPAT, 'UTF-8');
-                    $lines[] = '  Статус: '.$this->managementStatusLabel($management);
-                    if (filled($management['next_action'] ?? null)) {
-                        $action = $this->managementStatusLabel($management) === 'требуется уточнение'
-                            ? 'Требуется уточнение.'
-                            : (string) $management['next_action'];
-                        $lines[] = '  Предложение: '.htmlspecialchars($action, ENT_COMPAT, 'UTF-8');
+                $defect = $case['defect'] ?? null;
+                $entry = ['• '.htmlspecialchars(($case['location'] ?: $case['district_label']).' — '.$details
+                    .(filled($defect) && $defect !== 'брак/повреждение' ? ', '.$defect : ''), ENT_QUOTES, 'UTF-8')];
+                $followUps = $this->managementFollowUps($management);
+                foreach (collect($case['source_urls'] ?? [$case['source_url'] ?? null])->filter()->unique() as $sourceUrl) {
+                    if (! in_array('  🔗 '.$sourceUrl, $followUps, true)) {
+                        $entry[] = '  🔗 '.$sourceUrl;
                     }
                 }
-                foreach ($sourceUrls as $sourceUrl) {
-                    $lines[] = '  🔗 '.$sourceUrl;
-                }
+                $sourceEntries['🧺 Брак белья'][] = [...$entry, ...$followUps];
             }
+        }
+
+        $length = TelegramRichMessageBuilder::htmlVisibleLength($lines[0]);
+        $omitted = 0;
+        foreach ($sourceEntries as $label => $entries) {
+            $heading = ['', $label];
+            foreach ($entries as $entry) {
+                $block = [...$heading, ...$entry];
+                $blockLength = TelegramRichMessageBuilder::htmlVisibleLength(implode("\n", $block)) + 1;
+                if ($length + $blockLength > 3400) {
+                    $omitted++;
+
+                    continue;
+                }
+                array_push($lines, ...$block);
+                $length += $blockLength;
+                $heading = [];
+            }
+        }
+        if ($omitted) {
+            $lines[] = '';
+            $lines[] = 'Не вошло в сообщение из-за ограничения длины: '.$omitted.'.';
         }
 
         $quality = $preview['data_quality']['source_status'] ?? 'unavailable';
@@ -372,32 +337,26 @@ class TelegramDigestFormatter
         }
         if ($quality === 'available' && ! $linenIncomplete && count($lines) === 1) {
             $lines[] = '';
-            $lines[] = '✅ По обработанным сообщениям значимых выводов не выявлено.';
+            $lines[] = 'За день нет записей для сводки по обработанным сообщениям.';
         }
 
         return implode("\n", $lines);
     }
 
-    private function managementStatusLabel(array $item): string
+    private function managementFollowUps(array $item): array
     {
-        return match (true) {
-            ($item['status'] ?? null) === 'resolved' && ($item['resolution_confirmed'] ?? false) => 'решение подтверждено',
-            ($item['status'] ?? null) === 'resolved' => 'требуется уточнение',
-            ($item['confidence'] ?? null) === 'low' || filled($item['uncertainty'] ?? null) => 'требуется уточнение',
-            in_array($item['status'] ?? null, ['open', 'reopened'], true) => 'решение не подтверждено',
-            default => 'требуется уточнение',
-        };
+        return collect($item['follow_ups'] ?? [])
+            ->filter(fn (array $reply): bool => filled($reply['text'] ?? null) && filled($reply['source_url'] ?? null))
+            ->take(2)
+            ->flatMap(fn (array $reply): array => [
+                '  Ответ: '.htmlspecialchars($this->compactSourceText($reply['text']), ENT_QUOTES, 'UTF-8'),
+                '  🔗 '.$reply['source_url'],
+            ])->all();
     }
 
-    private function managementClassificationLabels(array $classifications): Collection
+    private function compactSourceText(string $text): string
     {
-        return collect($classifications)->map(fn (string $classification): ?string => match ($classification) {
-            'technical_faults' => 'техническая неисправность',
-            'unresolved_problems' => 'значимая проблема',
-            'instruction_gaps' => 'вопрос по инструкции',
-            'praise' => 'подтверждённое полезное действие',
-            default => null,
-        })->filter()->values();
+        return Str::limit(trim((string) preg_replace('/\s+/u', ' ', $text)), 160);
     }
 
     private function renderEditorialEvening(array $preview, string $district): string

@@ -180,7 +180,8 @@ it('combines reply-linked linen evidence into one case while preserving every so
         ->and($report['cases'][0]['details'])->toBe([['item' => 'простыня', 'quantity' => null]])
         ->and($report['cases'][0]['source_urls'])->toHaveCount(2)
         ->and(substr_count($text, 'Via Test 23'))->toBe(1)
-        ->and($text)->toContain('Классификации: брак белья · значимая проблема')
+        ->and($text)->toContain('простыня — количество не указано')
+        ->and($text)->not->toContain('Классификации:')
         ->and(substr_count($text, 'https://t.me/c/1/6151'))->toBe(1)
         ->and(substr_count($text, 'https://t.me/c/1/6152'))->toBe(1);
 });

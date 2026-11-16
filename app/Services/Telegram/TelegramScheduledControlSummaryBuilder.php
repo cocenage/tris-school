@@ -18,6 +18,7 @@ class TelegramScheduledControlSummaryBuilder
         private TelegramScheduledControlStatistics $statistics,
         private ScheduledControlResponseInterpreter $interpreter,
         private TelegramScheduledControlResponseService $responseService,
+        private ScheduledControlResponseClassifier $classifier,
     ) {}
 
     public function build(string $date, ?int $scheduledMessageId = null, ?string $controlType = null, ?string $chatId = null, ?string $throughDate = null): array
@@ -158,7 +159,7 @@ class TelegramScheduledControlSummaryBuilder
                 'failure_reason' => $delivery->failure_reason,
                 'condition_not_met' => $delivery->status === 'cancelled' && $delivery->failure_reason === 'confirmation_not_current',
                 'eligible_for_statistics' => $delivery->status === 'sent' && $sentAt !== null && $sentAt->lessThanOrEqualTo($cutoff),
-                'district_history' => $delivery->bot_type === 'work' && $delivery->status === 'sent'
+                'district_history' => $delivery->bot_type === 'work' && $delivery->status === 'sent' && $sentAt !== null && $sentAt->lessThanOrEqualTo($cutoff)
                     ? $this->districtHistory($historyDelivery, $cutoff) : [],
                 'source_url' => str_starts_with((string) $delivery->chat_id, '-100') && $delivery->telegram_message_id
                     ? 'https://t.me/c/'.substr((string) $delivery->chat_id, 4).'/'.$delivery->telegram_message_id : null,
@@ -232,10 +233,18 @@ class TelegramScheduledControlSummaryBuilder
     {
         $events = collect($this->responseService->districtAnswerEvents($delivery));
         $scheduledAt = CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome');
+        $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), config('app.timezone', 'Europe/Rome'));
+        $responseDue = $sentAt->addMinutes(max(1, (int) config('services.telegram.scheduled_response_window_minutes', 60)));
+        $responseWindowOpen = $responseDue->gt($cutoff) || $responseDue->isFuture();
         $districts = [];
+        $context = $delivery->sequence_context ?? [];
+        $activeDistricts = ScheduledControlTypes::activeDistricts($context);
+        if (($context['stage'] ?? null) === 'second' && is_array($context['eligible_districts'] ?? null)) {
+            $activeDistricts = array_intersect($activeDistricts, $context['eligible_districts']);
+        }
 
         foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
-            if (! in_array($key, ScheduledControlTypes::activeDistricts($delivery->sequence_context ?? []), true)) {
+            if (! in_array($key, $activeDistricts, true)) {
                 continue;
             }
             $states = [];
@@ -246,26 +255,28 @@ class TelegramScheduledControlSummaryBuilder
 
             foreach ($events->where('district', $key) as $event) {
                 $at = CarbonImmutable::parse($event['responded_at']);
-                $sentAt = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), 'Europe/Rome');
                 if ($at->lt($sentAt) || $at->gt($cutoff)) {
                     continue;
                 }
+                $text = $event['text'] ?? $event['response']->text;
+                $classification = $this->isExplicitNoCleaning($text, $delivery->control_type, $label)
+                    ? 'not_applicable' : $event['classification'];
                 $previous = $states[$event['identity']] ?? null;
-                if ($event['classification'] !== 'unclear' || ! in_array($previous, ['problem', 'partial'], true)) {
-                    $states[$event['identity']] = $event['classification'];
+                if ($classification !== 'unclear' || ! in_array($previous, ['problem', 'partial'], true)) {
+                    $states[$event['identity']] = $classification;
                 }
                 if ($event['response']->getAttribute('responded_at_utc') === null
                     && app(TelegramScheduledControlFollowupService::class)->hasAmbiguousLocalTimestamp($event['response']->getRawOriginal('responded_at'))) {
                     $timeUncertain = true;
                 }
-                if (in_array($event['classification'], ['problem', 'partial'], true)) {
+                if (in_array($classification, ['problem', 'partial'], true)) {
                     $firstProblem ??= $at;
                     $resolvedAt = null;
                 } elseif ($firstProblem !== null && ! collect($states)->contains(fn (string $value): bool => $value !== 'confirmed')) {
                     $resolvedAt = $at;
                 }
                 $timeline[] = [
-                    'status' => $event['classification'],
+                    'status' => $classification,
                     'responded_at' => $event['responded_at'],
                     'source_message_id' => $event['response']->telegram_message_id ?: $event['response']->reply_to_message_id,
                     'response_id' => $event['response']->id,
@@ -283,7 +294,9 @@ class TelegramScheduledControlSummaryBuilder
             $values = collect($states)->unique();
             $hasBad = $values->contains(fn (string $value): bool => in_array($value, ['problem', 'partial'], true));
             $status = match (true) {
-                $values->isEmpty() => 'no_response',
+                $values->isEmpty() => $responseWindowOpen ? 'pending' : 'no_response',
+                $values->contains('not_applicable') && $values->count() > 1 => 'conflict',
+                $values->contains('not_applicable') => 'not_applicable',
                 $hasBad && $values->contains('confirmed') => 'conflict',
                 $values->contains('problem') => 'problem',
                 $values->contains('partial') => 'partial',
@@ -314,6 +327,24 @@ class TelegramScheduledControlSummaryBuilder
         }
 
         return $districts;
+    }
+
+    private function isExplicitNoCleaning(string $text, string $type, string $district): bool
+    {
+        if (! in_array($type, ['first_cleanings_started', 'first_cleanings_finishing',
+            ScheduledControlTypes::SECOND_CLEANINGS_FINISHING, ScheduledControlTypes::CLOSING_CLEANINGS], true)) {
+            return false;
+        }
+        $lines = $this->classifier->districtLines($text);
+        if ($lines !== []) {
+            $text = collect($lines)->firstWhere('district', $district)['text'] ?? '';
+        }
+        $text = trim(mb_strtolower($text), " ,.:;!-\t\n\r");
+        $text = preg_replace('/^[—–\s]+|[—–\s]+$/u', '', $text);
+
+        return preg_match('/^(?:нет уборок|уборок нет|сегодня нет уборок|сегодня уборок нет)$/u', $text) === 1
+            || ($type === ScheduledControlTypes::SECOND_CLEANINGS_FINISHING
+                && preg_match('/^(?:нет вторых уборок|вторых уборок нет)$/u', $text) === 1);
     }
 
     private function districtReason(string $text, string $controlType, string $district): ?string

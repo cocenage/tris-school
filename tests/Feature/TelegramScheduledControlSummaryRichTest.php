@@ -178,6 +178,8 @@ it('keeps a No to Yes history as a confirmed resolution and provides a database-
         ->and(Artisan::call('telegram:control-summary-preview', ['--date' => '2026-11-08', '--demo' => true]))->toBe(0)
         ->and(Artisan::output())->toContain('10:25 — Lodi — проблема обнаружена', 'контроль 14:30, ответ 14:31', 'Certosa')
         ->and(Http::recorded())->toBeEmpty();
+    expect(app(TelegramScheduledControlSummaryRichFormatter::class)->fallbackHtml($summary))
+        ->toContain('Подтвердили устранение', 'Ответ «нет»', 'Подтверждение');
 });
 
 it('escapes employee text and includes the same essential information in the HTML fallback', function (): void {
@@ -190,9 +192,9 @@ it('escapes employee text and includes the same essential information in the HTM
 
     expect($markdown)->toContain('&lt;details&gt;')
         ->and($markdown)->not->toContain('<details><summary>подмена')
-        ->and($fallback)->toContain('Итоги дня')
-        ->and($fallback)->toContain('Подробная история доступна отдельно')
-        ->and($fallback)->not->toContain('подмена')
+        ->and($fallback)->toContain('Ответили «нет»')
+        ->and($fallback)->toContain('https://t.me/c/100123/710')
+        ->and($fallback)->toContain('&lt;details&gt;')
         ->and($fallback)->not->toContain('Тестовый автор')
         ->and($fallback)->not->toContain('<details>');
 });
@@ -207,9 +209,8 @@ it('keeps a short fallback informative and counts Cyrillic and emoji conservativ
 
     expect($html)->toContain('08.11.2026')
         ->and($html)->toContain('👩‍🔬 Москва')
-        ->and($html)->toContain('Главные проблемы')
-        ->and($html)->toContain('Ключевые итоги')
-        ->and($html)->toContain('Подробная история доступна отдельно')
+        ->and($html)->toContain('Ответы расходятся', 'Без ответа · точек: 3', 'Lodi — вторые уборки', 'Lambrate — доставки курьеров')
+        ->and($html)->not->toContain('Ключевые итоги')
         ->and(TelegramRichMessageBuilder::htmlVisibleLength($html))->toBe($utf16Length)
         ->and($utf16Length)->toBeLessThanOrEqual(TelegramScheduledControlSummaryRichFormatter::FALLBACK_MAX_VISIBLE_CHARACTERS);
 });
@@ -245,7 +246,7 @@ it('limits huge fallback reports without cutting HTML and preserves deterministi
     $formatter = app(TelegramScheduledControlSummaryRichFormatter::class);
     $html = $formatter->fallbackHtml($summary);
     $secondRender = $formatter->fallbackHtml($summary);
-    preg_match('/… не показано проблемных записей: (\d+)/u', $html, $omittedMatch);
+    preg_match('/… ещё записей: (\d+)/u', $html, $omittedMatch);
     preg_match_all('/District-\d{3}/u', $html, $includedMatches);
 
     $previousLibxmlState = libxml_use_internal_errors(true);
@@ -261,7 +262,7 @@ it('limits huge fallback reports without cutting HTML and preserves deterministi
         ->and($includedMatches[0][0] ?? null)->toBe('District-000')
         ->and($includedMatches[0][1] ?? null)->toBe('District-001')
         ->and($html)->not->toContain($longUrl)
-        ->and($html)->not->toContain('Подробный ответ не должен попадать')
+        ->and($html)->toContain('Подробный ответ')
         ->and($validHtml)->toBeTrue()
         ->and($htmlErrors)->toBeEmpty();
 });

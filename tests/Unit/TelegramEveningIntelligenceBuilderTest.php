@@ -1486,5 +1486,5 @@ it('renders one management entry when a technical event is also an unresolved pr
         ->and($entry['classifications'])->toContain('technical_faults', 'unresolved_problems')
         ->and(str_ends_with($entry['source_url'], '/21101'))->toBeTrue()
         ->and(substr_count($text, 'Не работает вытяжка.'))->toBe(1)
-        ->and($text)->toContain('Классификации: техническая неисправность · значимая проблема');
+        ->and($text)->not->toContain('Классификации:');
 });

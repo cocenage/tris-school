@@ -228,6 +228,8 @@ class TelegramScheduledControlSummaryFormatter
                     'partial' => '🟡 частично',
                     'conflict' => '⚠️ противоречивые ответы',
                     'unclear' => '❔ получен неясный ответ',
+                    'pending' => '⏳ окно ответа ещё открыто',
+                    'not_applicable' => '— не применимо',
                     default => '⚪ нет ответа',
                 };
                 $lines[] = $district['district'].' — '.$description;
