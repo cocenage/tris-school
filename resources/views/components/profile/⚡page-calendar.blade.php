@@ -157,7 +157,7 @@ new class extends Component
     protected function stateClass(string $state): string
     {
         return match ($state) {
-            'planned_work' => 'bg-[#E7F6EC] text-[#27683C]',
+            'planned_work' => 'bg-white text-[#213259]',
             'regular_day_off' => 'bg-[#FCE8E8] text-[#A72B2B]',
             'approved_absence' => 'bg-[#FFF2CC] text-[#805B00]',
             'not_employed' => 'bg-white text-black/35',
@@ -212,7 +212,16 @@ new class extends Component
                             wire:click="selectDate('{{ $day['date'] }}')"
                             aria-label="{{ $day['date'] }} — {{ $this->stateLabel($day['state']) }}{{ $day['pending'] ? ', заявка ожидает решения' : '' }}"
                             aria-pressed="{{ $selected ? 'true' : 'false' }}"
-                            class="relative flex aspect-square min-w-0 items-center justify-center rounded-[14px] text-[14px] font-medium {{ $stateClass }} {{ $day['in_month'] ? '' : 'opacity-35' }} {{ $selected ? 'ring-2 ring-[#213259] ring-offset-1' : '' }} {{ $day['today'] ? 'font-bold' : '' }}"
+                            @if ($day['today']) aria-current="date" @endif
+                            @class([
+                                'relative flex aspect-square min-w-0 items-center justify-center rounded-[14px] text-[14px]',
+                                $stateClass,
+                                'opacity-35' => ! $day['in_month'],
+                                'ring-2 ring-[#213259] ring-offset-1' => $selected,
+                                'ring-1 ring-[#2D6494] ring-inset' => $day['today'] && ! $selected,
+                                'font-bold' => $day['today'],
+                                'font-medium' => ! $day['today'],
+                            ])
                         >
                             {{ $day['day'] }}
                             @if ($day['pending'])
@@ -226,7 +235,7 @@ new class extends Component
     </section>
 
     <section aria-label="Обозначения" class="mt-4 grid grid-cols-2 gap-x-3 gap-y-2 text-[12px] text-black/65">
-        <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#72C78B]"></span>Рабочий день</div>
+        <div class="flex items-center gap-2"><span class="size-3 rounded-full border border-[#B9BDC4] bg-white"></span>Рабочий день по графику</div>
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#E88D8D]"></span>Регулярный выходной</div>
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#F2CD63]"></span>Одобренное отсутствие</div>
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#B9BDC4]"></span>График не зафиксирован</div>

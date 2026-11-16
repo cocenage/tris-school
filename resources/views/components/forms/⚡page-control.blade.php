@@ -2818,7 +2818,7 @@ protected function getDraftPayload(?array $media = null): array
                         <div class="mb-[12px] flex items-center justify-between">
                             <div>
                                 <h2 class="text-[17px] font-semibold tracking-[-0.02em] text-[#111827]">
-                                    Комментарий
+                                    Резюме контроля
                                 </h2>
                                 <p class="mt-[4px] text-[12px] font-medium text-[#94A3B8]">
                                     Необязательно
@@ -2839,7 +2839,7 @@ protected function getDraftPayload(?array $media = null): array
                             <textarea
                                 wire:model.blur="comment"
                                 rows="4"
-                                placeholder="Комментарий супервайзера"
+                                placeholder="Итоговый комментарий супервайзера"
                                 class="w-full rounded-[20px] border border-[#E6ECF2] bg-white px-[16px] py-[13px] text-[15px] font-medium text-[#111827] placeholder:text-[#94A3B8] focus:ring-2 focus:ring-[#213259]/15"
                             ></textarea>
 
@@ -2941,6 +2941,13 @@ protected function getDraftPayload(?array $media = null): array
                     <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Фото и видео</span><span class="font-semibold">{{ $summary['photos_total'] }}</span></div>
                     <div class="flex justify-between gap-[12px]"><span class="text-[#64748B]">Прогресс</span><span class="font-semibold">{{ $summary['progress'] }}%</span></div>
                 </div>
+
+                @if(filled(trim($comment)))
+                    <section class="mt-[14px] rounded-[18px] bg-[#F8FAFC] p-[12px]">
+                        <h2 class="text-[14px] font-semibold text-[#111827]">Резюме</h2>
+                        <p class="mt-1 whitespace-pre-wrap break-words text-[14px] text-[#111827]">{{ trim($comment) }}</p>
+                    </section>
+                @endif
 
                 @if(count($this->reviewProblems) > 0)
                     <div class="mt-[14px] space-y-[8px]">

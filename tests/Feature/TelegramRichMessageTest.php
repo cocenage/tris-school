@@ -9,6 +9,7 @@ use App\Services\Forms\DayOffRequestTelegramService;
 use App\Services\Forms\VacationRequestTelegramService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramRichMessageBuilder;
+use App\Services\TelegramUserNotificationService;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory as HttpClientFactory;
 use Illuminate\Http\Client\Request;
@@ -21,6 +22,32 @@ beforeEach(function (): void {
         'services.telegram.bot_token' => 'test-token',
         'services.telegram.rich_messages_enabled' => true,
     ]);
+});
+
+it('sends readable Russian access notices and button labels over HTML', function (): void {
+    config(['services.telegram.rich_messages_enabled' => false]);
+    (require database_path('migrations/0001_01_01_000000_create_users_table.php'))->up();
+    (require database_path('migrations/2026_04_28_073428_add_telegram_access_approved_notified_at_to_users_table.php'))->up();
+    (require database_path('migrations/2026_05_13_171603_add_telegram_access_pending_notified_at_to_users_table.php'))->up();
+
+    Http::preventStrayRequests();
+    Http::fake(['api.telegram.org/*' => Http::response(['ok' => true, 'result' => ['message_id' => 504]])]);
+
+    $user = User::create(['telegram_id' => 'test-recipient', 'status' => 'pending']);
+    app(TelegramUserNotificationService::class)->accessPending($user);
+    $user->update(['status' => 'approved']);
+
+    Http::assertSentCount(2);
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/sendMessage')
+        && $request['text'] === "⏳ <b>Заявка на доступ отправлена</b>\n\nМы получили вашу заявку.\nПожалуйста, не отправляйте её повторно.\n\nКогда администратор подтвердит доступ, мы пришлём сообщение здесь."
+    );
+    Http::assertSent(fn (Request $request): bool => str_ends_with($request->url(), '/sendMessage')
+        && $request['text'] === "✅ <b>Доступ одобрен</b>\n\nВаш аккаунт подтверждён.\nТеперь вы можете войти в приложение."
+        && data_get($request->data(), 'reply_markup.inline_keyboard.0.0.text') === 'Открыть приложение'
+        && data_get($request->data(), 'reply_markup.inline_keyboard.0.0.url') === route('landing')
+    );
+    expect($user->fresh()->telegram_access_pending_notified_at)->not->toBeNull()
+        ->and($user->fresh()->telegram_access_approved_notified_at)->not->toBeNull();
 });
 
 it('uses only the legacy HTML transport when Rich Messages are disabled', function (): void {

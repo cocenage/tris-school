@@ -1464,10 +1464,6 @@ new class extends Component
                     @endforeach
                 </datalist>
             </label>
-            <label class="block text-sm font-semibold">Комментарий <span class="font-normal text-[#596476]">· необязательно</span>
-                <textarea x-model="controlComment" x-on:input="scheduleAutosave(900)" maxlength="2000" rows="2"
-                    class="mt-1.5 w-full rounded-[22px] border-0 bg-[#EAEBED] px-4 py-3 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]"></textarea>
-            </label>
             <button type="button" x-on:click="startControl()" class="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#285B86] px-4 text-base font-semibold text-white">
                 К вопросам <x-heroicon-o-arrow-right class="size-4" />
             </button>
@@ -1625,6 +1621,11 @@ new class extends Component
                 <p><strong>Проверка:</strong> {{ $inspection_date ?: 'Не указана' }}</p>
                 <button type="button" wire:click="$set('stage', 'setup')" class="mt-2 font-semibold text-[#285B86]">Изменить данные</button>
             </div>
+            <label class="mt-4 block text-sm font-semibold">Резюме контроля <span class="font-normal text-[#596476]">· необязательно</span>
+                <textarea x-model="controlComment" x-on:input="scheduleAutosave(900)" maxlength="2000" rows="3"
+                    class="mt-1.5 w-full rounded-[22px] border-0 bg-[#F8FAFC] px-4 py-3 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]"></textarea>
+            </label>
+            @error('comment') <p class="mt-2 text-sm text-[#B42318]">{{ $message }}</p> @enderror
             @if(collect($this->savedMedia)->flatten(2)->isNotEmpty())
                 <section class="mt-4 rounded-2xl bg-[#F8FAFC] p-3">
                     <h3 class="mb-2 text-sm font-semibold">Фото и видео с комментариями</h3>
