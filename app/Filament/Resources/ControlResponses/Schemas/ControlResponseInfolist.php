@@ -361,9 +361,9 @@ class ControlResponseInfolist
                 $url = e($file['url']);
                 $html .= '<figure style="display:flex;flex-direction:column;gap:4px;max-width:320px;margin:0;">';
                 if (str_starts_with((string) ($file['mime'] ?? ''), 'video/')) {
-                    $html .= '<video src="'.$url.'" controls preload="metadata" style="width:160px;height:120px;border-radius:12px;"></video>';
+                    $html .= '<video src="'.$url.'" controls preload="none" style="width:160px;height:120px;border-radius:12px;"></video>';
                 } else {
-                    $html .= '<a href="'.$url.'" target="_blank"><img src="'.$url.'" alt="Фото контроля" style="width:120px;height:120px;object-fit:cover;border-radius:12px;"></a>';
+                    $html .= '<a href="'.$url.'" target="_blank" rel="noopener"><img src="'.e($file['thumbnail_url']).'" alt="Фото контроля" loading="lazy" style="width:120px;height:120px;object-fit:cover;border-radius:12px;"></a>';
                 }
                 $comment = trim((string) ($file['comment'] ?? ''));
                 if ($comment !== '') {

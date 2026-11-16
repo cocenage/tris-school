@@ -158,7 +158,7 @@ it('filters by an active employee and rejects an invalid employee or an overlong
         ->and($annual['totals']['unknown_schedule_days'])->toBeGreaterThan(0);
 });
 
-it('keeps report and export access default-deny for supervisors and admin-only bypass', function () {
+it('denies employee calendar reports and exports to supervisors with legacy grants', function () {
     $supervisor = User::findOrFail(99);
     $admin = User::findOrFail(100);
 
@@ -169,16 +169,15 @@ it('keeps report and export access default-deny for supervisors and admin-only b
 
     $supervisor->calendarPermission()->create([
         'can_view_all_calendars' => true,
-        'can_edit' => false,
-        'can_export' => false,
+        'can_edit' => true,
+        'can_export' => true,
     ]);
     auth()->setUser($supervisor->fresh());
-    expect(EmployeeWorkCalendarReport::canAccess())->toBeTrue()
+    expect(EmployeeWorkCalendarReport::canAccess())->toBeFalse()
+        ->and(auth()->user()->canViewAllEmployeeCalendars())->toBeFalse()
+        ->and(auth()->user()->canEditEmployeeCalendars())->toBeFalse()
         ->and(auth()->user()->canExportEmployeeCalendars())->toBeFalse()
         ->and(fn () => app(EmployeeWorkCalendarReport::class)->exportCsv())->toThrow(HttpException::class);
-
-    auth()->user()->calendarPermission()->update(['can_export' => true]);
-    expect(auth()->user()->fresh()->canExportEmployeeCalendars())->toBeTrue();
 
     auth()->setUser($admin);
     expect(EmployeeWorkCalendarReport::canAccess())->toBeTrue()

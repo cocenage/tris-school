@@ -115,6 +115,7 @@ beforeEach(function () {
 
 afterEach(function () {
     foreach ([
+        'user_calendar_type_accesses',
         'vacation_request_days',
         'vacation_requests',
         'calendar_events',
@@ -244,7 +245,7 @@ it('opens an active employee calendar from the client profile and lets the admin
     }
 });
 
-it('checks the calendar grant at page entry and again on Livewire requests', function () {
+it('keeps employee calendars restricted to admins even with a legacy grant', function () {
     $cleaner = User::findOrFail(21);
     $supervisor = createCalendarPageUser('supervisor', 'Проверяющий супервайзер');
 
@@ -254,13 +255,10 @@ it('checks the calendar grant at page entry and again on Livewire requests', fun
         $this->get(route('page-profile.calendar'))->assertOk();
     }
 
-    $permission = $supervisor->calendarPermission()->create(['can_view_all_calendars' => true]);
-    $this->actingAs($supervisor)->get(route('page-profile.employee-calendars'))->assertOk();
-    $this->get(route('employees.calendar', $cleaner))->assertOk();
-
-    $calendar = Livewire::test('profile.page-calendar', ['employee' => $cleaner->id]);
-    $permission->update(['can_view_all_calendars' => false]);
-    $calendar->call('nextMonth')->assertForbidden();
+    $supervisor->calendarPermission()->create(['can_view_all_calendars' => true]);
+    $this->actingAs($supervisor)->get(route('page-profile.employee-calendars'))->assertForbidden();
+    $this->get(route('employees.calendar', $cleaner))->assertForbidden();
+    $this->get(route('page-profile'))->assertOk()->assertDontSee('Календари сотрудников');
 });
 
 it('rejects changing the employee on a hydrated calendar', function () {
