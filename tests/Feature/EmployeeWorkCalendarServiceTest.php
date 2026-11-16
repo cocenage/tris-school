@@ -104,12 +104,51 @@ afterEach(function () {
     Carbon::setTestNow();
 });
 
-it('does not infer a historical recurring schedule from the current user profile', function () {
-    $summary = app(CalendarSummaryService::class)->build('2026-11-03');
+it('uses the initial schedule back to employment even when the current profile has changed', function () {
+    $employee = User::findOrFail(21);
+    $employee->forceFill(['weekend_days' => [1]])->saveQuietly();
+    $calendar = app(EmployeeWorkCalendarService::class);
+    $oldMonth = $calendar->forEmployee($employee, Carbon::parse('2020-04-14'), Carbon::parse('2020-04-20'));
+    $november = $calendar->forEmployee($employee, Carbon::parse('2026-11-01'), Carbon::parse('2026-11-05'));
 
-    expect($summary['shift']['level'])->toBe('unknown')
-        ->and($summary['workers']['unknown_count'])->toBe(1)
-        ->and($summary['workers']['working_count'])->toBe(0);
+    expect($oldMonth['2020-04-14']['state'])->toBe('not_employed')
+        ->and($oldMonth['2020-04-15']['state'])->toBe('planned_work')
+        ->and($oldMonth['2020-04-19']['state'])->toBe('regular_day_off')
+        ->and($november['2026-11-01']['state'])->toBe('regular_day_off')
+        ->and($november['2026-11-02']['state'])->toBe('planned_work')
+        ->and($november->where('schedule_known', false))->toBeEmpty();
+});
+
+it('keeps an approved day off on top of the reconstructed historical schedule', function () {
+    $employee = User::findOrFail(21);
+    $request = DB::table('day_off_requests')->insertGetId([
+        'user_id' => $employee->id,
+        'status' => 'approved',
+    ]);
+    DB::table('day_off_request_days')->insert([
+        'day_off_request_id' => $request,
+        'user_id' => $employee->id,
+        'date' => '2026-11-01',
+        'status' => 'approved',
+    ]);
+
+    $day = Carbon::parse('2026-11-01', 'Europe/Rome');
+    $calendar = app(EmployeeWorkCalendarService::class)->forEmployee($employee, $day, $day);
+
+    expect($calendar['2026-11-01']['state'])->toBe('approved_absence')
+        ->and($calendar['2026-11-01']['schedule_known'])->toBeTrue();
+});
+
+it('reads the profile schedule for an employee without a snapshot', function () {
+    $employee = User::findOrFail(21)->replicate();
+    $employee->forceFill(['work_started_at' => '2026-11-07', 'weekend_days' => [7]])->saveQuietly();
+
+    $calendar = app(EmployeeWorkCalendarService::class)->forEmployee($employee, Carbon::parse('2026-11-06'), Carbon::parse('2026-11-09'));
+
+    expect($calendar['2026-11-06']['state'])->toBe('not_employed')
+        ->and($calendar['2026-11-07']['state'])->toBe('planned_work')
+        ->and($calendar['2026-11-08']['state'])->toBe('regular_day_off')
+        ->and($calendar['2026-11-09']['state'])->toBe('planned_work');
 });
 
 it('keeps pre-employment dates neutral even if an old request day is approved', function () {
@@ -250,7 +289,7 @@ it('counts approved absence once, keeps pending separate, and marks missing sche
         'status' => 'approved',
         'is_active' => true,
         'work_started_at' => '2020-01-01',
-        'weekend_days' => json_encode([7]),
+        'weekend_days' => null,
         'created_at' => now(),
         'updated_at' => now(),
     ]);

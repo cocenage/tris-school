@@ -113,18 +113,22 @@ new class extends Component
         $start = $month->copy()->startOfWeek(Carbon::MONDAY);
         $end = $month->copy()->endOfMonth()->endOfWeek(Carbon::SUNDAY);
         $projection = app(EmployeeWorkCalendarService::class)->forEmployee($this->employee, $start, $end);
+        $now = now('Europe/Rome');
+        $today = $now->toDateString();
+        $lastCompletedDay = $now->hour >= 19 ? $today : $now->copy()->subDay()->toDateString();
         $days = collect();
 
         for ($cursor = $start->copy(); $cursor->lte($end); $cursor->addDay()) {
             $date = $cursor->toDateString();
             $record = $projection->get($date);
+            $state = $record['state'] ?? 'unknown_schedule';
 
             $days->push([
                 'date' => $date,
                 'day' => (int) $cursor->day,
                 'in_month' => $cursor->month === $month->month,
-                'today' => $cursor->isToday(),
-                'state' => $record['state'] ?? 'unknown_schedule',
+                'today' => $date === $today,
+                'state' => $state === 'planned_work' && $date <= $lastCompletedDay ? 'completed_workday' : $state,
                 'pending' => (bool) ($record['pending'] ?? false),
                 'sources' => $record['sources'] ?? [],
             ]);
@@ -146,6 +150,7 @@ new class extends Component
     protected function stateLabel(string $state): string
     {
         return match ($state) {
+            'completed_workday' => 'Рабочий день завершён по графику',
             'planned_work' => 'Рабочий день по графику',
             'regular_day_off' => 'Регулярный выходной',
             'approved_absence' => 'Одобрено отсутствие',
@@ -157,7 +162,8 @@ new class extends Component
     protected function stateClass(string $state): string
     {
         return match ($state) {
-            'planned_work' => 'bg-white text-[#213259]',
+            'completed_workday' => 'bg-[#BCE8C7] text-[#205734]',
+            'planned_work' => 'bg-[#E7F6EC] text-[#27683C]',
             'regular_day_off' => 'bg-[#FCE8E8] text-[#A72B2B]',
             'approved_absence' => 'bg-[#FFF2CC] text-[#805B00]',
             'not_employed' => 'bg-white text-black/35',
@@ -176,11 +182,7 @@ new class extends Component
     </div>
 </x-slot:header>
 
-<main class="min-h-[calc(100dvh-70px)] bg-white px-4 pb-8 pt-3">
-    <p class="mb-4 text-[14px] leading-[1.45] text-black/60">
-        Плановые рабочие дни и подтверждённые отсутствия. Календарь не отмечает фактическое присутствие.
-    </p>
-
+<main wire:poll.60s.visible class="min-h-[calc(100dvh-70px)] bg-white px-4 pb-8 pt-3">
     <section aria-label="Календарь сотрудника" class="rounded-[28px] bg-[#F8F7F5] p-3 sm:p-4">
         <div class="mb-4 flex items-center justify-between gap-3">
             <button type="button" wire:click="previousMonth" aria-label="Предыдущий месяц" class="flex size-10 items-center justify-center rounded-full bg-white text-[#213259]">
@@ -235,10 +237,13 @@ new class extends Component
     </section>
 
     <section aria-label="Обозначения" class="mt-4 grid grid-cols-2 gap-x-3 gap-y-2 text-[12px] text-black/65">
-        <div class="flex items-center gap-2"><span class="size-3 rounded-full border border-[#B9BDC4] bg-white"></span>Рабочий день по графику</div>
+        <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#BCE8C7]"></span>Рабочий день завершён по графику</div>
+        <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#E7F6EC]"></span>Плановый рабочий день</div>
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#E88D8D]"></span>Регулярный выходной</div>
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#F2CD63]"></span>Одобренное отсутствие</div>
-        <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#B9BDC4]"></span>График не зафиксирован</div>
+        @if($this->calendar['days']->contains('state', 'unknown_schedule'))
+            <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#B9BDC4]"></span>График не зафиксирован</div>
+        @endif
         <div class="col-span-2 flex items-center gap-2"><span class="size-2 rounded-full bg-[#2D6494]"></span>Заявка ожидает решения; цвет дня не меняется</div>
     </section>
 
