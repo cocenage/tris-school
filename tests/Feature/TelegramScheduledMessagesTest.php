@@ -919,7 +919,7 @@ it('starts the new OKS shift with individual district answers and only sends con
     Carbon::setTestNow(Carbon::parse('2026-09-28 09:00:20', 'Europe/Rome'));
     Queue::fake();
     Http::fake(fn ($request) => Http::response(['ok' => true, 'result' => [
-        'message_id' => str_contains((string) ($request['rich_message']['markdown'] ?? $request['text'] ?? ''), 'Открытие смены') ? 123 : 124,
+        'message_id' => str_contains((string) ($request['rich_message']['html'] ?? $request['text'] ?? ''), 'Открытие смены') ? 123 : 124,
     ]]));
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
     $opening = TelegramScheduledMessageDelivery::sole();
@@ -941,9 +941,9 @@ it('starts the new OKS shift with individual district answers and only sends con
     (new DeliverScheduledTelegramMessage($control->id, now()->toImmutable()->addHour()))->handle(app(TelegramBotService::class));
     expect($control->refresh()->sequence_context['oks_assignments'])->toBe(['navigli' => $supervisor]);
     Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/sendRichMessage')
-        && str_contains((string) ($request['rich_message']['markdown'] ?? ''), 'Время уборок и заметки')
-        && str_contains($request['rich_message']['markdown'], 'Navigli') && ! str_contains($request['rich_message']['markdown'], 'Como')
-        && str_contains((string) ($request['reply_markup']['inline_keyboard'][0][0]['url'] ?? ''), 'startapp=oks_card_'.$control->id));
+        && str_contains((string) ($request['rich_message']['html'] ?? ''), 'Время уборок и заметки')
+        && str_contains($request['rich_message']['html'], 'Navigli') && ! str_contains($request['rich_message']['html'], 'Como')
+        && str_contains($request['rich_message']['html'], 'oksc:'.$control->id.':check:navigli:yes'));
 });
 
 it('runs interactive OKS cards in the requested topic without altering the work shift or summary', function (): void {
@@ -967,9 +967,16 @@ it('runs interactive OKS cards in the requested topic without altering the work 
         'services.telegram.work_webhook_secret' => 'test-oks-live', 'services.telegram.oks_current_controls_enabled' => false]);
     $anchor = makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
     $sent = 123;
-    Http::fake(function ($request) use (&$sent) {
-        if (str_ends_with($request->url(), '/sendRichMessage') && str_contains($request['rich_message']['markdown'], 'Бельё в приоритетных квартирах')) {
-            return Http::response(['ok' => false, 'description' => 'Bad Request: rich messages are disabled'], 400);
+    $finishAttempts = 0;
+    Http::fake(function ($request) use (&$sent, &$finishAttempts) {
+        if (str_ends_with($request->url(), '/sendRichMessage')) {
+            $title = explode('</h2>', $request['rich_message']['html'], 2)[0];
+            if (str_contains($title, 'Бельё в приоритетных квартирах')) {
+                return Http::response(['ok' => false, 'description' => 'Bad Request: rich messages are disabled'], 400);
+            }
+            if (str_contains($title, '12:30') && ++$finishAttempts === 1) {
+                return Http::response(['ok' => false], 503);
+            }
         }
 
         return Http::response(['ok' => true, 'result' => ['message_id' => $sent++]]);
@@ -980,8 +987,8 @@ it('runs interactive OKS cards in the requested topic without altering the work 
     $opening = TelegramScheduledMessageDelivery::query()->withOksTests()->sole();
     expect($opening->message_thread_id)->toBe('134');
     Http::assertSent(fn ($request) => str_ends_with($request->url(), '/sendRichMessage')
-        && str_contains($request['rich_message']['markdown'], 'Открытие смены')
-        && count($request['reply_markup']['inline_keyboard'][0]) === 1);
+        && str_contains((string) ($request['rich_message']['html'] ?? ''), '<details><summary>Отметить районы</summary>')
+        && ! isset($request['reply_markup']));
 
     $initData = function (TelegramScheduledMessageDelivery $delivery, int $id): string {
         $fields = ['auth_date' => now()->timestamp, 'start_param' => 'oks_card_'.$delivery->id, 'user' => json_encode(['id' => $id])];
@@ -1001,16 +1008,18 @@ it('runs interactive OKS cards in the requested topic without altering the work 
     $this->postJson(route('telegram.auth'), ['init_data' => $initData($opening, 103)])->assertOk();
     $this->post(route('oks.card.save', [$opening, 'como']), ['answers' => ['opening' => ['choice' => 'yes']]])->assertOk();
     expect(ShiftDuty::query()->sole()->district_key)->toBe('lodi');
-    $this->artisan('telegram:oks-test', ['stage' => 'cards'] + $args)->assertSuccessful();
-    $this->artisan('telegram:oks-test', ['stage' => 'cards'] + $args)->assertSuccessful();
+    $this->artisan('telegram:oks-test', ['stage' => 'cards'] + $args)->assertExitCode(1);
+    $this->artisan('telegram:oks-test', ['stage' => 'cards'] + $args)->assertExitCode(1);
     expect(TelegramScheduledMessageDelivery::query()->withOksTests()->count())->toBe(11)
+        ->and(TelegramScheduledMessageDelivery::query()->withOksTests()->whereNull('telegram_message_id')->sole()->control_type)->toBe('oks_first_finish')
         ->and(TelegramScheduledMessageDelivery::query()->count())->toBe(0);
     $posts = Http::recorded(fn ($request): bool => str_ends_with($request->url(), '/sendRichMessage'));
     expect($posts)->toHaveCount(11);
     foreach ($posts as [$request]) {
         expect($request['message_thread_id'])->toBe(134)
-            ->and(collect($request['reply_markup']['inline_keyboard'])->collapse())->toHaveCount(1)
-            ->and($request['rich_message']['markdown'])->not->toContain('EXTRA TIME');
+            ->and(substr_count($request['rich_message']['html'], '<details>'))->toBe(1)
+            ->and(explode('<details>', $request['rich_message']['html'], 2)[0])->not->toContain('EXTRA TIME')
+            ->and(isset($request['reply_markup']))->toBeFalse();
     }
     $fallback = Http::recorded(fn ($request): bool => str_ends_with($request->url(), '/sendMessage'))->sole()[0];
     expect($fallback['message_thread_id'])->toBe(134)
@@ -1040,7 +1049,31 @@ it('runs interactive OKS cards in the requested topic without altering the work 
     expect(app(TelegramScheduledControlSummaryBuilder::class)->build('2026-09-28')['deliveries'] ?? [])->toBe([]);
     $edits = Http::recorded(fn ($request): bool => str_ends_with($request->url(), '/editMessageText') && $request['message_id'] === $card->telegram_message_id);
     expect($edits)->toHaveCount(1)
-        ->and($edits->sole()[0]['rich_message']['markdown'])->toContain('ТЕСТ ОКС', 'Гости ещё в квартире')->not->toContain('Тестовая причина');
+        ->and($edits->sole()[0]['rich_message']['html'])->toContain('ТЕСТ ОКС', 'Гости ещё в квартире', 'Тестовая причина');
+
+    $message = ['message_id' => $card->telegram_message_id, 'message_thread_id' => 134, 'chat' => ['id' => -100000000001, 'type' => 'supergroup']];
+    foreach (['start:yes', 'late:note'] as $answer) {
+        [$question, $choice] = explode(':', $answer);
+        $this->postJson('/telegram/work-webhook/test-oks-live', ['callback_query' => [
+            'id' => 'native-'.$question, 'from' => ['id' => 102, 'is_bot' => false],
+            'data' => 'oksc:'.$card->id.':'.$question.':navigli:'.$choice, 'message' => $message,
+        ]])->assertOk();
+    }
+    $this->postJson('/telegram/work-webhook/test-oks-live', ['message' => [
+        ...$message, 'message_id' => 812, 'date' => now()->timestamp,
+        'from' => ['id' => 102, 'is_bot' => false], 'reply_to_message' => $message, 'text' => 'Нужна помощь <PM>',
+    ]])->assertOk();
+    expect($card->responses()->where('district_key', 'navigli')->count())->toBe(2);
+    Http::assertSent(fn ($request) => str_ends_with($request->url(), '/editMessageText') && $request['message_id'] === $card->telegram_message_id
+        && str_contains($request['rich_message']['html'], 'Нужна помощь &lt;PM&gt;'));
+
+    // Simulate a published card carrying the previous renderer's hash.
+    $card->update(['render_hash' => str_repeat('0', 64)]);
+    $this->artisan('telegram:oks-test', ['stage' => 'cards', '--retry-unconfirmed' => '12:30'] + $args)->assertSuccessful();
+    expect($finishAttempts)->toBe(2)
+        ->and(TelegramScheduledMessageDelivery::query()->withOksTests()->whereNull('telegram_message_id')->count())->toBe(0)
+        ->and($card->refresh()->render_hash)->not->toBe(str_repeat('0', 64))
+        ->and(Http::recorded(fn ($request) => str_ends_with($request->url(), '/sendRichMessage')))->toHaveCount(12);
 });
 
 it('does not send an OKS card again when Telegram delivery is uncertain', function (): void {

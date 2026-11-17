@@ -9,8 +9,6 @@ class TelegramOksRichCard
 {
     public const CONTEXT_KEY = 'oks_rich_card';
 
-    public function __construct(private readonly TelegramRichMessageBuilder $richMessages) {}
-
     public static function available(): bool
     {
         return (bool) preg_match('/^[a-z][a-z0-9_]{4,31}$/iD', self::botUsername());
@@ -21,20 +19,39 @@ class TelegramOksRichCard
         return ($delivery->sequence_context[self::CONTEXT_KEY] ?? false) === true;
     }
 
-    /** @param list<array{name: string, status: string, icon: string}> $rows */
-    public function render(TelegramScheduledMessageDelivery $delivery, string $title, array $rows, string $button): array
+    /** @param list<array{name: string, status: string, icon: string, notes?: list<string>}> $rows */
+    public function render(TelegramScheduledMessageDelivery $delivery, string $title, array $rows, string $button, array $sections): array
     {
         $time = CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome')->format('H:i');
         $title = ($delivery->isOksTest() ? 'ТЕСТ ОКС · ' : '').$time.' · '.$title;
-        $markdown = ['# '.$this->richMessages->escapeRichText($title), ''];
         $html = ['<b>'.e($title).'</b>', ''];
+        $rich = ['<h2>'.e($title).'</h2>'];
         foreach ($rows as $row) {
-            $name = $row['name'];
-            $status = $row['status'];
-            $markdown[] = '- '.$row['icon'].' **'.$this->richMessages->escapeRichText($name).'** · '.$this->richMessages->escapeRichText($status);
-            $html[] = $row['icon'].' <b>'.e($name).'</b> · '.e($status);
+            $line = $row['icon'].' <b>'.e($row['name']).'</b> · '.e($row['status']);
+            $notes = array_map(fn (string $note): string => '<i>'.e($note).'</i>', $row['notes'] ?? []);
+            $html[] = implode("\n", [$line, ...$notes]);
+            $rich[] = '<p>'.implode('<br>', [$line, ...$notes]).'</p>';
         }
-        $rich = $this->richMessages->markdownDocument(implode("\n", $markdown));
+        if ($sections !== []) {
+            $rich[] = '<details><summary>'.e($button).'</summary>';
+            foreach ($sections as $section) {
+                $rich[] = '<h3>'.e($section['name']).'</h3>';
+                foreach ($section['questions'] as $question) {
+                    if (filled($question['title'] ?? null)) {
+                        $rich[] = '<p>'.e($question['title']).'</p>';
+                    }
+                    if (filled($question['details'] ?? null)) {
+                        $rich[] = '<p><i>'.e($question['details']).'</i></p>';
+                    }
+                    $rich[] = '<tg-button-row>'.implode('', array_map(
+                        fn (string $label, string $callback): string => '<tg-button type="callback_data" data="'.e($callback).'">'.e($label).'</tg-button>',
+                        array_keys($question['buttons']), array_values($question['buttons']),
+                    )).'</tg-button-row>';
+                }
+            }
+            $rich[] = '</details>';
+        }
+        $rich = ['html' => implode("\n", $rich)];
         $text = implode("\n", $html);
         $markup = ['inline_keyboard' => self::available() ? [[[
             'text' => $button,
