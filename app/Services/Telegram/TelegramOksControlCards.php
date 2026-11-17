@@ -24,6 +24,10 @@ class TelegramOksControlCards
         $previous = $this->previousReasons($delivery);
         $botUsername = trim((string) config('services.telegram.bot_username'), ' @');
         $lines = [];
+        if ($delivery->isOksTest()) {
+            $lines[] = '<b>ТЕСТ ОКС · '.e($delivery->scheduled_for->format('H:i')).'</b>';
+            $lines[] = '';
+        }
         $keyboard = [];
         if (count($questions) > 1) {
             $lines[] = '<b>⏰ '.e(OksControlSchedule::LABELS[$delivery->control_type]).'</b>';
@@ -81,7 +85,7 @@ class TelegramOksControlCards
         }
         [, $id, $key, $district, $action] = $parts;
         $callbackId = (string) ($callback['id'] ?? '');
-        $delivery = TelegramScheduledMessageDelivery::query()->whereKey($id)
+        $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->whereKey($id)
             ->where('chat_id', (string) data_get($callback, 'message.chat.id'))
             ->where('message_thread_id', (string) data_get($callback, 'message.message_thread_id'))
             ->where('telegram_message_id', (int) data_get($callback, 'message.message_id'))->first();
@@ -101,7 +105,7 @@ class TelegramOksControlCards
     public function canAnswer(TelegramScheduledMessageDelivery $delivery, string $key, string $district, User $user): bool
     {
         return $user->is_active && $user->status === 'approved' && filled($user->telegram_id)
-            && $delivery->bot_type === 'work' && $delivery->status === 'sent' && filled($delivery->telegram_message_id)
+            && $delivery->bot_type === 'work' && ($delivery->status === 'sent' || $delivery->isOksTest()) && filled($delivery->telegram_message_id)
             && isset(OksControlSchedule::questions((string) $delivery->control_type)[$key], ScheduledControlTypes::DISTRICTS[$district])
             && (int) ($delivery->sequence_context['oks_assignments'][$district] ?? 0) === (int) $user->id
             && CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome')->isToday();
@@ -243,9 +247,18 @@ class TelegramOksControlCards
         if ($type === null) {
             return [];
         }
-        $source = TelegramScheduledMessageDelivery::query()->where('control_type', $type)->where('status', 'sent')
+        $scheduled = CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome')->setTimeFromTimeString($time);
+        $query = TelegramScheduledMessageDelivery::query()->where('control_type', $type);
+        if ($delivery->isOksTest()) {
+            $query->withOksTests()->where('status', TelegramScheduledMessageDelivery::OKS_TEST)
+                ->where('scheduled_message_id', $delivery->scheduled_message_id)->whereNotNull('telegram_message_id');
+            $scheduled = $scheduled->setSecond(59);
+        } else {
+            $query->where('status', 'sent');
+        }
+        $source = $query
             ->where('chat_id', $delivery->chat_id)->where('message_thread_id', $delivery->message_thread_id)
-            ->where('scheduled_for', CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome')->setTimeFromTimeString($time)->format('Y-m-d H:i:s'))
+            ->where('scheduled_for', $scheduled->format('Y-m-d H:i:s'))
             ->first();
         if ($source === null) {
             return [];

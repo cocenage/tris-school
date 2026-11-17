@@ -2,12 +2,15 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class TelegramScheduledMessageDelivery extends Model
 {
+    public const OKS_TEST = 'oks_live_test';
+
     protected $fillable = [
         'scheduled_message_id',
         'trigger_delivery_id',
@@ -32,6 +35,21 @@ class TelegramScheduledMessageDelivery extends Model
         'telegram_message_id' => 'integer',
         'sequence_context' => 'array',
     ];
+
+    protected static function booted(): void
+    {
+        static::addGlobalScope(self::OKS_TEST, fn (Builder $query): Builder => $query->where($query->qualifyColumn('status'), '!=', self::OKS_TEST));
+    }
+
+    public function scopeWithOksTests(Builder $query): Builder
+    {
+        return $query->withoutGlobalScope(self::OKS_TEST);
+    }
+
+    public function isOksTest(): bool
+    {
+        return $this->status === self::OKS_TEST;
+    }
 
     public function responses(): HasMany
     {
