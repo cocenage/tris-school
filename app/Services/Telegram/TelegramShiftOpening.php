@@ -187,6 +187,9 @@ class TelegramShiftOpening
     {
         $names = User::query()->whereKey(array_values(array_filter($choices)))->pluck('name', 'id');
         $lines = ['<b>ОКС · Открытие смены</b>', $this->day($delivery)->format('d.m.Y').' · Europe/Rome', '', 'Есть уборки в вашем районе?'];
+        if ($delivery->isOksTest()) {
+            array_unshift($lines, '<b>ТЕСТ ОКС · Открытие</b>', '');
+        }
         $keyboard = [];
         foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
             $choice = $choices[$key] ?? null;
@@ -216,8 +219,9 @@ class TelegramShiftOpening
         }
         $actor = $this->eligibleUsers()->whereIn('role', ['admin', 'supervisor'])
             ->where('telegram_id', (string) data_get($callback, 'from.id'))->first();
-        $delivery = TelegramScheduledMessageDelivery::query()->whereKey($id)
-            ->where('control_type', ScheduledControlTypes::SHIFT_OPENING)->where('bot_type', 'work')->where('status', 'sent')
+        $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->whereKey($id)
+            ->where('control_type', ScheduledControlTypes::SHIFT_OPENING)->where('bot_type', 'work')
+            ->whereIn('status', ['sent', TelegramScheduledMessageDelivery::OKS_TEST])
             ->where('chat_id', (string) data_get($callback, 'message.chat.id'))
             ->where('message_thread_id', (string) data_get($callback, 'message.message_thread_id'))
             ->where('telegram_message_id', (int) data_get($callback, 'message.message_id'))->first();
@@ -228,17 +232,19 @@ class TelegramShiftOpening
 
         return Cache::lock('oks-opening:'.$delivery->id, 30)->block(3, function () use ($delivery, $district, $actor, $action, $telegram): string {
             $saved = DB::transaction(function () use ($delivery, $district, $actor, $action): bool {
-                $current = TelegramScheduledMessageDelivery::query()->lockForUpdate()->findOrFail($delivery->id);
+                $current = TelegramScheduledMessageDelivery::query()->withOksTests()->lockForUpdate()->findOrFail($delivery->id);
                 $context = $current->sequence_context;
                 $choices = $context['opening_draft'] ?? [];
                 if (array_key_exists($district, $choices)) {
                     return false;
                 }
-                $duty = ShiftDuty::query()->where('date', $this->day($current)->toDateString())->where('district_key', $district);
-                if ($action === 'yes') {
-                    ShiftDuty::query()->updateOrCreate(['date' => $this->day($current)->toDateString(), 'district_key' => $district], ['user_id' => $actor->id]);
-                } else {
-                    $duty->delete();
+                if (! $current->isOksTest()) {
+                    $date = $this->day($current)->toDateString();
+                    if ($action === 'yes') {
+                        ShiftDuty::query()->updateOrCreate(['date' => $date, 'district_key' => $district], ['user_id' => $actor->id]);
+                    } else {
+                        ShiftDuty::query()->where('date', $date)->where('district_key', $district)->delete();
+                    }
                 }
                 $choices[$district] = $action === 'yes' ? $actor->id : 0;
                 $current->update(['sequence_context' => [...$context, 'opening_draft' => $choices]]);

@@ -11,15 +11,17 @@ use Illuminate\Http\Request;
 
 class TelegramOksResponseController extends Controller
 {
-    public function show(Request $request, TelegramScheduledMessageDelivery $delivery, string $question, string $district, TelegramOksControlCards $cards): View
+    public function show(Request $request, string $delivery, string $question, string $district, TelegramOksControlCards $cards): View
     {
+        $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->findOrFail($delivery);
         abort_unless($cards->canAnswer($delivery, $question, $district, $request->user()), 403);
 
         return $this->page($delivery, $question, $district, $cards);
     }
 
-    public function store(Request $request, TelegramScheduledMessageDelivery $delivery, string $question, string $district, TelegramOksControlCards $cards): View
+    public function store(Request $request, string $delivery, string $question, string $district, TelegramOksControlCards $cards): View
     {
+        $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->findOrFail($delivery);
         abort_unless($cards->canAnswer($delivery, $question, $district, $request->user()), 403);
         $validated = $request->validate([
             'note' => ['required', 'string', 'max:420'],
