@@ -6,6 +6,7 @@ use App\Models\TelegramScheduledMessageDelivery;
 use App\Services\Telegram\OksControlSchedule;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOksRichCard;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
@@ -137,7 +138,6 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             return;
         }
 
-        $payload = app(TelegramShiftOpening::class)->payload($delivery);
         $claimed = TelegramScheduledMessageDelivery::query()->whereKey($delivery->id)
             ->whereIn('status', ['pending', 'retrying'])->update(['status' => 'uncertain', 'failure_reason' => 'opening_delivery_unconfirmed']);
         if ($claimed !== 1) {
@@ -145,13 +145,20 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         }
 
         try {
+            if (($delivery->sequence_context['opening_quick'] ?? false) && TelegramOksRichCard::available()) {
+                $delivery->update(['sequence_context' => [...$delivery->sequence_context, TelegramOksRichCard::CONTEXT_KEY => true]]);
+            }
+            $payload = app(TelegramShiftOpening::class)->payload($delivery);
             $id = app(TelegramOutboundMonitor::class)->withContext([
                 'operation_key' => 'scheduled_delivery:'.$delivery->id,
                 'notification_type' => 'oks_shift_opening',
                 'source_type' => 'telegram_scheduled_message_delivery',
                 'source_id' => $delivery->id,
                 'scheduled_for' => $delivery->scheduled_for,
-            ], fn (): ?int => $telegram->sendWorkControlMessage(
+            ], fn (): ?int => TelegramOksRichCard::enabled($delivery) ? $telegram->sendRichMessage(
+                (string) $delivery->chat_id, $payload['rich_message'], $payload['fallback_html'],
+                (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'], preferRich: true,
+            ) : $telegram->sendWorkControlMessage(
                 (string) $delivery->chat_id, $payload['fallback_html'],
                 (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'],
             ));
@@ -166,6 +173,7 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             $delivery->update([
                 'status' => 'sent', 'failure_reason' => null, 'telegram_message_id' => $id,
                 'sent_at' => $now->setTimezone('Europe/Rome'), 'sent_at_utc' => $now->format('Y-m-d H:i:s'),
+                ...(isset($payload['render_hash']) ? ['render_hash' => $payload['render_hash']] : []),
             ]);
         }
     }
@@ -223,6 +231,9 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         }
 
         try {
+            if ($isOksCard && TelegramOksRichCard::available()) {
+                $delivery->update(['sequence_context' => [...($delivery->sequence_context ?? []), TelegramOksRichCard::CONTEXT_KEY => true]]);
+            }
             $send = $isWorkControl ? 'sendWorkControlMessage' : 'sendScheduledMessage';
             $interactive = $isWorkControl
                 ? app(TelegramScheduledControlSummaryFormatter::class)->interactivePayload($delivery)
@@ -244,7 +255,11 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
                 'source_type' => 'telegram_scheduled_message_delivery',
                 'source_id' => $delivery->id,
                 'scheduled_for' => $delivery->scheduled_for,
-            ], fn () => $telegram->{$send}(
+            ], fn () => $isOksCard && TelegramOksRichCard::enabled($delivery) ? $telegram->sendRichMessage(
+                (string) $delivery->chat_id, $interactive['rich_message'], $text,
+                $delivery->message_thread_id === null ? null : (string) $delivery->message_thread_id,
+                replyMarkup: $keyboard, preferRich: true,
+            ) : $telegram->{$send}(
                 (string) $delivery->chat_id,
                 $text,
                 $delivery->message_thread_id === null ? null : (string) $delivery->message_thread_id,

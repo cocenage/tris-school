@@ -10,6 +10,7 @@ use App\Http\Controllers\RolePreviewController;
 use App\Http\Controllers\TelegramAnalyticsWebhookController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
+use App\Http\Controllers\TelegramOksCardController;
 use App\Http\Controllers\TelegramOksResponseController;
 use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
@@ -90,6 +91,8 @@ Route::match(['GET', 'HEAD'], '/admin/education/{path?}', function (?string $pat
 })->where('path', '.*')->name('education.legacy-redirect');
 
 Route::middleware(['auth', 'approved'])->group(function () {
+    Route::get('/oks/control/{delivery}/{district?}', [TelegramOksCardController::class, 'show'])->whereNumber('delivery')->name('oks.card.show');
+    Route::post('/oks/control/{delivery}/{district}', [TelegramOksCardController::class, 'store'])->whereNumber('delivery')->name('oks.card.save');
     Route::get('/oks/respond/{delivery}/{question}/{district}', [TelegramOksResponseController::class, 'show'])->name('oks.response.show');
     Route::post('/oks/respond/{delivery}/{question}/{district}', [TelegramOksResponseController::class, 'store'])->name('oks.response.save');
 

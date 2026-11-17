@@ -8,6 +8,7 @@ use App\Services\Telegram\OksControlSchedule;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOksControlCards;
+use App\Services\Telegram\TelegramOksRichCard;
 use App\Services\Telegram\TelegramShiftOpening;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
@@ -103,7 +104,7 @@ class TelegramOksTestCommand extends Command
             'scheduled_for' => $slot->format('Y-m-d H:i:s'),
         ], [
             'control_type' => $type, 'bot_type' => 'work', 'status' => TelegramScheduledMessageDelivery::OKS_TEST,
-            'chat_id' => $chat, 'message_thread_id' => $thread, 'sequence_context' => $context,
+            'chat_id' => $chat, 'message_thread_id' => $thread, 'sequence_context' => [...$context, TelegramOksRichCard::CONTEXT_KEY => true],
             'failure_reason' => 'oks_test_delivery_unconfirmed',
         ]);
         $time = $slot->format('H:i');
@@ -126,7 +127,8 @@ class TelegramOksTestCommand extends Command
 
         $payload = $type === ScheduledControlTypes::SHIFT_OPENING ? $opening->payload($delivery) : $cards->payload($delivery);
         try {
-            $id = $bot->sendWorkControlMessage($chat, $payload['text'] ?? $payload['fallback_html'], $thread, $payload['reply_markup']);
+            $id = $bot->sendRichMessage($chat, $payload['rich_message'], $payload['fallback_html'], $thread,
+                replyMarkup: $payload['reply_markup'], preferRich: true);
         } catch (Throwable $exception) {
             $this->error($time.' — ошибка Telegram: '.class_basename($exception));
 

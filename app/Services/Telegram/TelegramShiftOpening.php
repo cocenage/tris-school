@@ -186,6 +186,23 @@ class TelegramShiftOpening
     private function quickPayload(TelegramScheduledMessageDelivery $delivery, array $choices): array
     {
         $names = User::query()->whereKey(array_values(array_filter($choices)))->pluck('name', 'id');
+        if (TelegramOksRichCard::enabled($delivery)) {
+            $rows = [];
+            foreach (ScheduledControlTypes::DISTRICTS as $key => $name) {
+                $choice = $choices[$key] ?? null;
+                $rows[] = [
+                    'name' => $name,
+                    'status' => match ($choice) {
+                        null => 'Ждём отметку',
+                        0 => 'Нет уборок',
+                        default => 'Есть уборки · '.($names->get($choice) ?: 'Дежурный'),
+                    },
+                    'icon' => $choice ? '✅' : '▫️',
+                ];
+            }
+
+            return app(TelegramOksRichCard::class)->render($delivery, 'Открытие смены', $rows, 'Отметить районы');
+        }
         $lines = ['<b>ОКС · Открытие смены</b>', $this->day($delivery)->format('d.m.Y').' · Europe/Rome', '', 'Есть уборки в вашем районе?'];
         if ($delivery->isOksTest()) {
             array_unshift($lines, '<b>ТЕСТ ОКС · Открытие</b>', '');
@@ -211,6 +228,20 @@ class TelegramShiftOpening
         return ['rich_message' => [], 'fallback_html' => implode("\n", $lines), 'reply_markup' => ['inline_keyboard' => $keyboard]];
     }
 
+    public function canMark(TelegramScheduledMessageDelivery $delivery, User $user): bool
+    {
+        return $user->is_active && $user->status === 'approved' && filled($user->telegram_id)
+            && in_array($user->role, ['admin', 'supervisor'], true)
+            && $delivery->control_type === ScheduledControlTypes::SHIFT_OPENING && $delivery->bot_type === 'work'
+            && ($delivery->status === 'sent' || $delivery->isOksTest()) && filled($delivery->telegram_message_id)
+            && ($delivery->sequence_context['opening_quick'] ?? false) && $this->day($delivery)->isToday();
+    }
+
+    public function remainingDistricts(TelegramScheduledMessageDelivery $delivery): array
+    {
+        return array_diff_key(ScheduledControlTypes::DISTRICTS, $delivery->sequence_context['opening_draft'] ?? []);
+    }
+
     private function quickAnswer(array $callback, array $parts, TelegramBotService $telegram): string
     {
         [, $id, $district, $action] = $parts;
@@ -225,14 +256,23 @@ class TelegramShiftOpening
             ->where('chat_id', (string) data_get($callback, 'message.chat.id'))
             ->where('message_thread_id', (string) data_get($callback, 'message.message_thread_id'))
             ->where('telegram_message_id', (int) data_get($callback, 'message.message_id'))->first();
-        if ($actor === null || $delivery === null || ! $this->day($delivery)->isToday()
-            || ! ($delivery->sequence_context['opening_quick'] ?? false)) {
+        if ($actor === null || $delivery === null || ! $this->canMark($delivery, $actor)) {
             return 'Открытие этой смены недоступно.';
         }
+        [$saved, $edited] = $this->mark($delivery, $district, $actor, $action, $telegram);
 
-        return Cache::lock('oks-opening:'.$delivery->id, 30)->block(3, function () use ($delivery, $district, $actor, $action, $telegram): string {
+        return $edited ? ($saved ? 'Отметка сохранена.' : 'Район уже отмечен.') : 'Отметка сохранена. Карточка пока не обновилась.';
+    }
+
+    /** @return array{bool, bool} */
+    public function mark(TelegramScheduledMessageDelivery $delivery, string $district, User $actor, string $action, TelegramBotService $telegram): array
+    {
+        abort_unless(isset(ScheduledControlTypes::DISTRICTS[$district]) && in_array($action, ['yes', 'no'], true), 422);
+
+        return Cache::lock('oks-opening:'.$delivery->id, 30)->block(3, function () use ($delivery, $district, $actor, $action, $telegram): array {
             $saved = DB::transaction(function () use ($delivery, $district, $actor, $action): bool {
                 $current = TelegramScheduledMessageDelivery::query()->withOksTests()->lockForUpdate()->findOrFail($delivery->id);
+                abort_unless($this->canMark($current, $actor), 403);
                 $context = $current->sequence_context;
                 $choices = $context['opening_draft'] ?? [];
                 if (array_key_exists($district, $choices)) {
@@ -252,14 +292,21 @@ class TelegramShiftOpening
                 return true;
             });
             $payload = $this->payload($delivery->refresh());
+            $rich = TelegramOksRichCard::enabled($delivery);
+            if ($rich && $delivery->render_hash === $payload['render_hash']) {
+                return [$saved, true];
+            }
             try {
-                $edited = $telegram->editMessage((string) $delivery->chat_id, $delivery->telegram_message_id, [],
-                    $payload['fallback_html'], $payload['reply_markup'], forceLegacy: true);
+                $edited = $telegram->editMessage((string) $delivery->chat_id, $delivery->telegram_message_id, $payload['rich_message'],
+                    $payload['fallback_html'], $payload['reply_markup'], forceLegacy: ! $rich, preferRich: $rich);
+                if ($edited && $rich) {
+                    $delivery->update(['render_hash' => $payload['render_hash']]);
+                }
             } catch (Throwable) {
                 $edited = false;
             }
 
-            return $edited ? ($saved ? 'Отметка сохранена.' : 'Район уже отмечен.') : 'Отметка сохранена. Карточка пока не обновилась.';
+            return [$saved, $edited];
         });
     }
 
