@@ -13,6 +13,7 @@ use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramAssistantService;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDistrictRouteRegistry;
+use App\Services\Telegram\TelegramOksControlCards;
 use App\Services\Telegram\TelegramOperationalEventObserver;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramRichMessageBuilder;
@@ -237,6 +238,12 @@ class TelegramWorkWebhookController extends Controller
 
             if (str_starts_with($data, 'dayoffday:')) {
                 return $this->handleDayOffDayCallback($callbackQuery);
+            }
+
+            if (str_starts_with($data, 'oksc:')) {
+                $this->answerCallback($callbackQuery, app(TelegramOksControlCards::class)->callback($callbackQuery));
+
+                return response()->json(['ok' => true]);
             }
 
             if (str_starts_with($data, 'oks:')) {

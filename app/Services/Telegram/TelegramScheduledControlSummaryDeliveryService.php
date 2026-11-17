@@ -31,8 +31,13 @@ class TelegramScheduledControlSummaryDeliveryService
         }
         $window = max(1, (int) config('services.telegram.scheduled_response_window_minutes', 60))
             + max(0, (int) config('services.telegram.scheduled_summary_buffer_minutes', 5));
-        $latest = null;
+        $anchor = app(TelegramScheduledMessageDeliveryService::class)->currentOksAnchor($now);
+        $latest = $anchor === null ? null : $now->startOfDay()->setTimeFromTimeString(array_key_last(OksControlSchedule::TIMES))->addMinutes($window);
         foreach (TelegramScheduledMessage::query()->enabled()->get() as $control) {
+            if ($anchor !== null && $control->telegram_topic_record_id === $anchor->telegram_topic_record_id
+                && isset(ScheduledControlTypes::LABELS[$control->control_type])) {
+                continue;
+            }
             if (in_array($now->dayOfWeekIso, array_map('intval', $control->weekdays ?? []), true)) {
                 $planned = $now->startOfDay()->setTimeFromTimeString($control->send_time)->addMinutes($window);
                 $latest = $latest === null || $planned->gt($latest) ? $planned : $latest;

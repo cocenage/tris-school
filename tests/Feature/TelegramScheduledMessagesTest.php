@@ -2,6 +2,7 @@
 
 use App\Filament\Resources\TelegramScheduledMessages\Pages\CreateTelegramScheduledMessage;
 use App\Filament\Resources\TelegramScheduledMessages\TelegramScheduledMessageResource;
+use App\Jobs\DeliverScheduledControlFollowup;
 use App\Jobs\DeliverScheduledTelegramMessage;
 use App\Models\ShiftDuty;
 use App\Models\TelegramChat;
@@ -9,10 +10,13 @@ use App\Models\TelegramMessage;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramTopic;
+use App\Models\User;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDestinationCatalog;
+use App\Services\Telegram\TelegramScheduledControlFollowupService;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
+use App\Services\Telegram\TelegramScheduledControlSummaryBuilder;
 use Carbon\Carbon;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TimePicker;
@@ -103,7 +107,7 @@ function makeScheduledTelegramMessage(array $overrides = []): TelegramScheduledM
     ], $overrides));
 }
 
-it('queues one Rich OKS opening in the existing control topic and saves assignments from the Work webhook', function (): void {
+it('queues one HTML OKS opening in the existing control topic and saves assignments from the Work webhook', function (): void {
     (require database_path('migrations/2026_10_03_000000_allow_replyless_scheduled_control_responses.php'))->up();
     (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
     Schema::create('users', function (Blueprint $table): void {
@@ -119,7 +123,7 @@ it('queues one Rich OKS opening in the existing control topic and saves assignme
     config([
         'services.telegram.bot_token' => 'test-work',
         'services.telegram.work_webhook_secret' => 'test-opening',
-        'services.telegram.rich_messages_enabled' => false,
+        'services.telegram.rich_messages_enabled' => true,
         'services.telegram.oks_shift_opening_time' => '09:00',
     ]);
     Carbon::setTestNow(Carbon::parse('2026-09-28 09:00:20', 'Europe/Rome'));
@@ -127,9 +131,15 @@ it('queues one Rich OKS opening in the existing control topic and saves assignme
     $admin = DB::table('users')->insertGetId(['name' => 'Админ', 'role' => 'admin', 'status' => 'approved', 'is_active' => true, 'telegram_id' => '101']);
     $supervisor = DB::table('users')->insertGetId(['name' => 'Дежурный', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true, 'telegram_id' => '102']);
     Queue::fake();
-    Http::fake(fn ($request) => Http::response([
-        'ok' => true, 'result' => ['message_id' => str_ends_with($request->url(), '/sendMessage') ? 124 : 123],
-    ]));
+    Http::fake(function ($request) {
+        if (str_ends_with($request->url(), '/sendRichMessage')) {
+            throw new ConnectionException('Rich endpoint connection failed');
+        }
+
+        $opening = str_contains((string) ($request['text'] ?? ''), 'Открытие смены');
+
+        return Http::response(['ok' => true, 'result' => ['message_id' => $opening ? 123 : 124]]);
+    });
 
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
@@ -142,9 +152,10 @@ it('queues one Rich OKS opening in the existing control topic and saves assignme
     (new DeliverScheduledTelegramMessage($delivery->id, now()->toImmutable()->addHour()))->handle(app(TelegramBotService::class));
     Http::assertSentCount(1);
     $sent = Http::recorded()->sole()[0];
-    expect($sent->url())->toEndWith('/sendRichMessage')
+    expect($sent->url())->toEndWith('/sendMessage')
         ->and($sent['message_thread_id'])->toBe(42)
-        ->and($sent['rich_message']['markdown'])->toContain('Открытие смены')
+        ->and($sent['parse_mode'])->toBe('HTML')
+        ->and($sent['text'])->toContain('Открытие смены')
         ->and($delivery->refresh()->status)->toBe('sent');
 
     $click = function (string $action, int $actor = 101, int $thread = 42) use ($delivery): void {
@@ -171,7 +182,8 @@ it('queues one Rich OKS opening in the existing control topic and saves assignme
         ->and($delivery->refresh()->sequence_context['opening_confirmed_by'])->toBe($admin)
         ->and($delivery->sequence_context['opening_active_districts'])->toBe(['navigli']);
     Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/editMessageText') && $request['message_id'] === 123
-        && str_contains((string) data_get($request->data(), 'rich_message.markdown'), 'Назначения сохранены'));
+        && ($request['parse_mode'] ?? null) === 'HTML'
+        && str_contains((string) ($request['text'] ?? ''), 'Назначения сохранены'));
 
     Carbon::setTestNow(Carbon::parse('2026-09-28 09:30:20', 'Europe/Rome'));
     $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
@@ -179,7 +191,8 @@ it('queues one Rich OKS opening in the existing control topic and saves assignme
     (new DeliverScheduledTelegramMessage($control->id, now()->toImmutable()->addHour()))->handle(app(TelegramBotService::class));
     expect($control->refresh()->status)->toBe('sent')
         ->and($control->sequence_context['oks_assignments'])->toBe(['navigli' => $supervisor]);
-    $controlSend = Http::recorded(fn ($request): bool => str_ends_with($request->url(), '/sendMessage'))->sole()[0];
+    $controlSend = Http::recorded(fn ($request): bool => str_ends_with($request->url(), '/sendMessage')
+        && ! str_contains((string) ($request['text'] ?? ''), 'Открытие смены'))->sole()[0];
     $buttons = collect($controlSend['reply_markup']['inline_keyboard'])->flatten(1)->pluck('callback_data')->all();
     expect($buttons)->toBe(['sc:'.$control->id.':navigli:yes', 'sc:'.$control->id.':navigli:no']);
 
@@ -780,4 +793,173 @@ it('validates the existing control form follow-up settings and their defaults', 
         expect(Validator::make(['value' => $invalid], ['value' => $rules])->fails())->toBeTrue()
             ->and(Validator::make(['value' => $valid], ['value' => $rules])->passes())->toBeTrue();
     }
+});
+
+it('queues the new OKS posts independently of the legacy closing controls in the same topic', function (): void {
+    config(['services.telegram.oks_current_controls_enabled' => true]);
+    makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    makeScheduledTelegramMessage(['control_type' => 'first_cleanings_started', 'send_time' => '11:00:00']);
+    Queue::fake();
+
+    foreach (['09:30', '10:15', '11:00', '11:05', '12:00', '12:30', '14:00', '16:00', '17:30', '18:00'] as $time) {
+        Carbon::setTestNow(Carbon::parse('2026-09-28 '.$time.':20', 'Europe/Rome'));
+        $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+        $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    }
+
+    $deliveries = TelegramScheduledMessageDelivery::query()->orderBy('scheduled_for')->get();
+    expect($deliveries)->toHaveCount(10)
+        ->and($deliveries->pluck('control_type')->all())->toBe([
+            'oks_schedule', 'oks_start_ten', 'oks_start_eleven', 'oks_linen', 'oks_first_progress',
+            'oks_first_finish', 'oks_guest_arrivals', 'oks_couriers', 'oks_cleanings', 'oks_payments',
+        ]);
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 10);
+});
+
+it('keeps the two OKS questions independent and saves a reason in the original public card', function (): void {
+    (require database_path('migrations/2026_10_03_000000_allow_replyless_scheduled_control_responses.php'))->up();
+    (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
+    Schema::create('users', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+        $table->string('role');
+        $table->string('status');
+        $table->boolean('is_active');
+        $table->string('telegram_id')->nullable();
+        $table->timestamps();
+    });
+    $duty = new User;
+    $duty->forceFill(['name' => 'Дежурный', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true, 'telegram_id' => '102'])->save();
+    $other = $duty->replicate();
+    $other->forceFill(['telegram_id' => '103'])->save();
+    $anchor = makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    $delivery = $anchor->deliveries()->create([
+        'control_type' => 'oks_start_eleven', 'bot_type' => 'work', 'status' => 'sent', 'scheduled_for' => now()->startOfMinute(),
+        'sent_at' => now(), 'telegram_message_id' => 321, 'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => ['oks_assignments' => ['navigli' => $duty->id]],
+    ]);
+    config(['services.telegram.bot_token' => 'test-work', 'services.telegram.bot_username' => 'test_work_bot', 'services.telegram.work_webhook_secret' => 'test-oks-card']);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true])]);
+
+    $initData = function (int $id) use ($delivery): string {
+        $values = ['auth_date' => now()->timestamp, 'start_param' => 'oks_'.$delivery->id.'_start_navigli', 'user' => json_encode(['id' => $id])];
+        $secret = hash_hmac('sha256', 'test-work', 'WebAppData', true);
+        $check = collect($values)->map(fn ($value, $key) => $key.'='.$value)->implode("\n");
+
+        return http_build_query($values + ['hash' => hash_hmac('sha256', $check, $secret)]);
+    };
+    $this->postJson(route('telegram.auth'), ['init_data' => $initData(999)])->assertForbidden();
+    $this->postJson(route('telegram.auth'), ['init_data' => $initData(103)])->assertForbidden();
+    expect(User::query()->count())->toBe(2);
+    $this->postJson(route('telegram.auth'), ['init_data' => $initData(102)])->assertOk()
+        ->assertJsonPath('redirect', route('oks.response.show', [$delivery, 'start', 'navigli']));
+    $this->get(route('oks.response.show', [$delivery, 'start', 'navigli']))->assertOk()->assertSee('Какие уборки не начались');
+    $this->actingAs($other)->post(route('oks.response.save', [$delivery, 'start', 'navigli']), ['note' => 'Чужой ответ'])->assertForbidden();
+    $this->actingAs($duty)->post(route('oks.response.save', [$delivery, 'start', 'navigli']), ['note' => 'Via Vigevano · ждём ключи', 'version' => 0])->assertOk();
+    $callback = ['callback_query' => [
+        'id' => 'oks-test-positive', 'from' => ['id' => 102, 'is_bot' => false], 'data' => 'oksc:'.$delivery->id.':late:navigli:yes',
+        'message' => ['message_id' => 321, 'message_thread_id' => 42, 'chat' => ['id' => -100000000001, 'type' => 'supergroup']],
+    ]];
+    $this->postJson('/telegram/work-webhook/test-oks-card', $callback)->assertOk();
+    $this->postJson('/telegram/work-webhook/test-oks-card', $callback)->assertOk();
+
+    expect($delivery->responses()->count())->toBe(2)
+        ->and(app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery)['navigli']['telegram:102']['classification'])->toBe('problem');
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-09-28');
+    $control = collect($summary['controls'])->firstWhere('control_type', 'oks_start_eleven');
+    expect($control['status'])->toBe('problem')
+        ->and($control['district_results'][0]['conflict'])->toBeFalse()
+        ->and($control['district_results'][0]['details'])->toContain('Via Vigevano · ждём ключи');
+    Http::assertNotSent(fn ($request): bool => str_ends_with($request->url(), '/sendMessage'));
+    Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/editMessageText') && $request['message_id'] === 321
+        && str_contains($request['text'], 'ждём ключи') && str_contains($request['text'], 'Освободили') && ! str_contains($request['text'], 'Como'));
+});
+
+it('sends one reply reminder for unanswered OKS districts', function (): void {
+    $anchor = makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00', 'followup_reminder_enabled' => true]);
+    $delivery = $anchor->deliveries()->create([
+        'control_type' => 'oks_cleanings', 'bot_type' => 'work', 'status' => 'sent', 'scheduled_for' => now()->subMinutes(21),
+        'sent_at' => now()->subMinutes(21), 'telegram_message_id' => 321, 'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => ['oks_assignments' => ['navigli' => 11, 'lodi' => 12]],
+    ]);
+    config(['services.telegram.bot_token' => 'test-work']);
+    $followups = app(TelegramScheduledControlFollowupService::class);
+    Queue::fake();
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 322]])]);
+    $followups->queueDue();
+    $followups->queueDue();
+    $followup = $delivery->followups()->sole();
+    Queue::assertPushed(DeliverScheduledControlFollowup::class, 1);
+    (new DeliverScheduledControlFollowup($followup->id))->handle(app(TelegramBotService::class), $followups);
+    expect($followup->refresh()->status)->toBe('sent');
+    Http::assertSentCount(1);
+    $request = Http::recorded()->sole()[0];
+    expect($request['reply_to_message_id'])->toBe(321)
+        ->and($request['text'])->toContain('Navigli', 'Lodi')->not->toContain('Como');
+});
+
+it('starts the new OKS shift with individual district answers and only sends controls to active districts', function (): void {
+    (require database_path('migrations/2026_10_03_000000_allow_replyless_scheduled_control_responses.php'))->up();
+    (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
+    (require database_path('migrations/2026_11_15_000000_create_shift_duties_table.php'))->up();
+    Schema::create('users', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+        $table->string('role');
+        $table->string('status');
+        $table->boolean('is_active');
+        $table->string('telegram_id')->nullable();
+        $table->timestamps();
+    });
+    $supervisor = DB::table('users')->insertGetId(['name' => 'Дежурный', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true, 'telegram_id' => '102']);
+    DB::table('users')->insert(['name' => 'Клинер', 'role' => 'cleaner', 'status' => 'approved', 'is_active' => true, 'telegram_id' => '103']);
+    config(['services.telegram.oks_current_controls_enabled' => true, 'services.telegram.bot_token' => 'test-work',
+        'services.telegram.bot_username' => 'test_work_bot', 'services.telegram.work_webhook_secret' => 'test-oks-opening']);
+    makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    Carbon::setTestNow(Carbon::parse('2026-09-28 09:00:20', 'Europe/Rome'));
+    Queue::fake();
+    Http::fake(fn ($request) => Http::response(['ok' => true, 'result' => [
+        'message_id' => str_contains((string) ($request['text'] ?? ''), 'Открытие смены') ? 123 : 124,
+    ]]));
+    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $opening = TelegramScheduledMessageDelivery::sole();
+    (new DeliverScheduledTelegramMessage($opening->id, now()->toImmutable()->addHour()))->handle(app(TelegramBotService::class));
+    expect($opening->refresh()->status)->toBe('sent');
+
+    foreach ([['lodi', 'yes', 103], ['navigli', 'yes', 102], ['como', 'no', 102], ['navigli', 'no', 102]] as $i => [$district, $choice, $actor]) {
+        $this->postJson('/telegram/work-webhook/test-oks-opening', ['callback_query' => [
+            'id' => 'oks-quick-'.$i, 'from' => ['id' => $actor, 'is_bot' => false], 'data' => 'oks:'.$opening->id.':quick:'.$district.':'.$choice,
+            'message' => ['message_id' => 123, 'message_thread_id' => 42, 'chat' => ['id' => -100000000001, 'type' => 'supergroup']],
+        ]])->assertOk();
+    }
+    expect($opening->refresh()->sequence_context['opening_draft'])->toBe(['navigli' => $supervisor, 'como' => 0])
+        ->and(ShiftDuty::sole()->user_id)->toBe($supervisor);
+
+    Carbon::setTestNow(Carbon::parse('2026-09-28 09:30:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')->assertExitCode(0);
+    $control = TelegramScheduledMessageDelivery::query()->where('control_type', 'oks_schedule')->sole();
+    (new DeliverScheduledTelegramMessage($control->id, now()->toImmutable()->addHour()))->handle(app(TelegramBotService::class));
+    expect($control->refresh()->sequence_context['oks_assignments'])->toBe(['navigli' => $supervisor]);
+    Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/sendMessage')
+        && str_contains((string) ($request['text'] ?? ''), 'Время уборок и заметки проверены')
+        && str_contains($request['text'], 'Navigli') && ! str_contains($request['text'], 'Como')
+        && str_contains((string) ($request['reply_markup']['inline_keyboard'][0][1]['url'] ?? ''), 'startapp=oks_'.$control->id.'_check_navigli'));
+});
+
+it('does not send an OKS card again when Telegram delivery is uncertain', function (): void {
+    $anchor = makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    $delivery = $anchor->deliveries()->create([
+        'control_type' => 'oks_linen', 'bot_type' => 'work', 'status' => 'retrying', 'scheduled_for' => now(),
+        'chat_id' => '-100000000001', 'message_thread_id' => '42', 'sequence_context' => ['oks_assignments' => ['navigli' => 11]],
+    ]);
+    config(['services.telegram.bot_token' => 'test-work', 'services.telegram.bot_username' => 'test_work_bot']);
+    $attempts = 0;
+    Http::fake(function () use (&$attempts): never {
+        $attempts++;
+        throw new ConnectionException('No confirmation from Telegram');
+    });
+    $job = new DeliverScheduledTelegramMessage($delivery->id, now()->toImmutable()->addHour());
+    $job->handle(app(TelegramBotService::class));
+    $job->handle(app(TelegramBotService::class));
+    expect($delivery->fresh()->status)->toBe('uncertain')->and($attempts)->toBe(1);
 });

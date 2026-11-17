@@ -92,7 +92,7 @@ class TelegramScheduledControlResponseService
         }
 
         $deliveries = TelegramScheduledMessageDelivery::query()->where('status', 'sent')->whereNotNull('sent_at')
-            ->whereNotNull('telegram_message_id')->whereIn('control_type', array_keys(ScheduledControlTypes::LABELS))
+            ->whereNotNull('telegram_message_id')->whereIn('control_type', array_keys(ScheduledControlTypes::labels()))
             ->where('chat_id', $chatId)->where('message_thread_id', $threadId)
             ->orderBy('sent_at')->orderBy('id')->get();
 
@@ -138,6 +138,9 @@ class TelegramScheduledControlResponseService
             return null;
         }
         $delivery = $match['delivery'];
+        if (isset(OksControlSchedule::LABELS[$delivery->control_type])) {
+            return null;
+        }
         $followup = $match['followup'] ?? null;
         $replyId = data_get($message, 'reply_to_message.message_id');
         $chatId = data_get($message, 'chat.id');
@@ -397,7 +400,7 @@ class TelegramScheduledControlResponseService
         $districtKey = $parts[2];
         $action = $parts[3];
 
-        if ($delivery === null || ! array_key_exists($districtKey, ScheduledControlTypes::DISTRICTS)
+        if ($delivery === null || isset(OksControlSchedule::LABELS[$delivery->control_type]) || ! array_key_exists($districtKey, ScheduledControlTypes::DISTRICTS)
             || ! array_key_exists((string) $delivery->control_type, ScheduledControlTypes::LABELS)) {
             return ['status' => 'unmatched', 'delivery' => null, 'response' => null, 'action' => $action];
         }
@@ -497,6 +500,10 @@ class TelegramScheduledControlResponseService
     /** @return list<array{district: string, identity: string, classification: string, responded_at: string, response: TelegramScheduledMessageResponse}> */
     public function districtAnswerEvents(TelegramScheduledMessageDelivery $delivery): array
     {
+        if (isset(OksControlSchedule::LABELS[$delivery->control_type])) {
+            return app(TelegramOksControlCards::class)->districtEvents($delivery);
+        }
+
         $responses = $delivery->relationLoaded('responses')
             ? $delivery->responses->whereIn('response_kind', ['button', 'text_answer', 'comment'])
             : $delivery->responses()->whereIn('response_kind', ['button', 'text_answer', 'comment'])->get();

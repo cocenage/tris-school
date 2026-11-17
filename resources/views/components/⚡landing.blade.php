@@ -192,7 +192,8 @@ new class extends Component {
             try {
                 tg.ready();
 
-                if (typeof tg.expand === 'function') {
+                const openingOksForm = String(tg.initDataUnsafe?.start_param ?? '').startsWith('oks_');
+                if (!openingOksForm && typeof tg.expand === 'function') {
                     tg.expand();
                 }
 
@@ -215,7 +216,9 @@ new class extends Component {
                     throw new Error(data.message || 'Ошибка авторизации');
                 }
 
-                await tryRequestWriteAccess(tg);
+                if (!openingOksForm) {
+                    await tryRequestWriteAccess(tg);
+                }
 
                 if (data.redirect) {
                     window.location.replace(data.redirect);

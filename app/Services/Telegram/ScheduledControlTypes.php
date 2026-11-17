@@ -50,6 +50,11 @@ class ScheduledControlTypes
         return self::LABELS;
     }
 
+    public static function labels(): array
+    {
+        return self::LABELS + OksControlSchedule::LABELS;
+    }
+
     public static function scheduledTime(string $controlType, string $configuredTime): ?string
     {
         return match ($controlType) {

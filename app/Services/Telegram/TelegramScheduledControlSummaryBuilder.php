@@ -81,7 +81,8 @@ class TelegramScheduledControlSummaryBuilder
             $displayResponses = $delivery->responses;
             if ($delivery->bot_type === 'work') {
                 $latestAnswerIds = $displayResponses->filter(fn (TelegramScheduledMessageResponse $response): bool => in_array($response->response_kind, ['button', 'text_answer'], true) && $response->district_key !== null)
-                    ->groupBy(fn (TelegramScheduledMessageResponse $response): string => $response->district_key.'|'.$response->telegram_user_id)
+                    ->groupBy(fn (TelegramScheduledMessageResponse $response): string => $response->district_key.'|'.$response->telegram_user_id
+                        .(isset(OksControlSchedule::LABELS[$delivery->control_type]) ? '|'.TelegramOksControlCards::questionKey($response) : ''))
                     ->map(fn ($answers) => $answers->sortBy('id')->last()->id)->values()->all();
                 $displayResponses = $displayResponses->filter(fn (TelegramScheduledMessageResponse $response): bool => ! in_array($response->response_kind, ['button', 'text_answer'], true)
                     || $response->district_key === null || in_array($response->id, $latestAnswerIds, true));
@@ -148,7 +149,7 @@ class TelegramScheduledControlSummaryBuilder
                 'delivery_id' => $delivery->id, 'scheduled_message_id' => $delivery->scheduled_message_id,
                 'trigger_delivery_id' => $delivery->trigger_delivery_id,
                 'sequence_context' => $delivery->sequence_context ?? [],
-                'group_key' => $delivery->bot_type === 'work' && isset(ScheduledControlTypes::LABELS[$delivery->control_type])
+                'group_key' => $delivery->bot_type === 'work' && isset(ScheduledControlTypes::labels()[$delivery->control_type])
                     ? 'delivery:'.$delivery->id
                     : hash('sha256', implode('|', [$delivery->control_type, $delivery->chat_id, $delivery->message_thread_id,
                         CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString()])),
@@ -185,12 +186,32 @@ class TelegramScheduledControlSummaryBuilder
             $representative = $rows->firstWhere('delivery_status', 'sent') ?? $rows->first();
             $responses = collect($rows)->flatMap(fn (array $row) => $row['interpreted_responses']);
             $statuses = $responses->pluck('status')->countBy();
-            $label = ScheduledControlTypes::LABELS[$type] ?? $rows->first()['name'];
+            $label = ScheduledControlTypes::labels()[$type] ?? $rows->first()['name'];
             $districtResults = $this->mergeDistrictResults($responses);
             $status = $districtResults !== []
                 ? $this->districtOverallStatus($districtResults)
                 : ($statuses->get('problem', 0) + $statuses->get('partial', 0) > 0 ? 'problem'
                     : ($statuses->get('unknown', 0) > 0 ? 'unknown' : ($statuses->get('ok', 0) > 0 ? 'ok' : 'no_responses')));
+
+            if (isset(OksControlSchedule::LABELS[$type]) && $representative['district_history'] !== []) {
+                $history = collect($representative['district_history'])->keyBy('district');
+                $districtResults = array_map(function (array $district) use ($history): array {
+                    $state = $history->get($district['district'])['status'] ?? null;
+                    $district['status'] = match ($state) {
+                        'confirmed' => 'ok', 'problem' => 'problem', default => 'unknown',
+                    };
+                    $district['conflict'] = false;
+
+                    return $district;
+                }, $districtResults);
+                $statuses = $history->pluck('status');
+                $status = match (true) {
+                    $statuses->contains('problem') => 'problem',
+                    $statuses->every(fn (string $value): bool => $value === 'confirmed') => 'ok',
+                    $responses->isEmpty() => 'no_responses',
+                    default => 'partial',
+                };
+            }
 
             return [
                 'control_type' => $type,
@@ -507,13 +528,13 @@ class TelegramScheduledControlSummaryBuilder
     private function missingDeliveries(CarbonImmutable $start, CarbonImmutable $end, ?int $scheduledMessageId, ?string $controlType, ?string $chatId): array
     {
         $timezone = config('app.timezone', 'Europe/Rome');
-        $existing = TelegramScheduledMessageDelivery::query()
+        $recorded = TelegramScheduledMessageDelivery::query()
             ->where('scheduled_for', '>=', $start->setTimezone($timezone)->format('Y-m-d H:i:s'))
             ->where('scheduled_for', '<', $end->setTimezone($timezone)->format('Y-m-d H:i:s'))
-            ->get(['scheduled_message_id', 'scheduled_for'])
-            ->mapWithKeys(fn (TelegramScheduledMessageDelivery $delivery): array => [
-                $delivery->scheduled_message_id.'|'.CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString() => true,
-            ]);
+            ->get(['scheduled_message_id', 'scheduled_for', 'control_type']);
+        $existing = $recorded->mapWithKeys(fn (TelegramScheduledMessageDelivery $delivery): array => [
+            $delivery->scheduled_message_id.'|'.CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString() => true,
+        ]);
         $hasHistory = Schema::hasTable('telegram_scheduled_message_revisions');
         $query = TelegramScheduledMessage::query()
             ->where('created_at', '<', $end->format('Y-m-d H:i:s'))
@@ -526,6 +547,13 @@ class TelegramScheduledControlSummaryBuilder
                 ->when(filled($controlType), fn ($query) => $query->where('control_type', $controlType));
         }
         $messages = $query->get();
+        $currentDeliveries = $recorded->whereIn('control_type', array_keys(OksControlSchedule::LABELS));
+        $currentAnchors = TelegramScheduledMessage::query()->withTrashed()->whereIn('id', $currentDeliveries->pluck('scheduled_message_id')->unique())
+            ->pluck('telegram_topic_record_id', 'id');
+        $currentTopicDays = $currentDeliveries->mapWithKeys(fn (TelegramScheduledMessageDelivery $delivery): array => [
+            CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), $timezone)->toDateString()
+                .'|'.$currentAnchors->get($delivery->scheduled_message_id) => true,
+        ]);
         $revisions = $hasHistory
             ? DB::table('telegram_scheduled_message_revisions')->whereIn('scheduled_message_id', $messages->pluck('id'))
                 ->orderBy('effective_at_utc')->orderBy('id')->get()->groupBy('scheduled_message_id')
@@ -551,6 +579,7 @@ class TelegramScheduledControlSummaryBuilder
                         'weekdays' => json_encode($message->weekdays ?? []), 'enabled' => $message->enabled,
                         'is_deleted' => $message->trashed(), 'name' => $message->name,
                         'telegram_chat_record_id' => $message->telegram_chat_record_id,
+                        'telegram_topic_record_id' => $message->telegram_topic_record_id,
                         'effective_at_utc' => null, 'baseline' => $hasHistory,
                     ]]);
                 }
@@ -564,6 +593,10 @@ class TelegramScheduledControlSummaryBuilder
                     }
                     if (! $revision->enabled || $revision->is_deleted || ! filled($revision->control_type)
                         || $revision->control_type === 'control_question' || (filled($controlType) && $revision->control_type !== $controlType)) {
+                        continue;
+                    }
+                    if (isset(ScheduledControlTypes::LABELS[$revision->control_type])
+                        && $currentTopicDays->has($day->toDateString().'|'.($revision->telegram_topic_record_id ?? ''))) {
                         continue;
                     }
                     $scheduledTime = ScheduledControlTypes::scheduledTime((string) $revision->control_type, (string) $revision->send_time);

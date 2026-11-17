@@ -657,7 +657,7 @@ class TelegramScheduledControlSummaryRichFormatter
             'couriers_completed' => 'доставки курьеров',
             'extra_payments_completed' => 'доплаты',
             'schedule_checked' => 'расписание и заметки',
-            default => $type !== '' ? $type : 'контрольная точка',
+            default => OksControlSchedule::LABELS[$type] ?? ($type !== '' ? $type : 'контрольная точка'),
         };
     }
 

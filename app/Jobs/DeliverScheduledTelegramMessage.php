@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\TelegramScheduledMessageDelivery;
+use App\Services\Telegram\OksControlSchedule;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOutboundMonitor;
@@ -150,9 +151,9 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
                 'source_type' => 'telegram_scheduled_message_delivery',
                 'source_id' => $delivery->id,
                 'scheduled_for' => $delivery->scheduled_for,
-            ], fn (): ?int => $telegram->sendRichMessage(
-                (string) $delivery->chat_id, $payload['rich_message'], $payload['fallback_html'],
-                (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'], preferRich: true,
+            ], fn (): ?int => $telegram->sendWorkControlMessage(
+                (string) $delivery->chat_id, $payload['fallback_html'],
+                (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'],
             ));
         } catch (Throwable $exception) {
             Log::warning('OKS opening delivery could not be confirmed.', ['delivery_id' => $delivery->id, 'exception' => class_basename($exception)]);
@@ -179,11 +180,12 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             return;
         }
 
-        $isWorkControl = $delivery->bot_type === 'work' && array_key_exists((string) $delivery->control_type, ScheduledControlTypes::LABELS);
+        $isWorkControl = $delivery->bot_type === 'work' && isset(ScheduledControlTypes::labels()[$delivery->control_type]);
+        $isOksCard = isset(OksControlSchedule::LABELS[$delivery->control_type]);
         if ($isWorkControl && $delivery->status === 'pending') {
             $assignments = app(TelegramShiftOpening::class)->assignmentsFor($delivery);
-            if ($assignments === []) {
-                $delivery->update(['status' => 'skipped', 'failure_reason' => 'oks_no_active_districts']);
+            if ($assignments === [] || ($assignments === null && $isOksCard)) {
+                $delivery->update(['status' => 'skipped', 'failure_reason' => $assignments === null ? 'oks_opening_unavailable' : 'oks_no_active_districts']);
 
                 return;
             }
@@ -212,6 +214,11 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         if (! filled($delivery->chat_id)) {
             $this->failDelivery($delivery, 'destination_unavailable');
 
+            return;
+        }
+
+        if ($isOksCard && TelegramScheduledMessageDelivery::query()->whereKey($delivery->id)
+            ->whereIn('status', ['pending', 'retrying'])->update(['status' => 'uncertain', 'failure_reason' => 'oks_delivery_unconfirmed']) !== 1) {
             return;
         }
 
@@ -244,7 +251,7 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
                 $keyboard,
             ));
         } catch (ConnectionException $exception) {
-            if ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
+            if ($isOksCard || ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS)) {
                 $delivery->update(['status' => 'uncertain', 'failure_reason' => 'connection_exception']);
 
                 return;
@@ -257,7 +264,7 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             $reason = 'telegram_http_'.$status;
 
             if ($this->isRetryableStatus($status)) {
-                if ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS
+                if (($isOksCard || ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS))
                     && ($status >= 500 || $status === 408)) {
                     $delivery->update(['status' => 'uncertain', 'failure_reason' => $reason]);
 
@@ -286,7 +293,7 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         }
 
         if ($messageId === null) {
-            if ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS) {
+            if ($isOksCard || ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS)) {
                 $delivery->update(['status' => 'uncertain', 'failure_reason' => 'telegram_response_missing_message_id']);
             } else {
                 $this->failDelivery($delivery, 'telegram_response_missing_message_id');
@@ -313,7 +320,8 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
         $delivery = TelegramScheduledMessageDelivery::query()->find($this->deliveryId);
 
         if ($delivery === null || $delivery->status === 'sent'
-            || ($delivery->status === 'uncertain' && $delivery->control_type === ScheduledControlTypes::SHIFT_OPENING)) {
+            || ($delivery->status === 'uncertain' && ($delivery->control_type === ScheduledControlTypes::SHIFT_OPENING
+                || isset(OksControlSchedule::LABELS[$delivery->control_type])))) {
             return;
         }
 

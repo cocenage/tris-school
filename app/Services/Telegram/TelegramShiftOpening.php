@@ -20,6 +20,9 @@ class TelegramShiftOpening
     {
         $context = $delivery->sequence_context ?? [];
         $draft = $context['opening_draft'] ?? [];
+        if ($context['opening_quick'] ?? false) {
+            return $this->quickPayload($delivery, $draft);
+        }
         $confirmed = isset($context['opening_confirmed_by']);
         $names = User::query()->whereKey(array_filter($draft))->pluck('name', 'id');
         $title = 'ОКС · Открытие смены';
@@ -80,6 +83,9 @@ class TelegramShiftOpening
     public function answer(array $callback, TelegramBotService $telegram): string
     {
         $data = $callback['data'] ?? null;
+        if (is_string($data) && preg_match('/^oks:(\d+):quick:([a-z]+):(yes|no)$/D', $data, $quick)) {
+            return $this->quickAnswer($callback, $quick, $telegram);
+        }
         $message = $callback['message'] ?? [];
         if (! is_string($data) || ! preg_match('/^oks:(\d+):(nav:0|save|pick:([a-z]+):(\d{1,3})|set:([a-z]+):(\d+))$/D', $data, $parts)
             || ! is_numeric(data_get($callback, 'from.id')) || data_get($callback, 'from.is_bot', false)
@@ -146,7 +152,7 @@ class TelegramShiftOpening
                 : $this->payload($delivery);
             try {
                 $updated = $telegram->editMessage((string) $delivery->chat_id, $delivery->telegram_message_id,
-                    $payload['rich_message'], $payload['fallback_html'], $payload['reply_markup'], preferRich: true);
+                    $payload['rich_message'], $payload['fallback_html'], $payload['reply_markup'], forceLegacy: true);
             } catch (Throwable) {
                 $updated = false;
             }
@@ -173,7 +179,82 @@ class TelegramShiftOpening
             ->orderBy('scheduled_for')->orderBy('id')->first();
         $context = $opening?->sequence_context ?? [];
 
-        return isset($context['opening_confirmed_by']) ? array_filter($context['opening_draft']) : null;
+        return ($context['opening_quick'] ?? false) || isset($context['opening_confirmed_by'])
+            ? array_filter($context['opening_draft'] ?? []) : null;
+    }
+
+    private function quickPayload(TelegramScheduledMessageDelivery $delivery, array $choices): array
+    {
+        $names = User::query()->whereKey(array_values(array_filter($choices)))->pluck('name', 'id');
+        $lines = ['<b>ОКС · Открытие смены</b>', $this->day($delivery)->format('d.m.Y').' · Europe/Rome', '', 'Есть уборки в вашем районе?'];
+        $keyboard = [];
+        foreach (ScheduledControlTypes::DISTRICTS as $key => $label) {
+            $choice = $choices[$key] ?? null;
+            $status = match ($choice) {
+                null => 'Ждём отметку',
+                0 => 'Нет уборок',
+                default => 'Есть · '.($names->get($choice) ?: 'Дежурный'),
+            };
+            $lines[] = e($label.' — '.$status);
+            if ($choice === null) {
+                $prefix = 'oks:'.$delivery->id.':quick:'.$key.':';
+                $keyboard[] = [
+                    ['text' => $label.' · Есть', 'callback_data' => $prefix.'yes'],
+                    ['text' => $label.' · Нет', 'callback_data' => $prefix.'no'],
+                ];
+            }
+        }
+
+        return ['rich_message' => [], 'fallback_html' => implode("\n", $lines), 'reply_markup' => ['inline_keyboard' => $keyboard]];
+    }
+
+    private function quickAnswer(array $callback, array $parts, TelegramBotService $telegram): string
+    {
+        [, $id, $district, $action] = $parts;
+        if (! isset(ScheduledControlTypes::DISTRICTS[$district]) || data_get($callback, 'from.is_bot', false)) {
+            return 'Кнопка недоступна.';
+        }
+        $actor = $this->eligibleUsers()->whereIn('role', ['admin', 'supervisor'])
+            ->where('telegram_id', (string) data_get($callback, 'from.id'))->first();
+        $delivery = TelegramScheduledMessageDelivery::query()->whereKey($id)
+            ->where('control_type', ScheduledControlTypes::SHIFT_OPENING)->where('bot_type', 'work')->where('status', 'sent')
+            ->where('chat_id', (string) data_get($callback, 'message.chat.id'))
+            ->where('message_thread_id', (string) data_get($callback, 'message.message_thread_id'))
+            ->where('telegram_message_id', (int) data_get($callback, 'message.message_id'))->first();
+        if ($actor === null || $delivery === null || ! $this->day($delivery)->isToday()
+            || ! ($delivery->sequence_context['opening_quick'] ?? false)) {
+            return 'Открытие этой смены недоступно.';
+        }
+
+        return Cache::lock('oks-opening:'.$delivery->id, 30)->block(3, function () use ($delivery, $district, $actor, $action, $telegram): string {
+            $saved = DB::transaction(function () use ($delivery, $district, $actor, $action): bool {
+                $current = TelegramScheduledMessageDelivery::query()->lockForUpdate()->findOrFail($delivery->id);
+                $context = $current->sequence_context;
+                $choices = $context['opening_draft'] ?? [];
+                if (array_key_exists($district, $choices)) {
+                    return false;
+                }
+                $duty = ShiftDuty::query()->where('date', $this->day($current)->toDateString())->where('district_key', $district);
+                if ($action === 'yes') {
+                    ShiftDuty::query()->updateOrCreate(['date' => $this->day($current)->toDateString(), 'district_key' => $district], ['user_id' => $actor->id]);
+                } else {
+                    $duty->delete();
+                }
+                $choices[$district] = $action === 'yes' ? $actor->id : 0;
+                $current->update(['sequence_context' => [...$context, 'opening_draft' => $choices]]);
+
+                return true;
+            });
+            $payload = $this->payload($delivery->refresh());
+            try {
+                $edited = $telegram->editMessage((string) $delivery->chat_id, $delivery->telegram_message_id, [],
+                    $payload['fallback_html'], $payload['reply_markup'], forceLegacy: true);
+            } catch (Throwable) {
+                $edited = false;
+            }
+
+            return $edited ? ($saved ? 'Отметка сохранена.' : 'Район уже отмечен.') : 'Отметка сохранена. Карточка пока не обновилась.';
+        });
     }
 
     private function eligibleUsers(): Builder
