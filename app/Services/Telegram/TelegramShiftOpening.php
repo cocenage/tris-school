@@ -188,6 +188,7 @@ class TelegramShiftOpening
         $names = User::query()->whereKey(array_values(array_filter($choices)))->pluck('name', 'id');
         if (TelegramOksRichCard::enabled($delivery)) {
             $rows = [];
+            $sections = [];
             foreach (ScheduledControlTypes::DISTRICTS as $key => $name) {
                 $choice = $choices[$key] ?? null;
                 $rows[] = [
@@ -199,9 +200,13 @@ class TelegramShiftOpening
                     },
                     'icon' => $choice ? '✅' : '▫️',
                 ];
+                if ($choice === null) {
+                    $prefix = 'oks:'.$delivery->id.':quick:'.$key.':';
+                    $sections[] = ['name' => $name, 'questions' => [['buttons' => ['Есть уборки' => $prefix.'yes', 'Нет уборок' => $prefix.'no']]]];
+                }
             }
 
-            return app(TelegramOksRichCard::class)->render($delivery, 'Открытие смены', $rows, 'Отметить районы');
+            return app(TelegramOksRichCard::class)->render($delivery, 'Открытие смены', $rows, 'Отметить районы', $sections);
         }
         $lines = ['<b>ОКС · Открытие смены</b>', $this->day($delivery)->format('d.m.Y').' · Europe/Rome', '', 'Есть уборки в вашем районе?'];
         if ($delivery->isOksTest()) {
@@ -291,22 +296,30 @@ class TelegramShiftOpening
 
                 return true;
             });
+
+            return [$saved, $this->syncQuick($delivery, $telegram)];
+        });
+    }
+
+    public function syncQuick(TelegramScheduledMessageDelivery $delivery, TelegramBotService $telegram): bool
+    {
+        return Cache::lock('telegram_work_control_sync:'.$delivery->id, 30)->block(3, function () use ($delivery, $telegram): bool {
             $payload = $this->payload($delivery->refresh());
             $rich = TelegramOksRichCard::enabled($delivery);
             if ($rich && $delivery->render_hash === $payload['render_hash']) {
-                return [$saved, true];
+                return true;
             }
             try {
                 $edited = $telegram->editMessage((string) $delivery->chat_id, $delivery->telegram_message_id, $payload['rich_message'],
-                    $payload['fallback_html'], $payload['reply_markup'], forceLegacy: ! $rich, preferRich: $rich);
+                    $payload['fallback_html'], $payload['reply_markup'], forceLegacy: ! $rich, preferRich: $rich, buttonsInRichBody: $rich);
                 if ($edited && $rich) {
                     $delivery->update(['render_hash' => $payload['render_hash']]);
                 }
-            } catch (Throwable) {
-                $edited = false;
-            }
 
-            return [$saved, $edited];
+                return $edited;
+            } catch (Throwable) {
+                return false;
+            }
         });
     }
 

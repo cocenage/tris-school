@@ -157,7 +157,7 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
                 'scheduled_for' => $delivery->scheduled_for,
             ], fn (): ?int => TelegramOksRichCard::enabled($delivery) ? $telegram->sendRichMessage(
                 (string) $delivery->chat_id, $payload['rich_message'], $payload['fallback_html'],
-                (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'], preferRich: true,
+                (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'], preferRich: true, buttonsInRichBody: true,
             ) : $telegram->sendWorkControlMessage(
                 (string) $delivery->chat_id, $payload['fallback_html'],
                 (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'],
@@ -258,7 +258,7 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             ], fn () => $isOksCard && TelegramOksRichCard::enabled($delivery) ? $telegram->sendRichMessage(
                 (string) $delivery->chat_id, $interactive['rich_message'], $text,
                 $delivery->message_thread_id === null ? null : (string) $delivery->message_thread_id,
-                replyMarkup: $keyboard, preferRich: true,
+                replyMarkup: $keyboard, preferRich: true, buttonsInRichBody: true,
             ) : $telegram->{$send}(
                 (string) $delivery->chat_id,
                 $text,

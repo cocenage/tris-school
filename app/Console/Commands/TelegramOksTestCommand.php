@@ -17,7 +17,8 @@ use Throwable;
 
 class TelegramOksTestCommand extends Command
 {
-    protected $signature = 'telegram:oks-test {stage : opening or cards} {--template=} {--chat=} {--thread=}';
+    protected $signature = 'telegram:oks-test {stage : opening or cards} {--template=} {--chat=} {--thread=}
+        {--retry-unconfirmed= : Retry this HH:MM slot after checking that the message is absent from Telegram}';
 
     protected $description = 'Send interactive OKS test messages to an explicit Telegram topic';
 
@@ -27,9 +28,15 @@ class TelegramOksTestCommand extends Command
         $chat = (string) $this->option('chat');
         $thread = (string) $this->option('thread');
         $template = (string) $this->option('template');
+        $retry = $this->option('retry-unconfirmed');
         if (! in_array($stage, ['opening', 'cards'], true) || ! preg_match('/^-100\d+$/D', $chat)
             || ! preg_match('/^[1-9]\d*$/D', $thread) || ! preg_match('/^[1-9]\d*$/D', $template)) {
             $this->error('Укажи opening или cards, --template, --chat и --thread.');
+
+            return self::INVALID;
+        }
+        if ($retry !== null && ($stage !== 'cards' || ! isset(OksControlSchedule::TIMES[$retry]))) {
+            $this->error('Для --retry-unconfirmed укажи время контрольной карточки в формате HH:MM и этап cards.');
 
             return self::INVALID;
         }
@@ -48,7 +55,7 @@ class TelegramOksTestCommand extends Command
         $day = CarbonImmutable::now('Europe/Rome')->startOfDay();
         $openingTime = $day->setTime(9, 0, 59);
         $lock = Cache::lock('oks-test:'.$anchor->id.':'.$day->toDateString(), 300);
-        $result = $lock->get(function () use ($stage, $chat, $thread, $anchor, $day, $openingTime, $bot, $opening, $cards): int {
+        $result = $lock->get(function () use ($stage, $chat, $thread, $anchor, $day, $openingTime, $bot, $opening, $cards, $retry): int {
             $openingType = ScheduledControlTypes::SHIFT_OPENING;
             if ($stage === 'opening') {
                 return $this->send($anchor, $openingTime, $openingType, $chat, $thread, ['opening_quick' => true], $bot, $opening, $cards)
@@ -65,14 +72,15 @@ class TelegramOksTestCommand extends Command
                 return self::FAILURE;
             }
 
+            $complete = true;
             foreach (OksControlSchedule::TIMES as $time => $type) {
                 $slot = $day->setTimeFromTimeString($time)->setSecond(59);
-                if (! $this->send($anchor, $slot, $type, $chat, $thread, ['oks_assignments' => $assignments], $bot, $opening, $cards)) {
-                    return self::FAILURE;
+                if (! $this->send($anchor, $slot, $type, $chat, $thread, ['oks_assignments' => $assignments], $bot, $opening, $cards, retryUnconfirmed: $retry === $time)) {
+                    $complete = false;
                 }
             }
 
-            return self::SUCCESS;
+            return $complete ? self::SUCCESS : self::FAILURE;
         });
         if ($result === false) {
             $this->error('Прогон уже запущен.');
@@ -97,7 +105,7 @@ class TelegramOksTestCommand extends Command
     }
 
     private function send(TelegramScheduledMessage $anchor, CarbonImmutable $slot, string $type, string $chat, string $thread, array $context,
-        TelegramBotService $bot, TelegramShiftOpening $opening, TelegramOksControlCards $cards): bool
+        TelegramBotService $bot, TelegramShiftOpening $opening, TelegramOksControlCards $cards, bool $retryUnconfirmed = false): bool
     {
         $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->firstOrCreate([
             'scheduled_message_id' => $anchor->id,
@@ -114,21 +122,32 @@ class TelegramOksTestCommand extends Command
 
             return false;
         }
-        if (! $delivery->wasRecentlyCreated) {
-            if ($delivery->telegram_message_id === null) {
-                $this->error($time.' — предыдущая отправка не подтверждена. Повтор остановлен.');
+        if (! $delivery->wasRecentlyCreated && $delivery->telegram_message_id === null && ! $retryUnconfirmed) {
+            $this->error($time.' — предыдущая отправка не подтверждена. Карточка пропущена.');
 
-                return false;
+            return false;
+        }
+        if ($delivery->telegram_message_id !== null) {
+            if (TelegramOksRichCard::enabled($delivery)) {
+                $synced = $type === ScheduledControlTypes::SHIFT_OPENING ? $opening->syncQuick($delivery, $bot) : $cards->sync($delivery);
+                if (! $synced) {
+                    $this->error($time.' — Telegram не подтвердил обновление карточки.');
+
+                    return false;
+                }
             }
             $this->line($time.' — уже отправлено, Telegram ID '.$delivery->telegram_message_id);
 
             return true;
         }
+        if (! TelegramOksRichCard::enabled($delivery)) {
+            $delivery->update(['sequence_context' => [...($delivery->sequence_context ?? []), TelegramOksRichCard::CONTEXT_KEY => true]]);
+        }
 
         $payload = $type === ScheduledControlTypes::SHIFT_OPENING ? $opening->payload($delivery) : $cards->payload($delivery);
         try {
             $id = $bot->sendRichMessage($chat, $payload['rich_message'], $payload['fallback_html'], $thread,
-                replyMarkup: $payload['reply_markup'], preferRich: true);
+                replyMarkup: $payload['reply_markup'], preferRich: true, buttonsInRichBody: true);
         } catch (Throwable $exception) {
             $this->error($time.' — ошибка Telegram: '.class_basename($exception));
 

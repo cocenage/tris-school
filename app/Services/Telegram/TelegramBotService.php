@@ -232,10 +232,11 @@ class TelegramBotService
         ?string $replyToMessageId = null,
         ?array $replyMarkup = null,
         bool $preferRich = false,
+        bool $buttonsInRichBody = false,
     ): ?int {
         return $this->sendRichMessageUsingToken(
             config('services.telegram.bot_token'), $chatId, $richMessage, $fallbackHtml, $threadId, $replyToMessageId, $replyMarkup,
-            preferRich: $preferRich,
+            preferRich: $preferRich, buttonsInRichBody: $buttonsInRichBody,
         );
     }
 
@@ -263,6 +264,7 @@ class TelegramBotService
         ?array $replyMarkup,
         ?int $maxFallbackVisibleLength = null,
         bool $preferRich = false,
+        bool $buttonsInRichBody = false,
     ): ?int {
 
         if (! $token) {
@@ -292,7 +294,7 @@ class TelegramBotService
             'disable_web_page_preview' => true,
         ];
 
-        $this->addMessageOptions($payload, $threadId, $replyToMessageId, $replyMarkup);
+        $this->addMessageOptions($payload, $threadId, $replyToMessageId, $buttonsInRichBody ? null : $replyMarkup);
 
         try {
             $response = $this->postTelegramApi($token, 'sendRichMessage', $payload, 10, 3);
@@ -356,6 +358,7 @@ class TelegramBotService
         ?array $replyMarkup = null,
         bool $forceLegacy = false,
         bool $preferRich = false,
+        bool $buttonsInRichBody = false,
     ): bool {
         $token = config('services.telegram.bot_token');
 
@@ -379,20 +382,29 @@ class TelegramBotService
             'rich_message' => $richMessage,
         ];
 
-        if ($replyMarkup !== null) {
+        if ($buttonsInRichBody) {
+            $richPayload['reply_markup'] = ['inline_keyboard' => []];
+        } elseif ($replyMarkup !== null) {
             $richPayload['reply_markup'] = $replyMarkup;
         }
 
         try {
             $response = $this->postTelegramApi($token, 'editMessageText', $richPayload, 10, 3);
 
-            if ($response->successful() && data_get($response->json(), 'ok', true)) {
+            if (($response->successful() && data_get($response->json(), 'ok', true))
+                || ($buttonsInRichBody && $this->messageNotModified($response))) {
                 return true;
             }
+            if ($buttonsInRichBody && ! in_array($response->status(), [400, 404], true)) {
+                return false;
+            }
         } catch (\Throwable $e) {
-            Log::warning('Telegram Rich Message edit failed; using HTML fallback.', [
+            Log::warning($buttonsInRichBody ? 'Telegram Rich Message edit could not be confirmed.' : 'Telegram Rich Message edit failed; using HTML fallback.', [
                 'exception' => class_basename($e),
             ]);
+            if ($buttonsInRichBody) {
+                return false;
+            }
         }
 
         $fallbackPayload = [
@@ -409,7 +421,7 @@ class TelegramBotService
 
         $fallbackResponse = $this->postTelegramApi($token, 'editMessageText', $fallbackPayload, 10, 3);
 
-        return $fallbackResponse->successful();
+        return $fallbackResponse->successful() || ($buttonsInRichBody && $this->messageNotModified($fallbackResponse));
     }
 
     private function editHtmlMessage(
@@ -433,9 +445,13 @@ class TelegramBotService
 
         $response = $this->postTelegramApi($token, 'editMessageText', $payload, 10, 3);
 
-        return ($response->successful() && data_get($response->json(), 'ok', true))
-            || ($response->status() === 400
-                && str_contains(mb_strtolower((string) data_get($response->json(), 'description')), 'message is not modified'));
+        return ($response->successful() && data_get($response->json(), 'ok', true)) || $this->messageNotModified($response);
+    }
+
+    private function messageNotModified(Response $response): bool
+    {
+        return $response->status() === 400
+            && str_contains(mb_strtolower((string) data_get($response->json(), 'description')), 'message is not modified');
     }
 
     private function postTelegramApi(

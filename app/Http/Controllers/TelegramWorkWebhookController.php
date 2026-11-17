@@ -135,6 +135,18 @@ class TelegramWorkWebhookController extends Controller
 
         $chatId = (string) data_get($message, 'chat.id');
 
+        if (isset($update['message']) && $actionFreshness->messageIsCurrent($message)) {
+            try {
+                if (app(TelegramOksControlCards::class)->captureReason($message)) {
+                    return response()->json(['ok' => true]);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('OKS Telegram reason could not be saved', ['exception' => class_basename($e)]);
+
+                return response()->json(['ok' => false], 500);
+            }
+        }
+
         $allowedChatIds = config('services.telegram.work_allowed_chat_ids', []);
         $isWorkAllowed = in_array($chatId, $allowedChatIds, true);
         $isOperationalChat = $districts->isOperationalChatId($chatId)
