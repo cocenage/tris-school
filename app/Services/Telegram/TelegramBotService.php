@@ -111,11 +111,11 @@ class TelegramBotService
         return $this->sendMessageUsingToken($token, $chatId, $text, $threadId, replyMarkup: $replyMarkup, throwOnHttpFailure: true);
     }
 
-    public function sendWorkControlMessage(string $chatId, string $text, ?string $threadId = null, ?array $replyMarkup = null): ?int
+    public function sendWorkControlMessage(string $chatId, string $text, ?string $threadId = null, ?array $replyMarkup = null, ?string $replyToMessageId = null): ?int
     {
         return $this->sendMessageUsingToken(
             config('services.telegram.bot_token'), $chatId, $text, $threadId,
-            replyMarkup: $replyMarkup, throwOnHttpFailure: true,
+            replyToMessageId: $replyToMessageId, replyMarkup: $replyMarkup, throwOnHttpFailure: true,
         );
     }
 

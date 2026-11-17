@@ -10,6 +10,7 @@ use App\Http\Controllers\RolePreviewController;
 use App\Http\Controllers\TelegramAnalyticsWebhookController;
 use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
+use App\Http\Controllers\TelegramOksResponseController;
 use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
 use App\Http\Middleware\SafeguardRolePreviewData;
@@ -24,7 +25,8 @@ Route::get('/', function () {
         ? ['loader_preview' => '1']
         : [];
 
-    if (! auth()->check()) {
+    $telegramStart = request()->query('tgWebAppStartParam');
+    if (! auth()->check() || (is_string($telegramStart) && str_starts_with($telegramStart, 'oks_'))) {
         return redirect()->route('landing.page', $previewParameters);
     }
 
@@ -88,6 +90,9 @@ Route::match(['GET', 'HEAD'], '/admin/education/{path?}', function (?string $pat
 })->where('path', '.*')->name('education.legacy-redirect');
 
 Route::middleware(['auth', 'approved'])->group(function () {
+    Route::get('/oks/respond/{delivery}/{question}/{district}', [TelegramOksResponseController::class, 'show'])->name('oks.response.show');
+    Route::post('/oks/respond/{delivery}/{question}/{district}', [TelegramOksResponseController::class, 'store'])->name('oks.response.save');
+
     Route::post('/ui/role-preview', [RolePreviewController::class, 'store'])
         ->name('role-preview.store');
     Route::post('/ui/role-preview/exit', [RolePreviewController::class, 'clear'])

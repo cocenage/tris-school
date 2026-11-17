@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\TelegramScheduledControlFollowup;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
+use App\Services\Telegram\TelegramOksControlCards;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\Telegram\TelegramScheduledControlFollowupService;
 use Carbon\CarbonImmutable;
@@ -55,24 +56,32 @@ class DeliverScheduledControlFollowup implements ShouldQueue
                     return;
                 }
 
-                $district = htmlspecialchars(ScheduledControlTypes::DISTRICTS[$followup->district_key], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-                $label = htmlspecialchars(ScheduledControlTypes::LABELS[$delivery->control_type] ?? $delivery->control_type, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-                $heading = $followup->kind === 'reminder' ? '⏰ НАПОМИНАНИЕ' : '⏳ ПОВТОРНЫЙ КОНТРОЛЬ';
-                $text = $heading."\n\n".$district.' — '.$label.".\n\nКакая ситуация сейчас?";
-                if (str_starts_with((string) $delivery->chat_id, '-100')) {
-                    $text .= "\n\n".'<a href="https://t.me/c/'.substr((string) $delivery->chat_id, 4).'/'.$delivery->telegram_message_id.'">Исходный контроль</a>';
+                $group = $followup->district_key === TelegramScheduledControlFollowupService::OKS_GROUP;
+                if ($group) {
+                    $waiting = app(TelegramOksControlCards::class)->waitingDistricts($delivery->fresh());
+                    $label = ScheduledControlTypes::labels()[$delivery->control_type];
+                    $text = '<b>⏰ '.e($label)."</b>\nЖдём ответ по районам: ".e(implode(', ', $waiting)).".\nОтметьте статус в исходном контроле.";
+                    $buttons = null;
+                } else {
+                    $district = htmlspecialchars(ScheduledControlTypes::DISTRICTS[$followup->district_key], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                    $label = htmlspecialchars(ScheduledControlTypes::LABELS[$delivery->control_type] ?? $delivery->control_type, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                    $heading = $followup->kind === 'reminder' ? '⏰ НАПОМИНАНИЕ' : '⏳ ПОВТОРНЫЙ КОНТРОЛЬ';
+                    $text = $heading."\n\n".$district.' — '.$label.".\n\nКакая ситуация сейчас?";
+                    if (str_starts_with((string) $delivery->chat_id, '-100')) {
+                        $text .= "\n\n".'<a href="https://t.me/c/'.substr((string) $delivery->chat_id, 4).'/'.$delivery->telegram_message_id.'">Исходный контроль</a>';
+                    }
+                    [$yesLabel, $noLabel] = match ($delivery->control_type) {
+                        'schedule_checked' => ['✅ Проверены', '❌ Ещё не проверены'],
+                        'first_cleanings_started' => ['✅ Начались', '❌ Не все начались'],
+                        'couriers_completed' => ['✅ Доставлены', '❌ Ещё не доставлены'],
+                        ScheduledControlTypes::CLOSING_PAYMENTS => ['✅ Произведены', '❌ Ещё не произведены'],
+                        default => ['✅ Завершены', '❌ Ещё продолжаются'],
+                    };
+                    $buttons = ['inline_keyboard' => [[
+                        ['text' => $yesLabel, 'callback_data' => 'scf:'.$followup->id.':yes'],
+                        ['text' => $noLabel, 'callback_data' => 'scf:'.$followup->id.':no'],
+                    ]]];
                 }
-                [$yesLabel, $noLabel] = match ($delivery->control_type) {
-                    'schedule_checked' => ['✅ Проверены', '❌ Ещё не проверены'],
-                    'first_cleanings_started' => ['✅ Начались', '❌ Не все начались'],
-                    'couriers_completed' => ['✅ Доставлены', '❌ Ещё не доставлены'],
-                    ScheduledControlTypes::CLOSING_PAYMENTS => ['✅ Произведены', '❌ Ещё не произведены'],
-                    default => ['✅ Завершены', '❌ Ещё продолжаются'],
-                };
-                $buttons = ['inline_keyboard' => [[
-                    ['text' => $yesLabel, 'callback_data' => 'scf:'.$followup->id.':yes'],
-                    ['text' => $noLabel, 'callback_data' => 'scf:'.$followup->id.':no'],
-                ]]];
 
                 try {
                     $messageId = app(TelegramOutboundMonitor::class)->withContext([
@@ -84,6 +93,7 @@ class DeliverScheduledControlFollowup implements ShouldQueue
                         (string) $delivery->chat_id, $text,
                         $delivery->message_thread_id === null ? null : (string) $delivery->message_thread_id,
                         $buttons,
+                        ...($group ? [(string) $delivery->telegram_message_id] : []),
                     ));
                     if ($messageId === null) {
                         $followup->update(['status' => 'uncertain', 'failure_reason' => 'missing_receipt']);

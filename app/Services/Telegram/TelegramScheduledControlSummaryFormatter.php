@@ -11,6 +11,10 @@ class TelegramScheduledControlSummaryFormatter
     /** @return array{text: string, reply_markup: array, render_hash: string} */
     public function interactivePayload(TelegramScheduledMessageDelivery $delivery): array
     {
+        if (isset(OksControlSchedule::LABELS[$delivery->control_type])) {
+            return app(TelegramOksControlCards::class)->payload($delivery);
+        }
+
         $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
         $text = $this->formatInteractive($delivery, $states);
         $context = $delivery->sequence_context ?? [];

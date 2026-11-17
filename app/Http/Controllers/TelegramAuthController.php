@@ -3,10 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Models\ControlResponse;
+use App\Models\TelegramScheduledMessageDelivery;
+use App\Models\User;
+use App\Services\Telegram\TelegramOksControlCards;
 use App\Services\TelegramAuthService;
 use App\Services\TelegramMiniAppService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 
 class TelegramAuthController extends Controller
 {
@@ -21,10 +25,21 @@ class TelegramAuthController extends Controller
 
         $telegramUser = $miniAppService->validate($validated['init_data']);
 
-        $user = $authService->loginOrCreate($telegramUser);
-        $redirect = $authService->redirectRouteFor($user);
+        $startParam = (string) ($telegramUser['start_param'] ?? '');
+        if (str_starts_with($startParam, 'oks_')) {
+            abort_unless(preg_match('/^oks_([1-9][0-9]*)_(check|start|late)_([a-z]+)$/D', $startParam, $match), 403);
+            $delivery = TelegramScheduledMessageDelivery::query()->find((int) $match[1]);
+            $user = User::query()->activeStaff()->where('telegram_id', $telegramUser['telegram_id'])->first();
+            abort_unless($delivery && $user && app(TelegramOksControlCards::class)->canAnswer($delivery, $match[2], $match[3], $user), 403);
+            Auth::login($user);
+            $request->session()->regenerate();
+            $redirect = route('oks.response.show', [$delivery, $match[2], $match[3]]);
+        } else {
+            $user = $authService->loginOrCreate($telegramUser);
+            $redirect = $authService->redirectRouteFor($user);
+        }
 
-        if (preg_match('/^control_result_([1-9][0-9]*)$/D', (string) ($telegramUser['start_param'] ?? ''), $match)) {
+        if (preg_match('/^control_result_([1-9][0-9]*)$/D', $startParam, $match)) {
             abort_unless($user->status === 'approved' && $user->is_active
                 && in_array($user->role, ['cleaner', 'supervisor', 'admin'], true), 403);
 

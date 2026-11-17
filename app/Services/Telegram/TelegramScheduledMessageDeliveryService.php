@@ -23,23 +23,30 @@ class TelegramScheduledMessageDeliveryService
         $result = ['due' => 0, 'queued' => 0, 'failed' => 0, 'duplicate' => 0];
         $this->queueShiftOpening($now, $graceMinutes, $result);
 
-        $messages = TelegramScheduledMessage::query()
-            ->enabled()
-            ->orderBy('id')
-            ->get()
-            ->filter(fn (TelegramScheduledMessage $message): bool => $this->isWithinDeliveryWindow($message, $now, $timezone, $graceMinutes));
-
-        $result['due'] += $messages->count();
-
-        foreach ($messages as $message) {
-            $scheduledTime = ScheduledControlTypes::scheduledTime((string) $message->control_type, (string) $message->send_time);
-            if ($scheduledTime === null) {
-                continue;
+        $oksAnchor = $this->currentOksAnchor($now);
+        $due = TelegramScheduledMessage::query()->enabled()->orderBy('id')->get()
+            ->reject(fn (TelegramScheduledMessage $message): bool => isset(OksControlSchedule::LABELS[$message->control_type])
+                || ($oksAnchor !== null && $message->telegram_topic_record_id === $oksAnchor->telegram_topic_record_id
+                    && isset(ScheduledControlTypes::LABELS[$message->control_type])))
+            ->filter(fn (TelegramScheduledMessage $message): bool => $this->isWithinDeliveryWindow($message, $now, $timezone, $graceMinutes))
+            ->map(fn (TelegramScheduledMessage $message): array => [
+                $message,
+                $this->scheduledFor($now, (string) $message->send_time, $timezone),
+                (string) $message->control_type,
+            ]);
+        if ($oksAnchor !== null) {
+            foreach (OksControlSchedule::TIMES as $time => $type) {
+                $scheduledFor = $this->scheduledFor($now, $time, 'Europe/Rome');
+                if ($now->gte($scheduledFor) && $now->lte($scheduledFor->addMinutes($graceMinutes))) {
+                    $due->push([$oksAnchor, $scheduledFor, $type]);
+                }
             }
-            $scheduledFor = $this->scheduledFor($now, $scheduledTime, $timezone);
+        }
 
+        $result['due'] += $due->count();
+        foreach ($due as [$message, $scheduledFor, $type]) {
             try {
-                $delivery = $this->reserveOccurrence($message, $scheduledFor);
+                $delivery = $this->reserveOccurrence($message, $scheduledFor, $type);
             } catch (Throwable $exception) {
                 $result['failed']++;
                 Log::warning('Telegram scheduled message could not reserve its delivery occurrence.', [
@@ -130,6 +137,24 @@ class TelegramScheduledMessageDeliveryService
         return $result;
     }
 
+    public function currentOksAnchor(CarbonImmutable $now): ?TelegramScheduledMessage
+    {
+        if (! config('services.telegram.oks_current_controls_enabled')) {
+            return null;
+        }
+
+        $day = $now->setTimezone('Europe/Rome')->dayOfWeekIso;
+        $anchors = TelegramScheduledMessage::query()->enabled()->where('control_type', 'schedule_checked')
+            ->whereNotNull('telegram_topic_record_id')->with(['telegramChat', 'telegramTopic'])->orderBy('id')->get()
+            ->filter(fn (TelegramScheduledMessage $message): bool => ScheduledControlTypes::normalizeTime((string) $message->send_time) === '09:30:00'
+                && in_array($day, array_map('intval', $message->weekdays ?? []), true)
+                && $message->telegramChat?->is_enabled && $message->telegramTopic?->is_enabled
+                && (string) $message->telegramTopic->telegram_chat_id === (string) $message->telegram_chat_record_id)
+            ->groupBy('telegram_topic_record_id');
+
+        return $anchors->count() === 1 ? $anchors->first()->first() : null;
+    }
+
     private function queueShiftOpening(CarbonImmutable $now, int $graceMinutes, array &$result): void
     {
         $time = config('services.telegram.oks_shift_opening_time');
@@ -141,6 +166,7 @@ class TelegramScheduledMessageDeliveryService
             return;
         }
 
+        $currentAnchor = $this->currentOksAnchor($opening);
         $anchors = TelegramScheduledMessage::query()->enabled()
             ->where('control_type', 'schedule_checked')->whereNotNull('telegram_topic_record_id')
             ->with(['telegramChat', 'telegramTopic'])->orderBy('id')->get()
@@ -149,7 +175,7 @@ class TelegramScheduledMessageDeliveryService
                 && $message->telegramChat?->is_enabled && $message->telegramTopic?->is_enabled
                 && (string) $message->telegramTopic->telegram_chat_id === (string) $message->telegram_chat_record_id)
             ->groupBy(fn (TelegramScheduledMessage $message): string => $message->telegram_chat_record_id.':'.$message->telegram_topic_record_id);
-        if ($anchors->count() !== 1) {
+        if ($anchors->count() !== 1 && $currentAnchor === null) {
             if ($anchors->isNotEmpty()) {
                 Log::warning('OKS opening skipped because more than one control topic matches.');
             }
@@ -157,7 +183,7 @@ class TelegramScheduledMessageDeliveryService
             return;
         }
 
-        $anchor = $anchors->first()->first();
+        $anchor = $currentAnchor ?? $anchors->first()->first();
         if (! filled($anchor->telegramChat->telegram_chat_id) || ! filled($anchor->telegramTopic->telegram_thread_id)) {
             return;
         }
@@ -174,6 +200,7 @@ class TelegramScheduledMessageDeliveryService
             $delivery->update([
                 'chat_id' => $anchor->telegramChat->telegram_chat_id,
                 'message_thread_id' => $anchor->telegramTopic->telegram_thread_id,
+                ...($currentAnchor === null ? [] : ['sequence_context' => ['opening_quick' => true]]),
             ]);
             if (config('queue.connections.'.config('queue.default').'.driver') === 'sync') {
                 $this->fail($delivery, 'queue_connection_sync');
@@ -201,6 +228,11 @@ class TelegramScheduledMessageDeliveryService
             || $cleaningsDelivery->status !== 'sent' || ! $scheduledFor->isSameDay($now)
             || $cleaningsDelivery->scheduledMessage === null || ! $cleaningsDelivery->scheduledMessage->enabled
             || ! app(TelegramScheduledControlResponseService::class)->allDistrictsConfirmed($cleaningsDelivery)) {
+            return true;
+        }
+        $anchor = $this->currentOksAnchor($now);
+        if ($anchor !== null && (string) $anchor->telegramChat->telegram_chat_id === (string) $cleaningsDelivery->chat_id
+            && (string) $anchor->telegramTopic->telegram_thread_id === (string) $cleaningsDelivery->message_thread_id) {
             return true;
         }
         $cleaningsThreadId = $cleaningsDelivery->message_thread_id === null ? null : (string) $cleaningsDelivery->message_thread_id;
@@ -472,7 +504,7 @@ class TelegramScheduledMessageDeliveryService
             return TelegramScheduledMessageDelivery::query()->create([
                 'scheduled_message_id' => $message->getKey(),
                 'control_type' => $type,
-                'bot_type' => ($type === ScheduledControlTypes::SHIFT_OPENING || array_key_exists($type, ScheduledControlTypes::LABELS)) ? 'work' : 'scheduled',
+                'bot_type' => ($type === ScheduledControlTypes::SHIFT_OPENING || isset(ScheduledControlTypes::labels()[$type])) ? 'work' : 'scheduled',
                 'scheduled_for' => $scheduledFor,
                 'status' => 'pending',
             ]);

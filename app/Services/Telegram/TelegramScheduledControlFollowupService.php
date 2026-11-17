@@ -14,6 +14,8 @@ use Throwable;
 
 class TelegramScheduledControlFollowupService
 {
+    public const OKS_GROUP = 'oks_group';
+
     /** @var array<string, list<string>> */
     private const NEXT_STAGES = [
         'first_cleanings_started' => ['first_cleanings_finishing', 'cleanings_completed'],
@@ -29,13 +31,21 @@ class TelegramScheduledControlFollowupService
         $now = CarbonImmutable::now('UTC')->setTimezone('Europe/Rome');
         $deliveries = TelegramScheduledMessageDelivery::query()
             ->where('bot_type', 'work')->where('status', 'sent')
-            ->whereIn('control_type', array_keys(ScheduledControlTypes::LABELS))
+            ->whereIn('control_type', array_keys(ScheduledControlTypes::labels()))
             ->where('scheduled_for', '>=', $now->startOfDay()->format('Y-m-d H:i:s'))
             ->where('scheduled_for', '<', $now->addDay()->startOfDay()->format('Y-m-d H:i:s'))
             ->with(['scheduledMessage.telegramChat', 'scheduledMessage.telegramTopic', 'responses', 'followups'])
             ->get();
 
         foreach ($deliveries as $delivery) {
+            if (isset(OksControlSchedule::LABELS[$delivery->control_type])) {
+                $candidate = $this->oksGroupReminder($delivery, $now);
+                if ($candidate !== null && $candidate['due_at']->lte($now)) {
+                    $this->reserveAndDispatch($delivery, self::OKS_GROUP, $candidate, $now);
+                }
+
+                continue;
+            }
             $states = app(TelegramScheduledControlResponseService::class)->districtAnswerStates($delivery);
             foreach (ScheduledControlTypes::activeDistricts($delivery->sequence_context ?? []) as $district) {
                 $candidate = $this->candidate($delivery, $district, $now, $states);
@@ -127,10 +137,29 @@ class TelegramScheduledControlFollowupService
         if ($delivery === null) {
             return false;
         }
-        $candidate = $this->candidate($delivery, $followup->district_key, $now, null, $followup->id);
+        $candidate = $followup->district_key === self::OKS_GROUP
+            ? $this->oksGroupReminder($delivery, $now)
+            : $this->candidate($delivery, $followup->district_key, $now, null, $followup->id);
 
         return $candidate !== null && $candidate['kind'] === $followup->kind
             && $candidate['sequence'] === (int) $followup->sequence && $candidate['due_at']->lte($now);
+    }
+
+    private function oksGroupReminder(TelegramScheduledMessageDelivery $delivery, CarbonImmutable $now): ?array
+    {
+        $template = $delivery->scheduledMessage;
+        if (! isset(OksControlSchedule::LABELS[$delivery->control_type]) || ! $template?->enabled
+            || ! $template->followup_reminder_enabled || $delivery->status !== 'sent' || ! $delivery->sent_at
+            || ! $this->destinationUnchanged($delivery, $template)) {
+            return null;
+        }
+        $sent = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), 'Europe/Rome');
+        if (! $sent->isSameDay($now) || ($template->followup_cutoff && $now->gt($now->setTimeFromTimeString($template->followup_cutoff)))
+            || app(TelegramOksControlCards::class)->waitingDistricts($delivery) === []) {
+            return null;
+        }
+
+        return ['kind' => 'reminder', 'sequence' => 1, 'due_at' => $sent->addMinutes(max(1, (int) $template->followup_reminder_minutes))];
     }
 
     /** @return array{kind: string, sequence: int, due_at: CarbonImmutable}|null */
