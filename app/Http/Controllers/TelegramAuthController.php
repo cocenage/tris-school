@@ -6,6 +6,8 @@ use App\Models\ControlResponse;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\User;
 use App\Services\Telegram\TelegramOksControlCards;
+use App\Services\Telegram\TelegramOksRichCard;
+use App\Services\Telegram\TelegramShiftOpening;
 use App\Services\TelegramAuthService;
 use App\Services\TelegramMiniAppService;
 use Illuminate\Http\JsonResponse;
@@ -26,7 +28,16 @@ class TelegramAuthController extends Controller
         $telegramUser = $miniAppService->validate($validated['init_data']);
 
         $startParam = (string) ($telegramUser['start_param'] ?? '');
-        if (str_starts_with($startParam, 'oks_')) {
+        if (preg_match('/^oks_card_([1-9][0-9]*)$/D', $startParam, $match)) {
+            $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->find($match[1]);
+            $user = User::query()->activeStaff()->where('telegram_id', $telegramUser['telegram_id'])->first();
+            abort_unless($delivery && $user && TelegramOksRichCard::enabled($delivery)
+                && (app(TelegramShiftOpening::class)->canMark($delivery, $user)
+                    || app(TelegramOksControlCards::class)->districtsFor($delivery, $user) !== []), 403);
+            Auth::login($user);
+            $request->session()->regenerate();
+            $redirect = route('oks.card.show', $delivery);
+        } elseif (str_starts_with($startParam, 'oks_')) {
             abort_unless(preg_match('/^oks_([1-9][0-9]*)_(check|start|late)_([a-z]+)$/D', $startParam, $match), 403);
             $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->find((int) $match[1]);
             $user = User::query()->activeStaff()->where('telegram_id', $telegramUser['telegram_id'])->first();

@@ -8,6 +8,7 @@ use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Throwable;
@@ -21,6 +22,30 @@ class TelegramOksControlCards
         $questions = OksControlSchedule::questions($delivery->control_type);
         $districts = array_intersect_key(ScheduledControlTypes::DISTRICTS, $delivery->sequence_context['oks_assignments'] ?? []);
         $responses = $this->responses($delivery)->keyBy(fn ($response): string => self::questionKey($response).'|'.$response->district_key);
+        if (TelegramOksRichCard::enabled($delivery)) {
+            $rows = [];
+            foreach ($districts as $district => $name) {
+                $statuses = [];
+                $problem = false;
+                $answered = 0;
+                foreach ($questions as $key => $question) {
+                    $reply = $responses->get($key.'|'.$district);
+                    if ($reply === null) {
+                        continue;
+                    }
+                    $answered++;
+                    $problem = $problem || $reply->classification === 'problem';
+                    $statuses[] = $this->shortStatus($delivery->control_type, $key, $question, $reply);
+                }
+                $complete = $answered === count($questions);
+                if (! $complete) {
+                    $statuses[] = $answered === 0 ? 'Ждём ответа' : 'Есть ещё вопрос';
+                }
+                $rows[] = ['name' => $name, 'status' => implode(' · ', $statuses), 'icon' => $problem ? '🔴' : ($complete ? '✅' : '▫️')];
+            }
+
+            return app(TelegramOksRichCard::class)->render($delivery, OksControlSchedule::LABELS[$delivery->control_type], $rows, 'Открыть контроль');
+        }
         $previous = $this->previousReasons($delivery);
         $botUsername = trim((string) config('services.telegram.bot_username'), ' @');
         $lines = [];
@@ -76,6 +101,23 @@ class TelegramOksControlCards
         return ['text' => $text, 'reply_markup' => $markup, 'render_hash' => hash('sha256', serialize([$text, $markup]))];
     }
 
+    private function shortStatus(string $type, string $key, array $question, TelegramScheduledMessageResponse $reply): string
+    {
+        if (self::isSkipped($reply)) {
+            return 'Поздних выездов нет';
+        }
+
+        $positive = $reply->classification !== 'problem';
+
+        return match ($key) {
+            'start' => $positive ? 'Уборки начались' : 'Не все уборки начались',
+            'late' => $type === 'oks_start_eleven'
+                ? ($positive ? 'Гости выехали' : 'Гости ещё в квартире')
+                : ($positive ? 'Поздние выезды под контролем' : 'Есть риск из-за позднего выезда'),
+            default => $question[$positive ? 'yes' : 'no'],
+        };
+    }
+
     public function callback(array $callback): string
     {
         $data = (string) ($callback['data'] ?? '');
@@ -104,11 +146,49 @@ class TelegramOksControlCards
 
     public function canAnswer(TelegramScheduledMessageDelivery $delivery, string $key, string $district, User $user): bool
     {
-        return $user->is_active && $user->status === 'approved' && filled($user->telegram_id)
-            && $delivery->bot_type === 'work' && ($delivery->status === 'sent' || $delivery->isOksTest()) && filled($delivery->telegram_message_id)
-            && isset(OksControlSchedule::questions((string) $delivery->control_type)[$key], ScheduledControlTypes::DISTRICTS[$district])
-            && (int) ($delivery->sequence_context['oks_assignments'][$district] ?? 0) === (int) $user->id
-            && CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome')->isToday();
+        return isset(OksControlSchedule::questions((string) $delivery->control_type)[$key], $this->districtsFor($delivery, $user)[$district]);
+    }
+
+    public function districtsFor(TelegramScheduledMessageDelivery $delivery, User $user): array
+    {
+        if (! $user->is_active || $user->status !== 'approved' || ! filled($user->telegram_id)
+            || $delivery->bot_type !== 'work' || ($delivery->status !== 'sent' && ! $delivery->isOksTest()) || ! filled($delivery->telegram_message_id)
+            || ! isset(OksControlSchedule::LABELS[$delivery->control_type])
+            || ! CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome')->isToday()) {
+            return [];
+        }
+
+        $assignments = array_filter($delivery->sequence_context['oks_assignments'] ?? [], fn ($assigned): bool => (int) $assigned === (int) $user->id);
+
+        return array_intersect_key(ScheduledControlTypes::DISTRICTS, $assignments);
+    }
+
+    public function formQuestions(TelegramScheduledMessageDelivery $delivery, string $district): array
+    {
+        $questions = OksControlSchedule::questions($delivery->control_type);
+        $answers = $this->responses($delivery)->where('district_key', $district)->keyBy(self::questionKey(...));
+        foreach ($questions as $key => &$question) {
+            $reply = $answers->get($key);
+            $question['options'] = ['yes' => $question['yes'], 'note' => $question['no']];
+            if ($question['allowsSkip']) {
+                $question['options']['skip'] = 'Поздних выездов нет';
+            }
+            $question['version'] = $reply?->id ?? 0;
+            $question['selected'] = match (true) {
+                $reply === null => null,
+                self::isSkipped($reply) => 'skip',
+                $reply->classification === 'problem' => 'note',
+                default => 'yes',
+            };
+            $question['note'] = $question['selected'] === 'note' ? $reply->text : '';
+        }
+
+        return $questions;
+    }
+
+    public function priorReason(TelegramScheduledMessageDelivery $delivery, string $district): ?string
+    {
+        return $this->previousReasons($delivery)[$district] ?? null;
     }
 
     public function latestAnswer(TelegramScheduledMessageDelivery $delivery, string $key, string $district): ?TelegramScheduledMessageResponse
@@ -122,39 +202,60 @@ class TelegramOksControlCards
     {
         Cache::lock('scheduled_control_delivery:'.$delivery->id, 15)->block(3, function () use ($delivery, $key, $district, $user, $action, $text, $callbackId, $version): void {
             abort_unless($this->canAnswer($delivery->refresh(), $key, $district, $user), 403);
-            if ($callbackId !== null && $delivery->responses()->where('telegram_callback_query_id', $callbackId)->exists()) {
-                return;
-            }
-            $latest = $this->latestAnswer($delivery, $key, $district);
-            $reason = self::RESPONSE_PREFIX.$key.($action === 'skip' ? ':skip' : '');
-            $classification = $action === 'note' ? 'problem' : 'confirmed';
-            $text = $action === 'skip' ? 'Поздних выездов нет' : $text;
-            if ($latest?->classification === $classification && $latest->text === $text && $latest->classification_reason === $reason) {
-                return;
-            }
-            abort_if($version !== null && (int) ($latest?->id ?? 0) !== $version, 409, 'Ответ уже изменился. Откройте форму заново.');
-            $now = CarbonImmutable::now('Europe/Rome');
-            $sent = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), 'Europe/Rome');
-            $delivery->responses()->create([
-                'telegram_callback_query_id' => $callbackId,
-                'chat_id' => $delivery->chat_id,
-                'message_thread_id' => $delivery->message_thread_id,
-                'reply_to_message_id' => $delivery->telegram_message_id,
-                'user_id' => $user->id,
-                'telegram_user_id' => $user->telegram_id,
-                'author_name' => $user->name,
-                'district_key' => $district,
-                'text' => $text,
-                'classification' => $classification,
-                'classification_reason' => $reason,
-                'response_kind' => $action === 'note' ? 'text_answer' : 'button',
-                'responded_at' => $now,
-                'responded_at_utc' => $now->utc()->format('Y-m-d H:i:s'),
-                'response_latency_seconds' => $now->lt($sent) ? null : (int) $sent->diffInSeconds($now),
-            ]);
+            $this->recordAnswer($delivery, $key, $district, $user, $action, $text, $callbackId, $version);
         });
 
         return $this->sync($delivery);
+    }
+
+    public function saveChecklist(TelegramScheduledMessageDelivery $delivery, string $district, User $user, array $answers): bool
+    {
+        Cache::lock('scheduled_control_delivery:'.$delivery->id, 15)->block(3, function () use ($delivery, $district, $user, $answers): void {
+            abort_unless(isset($this->districtsFor($delivery->refresh(), $user)[$district]), 403);
+            DB::transaction(function () use ($delivery, $district, $user, $answers): void {
+                foreach (OksControlSchedule::questions($delivery->control_type) as $key => $question) {
+                    $answer = $answers[$key];
+                    $text = $answer['choice'] === 'note' ? trim($answer['note']) : $question['yes'];
+                    $this->recordAnswer($delivery, $key, $district, $user, $answer['choice'], $text, version: (int) $answer['version']);
+                }
+            });
+        });
+
+        return $this->sync($delivery);
+    }
+
+    private function recordAnswer(TelegramScheduledMessageDelivery $delivery, string $key, string $district, User $user, string $action, string $text, ?string $callbackId = null, ?int $version = null): void
+    {
+        if ($callbackId !== null && $delivery->responses()->where('telegram_callback_query_id', $callbackId)->exists()) {
+            return;
+        }
+        $latest = $this->latestAnswer($delivery, $key, $district);
+        $reason = self::RESPONSE_PREFIX.$key.($action === 'skip' ? ':skip' : '');
+        $classification = $action === 'note' ? 'problem' : 'confirmed';
+        $text = $action === 'skip' ? 'Поздних выездов нет' : $text;
+        if ($latest?->classification === $classification && $latest->text === $text && $latest->classification_reason === $reason) {
+            return;
+        }
+        abort_if($version !== null && (int) ($latest?->id ?? 0) !== $version, 409, 'Ответ уже изменился. Откройте форму заново.');
+        $now = CarbonImmutable::now('Europe/Rome');
+        $sent = CarbonImmutable::parse($delivery->getRawOriginal('sent_at'), 'Europe/Rome');
+        $delivery->responses()->create([
+            'telegram_callback_query_id' => $callbackId,
+            'chat_id' => $delivery->chat_id,
+            'message_thread_id' => $delivery->message_thread_id,
+            'reply_to_message_id' => $delivery->telegram_message_id,
+            'user_id' => $user->id,
+            'telegram_user_id' => $user->telegram_id,
+            'author_name' => $user->name,
+            'district_key' => $district,
+            'text' => $text,
+            'classification' => $classification,
+            'classification_reason' => $reason,
+            'response_kind' => $action === 'note' ? 'text_answer' : 'button',
+            'responded_at' => $now,
+            'responded_at_utc' => $now->utc()->format('Y-m-d H:i:s'),
+            'response_latency_seconds' => $now->lt($sent) ? null : (int) $sent->diffInSeconds($now),
+        ]);
     }
 
     public function waitingDistricts(TelegramScheduledMessageDelivery $delivery): array
@@ -174,14 +275,15 @@ class TelegramOksControlCards
     public function sync(TelegramScheduledMessageDelivery $delivery): bool
     {
         try {
-            return Cache::lock('telegram_work_control_sync:'.$delivery->id, 15)->block(3, function () use ($delivery): bool {
+            return Cache::lock('telegram_work_control_sync:'.$delivery->id, 30)->block(3, function () use ($delivery): bool {
                 $delivery->refresh();
                 $payload = $this->payload($delivery);
                 if ($delivery->render_hash === $payload['render_hash']) {
                     return true;
                 }
-                $edited = app(TelegramBotService::class)->editMessage((string) $delivery->chat_id, $delivery->telegram_message_id, [],
-                    $payload['text'], $payload['reply_markup'], forceLegacy: true);
+                $rich = TelegramOksRichCard::enabled($delivery);
+                $edited = app(TelegramBotService::class)->editMessage((string) $delivery->chat_id, $delivery->telegram_message_id, $payload['rich_message'] ?? [],
+                    $payload['text'], $payload['reply_markup'], forceLegacy: ! $rich, preferRich: $rich);
                 if ($edited) {
                     $delivery->update(['render_hash' => $payload['render_hash']]);
                 }
