@@ -335,6 +335,25 @@ it('uses existing scheduled delivery records and excludes disabled, off-day and 
             ->and($after['counts']['expected'])->toBe(12)
             ->and($after['counts']['sent'])->toBe(1);
 
+        $opening = TelegramScheduledMessageDelivery::query()->create([
+            'scheduled_message_id' => $due->id, 'control_type' => 'oks_shift_opening',
+            'scheduled_for' => '2026-10-22 08:30:00', 'status' => 'uncertain',
+            'failure_reason' => 'opening_delivery_unconfirmed',
+        ]);
+        $delivery->update(['status' => 'skipped', 'failure_reason' => 'oks_opening_unavailable']);
+        TelegramOutboundOperation::query()->create([
+            'operation_key' => 'scheduled_delivery:'.$opening->id,
+            'notification_type' => 'oks_shift_opening', 'method' => 'sendRichMessage', 'bot' => 'work',
+            'status' => 'uncertain', 'attempts' => 1, 'created_at' => '2026-10-22 08:30:00',
+        ]);
+        $openingSnapshot = app(TelegramDeliveryCenter::class)->snapshot($at);
+        $openingSlot = collect($openingSnapshot['slots'])->firstWhere('type', 'oks_shift_opening');
+        expect($openingSlot['due']->format('H:i'))->toBe('08:30')
+            ->and($openingSlot['status'])->toBe('uncertain')
+            ->and(collect($openingSnapshot['slots'])->where('type', 'scheduled_control')->sole()['status'])->toBe('skipped')
+            ->and($openingSnapshot['counts']['missed'])->toBe($after['counts']['missed'] + 1)
+            ->and($openingSnapshot['counts']['uncertain'])->toBe(1);
+
         TelegramScheduledMessageDelivery::query()->create([
             'scheduled_message_id' => $conditional->id, 'control_type' => $conditional->control_type,
             'scheduled_for' => '2026-10-22 09:05:00', 'status' => 'pending',
