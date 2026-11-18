@@ -31,7 +31,7 @@ class TelegramScheduledControlSummaryRichFormatter
                 $lines[] = '';
                 $lines[] = '**'.$this->richMessages->escapeRichText($problem['district'].' — '.$problem['control_label']).'** · '.$this->richMessages->escapeRichText($problem['status_label']);
                 $lines[] = 'Контроль: '.$this->richMessages->escapeRichText($problem['control_time']).' · обнаружено: '.$this->richMessages->escapeRichText($problem['discovered_time']);
-                $lines[] = 'Ответ: '.$this->richMessages->escapeRichText($problem['issue']);
+                $lines[] = 'Ответ: '.$this->richMessages->escapeRichText($problem['comment'] ?? $problem['issue']);
                 $lines[] = 'Квартира: '.$this->richMessages->escapeRichText($problem['apartment']).' · Причина: '.$this->richMessages->escapeRichText($problem['reason']).' · Автор: '.$this->richMessages->escapeRichText($problem['author']);
                 if ($problem['repeat_summary'] !== '') {
                     $lines[] = 'Повторная проверка: '.$this->richMessages->escapeRichText($problem['repeat_summary']);
@@ -165,7 +165,7 @@ class TelegramScheduledControlSummaryRichFormatter
         if ($context !== []) {
             $line .= ' · '.$this->html($this->compactText(implode(' · ', $context), 72));
         }
-        $description = $problem['reason'] !== 'Не установлено' ? $problem['reason'] : $problem['issue'];
+        $description = $problem['comment'] ?? ($problem['reason'] !== 'Не установлено' ? $problem['reason'] : $problem['issue']);
         $line .= ' — '.$this->html($this->compactText($description, 104));
         if ($problem['source_url'] !== null) {
             $line .= ' · <a href="'.$problem['source_url'].'">'.($problem['has_negative'] && $problem['initial_status'] === 'problem' ? 'Ответ «нет»' : 'Ответ').'</a>';
@@ -417,6 +417,7 @@ class TelegramScheduledControlSummaryRichFormatter
             'control_time' => $this->time((string) ($first['control_time'] ?? $story['scheduled_times'][0] ?? '')),
             'discovered_time' => $this->time((string) ($first['responded_at'] ?? '')),
             'issue' => filled($first['text'] ?? null) ? (string) $first['text'] : 'Не выполнено; подробности в ответе не указаны',
+            'comment' => isset(OksControlSchedule::LABELS[$bad['control_type'] ?? $controlType]) && filled($bad['text'] ?? null) ? (string) $bad['text'] : null,
             'apartment' => filled($apartment) ? (string) $apartment : 'Не установлено',
             'reason' => filled($reason) ? (string) $reason : 'Не установлено',
             'author' => filled($author) ? (string) $author : 'Не установлено',

@@ -8,6 +8,7 @@ use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOksRichCard;
 use App\Services\Telegram\TelegramOutboundMonitor;
+use App\Services\Telegram\TelegramRequestNotSent;
 use App\Services\Telegram\TelegramScheduledControlResponseService;
 use App\Services\Telegram\TelegramScheduledControlSummaryFormatter;
 use App\Services\Telegram\TelegramScheduledMessageDeliveryService;
@@ -162,6 +163,10 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
                 (string) $delivery->chat_id, $payload['fallback_html'],
                 (string) $delivery->message_thread_id, replyMarkup: $payload['reply_markup'],
             ));
+        } catch (TelegramRequestNotSent $exception) {
+            $this->markRetrying($delivery, 'telegram_connect_failed_before_send');
+
+            throw $exception;
         } catch (Throwable $exception) {
             Log::warning('OKS opening delivery could not be confirmed.', ['delivery_id' => $delivery->id, 'exception' => class_basename($exception)]);
 
@@ -267,6 +272,11 @@ class DeliverScheduledTelegramMessage implements ShouldQueue
             ));
         } catch (ConnectionException $exception) {
             if ($isOksCard || ($delivery->trigger_delivery_id !== null && $delivery->control_type === ScheduledControlTypes::CLOSING_PAYMENTS)) {
+                if ($isOksCard && $exception instanceof TelegramRequestNotSent) {
+                    $this->markRetrying($delivery, 'telegram_connect_failed_before_send');
+
+                    throw $exception;
+                }
                 $delivery->update(['status' => 'uncertain', 'failure_reason' => 'connection_exception']);
 
                 return;

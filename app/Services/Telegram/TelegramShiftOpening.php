@@ -202,7 +202,10 @@ class TelegramShiftOpening
                 ];
                 if ($choice === null) {
                     $prefix = 'oks:'.$delivery->id.':quick:'.$key.':';
-                    $sections[] = ['name' => $name, 'questions' => [['buttons' => ['Есть уборки' => $prefix.'yes', 'Нет уборок' => $prefix.'no']]]];
+                    $sections[] = ['name' => $name, 'questions' => [['buttons' => [
+                        ['text' => 'Есть уборки', 'callback_data' => $prefix.'yes'],
+                        ['text' => 'Нет уборок', 'callback_data' => $prefix.'no'],
+                    ]]]];
                 }
             }
 

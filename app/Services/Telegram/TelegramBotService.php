@@ -2,6 +2,7 @@
 
 namespace App\Services\Telegram;
 
+use GuzzleHttp\Exception\ConnectException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
@@ -314,6 +315,9 @@ class TelegramBotService
 
             Log::warning('Telegram Rich Message was explicitly rejected; using HTML fallback.', ['status' => $response->status()]);
         } catch (\Throwable $e) {
+            if ($buttonsInRichBody && $e instanceof TelegramRequestNotSent) {
+                throw $e;
+            }
             Log::warning('Telegram Rich Message outcome is uncertain; fallback was not sent.', [
                 'exception' => class_basename($e),
             ]);
@@ -421,7 +425,8 @@ class TelegramBotService
 
         $fallbackResponse = $this->postTelegramApi($token, 'editMessageText', $fallbackPayload, 10, 3);
 
-        return $fallbackResponse->successful() || ($buttonsInRichBody && $this->messageNotModified($fallbackResponse));
+        return ($fallbackResponse->successful() && data_get($fallbackResponse->json(), 'ok', true))
+            || ($buttonsInRichBody && $this->messageNotModified($fallbackResponse));
     }
 
     private function editHtmlMessage(
@@ -464,9 +469,15 @@ class TelegramBotService
         try {
             return $this->telegramApiRequest($timeout, $connectTimeout)
                 ->post("https://api.telegram.org/bot{$token}/{$method}", $payload);
-        } catch (ConnectionException) {
+        } catch (ConnectionException $exception) {
             // Telegram's Bot API embeds the bot token in the request path.
             // Do not let Guzzle's original URL-bearing exception escape.
+            $cause = $exception->getPrevious();
+            $errno = $cause instanceof ConnectException ? ($cause->getHandlerContext()['errno'] ?? null) : null;
+            // cURL 5/6/7 mean name resolution or connection establishment failed.
+            if (in_array($errno, [5, 6, 7], true)) {
+                throw new TelegramRequestNotSent("Telegram API did not connect for {$method}.", $errno);
+            }
             throw new ConnectionException("Telegram API connection failed for {$method}.");
         }
     }
