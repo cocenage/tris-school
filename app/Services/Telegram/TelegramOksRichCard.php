@@ -4,6 +4,7 @@ namespace App\Services\Telegram;
 
 use App\Models\TelegramScheduledMessageDelivery;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Str;
 
 class TelegramOksRichCard
 {
@@ -19,17 +20,28 @@ class TelegramOksRichCard
         return ($delivery->sequence_context[self::CONTEXT_KEY] ?? false) === true;
     }
 
+    public static function miniAppUrl(string $startParam): ?string
+    {
+        return self::available()
+            ? 'https://t.me/'.self::botUsername().'?startapp='.$startParam.'&mode=compact'
+            : null;
+    }
+
     /** @param list<array{name: string, status: string, icon: string, notes?: list<string>}> $rows */
     public function render(TelegramScheduledMessageDelivery $delivery, string $title, array $rows, string $button, array $sections): array
     {
         $time = CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome')->format('H:i');
         $title = ($delivery->isOksTest() ? 'ТЕСТ ОКС · ' : '').$time.' · '.$title;
         $html = ['<b>'.e($title).'</b>', ''];
+        $compactHtml = $html;
         $rich = ['<h2>'.e($title).'</h2>'];
         foreach ($rows as $row) {
             $line = $row['icon'].' <b>'.e($row['name']).'</b> · '.e($row['status']);
-            $notes = array_map(fn (string $note): string => '<i>'.e($note).'</i>', $row['notes'] ?? []);
+            $rawNotes = $row['notes'] ?? [];
+            $notes = array_map(fn (string $note): string => '<i>'.e($note).'</i>', $rawNotes);
+            $shortNotes = array_map(fn (string $note): string => '<i>'.e(Str::limit($note, 145)).'</i>', $rawNotes);
             $html[] = implode("\n", [$line, ...$notes]);
+            $compactHtml[] = implode("\n", [$line, ...$shortNotes]);
             $rich[] = '<p>'.implode('<br>', [$line, ...$notes]).'</p>';
         }
         if ($sections !== []) {
@@ -44,8 +56,10 @@ class TelegramOksRichCard
                         $rich[] = '<p><i>'.e($question['details']).'</i></p>';
                     }
                     $rich[] = '<tg-button-row>'.implode('', array_map(
-                        fn (string $label, string $callback): string => '<tg-button type="callback_data" data="'.e($callback).'">'.e($label).'</tg-button>',
-                        array_keys($question['buttons']), array_values($question['buttons']),
+                        fn (array $action): string => isset($action['url'])
+                            ? '<tg-button type="url" url="'.e($action['url']).'">'.e($action['text']).'</tg-button>'
+                            : '<tg-button type="callback_data" data="'.e($action['callback_data']).'">'.e($action['text']).'</tg-button>',
+                        $question['buttons'],
                     )).'</tg-button-row>';
                 }
             }
@@ -53,10 +67,11 @@ class TelegramOksRichCard
         }
         $rich = ['html' => implode("\n", $rich)];
         $text = implode("\n", $html);
-        $markup = ['inline_keyboard' => self::available() ? [[[
-            'text' => $button,
-            'url' => 'https://t.me/'.self::botUsername().'?startapp=oks_card_'.$delivery->id.'&mode=compact',
-        ]]] : []];
+        if (TelegramRichMessageBuilder::htmlVisibleLength($text) > 4096) {
+            $text = implode("\n", $compactHtml);
+        }
+        $url = self::miniAppUrl('oks_card_'.$delivery->id);
+        $markup = ['inline_keyboard' => $url === null ? [] : [[['text' => $button, 'url' => $url]]]];
 
         return ['rich_message' => $rich, 'text' => $text, 'fallback_html' => $text, 'reply_markup' => $markup,
             'render_hash' => hash('sha256', serialize([$rich, $text, $markup]))];

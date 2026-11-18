@@ -2,6 +2,7 @@
 
 namespace App\Services\Telegram;
 
+use App\Jobs\RefreshTelegramOksCard;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramScheduledMessageResponse;
 use App\Models\User;
@@ -33,9 +34,13 @@ class TelegramOksControlCards
                 $answered = 0;
                 foreach ($questions as $key => $question) {
                     $prefix = 'oksc:'.$delivery->id.':'.$key.':'.$district.':';
-                    $buttons = [$question['yes'] => $prefix.'yes', $question['no'] => $prefix.'note'];
+                    $buttons = [['text' => $question['yes'], 'callback_data' => $prefix.'yes']];
+                    $noteUrl = TelegramOksRichCard::miniAppUrl('oks_'.$delivery->id.'_'.$key.'_'.$district);
+                    if ($noteUrl !== null) {
+                        $buttons[] = ['text' => $question['no'], 'url' => $noteUrl];
+                    }
                     if ($question['allowsSkip']) {
-                        $buttons['Поздних выездов нет'] = $prefix.'skip';
+                        $buttons[] = ['text' => 'Поздних выездов нет', 'callback_data' => $prefix.'skip'];
                     }
                     $actions[] = ['title' => $question['title'], 'details' => $question['details'], 'buttons' => $buttons];
                     $reply = $responses->get($key.'|'.$district);
@@ -46,7 +51,7 @@ class TelegramOksControlCards
                     $problem = $problem || $reply->classification === 'problem';
                     $statuses[] = $this->shortStatus($delivery->control_type, $key, $question, $reply);
                     if ($reply->classification === 'problem' && filled($reply->text)) {
-                        $notes[] = Str::limit($reply->text, 145);
+                        $notes[] = $reply->text;
                     }
                 }
                 $complete = $answered === count($questions);
@@ -60,7 +65,6 @@ class TelegramOksControlCards
             return app(TelegramOksRichCard::class)->render($delivery, OksControlSchedule::LABELS[$delivery->control_type], $rows, 'Открыть контроль', $sections);
         }
         $previous = $this->previousReasons($delivery);
-        $botUsername = trim((string) config('services.telegram.bot_username'), ' @');
         $lines = [];
         if ($delivery->isOksTest()) {
             $lines[] = '<b>ТЕСТ ОКС · '.e($delivery->scheduled_for->format('H:i')).'</b>';
@@ -95,10 +99,11 @@ class TelegramOksControlCards
                 $prefix = 'oksc:'.$delivery->id.':'.$key.':'.$district.':';
                 $shortLabel = count($questions) > 1 ? $label.($key === 'late' ? ' · выезды' : ' · старт') : $label;
                 $buttons = [['text' => $shortLabel.' · '.$question['yes'], 'callback_data' => $prefix.'yes']];
-                if (preg_match('/^[a-z][a-z0-9_]{4,31}$/iD', $botUsername)) {
+                $noteUrl = TelegramOksRichCard::miniAppUrl('oks_'.$delivery->id.'_'.$key.'_'.$district);
+                if ($noteUrl !== null) {
                     $buttons[] = [
                         'text' => $shortLabel.' · '.($response === null ? $question['no'] : 'Уточнить'),
-                        'url' => 'https://t.me/'.$botUsername.'?startapp=oks_'.$delivery->id.'_'.$key.'_'.$district.'&mode=compact',
+                        'url' => $noteUrl,
                     ];
                 }
                 $keyboard[] = $buttons;
@@ -152,76 +157,16 @@ class TelegramOksControlCards
         if ($action === 'skip' && ! $question['allowsSkip']) {
             return 'Такой ответ для этого вопроса недоступен.';
         }
-        $intentKey = $this->noteKey((string) $delivery->chat_id, (int) $delivery->telegram_message_id, (string) $actor->telegram_id);
         if ($action === 'note') {
-            if (! TelegramOksRichCard::enabled($delivery)) {
-                return 'Открой актуальную карточку контроля.';
-            }
-            Cache::lock($intentKey.':lock', 35)->block(3, function () use ($intentKey, $delivery, $district, $key, $callbackId): void {
-                Cache::put($intentKey, [
-                    'delivery' => $delivery->id, 'district' => $district, 'question' => $key, 'callback' => $callbackId,
-                    'version' => $this->latestAnswer($delivery, $key, $district)?->id ?? 0,
-                ], now()->addMinutes(15));
-            });
-
-            return ScheduledControlTypes::DISTRICTS[$district].' · '.$question['no'].'. Напиши причину ответом на карточку.';
+            // Refresh cards already published with a callback for the comment field.
+            return $this->sync($delivery)
+                ? 'Карточка обновлена. Нажми кнопку отрицательного ответа ещё раз.'
+                : 'Карточку пока не удалось обновить. Попробуй ещё раз позже.';
         }
 
-        $pending = Cache::get($intentKey);
         $synced = $this->save($delivery, $key, $district, $actor, $action, $question['yes'], $callbackId);
-        if (($pending['district'] ?? null) === $district && ($pending['question'] ?? null) === $key) {
-            Cache::lock($intentKey.':lock', 35)->block(3, function () use ($intentKey, $pending): void {
-                if (Cache::get($intentKey) === $pending) {
-                    Cache::forget($intentKey);
-                }
-            });
-        }
 
         return $synced ? 'Ответ сохранён.' : 'Ответ сохранён. Карточка пока не обновилась.';
-    }
-
-    public function captureReason(array $message): bool
-    {
-        $chat = data_get($message, 'chat.id');
-        $reply = data_get($message, 'reply_to_message.message_id');
-        $sender = data_get($message, 'from.id');
-        $text = $message['text'] ?? null;
-        if (! is_numeric($chat) || ! is_numeric($reply) || ! is_numeric($sender) || data_get($message, 'from.is_bot', false)
-            || ! is_string($text) || trim($text) === '' || str_starts_with(ltrim($text), '/')) {
-            return false;
-        }
-        $key = $this->noteKey((string) $chat, (int) $reply, (string) $sender);
-        if (! Cache::has($key)) {
-            return false;
-        }
-
-        return Cache::lock($key.':lock', 35)->block(3, function () use ($key, $chat, $message, $reply, $sender, $text): bool {
-            $intent = Cache::get($key);
-            if (! is_array($intent)) {
-                return false;
-            }
-            $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->whereKey($intent['delivery'])
-                ->where('chat_id', (string) $chat)->where('message_thread_id', (string) data_get($message, 'message_thread_id'))
-                ->where('telegram_message_id', (int) $reply)->first();
-            $actor = User::query()->activeStaff()->where('telegram_id', (string) $sender)->first();
-            if ($delivery === null || $actor === null || ! $this->canAnswer($delivery, $intent['question'], $intent['district'], $actor)) {
-                return false;
-            }
-            if (($this->latestAnswer($delivery, $intent['question'], $intent['district'])?->id ?? 0) !== $intent['version']) {
-                Cache::forget($key);
-
-                return false;
-            }
-            $this->save($delivery, $intent['question'], $intent['district'], $actor, 'note', trim($text), version: $intent['version']);
-            Cache::forget($key);
-
-            return true;
-        });
-    }
-
-    private function noteKey(string $chat, int $message, string $user): string
-    {
-        return 'telegram:oks-note:'.$chat.':'.$message.':'.$user;
     }
 
     public function canAnswer(TelegramScheduledMessageDelivery $delivery, string $key, string $district, User $user): bool
@@ -285,7 +230,7 @@ class TelegramOksControlCards
             $this->recordAnswer($delivery, $key, $district, $user, $action, $text, $callbackId, $version);
         });
 
-        return $this->sync($delivery);
+        return $this->syncAfterAnswer($delivery);
     }
 
     public function saveChecklist(TelegramScheduledMessageDelivery $delivery, string $district, User $user, array $answers): bool
@@ -301,7 +246,24 @@ class TelegramOksControlCards
             });
         });
 
-        return $this->sync($delivery);
+        return $this->syncAfterAnswer($delivery);
+    }
+
+    private function syncAfterAnswer(TelegramScheduledMessageDelivery $delivery): bool
+    {
+        if ($this->sync($delivery)) {
+            return true;
+        }
+
+        if (config('queue.connections.'.config('queue.default').'.driver') !== 'sync') {
+            try {
+                RefreshTelegramOksCard::dispatch($delivery->id)->delay(now()->addSeconds(10));
+            } catch (Throwable $exception) {
+                Log::warning('OKS card refresh could not be queued.', ['delivery_id' => $delivery->id, 'exception' => class_basename($exception)]);
+            }
+        }
+
+        return false;
     }
 
     private function recordAnswer(TelegramScheduledMessageDelivery $delivery, string $key, string $district, User $user, string $action, string $text, ?string $callbackId = null, ?int $version = null): void

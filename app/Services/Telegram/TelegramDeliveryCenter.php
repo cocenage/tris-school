@@ -18,6 +18,8 @@ class TelegramDeliveryCenter
 
     private const DIGEST_TYPES = ['calendar', 'morning_digest', 'scheduled_control', 'scheduled_control_summary', 'evening_intelligence', 'linen_defect'];
 
+    private const SLOT_NOTIFICATION_TYPES = ['morning_digest', 'evening_intelligence', 'scheduled_control', 'oks_shift_opening', 'scheduled_control_summary', 'calendar'];
+
     private const HISTORY_LIMIT_PER_OPERATION = 30;
 
     private array $sourceWarnings = [];
@@ -59,7 +61,7 @@ class TelegramDeliveryCenter
             ? TelegramOutboundOperation::query()->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
                 ->where('notification_type', '!=', 'mobility_alert')
                 ->where(fn ($query) => $query->whereNull('operation_key')
-                    ->orWhereNotIn('notification_type', ['morning_digest', 'evening_intelligence', 'scheduled_control', 'scheduled_control_summary', 'calendar']))
+                    ->orWhereNotIn('notification_type', self::SLOT_NOTIFICATION_TYPES))
                 ->selectRaw('status, COUNT(*) as total')->groupBy('status')->get()
             : collect();
 
@@ -81,7 +83,7 @@ class TelegramDeliveryCenter
                 'sent' => 'sent',
                 'edited' => 'edited',
                 'failed' => 'failed',
-                'missed' => 'missed',
+                'missed', 'skipped' => 'missed',
                 'uncertain', 'retrying' => 'uncertain',
                 'unmonitored' => 'unmonitored',
                 default => 'pending',
@@ -98,7 +100,7 @@ class TelegramDeliveryCenter
                 ->where('created_at', '>=', $start->format('Y-m-d H:i:s'))
                 ->where('notification_type', '!=', 'mobility_alert')
                 ->where(fn ($query) => $query->whereNull('operation_key')
-                    ->orWhereNotIn('notification_type', ['morning_digest', 'evening_intelligence', 'scheduled_control', 'scheduled_control_summary', 'calendar']))
+                    ->orWhereNotIn('notification_type', self::SLOT_NOTIFICATION_TYPES))
                 ->where('status', 'pending')
                 ->where('attempted_at', '<', $now->subMinutes(10)->format('Y-m-d H:i:s'))
                 ->count();
@@ -211,7 +213,8 @@ class TelegramDeliveryCenter
             if (! in_array($due->dayOfWeekIso, array_map('intval', $template->weekdays ?? []), true)) {
                 continue;
             }
-            $delivery = $deliveriesByMessage->get($template->getKey())?->first();
+            $delivery = $deliveriesByMessage->get($template->getKey())?->first(fn (TelegramScheduledMessageDelivery $candidate): bool => $candidate->control_type !== ScheduledControlTypes::SHIFT_OPENING
+                && $candidate->getRawOriginal('scheduled_for') === $due->format('Y-m-d H:i:s'));
             if ($delivery !== null) {
                 $seenDeliveryIds[] = $delivery->id;
             }
@@ -231,10 +234,11 @@ class TelegramDeliveryCenter
             if (in_array($delivery->id, $seenDeliveryIds, true)) {
                 continue;
             }
+            $opening = $delivery->control_type === ScheduledControlTypes::SHIFT_OPENING;
             $slots[] = [
                 'key' => 'scheduled_delivery:'.$delivery->id,
-                'type' => 'scheduled_control', 'district' => null,
-                'bot' => $delivery->bot_type ?? 'scheduled',
+                'type' => $opening ? 'oks_shift_opening' : 'scheduled_control', 'district' => null,
+                'bot' => $delivery->bot_type ?? ($opening ? 'work' : 'scheduled'),
                 'chat_id' => $delivery->chat_id, 'thread_id' => $delivery->message_thread_id,
                 'due' => CarbonImmutable::parse($delivery->getRawOriginal('scheduled_for'), 'Europe/Rome'),
                 'status' => $delivery->status, 'reason' => $delivery->failure_reason,
