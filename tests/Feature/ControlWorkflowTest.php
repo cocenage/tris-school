@@ -1411,7 +1411,7 @@ it('submits a negative Focus answer without corrective UI while preserving exist
         ->call('setAnswer', 0, 0, 'no')
         ->assertDontSee('Что исправить')
         ->assertDontSee('К проверке ответов')
-        ->assertSee('Завершить контроль')
+        ->assertSee('Проверить ответы')
         ->call('review', 0)
         ->assertSet('stage', 'review')
         ->assertSee('Резюме контроля')
@@ -1667,10 +1667,83 @@ it('keeps a media upload attached to its original question after navigating away
         ->assertSet('pendingMediaCount', 0)
         ->call('goToRoom', 0)
         ->assertSet('currentRoomIndex', 0)
-        ->assertSee('Фото и видео')
-        ->assertSee('Прикрепить фото или видео')
+        ->assertSee('Добавить фото или видео')
         ->assertSee('accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm"', false)
         ->assertDontSee('Загрузка файлов');
+});
+
+it('opens the first missing required Focus question and advances past optional questions', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $room = controlWorkflowSchema()[0];
+    $room['items'][0]['answer_options_scored'][0]['label'] = 'Все ключи на своих местах и работают без заеданий';
+    $room['items'][] = ['question' => 'Где лежат запасные ключи?', 'answer_type' => 'text'];
+    $room['items'][] = ['question' => 'Дополнительные замечания', 'answer_type' => 'text', 'is_optional' => true];
+    $control->update(['main' => [
+        $room,
+        ['title' => 'Кухня', 'items' => [['question' => 'Состояние плиты', 'answer_type' => 'text']]],
+        ['title' => 'Балкон', 'is_optional' => true, 'items' => [['question' => 'Состояние балкона', 'answer_type' => 'text']]],
+    ]]);
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('start')
+        ->assertSee('Все ключи на своих местах и работают без заеданий')
+        ->assertSet('requiredQuestionsByRoom', [[0, 1], [0]])
+        ->call('next')
+        ->assertSet('currentRoomIndex', 0)
+        ->assertDispatched('focus-question-selected', room: 0, question: 0)
+        ->call('setAnswer', 0, 0, 'yes')
+        ->set('answers.0.1.custom', '   ')
+        ->call('next')
+        ->assertSet('currentRoomIndex', 0)
+        ->assertDispatched('focus-question-selected', room: 0, question: 1)
+        ->set('answers.0.1.custom', 'В верхнем ящике')
+        ->call('next')
+        ->assertSet('currentRoomIndex', 1)
+        ->call('next')
+        ->assertSet('currentRoomIndex', 1)
+        ->assertDispatched('focus-question-selected', room: 1, question: 0)
+        ->set('answers.1.0.custom', 'Плита чистая')
+        ->call('next')
+        ->assertSet('currentRoomIndex', 2)
+        ->call('next')
+        ->assertSet('stage', 'review')
+        ->assertSet('incompleteQuestions', []);
+});
+
+it('resumes Focus at the next incomplete room and returns to review after editing setup', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $control->update(['main' => [
+        controlWorkflowSchema()[0],
+        ['title' => 'Кухня', 'items' => [['question' => 'Состояние плиты', 'answer_type' => 'text']]],
+    ]]);
+
+    Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('start')
+        ->call('setAnswer', 0, 0, 'yes');
+
+    Livewire::test('forms.page-control-focus')
+        ->assertSet('answers.0.0.selected', 'yes')
+        ->call('start')
+        ->assertSet('currentRoomIndex', 1)
+        ->set('answers.1.0.custom', 'Плита чистая')
+        ->call('next')
+        ->assertSet('stage', 'review')
+        ->call('backToSetup')
+        ->assertSee('Вернуться к проверке')
+        ->set('previous_cleaner', 'Предыдущий сотрудник')
+        ->call('start')
+        ->assertSet('stage', 'review')
+        ->assertSet('answers.0.0.selected', 'yes')
+        ->assertSet('answers.1.0.custom', 'Плита чистая')
+        ->call('submit')
+        ->assertSet('stage', 'done')
+        ->assertSee('Открыть результат');
+
+    expect(ControlResponse::query()->sole()->previous_cleaner)->toBe('Предыдущий сотрудник');
 });
 
 it('shows missing required questions on Focus review and requires explicit confirmation', function () {
