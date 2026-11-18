@@ -4,6 +4,7 @@
             $typeLabels = [
                 'morning_digest' => 'Утренняя сводка', 'evening_intelligence' => 'Вечерняя сводка',
                 'scheduled_control' => 'Контрольная рассылка', 'scheduled_control_summary' => 'Итог контролей',
+                'oks_shift_opening' => 'Открытие смены ОКС',
                 'mobility_alert' => 'Забастовка / Mobility', 'mobility_admin_alert' => 'Mobility для руководителей',
                 'day_off' => 'Выходной', 'vacation' => 'Отпуск', 'inventory' => 'Инвентарь',
                 'staff_form' => 'Форма сотрудника', 'user_access' => 'Доступ', 'task' => 'Задача',
@@ -15,6 +16,7 @@
                 'sent' => 'принято API', 'edited' => 'отредактировано', 'pending' => 'ожидает',
                 'expected' => 'ожидает отправки',
                 'failed' => 'ошибка', 'missed' => 'пропущено', 'uncertain' => 'результат неизвестен',
+                'skipped' => 'пропущено по условию',
                 'retrying' => 'повторная попытка', 'unmonitored' => 'нет достоверного учёта',
             ];
             $historyStageLabels = [
