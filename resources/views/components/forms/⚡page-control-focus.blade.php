@@ -62,6 +62,9 @@ new class extends Component
 
     public string $stage = 'setup';
 
+    #[Locked]
+    public bool $editingReviewData = false;
+
     public int $currentRoomIndex = 0;
 
     public ?int $cleaner_id = null;
@@ -259,6 +262,18 @@ new class extends Component
         }
 
         return $completion;
+    }
+
+    public function getRequiredQuestionsByRoomProperty(): array
+    {
+        $required = [];
+        foreach ($this->questions as $item) {
+            if (! $item['optional']) {
+                $required[$item['room_index']][] = $item['question_index'];
+            }
+        }
+
+        return $required;
     }
 
     public function getIncompleteQuestionsProperty(): array
@@ -513,6 +528,9 @@ new class extends Component
             $this->answers = array_replace_recursive($this->answers, $restoredAnswers);
         }
 
+        if ($this->completedCount > 0) {
+            $this->currentRoomIndex = $this->incompleteQuestions[0]['room_index'] ?? max(0, count($this->rooms) - 1);
+        }
         $this->draftState = 'saved';
         $this->draftSavedAt = $draft->updated_at?->format('H:i');
     }
@@ -547,6 +565,7 @@ new class extends Component
         $this->draftSchemaNotice = 'Старый черновик сохранён без переноса ответов. Новая проверка начата отдельно.';
         $this->currentRoomIndex = 0;
         $this->stage = 'setup';
+        $this->editingReviewData = false;
         $this->initializeAnswers();
         $this->draftState = 'dirty';
         $this->saveDraft(true);
@@ -564,8 +583,8 @@ new class extends Component
             return false;
         }
 
-        $this->currentRoomIndex = 0;
-        $this->stage = 'questions';
+        $this->stage = $this->editingReviewData ? 'review' : 'questions';
+        $this->editingReviewData = false;
 
         return true;
     }
@@ -597,6 +616,18 @@ new class extends Component
     public function next(): void
     {
         $this->ensureAuthorized();
+        if ($this->stage !== 'questions') {
+            return;
+        }
+
+        foreach ($this->incompleteQuestions as $item) {
+            if ($item['room_index'] === $this->currentRoomIndex) {
+                $this->goToQuestion($item['room_index'], $item['question_index']);
+
+                return;
+            }
+        }
+
         if ($this->currentRoomIndex + 1 < count($this->rooms)) {
             $this->currentRoomIndex++;
         } else {
@@ -619,6 +650,7 @@ new class extends Component
     public function backToSetup(): void
     {
         $this->ensureAuthorized();
+        $this->editingReviewData = $this->stage === 'review';
         $this->stage = 'setup';
     }
 
@@ -940,11 +972,11 @@ new class extends Component
 
         return $this->getErrorBag()->isEmpty() ? $rooms : false;
     }
-    public function review(?int $roomIndex = null): void
+    public function review(?int $roomIndex = null): bool
     {
         $this->ensureAuthorized();
         if ($this->draftSchemaConflict || ! $this->saveDraft(true)) {
-            return;
+            return false;
         }
 
         if ($roomIndex !== null && isset($this->rooms[$roomIndex])) {
@@ -952,6 +984,8 @@ new class extends Component
         }
 
         $this->stage = 'review';
+
+        return true;
     }
     public function submit(): void
     {
@@ -1061,7 +1095,9 @@ new class extends Component
     </div>
 </x-slot:header>
 
-<div class="flex min-h-full flex-col bg-[#E7E8EA] pt-6 text-[#182230] sm:pt-8"
+<div class="contents">
+{{-- Keep the Alpine state for this run across Livewire renders. --}}
+<div wire:key="focus-run-{{ $runId }}" wire:ignore.self class="flex min-h-full flex-col bg-[#E7E8EA] pt-6 text-[#182230] sm:pt-8"
     x-data="{
         activeRoomIndex: @entangle('currentRoomIndex'),
         cleanerId: @entangle('cleaner_id'),
@@ -1072,15 +1108,20 @@ new class extends Component
         previousCleaner: @entangle('previous_cleaner'),
         controlComment: @entangle('comment'),
         questionCompletion: @js($this->questionCompletion),
+        requiredQuestionsByRoom: @js($this->requiredQuestionsByRoom),
+        missingQuestion: null,
         clientDraftState: @js($draftState),
         clientDraftError: @js($draftError),
         saveTimer: null, saveInFlight: false, saveRevision: 0, persistedSaveRevision: 0,
         mutationQueue: Promise.resolve(),
         roomCount: {{ count($this->rooms) }},
-        totalQuestions: {{ count($this->questions) }},
         failedComments: {},
+        pendingComments: 0,
         transportBytes: @js(FocusMediaLimits::transportBytes()),
         uploads: [], queue: Promise.resolve(), nextId: 0,
+        destroy() {
+            window.clearTimeout(this.saveTimer);
+        },
         enqueueMutation(action) {
             const request = this.mutationQueue.catch(() => {}).then(action);
             this.mutationQueue = request.catch(() => {});
@@ -1088,20 +1129,18 @@ new class extends Component
         },
         updateQuestionCompletion(room, question, selected, custom) {
             this.questionCompletion[room] ||= [];
-            this.questionCompletion[room][question] = String(selected ?? '').trim() !== '' || String(custom ?? '').trim() !== '';
+            const answered = String(selected ?? '').trim() !== '' || String(custom ?? '').trim() !== '';
+            this.questionCompletion[room][question] = answered;
+            if (answered && room === this.activeRoomIndex && question === this.missingQuestion) this.missingQuestion = null;
+        },
+        roomAnsweredCount(index) {
+            return (this.requiredQuestionsByRoom[index] || []).filter(question => this.questionCompletion[index]?.[question]).length;
         },
         roomProgress(index) {
-            const questions = Object.values(this.questionCompletion[index] || {});
-            const completed = questions.filter(Boolean).length;
-            if (questions.length > 0 && completed === questions.length) return 'complete';
+            const required = this.requiredQuestionsByRoom[index] || [];
+            const completed = this.roomAnsweredCount(index);
+            if (required.length === completed) return 'complete';
             return completed > 0 ? 'partial' : 'empty';
-        },
-        get completedCount() {
-            return Object.values(this.questionCompletion).reduce((count, questions) =>
-                count + Object.values(questions || {}).filter(Boolean).length, 0);
-        },
-        get completedPercent() {
-            return this.totalQuestions ? Math.round(this.completedCount / this.totalQuestions * 100) : 0;
         },
         scheduleAutosave(delay = 900) {
             this.saveRevision++;
@@ -1121,11 +1160,8 @@ new class extends Component
             this.clientDraftState = 'saving';
             try {
                 const saved = await this.enqueueMutation(() => this.$wire.saveDraft());
-                const serverState = this.$wire.get('draftState');
-                if (saved === true && serverState === 'saved') {
-                    this.persistedSaveRevision = revision;
-                    this.clientDraftState = this.saveRevision === revision ? 'saved' : 'dirty';
-                    this.clientDraftError = '';
+                if (saved === true) {
+                    this.markDraftSaved(revision);
                     return this.saveRevision === revision;
                 }
                 this.clientDraftState = 'error';
@@ -1140,12 +1176,15 @@ new class extends Component
                 if (this.saveRevision > revision) this.scheduleAutosave(0);
             }
         },
+        markDraftSaved(revision) {
+            this.persistedSaveRevision = Math.max(this.persistedSaveRevision, revision);
+            this.clientDraftState = this.saveRevision === revision ? 'saved' : 'dirty';
+            this.clientDraftError = '';
+        },
         syncDraftState(saved, revision = this.saveRevision) {
             const serverState = this.$wire.get('draftState');
             if (saved && serverState === 'saved') {
-                this.persistedSaveRevision = Math.max(this.persistedSaveRevision, revision);
-                this.clientDraftState = this.saveRevision === revision ? 'saved' : 'dirty';
-                this.clientDraftError = '';
+                this.markDraftSaved(revision);
             } else if (serverState === 'error') {
                 this.clientDraftState = 'error';
                 this.clientDraftError = this.$wire.get('draftError') || 'Не удалось сохранить. Повторите попытку.';
@@ -1156,8 +1195,9 @@ new class extends Component
             this.clientDraftState = 'saving';
             try {
                 const started = await this.enqueueMutation(() => this.$wire.start());
-                this.syncDraftState(started === true, revision);
-                if (!started) {
+                if (started === true) {
+                    this.markDraftSaved(revision);
+                } else {
                     this.clientDraftState = 'error';
                     this.clientDraftError = this.$wire.get('draftError') || 'Не удалось начать контроль. Проверьте данные.';
                 }
@@ -1170,10 +1210,10 @@ new class extends Component
             const revision = this.saveRevision;
             this.clientDraftState = 'saving';
             try {
-                await this.enqueueMutation(() => this.$wire.review(this.activeRoomIndex));
-                const reviewed = this.$wire.get('stage') === 'review';
-                this.syncDraftState(reviewed, revision);
-                if (!reviewed && this.clientDraftState !== 'error') {
+                const reviewed = await this.enqueueMutation(() => this.$wire.review(this.activeRoomIndex));
+                if (reviewed === true) {
+                    this.markDraftSaved(revision);
+                } else {
                     this.clientDraftState = 'error';
                     this.clientDraftError = this.$wire.get('draftError') || 'Не удалось открыть сводку. Проверьте ответы.';
                 }
@@ -1201,6 +1241,7 @@ new class extends Component
         async savePhotoComment(room, question, media, comment, element = null, fileKey = null) {
             const revision = this.saveRevision;
             const key = `${room}.${question}.${media}`;
+            this.pendingComments++;
             this.clientDraftState = 'saving';
             try {
                 const saved = await this.enqueueMutation(() => this.$wire.saveMediaComment(room, question, media, comment, fileKey));
@@ -1212,6 +1253,8 @@ new class extends Component
                 this.failedComments[key] = { room, question, media, comment, fileKey };
                 this.clientDraftState = 'error';
                 this.clientDraftError = error.message || 'Не удалось сохранить комментарий. Повторите попытку.';
+            } finally {
+                this.pendingComments--;
             }
         },
         async retryDraft() {
@@ -1223,10 +1266,17 @@ new class extends Component
         },
         goToRoom(index) {
             if (index < 0 || index >= this.roomCount) return;
+            this.missingQuestion = null;
             this.activeRoomIndex = index;
             this.$nextTick(() => this.scrollToActiveRoom());
         },
         nextRoom() {
+            const room = this.activeRoomIndex;
+            const missing = (this.requiredQuestionsByRoom[room] || []).find(question => !this.questionCompletion[room]?.[question]);
+            if (missing !== undefined) {
+                this.focusQuestion({ room, question: missing });
+                return;
+            }
             if (this.activeRoomIndex + 1 < this.roomCount) {
                 this.goToRoom(this.activeRoomIndex + 1);
                 return;
@@ -1253,8 +1303,11 @@ new class extends Component
         },
         focusQuestion(detail) {
             this.activeRoomIndex = detail.room;
+            const required = this.requiredQuestionsByRoom[detail.room] || [];
+            this.missingQuestion = required.includes(detail.question) && !this.questionCompletion[detail.room]?.[detail.question] ? detail.question : null;
             window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
                 const question = document.getElementById(`focus-question-${detail.room}-${detail.question}`);
+                question?.focus({ preventScroll: true });
                 question?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
             }));
         },
@@ -1366,7 +1419,7 @@ new class extends Component
         <div role="status" class="mb-4 rounded-2xl bg-blue-50 p-4 text-sm text-blue-900">{{ $draftSchemaNotice }}</div>
     @endif
     @if(in_array($stage, ['setup', 'questions'], true))
-        <nav x-ref="roomTabs" class="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6" aria-label="Этапы контроля">
+        <nav wire:key="focus-tabs-{{ $stage }}" x-ref="roomTabs" class="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6" aria-label="Этапы контроля">
             @if($stage === 'setup')
                 <span aria-current="step" class="inline-flex min-h-10 shrink-0 items-center rounded-full bg-[#626B76] px-3.5 text-sm font-semibold text-white">Данные</span>
             @else
@@ -1395,35 +1448,25 @@ new class extends Component
         </nav>
     @endif
 
-    <h1 class="mb-3 break-words text-[26px] font-bold leading-tight tracking-tight">
-        {{ $stage === 'review' ? 'Проверка контроля' : 'Фокус-контроль' }}
-    </h1>
-
     @if($stage !== 'done')
-        <div class="mb-4">
-            @if($stage !== 'setup')
-                <div class="flex justify-between text-xs font-semibold text-[#475467]">
-                    <span>Ответов <span x-text="completedCount"></span> из {{ count($this->questions) }}</span>
-                    <span x-text="`${completedPercent}%`"></span>
-                </div>
-                <div role="progressbar" aria-label="Прогресс ответов" aria-valuemin="0" aria-valuemax="{{ count($this->questions) }}" :aria-valuenow="completedCount"
-                    class="mt-2 h-1.5 overflow-hidden rounded-full bg-[#E8EDF3]">
-                    <div class="h-full rounded-full bg-[#285B86] transition-[width] duration-200" :style="`width: ${completedPercent}%`"></div>
-                </div>
-            @endif
+        <div wire:key="focus-draft-status" class="mb-3">
             <p x-show="busy" class="mt-2 text-xs font-semibold text-[#8A6116]" role="status">Загружаем файлы · можно продолжать вопросы</p>
             <p x-show="!busy && clientDraftState !== 'idle'" x-cloak class="mt-2 text-xs" :class="clientDraftState === 'error' ? 'text-[#B42318]' : 'text-[#8A97A8]'" role="status" aria-live="polite">
-                <span x-show="clientDraftState === 'dirty'">Изменения не сохранены</span>
-                <span x-show="clientDraftState === 'saving'">Сохранение выполняется…</span>
-                <span x-show="clientDraftState === 'saved'">Изменения сохранены</span>
-                <span x-show="clientDraftState === 'error'" x-text="clientDraftError"></span>
+                <span x-show="pendingComments === 0 && clientDraftState === 'dirty'">Изменения не сохранены</span>
+                <span x-show="pendingComments > 0 || clientDraftState === 'saving'">Сохранение выполняется…</span>
+                <span x-show="pendingComments === 0 && clientDraftState === 'saved'">Изменения сохранены</span>
+                <span x-show="pendingComments === 0 && clientDraftState === 'error'" x-text="clientDraftError"></span>
             </p>
             <button x-show="clientDraftState === 'error' || Object.keys(failedComments).length > 0" type="button" x-on:click="retryDraft()" class="mt-2 text-xs font-semibold text-[#285B86]">Повторить сохранение</button>
         </div>
     @endif
 
     @if($stage === 'setup')
-        <section class="space-y-3.5">
+        <section wire:key="focus-setup" class="space-y-3.5">
+            <div>
+                <h1 class="text-[26px] font-bold leading-tight tracking-tight">Данные проверки</h1>
+                <p class="mt-1 text-sm text-[#596476]">Выбери квартиру, сотрудника и даты.</p>
+            </div>
             <x-controls.setup-select label="Кто убирался" :options="$peopleOptions" model="cleanerId" field="cleaner_id"
                 placeholder="Выберите сотрудника" icon="heroicon-o-user" />
 
@@ -1465,54 +1508,59 @@ new class extends Component
                 </datalist>
             </label>
             <button type="button" x-on:click="startControl()" class="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#285B86] px-4 text-base font-semibold text-white">
-                К вопросам <x-heroicon-o-arrow-right class="size-4" />
+                {{ $editingReviewData ? 'Вернуться к проверке' : 'К вопросам' }} <x-heroicon-o-arrow-right class="size-4" />
             </button>
         </section>
     @elseif($stage === 'questions')
-        <div class="space-y-3">
+        <div wire:key="focus-room-pages" class="space-y-3">
             @foreach($this->rooms as $roomIndex => $room)
+                @php $requiredCount = count($this->requiredQuestionsByRoom[$roomIndex] ?? []); @endphp
                 <template x-if="activeRoomIndex === {{ $roomIndex }}">
-                    <section x-ref="roomTop" data-focus-room-page class="min-w-0 scroll-mt-4">
-                        <div class="mb-2">
-                            <h2 class="mt-1 text-xl font-bold leading-tight text-[#18283D]">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}</h2>
-                            <p class="mt-1 truncate text-xs text-[#64748B]">{{ collect($apartmentOptions)->firstWhere('id', $apartment_id)['name'] ?? 'Квартира не выбрана' }}</p>
+                    <section x-ref="roomTop" data-focus-room-page class="min-w-0 scroll-mt-4 space-y-3">
+                        <div class="flex items-start justify-between gap-3">
+                            <h1 class="min-w-0 break-words text-[26px] font-bold leading-tight text-[#18283D]">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}</h1>
+                            @if($requiredCount > 0)
+                                <span class="shrink-0 rounded-full bg-[#EDF4FB] px-2.5 py-1 text-xs font-semibold tabular-nums text-[#285B86]"
+                                    :aria-label="roomAnsweredCount({{ $roomIndex }}) + ' из {{ $requiredCount }} обязательных вопросов заполнено'"
+                                    x-text="roomAnsweredCount({{ $roomIndex }}) + ' из {{ $requiredCount }}'"></span>
+                            @endif
                         </div>
 
                         @foreach(($room['items'] ?? []) as $questionIndex => $question)
                             @php
-                                $answer = $answers[$roomIndex][$questionIndex] ?? [];
                                 $media = $this->savedMedia[$roomIndex][$questionIndex] ?? [];
                                 $type = $question['answer_type'] ?? 'options';
                                 $options = $question['answer_options_scored'] ?? [];
                                 $optional = (bool) (($room['is_optional'] ?? false) || ($question['is_optional'] ?? false));
-                                $binaryOptions = count($options) === 2 && collect($options)
-                                    ->pluck('label')->map(fn ($label) => mb_strtolower(trim((string) $label)))
-                                    ->sort()->values()->all() === ['да', 'нет'];
+                                $answerPath = 'answers.'.$roomIndex.'.'.$questionIndex;
                             @endphp
-                            <article id="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" wire:key="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" class="scroll-mt-4 border-b border-[#EEF1F4] py-4 last:border-b-0">
+                            <article id="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" wire:key="focus-question-{{ $roomIndex }}-{{ $questionIndex }}" tabindex="-1"
+                                aria-labelledby="focus-question-label-{{ $roomIndex }}-{{ $questionIndex }}"
+                                x-data="{ selected: @entangle($answerPath . '.selected'), custom: @entangle($answerPath . '.custom') }"
+                                :class="missingQuestion === {{ $questionIndex }} ? 'border-[#EBA39E] bg-[#FFF9F8]' : 'border-[#E4EAF0] bg-white'"
+                                class="scroll-mt-4 rounded-2xl border p-3 focus:outline-none sm:p-4">
                                 <div class="flex items-start justify-between gap-3">
-                                    <h3 class="min-w-0 text-base font-semibold leading-snug text-[#18283D]">{{ $question['question'] ?? 'Вопрос' }}</h3>
+                                    <h3 id="focus-question-label-{{ $roomIndex }}-{{ $questionIndex }}" class="min-w-0 text-base font-semibold leading-snug text-[#18283D]">{{ $question['question'] ?? 'Вопрос' }}</h3>
                                     @if($optional) <span class="shrink-0 pt-0.5 text-[11px] text-[#64748B]">Необязательно</span> @endif
                                 </div>
                                 @if(filled($question['question_image'] ?? null))
                                     <img src="{{ Storage::disk('public')->url($question['question_image']) }}" alt="" loading="lazy" class="mt-3 max-h-40 w-full rounded-xl object-contain">
                                 @endif
                                 @error("answers.$roomIndex.$questionIndex") <p class="mt-2 text-sm text-[#B42318]">{{ $message }}</p> @enderror
+                                <p x-show="missingQuestion === {{ $questionIndex }}" x-cloak role="alert" class="mt-2 text-sm font-medium text-[#B42318]">Ответь на обязательный вопрос.</p>
 
                                 @if(in_array($type, ['options', 'both'], true))
-                                    <div class="mt-3 grid {{ $binaryOptions ? 'grid-cols-2' : 'grid-cols-1' }} gap-2" x-data="{ selected: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.selected') }">
-                                        @foreach(($question['answer_options_scored'] ?? []) as $optionIndex => $option)
+                                    <div class="mt-3 grid auto-rows-fr gap-2">
+                                        @foreach($options as $optionIndex => $option)
                                             @php
                                                 $value = (string) ($option['value'] ?? $option['label'] ?? 'option_'.$optionIndex);
-                                                $isPositiveBinaryOption = $binaryOptions && mb_strtolower(trim((string) ($option['label'] ?? ''))) === 'да';
-                                                $isNegativeBinaryOption = $binaryOptions && mb_strtolower(trim((string) ($option['label'] ?? ''))) === 'нет';
                                             @endphp
-                                                <button type="button" x-on:click="if (selected !== @js($value)) { selected = @js($value); updateQuestionCompletion({{ $roomIndex }}, {{ $questionIndex }}, selected, $wire.get('answers.{{ $roomIndex }}.{{ $questionIndex }}.custom')); scheduleAutosave() }" :aria-pressed="selected === @js($value)"
-                                                :class="selected === @js($value) ? (@js($isPositiveBinaryOption) ? 'border-[#B8E3C8] bg-[#EAF7EE] text-[#176B3A] ring-2 ring-[#2F9E5B]/10' : (@js($isNegativeBinaryOption) ? 'border-[#F3C5C3] bg-[#FFF1F0] text-[#A63832] ring-2 ring-[#D4544D]/10' : 'border-[#D7E2EC] bg-[#F1F6FA] text-[#194C75] ring-2 ring-[#285B86]/10')) : 'border-transparent bg-[#F5F7F9] text-[#263B51] hover:bg-[#EEF2F5]'"
-                                                class="flex {{ $binaryOptions ? 'min-h-14 text-base' : 'min-h-12 text-sm' }} w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left font-semibold transition-colors">
-                                                @if($binaryOptions)
-                                                    <span aria-hidden="true" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/80 text-lg">{{ $isPositiveBinaryOption ? '✓' : '×' }}</span>
-                                                @endif
+                                            <button type="button" x-on:click="if (selected !== @js($value)) { selected = @js($value); updateQuestionCompletion({{ $roomIndex }}, {{ $questionIndex }}, selected, custom); scheduleAutosave() }" :aria-pressed="selected === @js($value)"
+                                                :class="selected === @js($value) ? 'border-[#9DBCD6] bg-[#EDF4FB] text-[#194C75]' : 'border-[#E4EAF0] bg-[#F5F7F9] text-[#263B51] hover:bg-[#EEF2F5]'"
+                                                class="flex min-h-12 w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-[#285B86]">
+                                                <span aria-hidden="true" :class="selected === @js($value) ? 'border-[#285B86] bg-[#285B86] text-white' : 'border-[#A6B4C2] bg-white'" class="grid size-5 shrink-0 place-items-center rounded-full border">
+                                                    <span x-show="selected === @js($value)" x-cloak><x-heroicon-o-check class="size-3" /></span>
+                                                </span>
                                                 <span class="min-w-0 break-words">{{ $option['label'] ?? $value }}</span>
                                             </button>
                                         @endforeach
@@ -1520,21 +1568,16 @@ new class extends Component
                                 @endif
                                 @if(in_array($type, ['text', 'both'], true))
                                     <label class="mt-3 block text-xs font-semibold text-[#475569]">{{ $type === 'both' ? ($question['custom_answer_label'] ?? 'Комментарий к ответу') : 'Ответ' }}
-                                        <textarea x-data="{ custom: @entangle('answers.' . $roomIndex . '.' . $questionIndex . '.custom') }" x-model="custom" x-on:input="updateQuestionCompletion({{ $roomIndex }}, {{ $questionIndex }}, $wire.get('answers.{{ $roomIndex }}.{{ $questionIndex }}.selected'), $event.target.value); scheduleAutosave(900)" maxlength="2000" rows="2"
+                                        <textarea x-model="custom" x-on:input="updateQuestionCompletion({{ $roomIndex }}, {{ $questionIndex }}, selected, $event.target.value); scheduleAutosave(900)" maxlength="2000" rows="2"
                                             class="mt-1.5 w-full rounded-xl border-[#CBD5E1] text-base" placeholder="Введите ответ"></textarea>
                                     </label>
                                 @endif
 
                                 <div class="mt-3">
-                                    <div class="flex items-center justify-between gap-2">
-                                        <h4 class="text-sm font-semibold">Фото и видео</h4>
-                                        <span class="text-[11px] text-[#8A97A8]">{{ count($media) }} / 12</span>
-                                    </div>
-                                    <label class="mt-2 flex min-h-12 cursor-pointer items-center gap-2.5 rounded-[20px] bg-[#EDF4FB] px-3 text-sm font-semibold text-[#285B86] focus-within:ring-2 focus-within:ring-[#285B86]">
-                                        <span aria-hidden="true" class="grid size-8 place-items-center rounded-full bg-[#285B86] text-white">
-                                            <x-heroicon-o-paper-clip class="size-[18px]" />
-                                        </span>
-                                        Прикрепить фото или видео
+                                    <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl border border-[#C9DAEA] bg-[#EDF4FB] px-3 py-2.5 text-sm font-semibold text-[#285B86] focus-within:ring-2 focus-within:ring-[#285B86]">
+                                        <x-heroicon-o-paper-clip aria-hidden="true" class="size-5 shrink-0" />
+                                        <span class="flex-1">Добавить фото или видео</span>
+                                        @if(count($media)) <span class="shrink-0 text-xs tabular-nums">{{ count($media) }}/12</span> @endif
                                         <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
                                     </label>
                                     <p class="mt-1.5 text-xs text-[#596476]">Фото до 10 МБ · видео до 100 МБ.
@@ -1547,9 +1590,9 @@ new class extends Component
                                         @foreach($media as $mediaIndex => $file)
                                             <div class="min-w-0 overflow-hidden rounded-xl bg-[#F6F8FB] p-1" wire:key="focus-media-{{ $roomIndex }}-{{ $questionIndex }}-{{ $mediaIndex }}">
                                                 @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
-                                                    <video src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" controls preload="none" class="h-20 w-full rounded-lg object-cover"></video>
+                                                    <video src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" controls preload="none" class="aspect-square w-full rounded-lg object-cover"></video>
                                                 @else
-                                                    <img src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId, 'thumbnail' => 1]) }}" alt="Вложение к вопросу" loading="lazy" class="h-20 w-full rounded-lg object-cover">
+                                                    <img src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId, 'thumbnail' => 1]) }}" alt="Вложение к вопросу" loading="lazy" class="aspect-square w-full rounded-lg object-cover">
                                                 @endif
                                                 <div class="flex items-center justify-between gap-1 px-1 py-1 text-[10px]">
                                                     <span class="font-semibold text-[#16834B]">Сохранено</span>
@@ -1603,23 +1646,23 @@ new class extends Component
                 </template>
             @endforeach
         </div>
-        <div class="sticky bottom-0 z-10 -mx-4 mt-3 grid sm:-mx-6 sm:px-6 grid-cols-2 gap-2 border-t border-[#EEF1F4] bg-white/95 px-4 pt-2.5 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur-sm">
+        <div wire:key="focus-room-actions" class="sticky bottom-0 z-10 -mx-4 mt-3 grid sm:-mx-6 sm:px-6 grid-cols-2 gap-2 border-t border-[#EEF1F4] bg-white/95 px-4 pt-2.5 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur-sm">
             <button type="button" x-on:click="previousRoom()" class="min-h-11 rounded-xl bg-[#F1F5F9] px-3 text-sm font-semibold">← Назад</button>
             <button type="button" x-on:click="nextRoom()" class="min-h-11 rounded-xl bg-[#285B86] px-3 text-sm font-semibold text-white">
-                <span x-show="activeRoomIndex + 1 !== roomCount">Далее →</span>
-                <span x-show="activeRoomIndex + 1 === roomCount">Завершить контроль</span>
+                <span x-show="activeRoomIndex + 1 !== roomCount">Дальше →</span>
+                <span x-show="activeRoomIndex + 1 === roomCount">Проверить ответы</span>
             </button>
         </div>
     @elseif($stage === 'review')
-        <section class="min-w-0 pb-5">
-            <h2 class="text-xl font-bold">Проверка перед отправкой</h2>
+        <section wire:key="focus-review" class="min-w-0 pb-5">
+            <h1 class="text-[26px] font-bold leading-tight tracking-tight">Проверка перед отправкой</h1>
             <p class="mt-2 text-sm text-[#64748B]">{{ $this->completedCount }} ответов из {{ count($this->questions) }}. Проверьте данные и незаполненные вопросы.</p>
             <div class="mt-4 space-y-1 rounded-2xl bg-[#F8FAFC] p-4 text-sm">
                 <p><strong>Сотрудник:</strong> {{ collect($peopleOptions)->firstWhere('id', $cleaner_id)['name'] ?? 'Не выбран' }}</p>
                 <p><strong>Квартира:</strong> {{ collect($apartmentOptions)->firstWhere('id', $apartment_id)['name'] ?? 'Не выбрана' }}</p>
                 <p><strong>Уборка:</strong> {{ $cleaning_date ?: 'Не указана' }}</p>
                 <p><strong>Проверка:</strong> {{ $inspection_date ?: 'Не указана' }}</p>
-                <button type="button" wire:click="$set('stage', 'setup')" class="mt-2 font-semibold text-[#285B86]">Изменить данные</button>
+                <button type="button" wire:click="backToSetup" class="mt-2 font-semibold text-[#285B86]">Изменить данные</button>
             </div>
             <label class="mt-4 block text-sm font-semibold">Резюме контроля <span class="font-normal text-[#596476]">· необязательно</span>
                 <textarea x-model="controlComment" x-on:input="scheduleAutosave(900)" maxlength="2000" rows="3"
@@ -1640,9 +1683,9 @@ new class extends Component
                                             @foreach($reviewMedia as $mediaIndex => $file)
                                                 <figure class="min-w-0 overflow-hidden rounded-xl bg-white">
                                                     @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
-                                                        <video src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" controls preload="none" class="aspect-[4/3] w-full object-cover"></video>
+                                                        <video src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" controls preload="none" class="aspect-square w-full object-cover"></video>
                                                     @else
-                                                        <img src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId, 'thumbnail' => 1]) }}" alt="Фото к вопросу" loading="lazy" decoding="async" class="aspect-[4/3] w-full object-cover">
+                                                        <img src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId, 'thumbnail' => 1]) }}" alt="Фото к вопросу" loading="lazy" decoding="async" class="aspect-square w-full object-cover">
                                                     @endif
                                                     @if(filled($file['comment'] ?? null))
                                                         <figcaption class="whitespace-pre-wrap break-words px-2 py-1.5 text-xs leading-5 text-[#263238]">{{ $file['comment'] }}</figcaption>
@@ -1677,7 +1720,7 @@ new class extends Component
             @if($errors->any()) <p class="mt-3 text-sm text-[#B42318]">Проверьте отмеченные поля и вопросы.</p> @endif
             <div class="mt-6 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
                 <button type="button" wire:click="previous" class="min-h-12 rounded-2xl bg-[#F1F5F9] px-3 font-semibold">Назад</button>
-                <button type="button" wire:click="submit" wire:loading.attr="disabled" :disabled="busy || Object.keys(failedComments).length > 0 || ['dirty', 'saving', 'error'].includes(clientDraftState) || {{ $isSubmitting || $pendingMediaCount > 0 ? 'true' : 'false' }}"
+                <button type="button" wire:click="submit" wire:loading.attr="disabled" :disabled="busy || pendingComments > 0 || Object.keys(failedComments).length > 0 || ['dirty', 'saving', 'error'].includes(clientDraftState) || @js($isSubmitting || $pendingMediaCount > 0 || count($this->incompleteQuestions) > 0)"
                     class="min-h-12 rounded-2xl bg-[#285B86] px-3 font-semibold text-white disabled:opacity-50">
                         <span wire:loading.remove wire:target="submit">Отправить контроль</span>
                         <span wire:loading wire:target="submit">Отправляем контроль…</span>
@@ -1685,8 +1728,8 @@ new class extends Component
             </div>
         </section>
     @elseif($stage === 'done')
-        <section class="rounded-3xl bg-[#E7F8EF] p-6 text-center">
-            <h2 class="text-xl font-bold text-[#16834B]">Контроль отправлен</h2>
+        <section wire:key="focus-done" class="rounded-3xl bg-[#E7F8EF] p-6 text-center">
+            <h1 class="text-xl font-bold text-[#16834B]">Контроль отправлен</h1>
             <p class="mt-2 text-sm">{{ $successMessage }}</p>
             @if($submittedResponseId)
                 <a href="{{ route('page-profile.checks.result', $submittedResponseId) }}" class="mt-5 inline-flex min-h-11 items-center rounded-full bg-[#285B86] px-5 font-semibold text-white">Открыть результат</a>
@@ -1696,4 +1739,5 @@ new class extends Component
     @endif
 
     </div>
+</div>
 </div>
