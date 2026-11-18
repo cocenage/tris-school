@@ -6,16 +6,11 @@ use App\Models\CalendarEvent;
 use App\Models\User;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 
 class TeamCelebrationService
 {
-    private const BIRTHDAY_GREETINGS = [
-        '🎂 С днём рождения, %s! Желаем радости, здоровья и прекрасного года!',
-        '🎂 Поздравляем %s с днём рождения! Пусть впереди будет много светлых моментов!',
-        '🎂 С днём рождения, %s! Желаем вдохновения, тепла и исполнения желаний!',
-    ];
+    private const BIRTHDAY_GREETING = '🎂 С днём рождения, %s!';
 
     public function __construct(private readonly CalendarEventsService $calendarEventsService) {}
 
@@ -41,7 +36,7 @@ class TeamCelebrationService
                     sourceType: 'User',
                     sourceId: (string) $user->getKey(),
                     date: $date,
-                    text: sprintf(Arr::random(self::BIRTHDAY_GREETINGS), $this->mention($user)),
+                    text: sprintf(self::BIRTHDAY_GREETING, $this->mention($user)),
                     photoPath: $this->birthdayCard($date),
                 ));
             }
@@ -101,12 +96,15 @@ class TeamCelebrationService
     /** @return array{text:string,photo_path:?string,over_limit:bool,character_count:int}|null */
     public function formatDigest(CarbonImmutable $date, Collection $events): ?array
     {
+        $events = $events
+            ->reject(fn (array $event): bool => ($event['kind'] ?? null) === 'birthday')
+            ->values();
+
         if ($events->isEmpty()) {
             return null;
         }
 
         $headings = [
-            'birthday' => '🎂 <b>Дни рождения</b>',
             'work_anniversary' => '🏆 <b>Годовщины работы</b>',
             'calendar_holiday' => '🎉 <b>Праздники</b>',
             CalendarEvent::TYPE_WORKFLOW => '🧭 <b>Рабочие процессы</b>',
@@ -133,15 +131,9 @@ class TeamCelebrationService
 
         $text = '📅 <b>События на '.$date->format('d.m.Y')."</b>\n\n".implode("\n\n", $sections);
         $characterCount = $this->telegramCharacterCount($text);
-        $photoPath = $events->firstWhere('kind', 'birthday')['photo_path'] ?? null;
-        if (! is_string($photoPath) || ! is_file($photoPath) || ! is_readable($photoPath)
-            || $characterCount > 1024) {
-            $photoPath = null;
-        }
-
         return [
             'text' => $text,
-            'photo_path' => $photoPath,
+            'photo_path' => null,
             'over_limit' => $characterCount > 4096,
             'character_count' => $characterCount,
         ];
@@ -261,11 +253,13 @@ class TeamCelebrationService
             return null;
         }
 
-        foreach (['jpg', 'jpeg', 'png'] as $extension) {
-            $path = $directory.'/'.$date->format('m').'.'.$extension;
+        foreach (array_unique([$date->format('m'), (string) $date->month]) as $monthName) {
+            foreach (['jpg', 'jpeg', 'png'] as $extension) {
+                $path = $directory.'/'.$monthName.'.'.$extension;
 
-            if (is_file($path) && is_readable($path)) {
-                return $path;
+                if (is_file($path) && is_readable($path)) {
+                    return $path;
+                }
             }
         }
 

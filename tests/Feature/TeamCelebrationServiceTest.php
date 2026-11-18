@@ -241,7 +241,7 @@ it('includes recurring calendar events on their occurrence date', function () {
         ->and($events->first()['text'])->toContain('<b>Ежегодный день Академии</b>');
 });
 
-it('formats a grouped digest with multiple birthday mentions and no empty sections', function () {
+it('keeps birthdays out of the grouped digest and uses the short greeting', function () {
     insertCelebrationUser(['name' => 'Анна & друзья', 'telegram_id' => '123456789', 'birthday' => '1992-11-02']);
     insertCelebrationUser(['name' => 'Мария', 'telegram_username' => 'maria_team', 'birthday' => '1990-11-02']);
 
@@ -251,11 +251,11 @@ it('formats a grouped digest with multiple birthday mentions and no empty sectio
     $digest = $service->formatDigest($date, $events);
 
     expect($events)->toHaveCount(2)
-        ->and($digest['text'])->toContain('🎂 <b>Дни рождения</b>', 'Анна &amp; друзья', 'tg://user?id=123456789', 'https://t.me/maria_team')
-        ->not->toContain('🏆 <b>Годовщины работы</b>', '🎉 <b>Праздники</b>')
-        ->and($digest['text'])->toContain("\n\n")
-        ->and(substr_count($digest['text'], '<a '))->toBe(substr_count($digest['text'], '</a>'))
-        ->and(substr_count($digest['text'], '<b>'))->toBe(substr_count($digest['text'], '</b>'));
+        ->and($events->pluck('text')->implode("\n"))->toContain(
+            '🎂 С днём рождения, <a href="tg://user?id=123456789">Анна &amp; друзья</a>!',
+            '🎂 С днём рождения, <a href="https://t.me/maria_team">Мария</a>!',
+        )
+        ->and($digest)->toBeNull();
 });
 
 it('groups birthdays, work anniversaries, and a holiday that share a date', function () {
@@ -265,10 +265,12 @@ it('groups birthdays, work anniversaries, and a holiday that share a date', func
 
     $date = CarbonImmutable::parse('2026-11-02', 'Europe/Rome');
     $service = app(TeamCelebrationService::class);
-    $digest = $service->formatDigest($date, $service->eventsForDate($date));
+    $events = $service->eventsForDate($date);
+    $digest = $service->formatDigest($date, $events);
 
-    expect($digest['text'])->toContain('🎂 <b>Дни рождения</b>', '🏆 <b>Годовщины работы</b>', '🎉 <b>Праздники</b>', 'День Академии', '5 лет')
-        ->and(strpos($digest['text'], '🎂 <b>Дни рождения</b>'))->toBeLessThan(strpos($digest['text'], '🏆 <b>Годовщины работы</b>'))
+    expect($events->where('kind', 'birthday'))->toHaveCount(1)
+        ->and($digest['text'])->toContain('🏆 <b>Годовщины работы</b>', '🎉 <b>Праздники</b>', 'День Академии', '5 лет')
+        ->not->toContain('🎂 <b>Дни рождения</b>', 'Анна')
         ->and(strpos($digest['text'], '🏆 <b>Годовщины работы</b>'))->toBeLessThan(strpos($digest['text'], '🎉 <b>Праздники</b>'));
 });
 
@@ -345,9 +347,8 @@ it('returns no digest for an empty date and escapes calendar HTML', function () 
     $tagNames = array_unique(array_map('strtolower', $tags[1]));
 
     expect($digest['text'])->toContain('&lt;Встреча &amp; план&gt;', '&lt;script&gt;опасно&lt;/script&gt;')
-        ->not->toContain('<script>', '<Встреча', '<Академия>')
-        ->and($tagNames)->toEqualCanonicalizing(['a', 'b'])
-        ->and(substr_count($digest['text'], '<a '))->toBe(substr_count($digest['text'], '</a>'))
+        ->not->toContain('<script>', '<Встреча', '<Академия>', 'Анна')
+        ->and($tagNames)->toEqualCanonicalizing(['b'])
         ->and(substr_count($digest['text'], '<b>'))->toBe(substr_count($digest['text'], '</b>'));
 });
 
@@ -355,7 +356,7 @@ it('selects the optional birthday card by the two-digit month', function () {
     $directory = sys_get_temp_dir().DIRECTORY_SEPARATOR.'tris-month-cards-'.uniqid();
     mkdir($directory);
     file_put_contents($directory.DIRECTORY_SEPARATOR.'10.jpg', 'october-card');
-    insertCelebrationUser(['birthday' => '1992-11-02']);
+    insertCelebrationUser(['birthday' => '1992-01-02']);
 
     $service = new class(app(CalendarEventsService::class), $directory) extends TeamCelebrationService
     {
@@ -371,36 +372,28 @@ it('selects the optional birthday card by the two-digit month', function () {
     };
 
     try {
-        $event = $service->eventsForDate(CarbonImmutable::parse('2026-11-02', 'Europe/Rome'))->first();
+        $event = $service->eventsForDate(CarbonImmutable::parse('2026-01-02', 'Europe/Rome'))->first();
         expect($event['photo_path'])->toBeNull();
 
-        file_put_contents($directory.DIRECTORY_SEPARATOR.'11.jpg', 'november-card');
-        $eventWithCard = $service->eventsForDate(CarbonImmutable::parse('2026-11-02', 'Europe/Rome'))->first();
-        expect(str_replace('\\', '/', $eventWithCard['photo_path']))->toBe(str_replace('\\', '/', $directory.'/11.jpg'));
+        file_put_contents($directory.DIRECTORY_SEPARATOR.'1.jpg', 'january-card');
+        $eventWithCard = $service->eventsForDate(CarbonImmutable::parse('2026-01-02', 'Europe/Rome'))->first();
+        expect(str_replace('\\', '/', $eventWithCard['photo_path']))->toBe(str_replace('\\', '/', $directory.'/1.jpg'));
     } finally {
-        @unlink($directory.DIRECTORY_SEPARATOR.'11.jpg');
+        @unlink($directory.DIRECTORY_SEPARATOR.'1.jpg');
         @unlink($directory.DIRECTORY_SEPARATOR.'10.jpg');
         @rmdir($directory);
     }
 });
 
-it('respects Telegram caption and message limits without truncating visible text', function () {
+it('keeps birthdays out of message limits and checks non-birthday digest length', function () {
     $service = app(TeamCelebrationService::class);
     $date = CarbonImmutable::parse('2026-11-02', 'Europe/Rome');
     $photoPath = tempnam(sys_get_temp_dir(), 'tris-digest-card-');
     file_put_contents($photoPath, 'fixture-image');
 
     try {
-        $birthday = ['kind' => 'birthday', 'text' => '', 'photo_path' => $photoPath];
-        $captionBase = $service->formatDigest($date, collect([$birthday]))['character_count'];
-        $birthday['text'] = str_repeat('x', 1024 - $captionBase);
-        $captionLimit = $service->formatDigest($date, collect([$birthday]));
-        expect($captionLimit['character_count'])->toBe(1024)
-            ->and($captionLimit['photo_path'])->toBe($photoPath)
-            ->and($captionLimit['over_limit'])->toBeFalse();
-
-        $birthday['text'] .= 'x';
-        expect($service->formatDigest($date, collect([$birthday]))['photo_path'])->toBeNull();
+        $birthday = ['kind' => 'birthday', 'text' => '🎂 С днём рождения, Анна!', 'photo_path' => $photoPath];
+        expect($service->formatDigest($date, collect([$birthday])))->toBeNull();
 
         $calendarEvent = ['kind' => 'workflow', 'text' => '', 'photo_path' => null];
         $textBase = $service->formatDigest($date, collect([$calendarEvent]))['character_count'];
