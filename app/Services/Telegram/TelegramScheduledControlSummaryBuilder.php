@@ -98,8 +98,15 @@ class TelegramScheduledControlSummaryBuilder
                 $topic = $telegramMessage?->topic;
                 $interpretation = $this->interpreter->interpret((string) $response->text, $delivery->control_type);
                 if ($delivery->bot_type === 'work' && isset(ScheduledControlTypes::DISTRICTS[$response->district_key])) {
-                    $status = match ($response->response_kind === 'comment' ? 'unclear' : $response->classification) {
+                    $classification = match (true) {
+                        $response->response_kind === 'comment' => 'unclear',
+                        in_array($delivery->control_type, ['oks_first_finish', 'oks_linen'], true)
+                            && TelegramOksControlCards::isSkipped($response) => 'not_applicable',
+                        default => $response->classification,
+                    };
+                    $status = match ($classification) {
                         'confirmed' => 'ok', 'problem' => 'problem', 'partial' => 'partial', default => 'unknown',
+                        'not_applicable' => 'not_applicable',
                     };
                     $interpretation['status'] = $status;
                     $interpretation['issue'] = in_array($status, ['problem', 'partial'], true) ? trim((string) $response->text) : null;
@@ -137,12 +144,16 @@ class TelegramScheduledControlSummaryBuilder
                         'ok' => 'confirmed',
                         'problem' => 'problem',
                         'partial' => 'partial',
+                        'not_applicable' => 'not_applicable',
                         default => 'unclear',
                     };
-                    $stats['classification_counts'][$category]++;
+                    $stats['classification_counts'][$category] = ($stats['classification_counts'][$category] ?? 0) + 1;
                 }
-                $stats['result'] = collect(['problem', 'partial', 'confirmed', 'unclear'])
-                    ->first(fn (string $category): bool => $stats['classification_counts'][$category] > 0);
+                $stats['result'] = collect(['problem', 'partial', 'confirmed', 'unclear', 'not_applicable'])
+                    ->first(fn (string $category): bool => ($stats['classification_counts'][$category] ?? 0) > 0);
+                if ($stats['result'] === 'not_applicable' && $delivery->control_type === 'oks_first_finish') {
+                    $stats['result'] = 'unclear';
+                }
             }
 
             return $stats + [
@@ -198,7 +209,7 @@ class TelegramScheduledControlSummaryBuilder
                 $districtResults = array_map(function (array $district) use ($history): array {
                     $state = $history->get($district['district'])['status'] ?? null;
                     $district['status'] = match ($state) {
-                        'confirmed' => 'ok', 'problem' => 'problem', default => 'unknown',
+                        'confirmed' => 'ok', 'problem' => 'problem', 'not_applicable' => 'not_applicable', default => 'unknown',
                     };
                     $district['conflict'] = false;
 
@@ -207,7 +218,8 @@ class TelegramScheduledControlSummaryBuilder
                 $statuses = $history->pluck('status');
                 $status = match (true) {
                     $statuses->contains('problem') => 'problem',
-                    $statuses->every(fn (string $value): bool => $value === 'confirmed') => 'ok',
+                    $statuses->every(fn (string $value): bool => $value === 'not_applicable') => 'not_applicable',
+                    $statuses->every(fn (string $value): bool => in_array($value, ['confirmed', 'not_applicable'], true)) => 'ok',
                     $responses->isEmpty() => 'no_responses',
                     default => 'partial',
                 };
@@ -272,6 +284,7 @@ class TelegramScheduledControlSummaryBuilder
             $firstProblem = null;
             $resolvedAt = null;
             $timeline = [];
+            $skippedQuestions = [];
             $timeUncertain = false;
 
             foreach ($events->where('district', $key) as $event) {
@@ -282,6 +295,7 @@ class TelegramScheduledControlSummaryBuilder
                 $text = $event['text'] ?? $event['response']->text;
                 $classification = $this->isExplicitNoCleaning($text, $delivery->control_type, $label)
                     ? 'not_applicable' : $event['classification'];
+                $skippedQuestions = $event['skipped_questions'] ?? [];
                 $previous = $states[$event['identity']] ?? null;
                 if ($classification !== 'unclear' || ! in_array($previous, ['problem', 'partial'], true)) {
                     $states[$event['identity']] = $classification;
@@ -336,6 +350,7 @@ class TelegramScheduledControlSummaryBuilder
                 'time_uncertain' => $timeUncertain,
                 'delay_minutes' => $resolvedAt === null || $timeUncertain ? null : max(0, intdiv($resolvedAt->timestamp - $scheduledAt->timestamp, 60)),
                 'timeline' => $timeline,
+                'skipped_questions' => $skippedQuestions,
                 'followups' => $delivery->followups->where('district_key', $key)
                     ->filter(fn ($followup): bool => $followup->created_at !== null && $followup->created_at->lessThanOrEqualTo($cutoff)
                         && ($followup->sent_at === null || $followup->sent_at->lessThanOrEqualTo($cutoff)))

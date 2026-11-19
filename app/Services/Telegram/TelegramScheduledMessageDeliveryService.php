@@ -507,6 +507,7 @@ class TelegramScheduledMessageDeliveryService
                 'bot_type' => ($type === ScheduledControlTypes::SHIFT_OPENING || isset(ScheduledControlTypes::labels()[$type])) ? 'work' : 'scheduled',
                 'scheduled_for' => $scheduledFor,
                 'status' => 'pending',
+                ...($type === 'oks_first_finish' ? ['sequence_context' => [OksControlSchedule::SPLIT_FIRST_FINISH => true]] : []),
             ]);
         } catch (QueryException $exception) {
             $existing = TelegramScheduledMessageDelivery::query()

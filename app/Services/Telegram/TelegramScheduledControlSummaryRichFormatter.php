@@ -588,9 +588,13 @@ class TelegramScheduledControlSummaryRichFormatter
             }
             $label = $this->controlLabel((string) ($row['control_type'] ?? ''));
             foreach (($row['district_history'] ?? []) as $district) {
-                if (($district['status'] ?? null) === $status) {
+                $labels = $status === 'not_applicable' ? ($district['skipped_questions'] ?? []) : [];
+                if ($labels === [] && ($district['status'] ?? null) === $status) {
+                    $labels = [$label];
+                }
+                foreach ($labels as $pointLabel) {
                     $time = $this->time((string) ($row['scheduled_for'] ?? ''));
-                    $points[$district['district'] ?? 'Район не установлен'][] = $label.($time === 'Не установлено' ? '' : ' · '.$time);
+                    $points[$district['district'] ?? 'Район не установлен'][] = $pointLabel.($time === 'Не установлено' ? '' : ' · '.$time);
                 }
             }
         }

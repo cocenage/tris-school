@@ -38,7 +38,7 @@ class TelegramAuthController extends Controller
             $request->session()->regenerate();
             $redirect = route('oks.card.show', $delivery);
         } elseif (str_starts_with($startParam, 'oks_')) {
-            abort_unless(preg_match('/^oks_([1-9][0-9]*)_(check|start|late)_([a-z]+)$/D', $startParam, $match), 403);
+            abort_unless(preg_match('/^oks_([1-9][0-9]*)_(check|start|late|next)_([a-z]+)$/D', $startParam, $match), 403);
             $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->find((int) $match[1]);
             $user = User::query()->activeStaff()->where('telegram_id', $telegramUser['telegram_id'])->first();
             abort_unless($delivery && $user && app(TelegramOksControlCards::class)->canAnswer($delivery, $match[2], $match[3], $user), 403);

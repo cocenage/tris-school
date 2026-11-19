@@ -2,8 +2,12 @@
 
 namespace App\Services\Telegram;
 
+use App\Models\TelegramScheduledMessageDelivery;
+
 class OksControlSchedule
 {
+    public const SPLIT_FIRST_FINISH = 'oks_split_first_finish';
+
     public const TIMES = [
         '09:30' => 'oks_schedule',
         '10:15' => 'oks_start_ten',
@@ -30,25 +34,35 @@ class OksControlSchedule
         'oks_payments' => 'Доплаты за день',
     ];
 
-    public static function questions(string $type): array
+    public static function questionsFor(TelegramScheduledMessageDelivery $delivery): array
+    {
+        return self::questions($delivery->control_type, ($delivery->sequence_context[self::SPLIT_FIRST_FINISH] ?? false) === true);
+    }
+
+    public static function questions(string $type, bool $splitFirstFinish = true): array
     {
         return match ($type) {
             'oks_schedule' => ['check' => self::question('Время уборок и заметки проверены?', 'Проверили', 'Есть расхождения', 'Какой заезд, время или заметку нужно уточнить?',
                 'Проверяем актуальность заездов, новые заезды и соответствие графика реальной ситуации. Сверяем заметки PM с заметками для клинеров.')],
             'oks_start_ten' => [
                 'start' => self::question('Все уборки, запланированные на 10:00, начались?', 'Все начались', 'Не все', 'Какие уборки на 10:00 ещё не начались и почему?'),
-                'late' => self::question('Уборки с поздним выездом под контролем?', 'Под контролем', 'Есть риск', 'Какая уборка под риском и что нужно сделать?', allowsSkip: true),
+                'late' => self::question('Уборки с поздним выездом под контролем?', 'Под контролем', 'Есть риск', 'Какая уборка под риском и что нужно сделать?', skip: 'Поздних выездов нет'),
             ],
             'oks_start_eleven' => [
                 'start' => self::question('Все уборки, запланированные до 11:00, начались?', 'Все начались', 'Не все', 'Какие уборки не начались, почему и что делаем, чтобы сохранить график?'),
                 'late' => self::question('Гости с поздним выездом освободили квартиры?', 'Освободили', 'Ещё нет', 'Какие квартиры ещё заняты и что делаем, чтобы сохранить график?',
-                    'Если ожидание выезда гостей составило 30 минут или больше, добавляем EXTRA TIME.', allowsSkip: true),
+                    'Если ожидание выезда гостей составило 30 минут или больше, добавляем EXTRA TIME.', skip: 'Поздних выездов нет'),
             ],
-            'oks_linen' => ['check' => self::question('Постельное бельё доставлено в приоритетные квартиры?', 'Доставили', 'Не везде', 'В какие приоритетные квартиры бельё ещё не доставили и почему?')],
+            'oks_linen' => ['check' => self::question('Постельное бельё доставлено в приоритетные квартиры?', 'Доставили', 'Не везде',
+                'В какие приоритетные квартиры бельё ещё не доставили и почему?', skip: 'Нет приоритета по белью')],
             'oks_first_progress' => ['check' => self::question('Первые уборки выполняются по графику?', 'По графику', 'Есть отставание',
                 'Какая уборка отстаёт, почему и есть ли риск для следующих? Если меняем график, напиши как.',
                 'Сверяем ход уборок с индивидуальным временем начала и длительностью. В больших квартирах с уборкой от 240 минут к 12:00 клинер должен приступить к влажной уборке поверхностей.')],
-            'oks_first_finish' => ['check' => self::question('Успеют ли клинеры завершить первые уборки без сдвига следующих?', 'Успевают', 'Есть риск',
+            'oks_first_finish' => $splitFirstFinish ? [
+                'check' => self::question('Первые уборки закончатся вовремя?', 'Успевают', 'Есть риск', 'Какие первые уборки рискуют затянуться и почему?'),
+                'next' => self::question('Вторые уборки начнутся по графику?', 'По графику', 'Есть риск',
+                    'Какие вторые уборки могут начаться позже и что меняем в графике?', skip: 'Вторых уборок нет'),
+            ] : ['check' => self::question('Успеют ли клинеры завершить первые уборки без сдвига следующих?', 'Успевают', 'Есть риск',
                 'Какие уборки рискуют опоздать и что меняем в графике?', 'Проверяем последующие уборки по индивидуальному графику. Если задержка первых угрожает следующим, меняем график.')],
             'oks_guest_arrivals' => ['check' => self::question('Все уборки идут по графику и завершатся к заезду гостей?', 'Рисков нет', 'Заезд под риском',
                 'Какая квартира под риском, почему и что передаём PM?', 'Проверяем статус каждой квартиры. Если заезд под риском, принимаем меры и передаём информацию PM.')],
@@ -59,8 +73,8 @@ class OksControlSchedule
         };
     }
 
-    private static function question(string $title, string $yes, string $no, string $prompt, string $details = '', bool $allowsSkip = false): array
+    private static function question(string $title, string $yes, string $no, string $prompt, string $details = '', ?string $skip = null): array
     {
-        return compact('title', 'yes', 'no', 'prompt', 'details', 'allowsSkip');
+        return compact('title', 'yes', 'no', 'prompt', 'details', 'skip');
     }
 }

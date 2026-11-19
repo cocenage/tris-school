@@ -237,6 +237,9 @@ class TelegramScheduledControlSummaryFormatter
                     default => '⚪ нет ответа',
                 };
                 $lines[] = $district['district'].' — '.$description;
+                foreach ($district['skipped_questions'] ?? [] as $skippedQuestion) {
+                    $lines[] = '  — '.$skippedQuestion;
+                }
                 if (($district['time_uncertain'] ?? false) && $district['status'] !== 'confirmed') {
                     $lines[] = '  ⚪ Точное время ответа не установлено';
                 }
