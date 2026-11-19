@@ -55,12 +55,18 @@ class TelegramOksRichCard
                     if (filled($question['details'] ?? null)) {
                         $rich[] = '<p><i>'.e($question['details']).'</i></p>';
                     }
-                    $rich[] = '<tg-button-row>'.implode('', array_map(
-                        fn (array $action): string => isset($action['url'])
-                            ? '<tg-button type="url" url="'.e($action['url']).'">'.e($action['text']).'</tg-button>'
-                            : '<tg-button type="callback_data" data="'.e($action['callback_data']).'">'.e($action['text']).'</tg-button>',
-                        $question['buttons'],
-                    )).'</tg-button-row>';
+                    $buttonRows = [$question['buttons']];
+                    if (isset($question['skip_button'])) {
+                        $buttonRows[] = [$question['skip_button']];
+                    }
+                    foreach ($buttonRows as $buttons) {
+                        $rich[] = '<tg-button-row>'.implode('', array_map(
+                            fn (array $action): string => isset($action['url'])
+                                ? '<tg-button type="url" url="'.e($action['url']).'">'.e($action['text']).'</tg-button>'
+                                : '<tg-button type="callback_data" data="'.e($action['callback_data']).'">'.e($action['text']).'</tg-button>',
+                            $buttons,
+                        )).'</tg-button-row>';
+                    }
                 }
             }
             $rich[] = '</details>';

@@ -906,6 +906,82 @@ it('sends one reply reminder for unanswered OKS districts', function (): void {
         ->and($request['text'])->toContain('Navigli', 'Lodi')->not->toContain('Como');
 });
 
+it('keeps the first cleaning check open when there are no second cleanings and records linen as not applicable', function (): void {
+    (require database_path('migrations/2026_10_03_000000_allow_replyless_scheduled_control_responses.php'))->up();
+    (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
+    Schema::create('users', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+        $table->string('role');
+        $table->string('status');
+        $table->boolean('is_active');
+        $table->string('telegram_id')->nullable();
+        $table->timestamps();
+    });
+    $duty = User::query()->forceCreate(['name' => 'Дежурный', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true, 'telegram_id' => '102']);
+    config(['services.telegram.bot_token' => 'test-work', 'services.telegram.bot_username' => 'test_work_bot',
+        'services.telegram.oks_current_controls_enabled' => true, 'services.telegram.work_webhook_secret' => 'test-oks-skip']);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true])]);
+    Queue::fake();
+    makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    $cards = app(TelegramOksControlCards::class);
+
+    foreach ([
+        ['11:05', 'oks_linen', 'check', 'Нет приоритета по белью', 321, 'not_applicable'],
+        ['12:30', 'oks_first_finish', 'next', 'Вторых уборок нет', 322, 'unclear'],
+    ] as [$time, $type, $key, $label, $messageId, $classification]) {
+        Carbon::setTestNow(Carbon::parse('2026-09-28 '.$time.':20', 'Europe/Rome'));
+        $this->artisan('telegram:scheduled-messages-send')->assertSuccessful();
+        $delivery = TelegramScheduledMessageDelivery::query()->where('control_type', $type)->sole();
+        $context = [...($delivery->sequence_context ?? []), 'oks_assignments' => ['navigli' => $duty->id], 'oks_rich_card' => true];
+        $delivery->update(['status' => 'sent', 'sent_at' => now(), 'telegram_message_id' => $messageId, 'sequence_context' => $context]);
+
+        $form = $this->actingAs($duty)->get(route('oks.card.show', [$delivery->id, 'navigli']));
+        $form->assertOk()->assertSee($label)->assertSee('class="choice choice-full"', false);
+        $richRows = [];
+        preg_match_all('~<tg-button-row>(.*?)</tg-button-row>~s', $cards->payload($delivery)['rich_message']['html'], $richRows);
+        $skipRow = collect($richRows[1])->sole(fn ($row): bool => str_contains($row, $label));
+        expect(substr_count($skipRow, '<tg-button '))->toBe(1);
+        $delivery->sequence_context = [...$context, 'oks_rich_card' => false];
+        $legacyRows = collect($cards->payload($delivery)['reply_markup']['inline_keyboard']);
+        expect($legacyRows->sole(fn (array $row): bool => str_ends_with($row[0]['text'], $label)))->toHaveCount(1);
+
+        $answer = function (string $question, string $choice) use ($delivery, $messageId): void {
+            $this->postJson('/telegram/work-webhook/test-oks-skip', ['callback_query' => [
+                'id' => 'oks-'.$messageId.'-'.$question.'-'.$choice, 'from' => ['id' => 102, 'is_bot' => false],
+                'data' => 'oksc:'.$delivery->id.':'.$question.':navigli:'.$choice,
+                'message' => ['message_id' => $messageId, 'message_thread_id' => 42, 'chat' => ['id' => -100000000001, 'type' => 'supergroup']],
+            ]])->assertOk();
+        };
+        $answer($key, 'skip');
+        $delivery->refresh();
+        expect($delivery->responses()->sole()->text)->toBe($label)
+            ->and($cards->districtEvents($delivery)[0]['classification'])->toBe($classification)
+            ->and($cards->waitingDistricts($delivery))->toBe($key === 'next' ? ['Navigli'] : []);
+        if ($key === 'next') {
+            expect($cards->formQuestions($delivery, 'navigli')['check']['selected'])->toBeNull()
+                ->and($cards->formQuestions($delivery, 'navigli')['next']['selected'])->toBe('skip');
+            $values = ['auth_date' => now()->timestamp, 'start_param' => 'oks_'.$delivery->id.'_next_navigli', 'user' => json_encode(['id' => 102])];
+            $secret = hash_hmac('sha256', 'test-work', 'WebAppData', true);
+            $check = collect($values)->map(fn ($value, $field) => $field.'='.$value)->implode("\n");
+            $this->postJson(route('telegram.auth'), ['init_data' => http_build_query($values + ['hash' => hash_hmac('sha256', $check, $secret)])])
+                ->assertOk()->assertJsonPath('redirect', route('oks.response.show', [$delivery, 'next', 'navigli']));
+            $this->get(route('oks.response.show', [$delivery, 'next', 'navigli']))
+                ->assertOk()->assertSee('Какие вторые уборки могут начаться позже');
+            $answer('check', 'yes');
+            expect($cards->waitingDistricts($delivery))->toBe([])
+                ->and(collect($cards->districtEvents($delivery))->last()['classification'])->toBe('confirmed');
+            $legacyDelivery = clone $delivery;
+            $legacyDelivery->sequence_context = ['oks_assignments' => ['navigli' => $duty->id]];
+            expect(array_keys($cards->formQuestions($legacyDelivery, 'navigli')))->toBe(['check']);
+        }
+    }
+
+    $summary = app(TelegramScheduledControlSummaryBuilder::class)->build('2026-09-28');
+    $report = app(TelegramScheduledControlSummaryRichFormatter::class)->richMessage($summary)['markdown'];
+    expect($report)->toContain('Вторых уборок нет', 'Нет приоритета по белью');
+});
+
 it('starts the new OKS shift with individual district answers and only sends controls to active districts', function (): void {
     (require database_path('migrations/2026_10_03_000000_allow_replyless_scheduled_control_responses.php'))->up();
     (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();

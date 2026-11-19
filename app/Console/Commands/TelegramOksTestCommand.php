@@ -112,7 +112,12 @@ class TelegramOksTestCommand extends Command
             'scheduled_for' => $slot->format('Y-m-d H:i:s'),
         ], [
             'control_type' => $type, 'bot_type' => 'work', 'status' => TelegramScheduledMessageDelivery::OKS_TEST,
-            'chat_id' => $chat, 'message_thread_id' => $thread, 'sequence_context' => [...$context, TelegramOksRichCard::CONTEXT_KEY => true],
+            'chat_id' => $chat, 'message_thread_id' => $thread,
+            'sequence_context' => [
+                ...$context,
+                TelegramOksRichCard::CONTEXT_KEY => true,
+                ...($type === 'oks_first_finish' ? [OksControlSchedule::SPLIT_FIRST_FINISH => true] : []),
+            ],
             'failure_reason' => 'oks_test_delivery_unconfirmed',
         ]);
         $time = $slot->format('H:i');

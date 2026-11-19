@@ -16,7 +16,8 @@
         fieldset { margin: 0 0 1rem; border: 0; padding: 0; min-width: 0; }
         legend { padding: 0; margin-bottom: .45rem; font-weight: 600; }
         .choices { display: flex; flex-wrap: wrap; gap: .4rem; }
-        .choice { position: relative; }
+        .choice { position: relative; min-width: 0; max-width: 100%; }
+        .choice-full { flex-basis: 100%; }
         .choice input { position: absolute; inset: 0; opacity: 0; height: 100%; width: 100%; margin: 0; }
         .choice span { box-sizing: border-box; display: flex; align-items: center; min-height: 44px; padding: .45rem .65rem; border: 1px solid var(--tg-theme-hint-color, GrayText); border-radius: .6rem; }
         .choice input:checked + span { background: var(--tg-theme-button-color, #176d9d); color: var(--tg-theme-button-text-color, #fff); border-color: transparent; }
@@ -73,7 +74,7 @@
                     @endisset
                     <div class="choices">
                         @foreach ($question['options'] as $value => $label)
-                            <label class="choice">
+                            <label @class(['choice', 'choice-full' => $value === 'skip'])>
                                 <input type="radio" name="answers[{{ $key }}][choice]" value="{{ $value }}" @checked($choice === $value) required>
                                 <span>{{ $label }}</span>
                             </label>

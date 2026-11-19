@@ -20,7 +20,7 @@ class TelegramOksControlCards
 
     public function payload(TelegramScheduledMessageDelivery $delivery): array
     {
-        $questions = OksControlSchedule::questions($delivery->control_type);
+        $questions = OksControlSchedule::questionsFor($delivery);
         $districts = array_intersect_key(ScheduledControlTypes::DISTRICTS, $delivery->sequence_context['oks_assignments'] ?? []);
         $responses = $this->responses($delivery)->keyBy(fn ($response): string => self::questionKey($response).'|'.$response->district_key);
         if (TelegramOksRichCard::enabled($delivery)) {
@@ -39,10 +39,10 @@ class TelegramOksControlCards
                     if ($noteUrl !== null) {
                         $buttons[] = ['text' => $question['no'], 'url' => $noteUrl];
                     }
-                    if ($question['allowsSkip']) {
-                        $buttons[] = ['text' => 'Поздних выездов нет', 'callback_data' => $prefix.'skip'];
-                    }
-                    $actions[] = ['title' => $question['title'], 'details' => $question['details'], 'buttons' => $buttons];
+                    $actions[] = [
+                        'title' => $question['title'], 'details' => $question['details'], 'buttons' => $buttons,
+                        'skip_button' => $question['skip'] === null ? null : ['text' => $question['skip'], 'callback_data' => $prefix.'skip'],
+                    ];
                     $reply = $responses->get($key.'|'.$district);
                     if ($reply === null) {
                         continue;
@@ -83,32 +83,37 @@ class TelegramOksControlCards
                 $response = $responses->get($key.'|'.$district);
                 $status = match (true) {
                     $response === null => '▫️ Ждём ответа',
-                    self::isSkipped($response) => '— Поздних выездов нет',
+                    self::isSkipped($response) => '— '.$response->text,
                     $response->classification === 'problem' => '🔴 '.$question['no'],
                     default => '✅ '.$question['yes'],
                 };
                 $lines[] = e($label.' · '.$status);
                 $comment = $response?->classification === 'problem' ? $response->text : null;
-                $earlier = $response === null && ($delivery->control_type !== 'oks_start_eleven' || $key === 'late') ? ($previous[$district] ?? null) : null;
+                $earlier = $response === null && $key === ($delivery->control_type === 'oks_start_eleven' ? 'late' : 'check') ? ($previous[$district] ?? null) : null;
                 if ($comment !== null || $earlier !== null) {
                     $lines[] = '<i>'.e(Str::limit($comment ?? $earlier, 145)).'</i>';
                 }
-                if ($response?->classification === 'confirmed') {
+                if ($response?->classification === 'confirmed' && ! self::isSkipped($response)) {
                     continue;
                 }
                 $prefix = 'oksc:'.$delivery->id.':'.$key.':'.$district.':';
-                $shortLabel = count($questions) > 1 ? $label.($key === 'late' ? ' · выезды' : ' · старт') : $label;
+                $shortLabel = count($questions) === 1 ? $label : $label.match ($key) {
+                    'late' => ' · выезды',
+                    'check' => ' · первые',
+                    'next' => ' · вторые',
+                    default => ' · старт',
+                };
                 $buttons = [['text' => $shortLabel.' · '.$question['yes'], 'callback_data' => $prefix.'yes']];
                 $noteUrl = TelegramOksRichCard::miniAppUrl('oks_'.$delivery->id.'_'.$key.'_'.$district);
                 if ($noteUrl !== null) {
                     $buttons[] = [
-                        'text' => $shortLabel.' · '.($response === null ? $question['no'] : 'Уточнить'),
+                        'text' => $shortLabel.' · '.($response?->classification === 'problem' ? 'Уточнить' : $question['no']),
                         'url' => $noteUrl,
                     ];
                 }
                 $keyboard[] = $buttons;
-                if ($question['allowsSkip'] && $response === null) {
-                    $keyboard[] = [['text' => $label.' · Поздних выездов нет', 'callback_data' => $prefix.'skip']];
+                if ($question['skip'] !== null && ! self::isSkipped($response)) {
+                    $keyboard[] = [['text' => $label.' · '.$question['skip'], 'callback_data' => $prefix.'skip']];
                 }
             }
             $lines[] = '';
@@ -122,7 +127,7 @@ class TelegramOksControlCards
     private function shortStatus(string $type, string $key, array $question, TelegramScheduledMessageResponse $reply): string
     {
         if (self::isSkipped($reply)) {
-            return 'Поздних выездов нет';
+            return $reply->text;
         }
 
         $positive = $reply->classification !== 'problem';
@@ -139,7 +144,7 @@ class TelegramOksControlCards
     public function callback(array $callback): string
     {
         $data = (string) ($callback['data'] ?? '');
-        if (! preg_match('/^oksc:(\d+):(check|start|late):([a-z]+):(yes|skip|note)$/D', $data, $parts)
+        if (! preg_match('/^oksc:(\d+):(check|start|late|next):([a-z]+):(yes|skip|note)$/D', $data, $parts)
             || ! is_numeric(data_get($callback, 'from.id')) || data_get($callback, 'from.is_bot', false)) {
             return 'Кнопка недоступна.';
         }
@@ -153,8 +158,8 @@ class TelegramOksControlCards
         if ($delivery === null || $actor === null || $callbackId === '' || ! $this->canAnswer($delivery, $key, $district, $actor)) {
             return 'Ответить может дежурный этого района.';
         }
-        $question = OksControlSchedule::questions($delivery->control_type)[$key];
-        if ($action === 'skip' && ! $question['allowsSkip']) {
+        $question = OksControlSchedule::questionsFor($delivery)[$key];
+        if ($action === 'skip' && $question['skip'] === null) {
             return 'Такой ответ для этого вопроса недоступен.';
         }
         if ($action === 'note') {
@@ -164,14 +169,14 @@ class TelegramOksControlCards
                 : 'Карточку пока не удалось обновить. Попробуй ещё раз позже.';
         }
 
-        $synced = $this->save($delivery, $key, $district, $actor, $action, $question['yes'], $callbackId);
+        $synced = $this->save($delivery, $key, $district, $actor, $action, $action === 'skip' ? $question['skip'] : $question['yes'], $callbackId);
 
         return $synced ? 'Ответ сохранён.' : 'Ответ сохранён. Карточка пока не обновилась.';
     }
 
     public function canAnswer(TelegramScheduledMessageDelivery $delivery, string $key, string $district, User $user): bool
     {
-        return isset(OksControlSchedule::questions((string) $delivery->control_type)[$key], $this->districtsFor($delivery, $user)[$district]);
+        return isset(OksControlSchedule::questionsFor($delivery)[$key], $this->districtsFor($delivery, $user)[$district]);
     }
 
     public function districtsFor(TelegramScheduledMessageDelivery $delivery, User $user): array
@@ -190,13 +195,13 @@ class TelegramOksControlCards
 
     public function formQuestions(TelegramScheduledMessageDelivery $delivery, string $district): array
     {
-        $questions = OksControlSchedule::questions($delivery->control_type);
+        $questions = OksControlSchedule::questionsFor($delivery);
         $answers = $this->responses($delivery)->where('district_key', $district)->keyBy(self::questionKey(...));
         foreach ($questions as $key => &$question) {
             $reply = $answers->get($key);
             $question['options'] = ['yes' => $question['yes'], 'note' => $question['no']];
-            if ($question['allowsSkip']) {
-                $question['options']['skip'] = 'Поздних выездов нет';
+            if ($question['skip'] !== null) {
+                $question['options']['skip'] = $question['skip'];
             }
             $question['version'] = $reply?->id ?? 0;
             $question['selected'] = match (true) {
@@ -238,9 +243,13 @@ class TelegramOksControlCards
         Cache::lock('scheduled_control_delivery:'.$delivery->id, 15)->block(3, function () use ($delivery, $district, $user, $answers): void {
             abort_unless(isset($this->districtsFor($delivery->refresh(), $user)[$district]), 403);
             DB::transaction(function () use ($delivery, $district, $user, $answers): void {
-                foreach (OksControlSchedule::questions($delivery->control_type) as $key => $question) {
+                foreach (OksControlSchedule::questionsFor($delivery) as $key => $question) {
                     $answer = $answers[$key];
-                    $text = $answer['choice'] === 'note' ? trim($answer['note']) : $question['yes'];
+                    $text = match ($answer['choice']) {
+                        'note' => trim($answer['note']),
+                        'skip' => $question['skip'],
+                        default => $question['yes'],
+                    };
                     $this->recordAnswer($delivery, $key, $district, $user, $answer['choice'], $text, version: (int) $answer['version']);
                 }
             });
@@ -274,7 +283,6 @@ class TelegramOksControlCards
         $latest = $this->latestAnswer($delivery, $key, $district);
         $reason = self::RESPONSE_PREFIX.$key.($action === 'skip' ? ':skip' : '');
         $classification = $action === 'note' ? 'problem' : 'confirmed';
-        $text = $action === 'skip' ? 'Поздних выездов нет' : $text;
         if ($latest?->classification === $classification && $latest->text === $text && $latest->classification_reason === $reason) {
             return;
         }
@@ -302,7 +310,7 @@ class TelegramOksControlCards
 
     public function waitingDistricts(TelegramScheduledMessageDelivery $delivery): array
     {
-        $questions = OksControlSchedule::questions($delivery->control_type);
+        $questions = OksControlSchedule::questionsFor($delivery);
         $answered = $this->responses($delivery)->groupBy('district_key');
         $waiting = [];
         foreach (array_keys($delivery->sequence_context['oks_assignments'] ?? []) as $district) {
@@ -344,9 +352,10 @@ class TelegramOksControlCards
         return explode(':', (string) $response->classification_reason)[1] ?? '';
     }
 
-    private static function isSkipped(TelegramScheduledMessageResponse $response): bool
+    public static function isSkipped(?TelegramScheduledMessageResponse $response): bool
     {
-        return str_ends_with((string) $response->classification_reason, ':skip');
+        return str_starts_with((string) $response?->classification_reason, self::RESPONSE_PREFIX)
+            && str_ends_with((string) $response->classification_reason, ':skip');
     }
 
     private function responses(TelegramScheduledMessageDelivery $delivery): Collection
@@ -361,12 +370,19 @@ class TelegramOksControlCards
     {
         $states = [];
         $events = [];
-        $questions = OksControlSchedule::questions($delivery->control_type);
+        $questions = OksControlSchedule::questionsFor($delivery);
         foreach ($this->responses($delivery) as $response) {
             $district = $response->district_key;
             $states[$district][self::questionKey($response)] = $response;
-            $problem = collect($states[$district])->firstWhere('classification', 'problem');
-            $classification = $problem !== null ? 'problem' : (count($states[$district]) === count($questions) ? 'confirmed' : 'unclear');
+            $answers = collect($states[$district]);
+            $problem = $answers->firstWhere('classification', 'problem');
+            $skipped = $answers->filter(self::isSkipped(...))->pluck('text')->values()->all();
+            $classification = match (true) {
+                $problem !== null => 'problem',
+                $answers->count() < count($questions) => 'unclear',
+                count($skipped) === $answers->count() => 'not_applicable',
+                default => 'confirmed',
+            };
             $events[] = [
                 'district' => $district,
                 'identity' => 'telegram:'.$response->telegram_user_id,
@@ -375,6 +391,7 @@ class TelegramOksControlCards
                     : CarbonImmutable::parse($response->responded_at_utc, 'UTC')->setTimezone('Europe/Rome')->toIso8601String(),
                 'text' => $problem?->text ?? $response->text,
                 'response' => $problem ?? $response,
+                'skipped_questions' => in_array($delivery->control_type, ['oks_first_finish', 'oks_linen'], true) ? $skipped : [],
             ];
         }
 

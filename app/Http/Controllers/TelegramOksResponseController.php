@@ -37,7 +37,7 @@ class TelegramOksResponseController extends Controller
         return view('telegram.oks-response', [
             'title' => OksControlSchedule::LABELS[$delivery->control_type],
             'districtName' => ScheduledControlTypes::DISTRICTS[$district],
-            'question' => OksControlSchedule::questions($delivery->control_type)[$key],
+            'question' => OksControlSchedule::questionsFor($delivery)[$key],
             'answer' => $cards->latestAnswer($delivery, $key, $district),
             'action' => route('oks.response.save', [$delivery, $key, $district]),
             'synced' => $synced,
