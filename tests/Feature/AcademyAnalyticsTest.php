@@ -1,7 +1,9 @@
 <?php
 
 use App\Models\User;
+use App\Services\Analytics\AcademyAnalytics;
 use App\Services\RolePreviewContext;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
@@ -73,7 +75,7 @@ it('limits a supervisor to their own controls and denies team data to other role
     $other = addAnalyticsControl($this->cleaner, $this->admin, '2026-11-15', 100);
 
     $this->actingAs($this->supervisor)->get('/analytics?tab=districts&day=2026-11-15')
-        ->assertOk()->assertSee('Мои проведённые контроли')->assertDontSee('Рабочие дни по графику');
+        ->assertOk()->assertSee('Мои проведённые контроли')->assertSee('Рабочие дни по графику')->assertDontSee('Районы');
     $this->get('/analytics?tab=quality&day=2026-11-15')
         ->assertOk()->assertSee(route('page-profile.checks.result', $own))
         ->assertDontSee(route('page-profile.checks.result', $other))
@@ -161,6 +163,60 @@ it('shows planned days and regular days off separately for the calendar date sel
 
     $this->actingAs($this->admin)->get('/analytics?tab=staff&day=2026-11-15')
         ->assertOk()->assertSeeInOrder(['Рабочие дни по графику', '>6</dd>', 'Выходные по графику', '>1</dd>'], false)
-        ->assertSee('По графику 0 · Выходные 1 · Отсутствия 0 · График неизвестен 1')
+        ->assertSee('По графику 0 · Выходные 1 · Отсутствия 0 · Без назначенной работы 0 · График неизвестен 1')
         ->assertSee(route('employees.calendar', ['employee' => $this->cleaner, 'month' => '2026-11', 'day' => '2026-11-15']));
+});
+
+it('counts only explicit cleaner no-work marks in schedule analytics', function () {
+    $this->cleaner->forceFill(['weekend_days' => [7]])->save();
+
+    $vacationId = DB::table('vacation_requests')->insertGetId([
+        'user_id' => $this->cleaner->id,
+        'start_date' => '2026-11-14',
+        'end_date' => '2026-11-14',
+        'days_count' => 1,
+        'reason' => 'fixture',
+        'status' => 'approved',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    DB::table('vacation_request_days')->insert([
+        'vacation_request_id' => $vacationId,
+        'user_id' => $this->cleaner->id,
+        'date' => '2026-11-14',
+        'status' => 'approved',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    foreach ([[$this->cleaner, '2026-11-16'], [$this->supervisor, '2026-11-15']] as [$employee, $date]) {
+        DB::table('employee_calendar_adjustments')->insert([
+            'user_id' => $employee->id,
+            'starts_on' => $date,
+            'operation' => 'set_state',
+            'category' => 'other',
+            'previous_state' => json_encode(['state' => 'planned_work']),
+            'new_state' => json_encode(['state' => 'no_work']),
+            'actor_id' => $this->admin->id,
+            'actor_name_snapshot' => $this->admin->name,
+            'reason' => 'fixture no-work mark',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    $schedule = app(AcademyAnalytics::class)->schedule(
+        CarbonImmutable::parse('2026-11-10', 'Europe/Rome'),
+        CarbonImmutable::parse('2026-11-16', 'Europe/Rome'),
+    );
+
+    expect($schedule['daily']->get('2026-11-16')['unassigned_work_days'])->toBe(1)
+        ->and($schedule['daily']->get('2026-11-15')['unassigned_work_days'])->toBe(0)
+        ->and($schedule['daily']->get('2026-11-14')['unassigned_work_days'])->toBe(0)
+        ->and($schedule['daily']->sum('unassigned_work_days'))->toBe(1);
+
+    $this->actingAs($this->admin)->get('/analytics?tab=staff&day=2026-11-16')
+        ->assertOk()
+        ->assertSee('Без назначенной работы')
+        ->assertSee('Без назначенной работы 1');
 });

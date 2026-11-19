@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Services\Calendar\EmployeeWorkCalendarManagementService;
 use App\Services\Calendar\EmployeeWorkCalendarService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Gate;
@@ -71,6 +72,17 @@ new class extends Component
         $this->selectedDate = $selected->toDateString();
     }
 
+    public function markTodayNoWork(): void
+    {
+        abort_unless($this->employeeId !== null, 403);
+        abort_unless($this->selectedDate === Carbon::now('Europe/Rome')->toDateString(), 403);
+
+        $actor = auth()->user();
+        abort_unless($actor, 403);
+
+        app(EmployeeWorkCalendarManagementService::class)->markNoWorkToday($this->employee, $actor);
+    }
+
     protected function validMonth(): Carbon
     {
         try {
@@ -122,13 +134,16 @@ new class extends Component
             $date = $cursor->toDateString();
             $record = $projection->get($date);
             $state = $record['state'] ?? 'unknown_schedule';
+            $future = $date > $today;
 
             $days->push([
                 'date' => $date,
                 'day' => (int) $cursor->day,
                 'in_month' => $cursor->month === $month->month,
                 'today' => $date === $today,
-                'state' => $state === 'planned_work' && $date <= $lastCompletedDay ? 'completed_workday' : $state,
+                'state' => $future ? 'future_unassigned' : ($state === 'planned_work' && $date <= $lastCompletedDay ? 'completed_workday' : $state),
+                'actual_state' => $state,
+                'future' => $future,
                 'pending' => (bool) ($record['pending'] ?? false),
                 'sources' => $record['sources'] ?? [],
             ]);
@@ -150,6 +165,8 @@ new class extends Component
     protected function stateLabel(string $state): string
     {
         return match ($state) {
+            'no_work' => 'Работа не назначена',
+            'future_unassigned' => 'Пока не назначено',
             'completed_workday' => 'Рабочий день завершён по графику',
             'planned_work' => 'Рабочий день по графику',
             'regular_day_off' => 'Регулярный выходной',
@@ -162,6 +179,7 @@ new class extends Component
     protected function stateClass(string $state): string
     {
         return match ($state) {
+            'no_work', 'future_unassigned' => 'bg-[#E6E8EB] text-[#59616B]',
             'completed_workday' => 'bg-[#BCE8C7] text-[#205734]',
             'planned_work' => 'bg-[#E7F6EC] text-[#27683C]',
             'regular_day_off' => 'bg-[#FCE8E8] text-[#A72B2B]',
@@ -237,11 +255,15 @@ new class extends Component
     </section>
 
     <section aria-label="Обозначения" class="mt-4 grid grid-cols-2 gap-x-3 gap-y-2 text-[12px] text-black/65">
+        <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#E6E8EB]"></span>Работа не назначена</div>
+        @if($this->calendar['days']->contains('future', true))
+            <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#E6E8EB]"></span>Пока не назначено</div>
+        @endif
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#BCE8C7]"></span>Рабочий день завершён по графику</div>
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#E7F6EC]"></span>Плановый рабочий день</div>
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#E88D8D]"></span>Регулярный выходной</div>
         <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#F2CD63]"></span>Одобренное отсутствие</div>
-        @if($this->calendar['days']->contains('state', 'unknown_schedule'))
+        @if($this->calendar['days']->contains('actual_state', 'unknown_schedule'))
             <div class="flex items-center gap-2"><span class="size-3 rounded-full bg-[#B9BDC4]"></span>График не зафиксирован</div>
         @endif
         <div class="col-span-2 flex items-center gap-2"><span class="size-2 rounded-full bg-[#2D6494]"></span>Заявка ожидает решения; цвет дня не меняется</div>
@@ -255,6 +277,18 @@ new class extends Component
             </p>
             @if ($this->selectedDay['pending'])
                 <p class="mt-2 text-[13px] text-[#2D6494]">Есть заявка, ожидающая решения. Текущий статус дня сохранён.</p>
+            @endif
+
+            @if ($employeeId !== null
+                && $this->selectedDay['date'] === \Carbon\Carbon::now('Europe/Rome')->toDateString()
+                && $this->selectedDay['actual_state'] === 'planned_work'
+                && auth()->user()?->is_active
+                && in_array(auth()->user()?->role, ['admin', 'supervisor'], true))
+                <button type="button" wire:click="markTodayNoWork" wire:loading.attr="disabled"
+                    class="mt-4 inline-flex min-h-11 items-center justify-center rounded-full bg-[#E6E8EB] px-4 text-sm font-semibold text-[#39414B] hover:bg-[#D8DCE1] disabled:opacity-50">
+                    Отметить «Работа не назначена»
+                </button>
+                @error('no_work')<p class="mt-2 text-sm text-[#A72B2B]">{{ $message }}</p>@enderror
             @endif
 
             @if (! empty($this->selectedDay['sources']))

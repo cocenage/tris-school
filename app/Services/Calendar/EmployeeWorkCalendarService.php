@@ -274,14 +274,14 @@ class EmployeeWorkCalendarService
             if ($adjustment->replacement_date?->toDateString() === $date) {
                 $state = $newState['replacement_state'] ?? null;
 
-                if (in_array($state, ['planned_work', 'regular_day_off', 'approved_absence', 'unknown_schedule', 'not_employed'], true)) {
+                if (in_array($state, ['planned_work', 'regular_day_off', 'approved_absence', 'unknown_schedule', 'not_employed', 'no_work'], true)) {
                     return $state;
                 }
             }
 
             $state = $newState['state'] ?? null;
 
-            if (in_array($state, ['planned_work', 'regular_day_off', 'approved_absence', 'unknown_schedule', 'not_employed'], true)) {
+            if (in_array($state, ['planned_work', 'regular_day_off', 'approved_absence', 'unknown_schedule', 'not_employed', 'no_work'], true)) {
                 return $state;
             }
         }

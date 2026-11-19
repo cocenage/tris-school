@@ -4,6 +4,7 @@
         'regular_off_days' => ['Выходные по графику', 'bg-[#187758]'],
         'approved_absence_days' => ['Согласованные отсутствия', 'bg-[#94610C]'],
         'unknown_schedule_days' => ['График неизвестен', 'bg-[#64758A]'],
+        'unassigned_work_days' => ['Без назначенной работы', 'bg-[#8A929D]'],
     ];
     $daily = $schedule['daily'];
     $selected = $day === null ? null : ($daily->get($day) ?? []);
@@ -14,7 +15,7 @@
     @if($schedule['staff']->isEmpty())
         <p class="mt-3 text-sm text-[#42556B]">Нет сотрудников с активным профилем</p>
     @else
-        <dl class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <dl class="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
             @foreach($scheduleSeries as $key => [$label, $color])
                 <div>
                     <dt class="flex items-start gap-1.5 text-sm text-[#42556B]"><span class="mt-1.5 size-2 shrink-0 rounded-full {{ $color }}" aria-hidden="true"></span>{{ $label }}</dt>
@@ -58,7 +59,7 @@
 
         @if($selected !== null)
             <p class="mt-3 rounded-2xl bg-[#F3F6F9] px-3 py-2 text-sm tabular-nums text-[#42556B]">
-                <strong>{{ \Carbon\CarbonImmutable::parse($day)->format('d.m') }}</strong> · По графику {{ $selected['planned_workdays'] ?? 0 }} · Выходные {{ $selected['regular_off_days'] ?? 0 }} · Отсутствия {{ $selected['approved_absence_days'] ?? 0 }} · График неизвестен {{ $selected['unknown_schedule_days'] ?? 0 }}
+                <strong>{{ \Carbon\CarbonImmutable::parse($day)->format('d.m') }}</strong> · По графику {{ $selected['planned_workdays'] ?? 0 }} · Выходные {{ $selected['regular_off_days'] ?? 0 }} · Отсутствия {{ $selected['approved_absence_days'] ?? 0 }} · Без назначенной работы {{ $selected['unassigned_work_days'] ?? 0 }} · График неизвестен {{ $selected['unknown_schedule_days'] ?? 0 }}
             </p>
         @endif
 

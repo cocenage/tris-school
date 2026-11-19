@@ -241,6 +241,42 @@ class EmployeeWorkCalendarManagementService
         });
     }
 
+    public function markNoWorkToday(User $employee, User $actor): EmployeeCalendarAdjustment
+    {
+        abort_unless($actor->isApproved() && $actor->is_active
+            && in_array($actor->role, ['admin', 'supervisor'], true), 403);
+        abort_unless($employee->isApproved() && $employee->is_active && $employee->role === 'cleaner', 404);
+
+        $today = CarbonImmutable::now(config('app.timezone', 'Europe/Rome'))->startOfDay();
+
+        return DB::transaction(function () use ($employee, $actor, $today): EmployeeCalendarAdjustment {
+            $lockedEmployee = User::query()->whereKey($employee->id)->lockForUpdate()->firstOrFail();
+            abort_unless($lockedEmployee->isApproved() && $lockedEmployee->is_active && $lockedEmployee->role === 'cleaner', 404);
+
+            $current = app(EmployeeWorkCalendarService::class)->forEmployee($lockedEmployee, $today, $today)->first();
+
+            if (($current['state'] ?? null) !== 'planned_work') {
+                throw ValidationException::withMessages(['no_work' => 'Отметить можно только запланированный рабочий день.']);
+            }
+
+            return $lockedEmployee->calendarAdjustments()->create([
+                'starts_on' => $today->toDateString(),
+                'ends_on' => null,
+                'operation' => 'set_state',
+                'category' => 'other',
+                'previous_state' => [
+                    'state' => $current['state'],
+                    'schedule_known' => $current['schedule_known'],
+                    'pending' => $current['pending'],
+                ],
+                'new_state' => ['state' => 'no_work'],
+                'actor_id' => $actor->id,
+                'actor_name_snapshot' => $actor->name,
+                'reason' => 'Работа не назначена',
+            ]);
+        });
+    }
+
     private function reverseAdjustment(User $employee, array $change, User $actor, string $reason): EmployeeCalendarAdjustment
     {
         $adjustmentId = (int) ($change['adjustment_id'] ?? 0);
