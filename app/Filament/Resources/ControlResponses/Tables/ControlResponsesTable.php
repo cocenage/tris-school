@@ -4,10 +4,12 @@ namespace App\Filament\Resources\ControlResponses\Tables;
 
 use App\Filament\Resources\ControlResponses\ControlResponseResource;
 use App\Models\ControlResponse;
+use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\ViewAction;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Support\Facades\Gate;
 
 class ControlResponsesTable
 {
@@ -102,6 +104,14 @@ class ControlResponsesTable
             ->recordUrl(fn (ControlResponse $record) => ControlResponseResource::getUrl('view', ['record' => $record]))
             ->actions([
                 ViewAction::make(),
+            ])
+            ->toolbarActions([
+                DeleteBulkAction::make()
+                    ->label('Удалить выбранные')
+                    ->modalHeading('Удалить выбранные проверки?')
+                    ->modalDescription(fn (DeleteBulkAction $action): string => 'Выбрано проверок: '.$action->getSelectedRecords()->count().'. Удаление нельзя отменить.')
+                    ->authorize(fn (): bool => auth()->user()?->isAdmin() === true && Gate::allows('deleteAny', ControlResponse::class))
+                    ->authorizeIndividualRecords('delete'),
             ]);
     }
 }
