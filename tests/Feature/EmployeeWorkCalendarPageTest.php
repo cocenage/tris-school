@@ -152,7 +152,7 @@ it('shows only the authenticated employee calendar and keeps it read-only', func
         ->and(method_exists($component->instance(), 'updateSchedule'))->toBeFalse();
 });
 
-it('changes today to green at 19:00 in Milan and keeps tomorrow pale green', function () {
+it('changes today to green at 19:00 in Milan and keeps future dates grey', function () {
     Carbon::setTestNow(Carbon::parse('2026-11-05 17:59:59', 'UTC'));
     $employee = User::findOrFail(21);
     $url = route('page-profile.calendar', ['month' => '2026-11', 'day' => '2026-11-06']);
@@ -168,8 +168,9 @@ it('changes today to green at 19:00 in Milan and keeps tomorrow pale green', fun
 
     expect($past->getAttribute('class'))->toContain('bg-[#BCE8C7]')
         ->and($today->getAttribute('class'))->toContain('bg-[#E7F6EC]')
-        ->and($tomorrow->getAttribute('class'))->toContain('bg-[#E7F6EC]')
+        ->and($tomorrow->getAttribute('class'))->toContain('bg-[#E6E8EB]')
         ->and($tomorrow->getAttribute('aria-pressed'))->toBe('true')
+        ->and($response->getContent())->toContain('Пока не назначено')
         ->and($today->getAttribute('class'))->toContain('ring-[#2D6494]')
         ->and($today->getAttribute('aria-current'))->toBe('date')
         ->and($today->getAttribute('aria-pressed'))->toBe('false');
@@ -180,7 +181,7 @@ it('changes today to green at 19:00 in Milan and keeps tomorrow pale green', fun
     $today = $xpath->query('//button[starts-with(@aria-label, "2026-11-05")]')->item(0);
     $tomorrow = $xpath->query('//button[starts-with(@aria-label, "2026-11-06")]')->item(0);
     expect($today->getAttribute('class'))->toContain('bg-[#BCE8C7]')
-        ->and($tomorrow->getAttribute('class'))->toContain('bg-[#E7F6EC]');
+        ->and($tomorrow->getAttribute('class'))->toContain('bg-[#E6E8EB]');
 });
 
 it('denies users outside the employee roles and rejects dates outside the visible month', function () {
@@ -276,20 +277,94 @@ it('opens an active employee calendar from the client profile and lets the admin
     }
 });
 
-it('keeps employee calendars restricted to admins even with a legacy grant', function () {
+it('allows supervisors to view employee calendars without granting general calendar edits', function () {
     $cleaner = User::findOrFail(21);
     $supervisor = createCalendarPageUser('supervisor', 'Проверяющий супервайзер');
+    $inactiveSupervisor = createCalendarPageUser('supervisor', 'Отключённый супервайзер', false);
 
-    foreach ([$cleaner, $supervisor] as $viewer) {
-        $this->actingAs($viewer)->get(route('page-profile.employee-calendars'))->assertForbidden();
-        $this->get(route('employees.calendar', $cleaner))->assertForbidden();
-        $this->get(route('page-profile.calendar'))->assertOk();
-    }
+    $this->actingAs($cleaner)->get(route('page-profile.employee-calendars'))->assertForbidden();
+    $this->get(route('employees.calendar', $cleaner))->assertForbidden();
+    $this->get(route('page-profile.calendar'))->assertOk();
+
+    $this->actingAs($supervisor)->get(route('page-profile.employee-calendars'))->assertOk();
+    $this->get(route('employees.calendar', $cleaner))->assertOk();
+    $this->get(route('page-profile'))->assertOk()->assertSee('Календари сотрудников');
+    $this->actingAs($inactiveSupervisor)->get(route('page-profile.employee-calendars'))->assertForbidden();
 
     $supervisor->calendarPermission()->create(['can_view_all_calendars' => true]);
-    $this->actingAs($supervisor)->get(route('page-profile.employee-calendars'))->assertForbidden();
-    $this->get(route('employees.calendar', $cleaner))->assertForbidden();
-    $this->get(route('page-profile'))->assertOk()->assertDontSee('Календари сотрудников');
+    $this->actingAs($supervisor)->get(route('page-profile.employee-calendars'))->assertOk();
+    expect($supervisor->fresh()->canViewAllEmployeeCalendars())->toBeFalse()
+        ->and($supervisor->fresh()->canEditEmployeeCalendars())->toBeFalse();
+});
+
+it('searches staff calendars and filters by whether the schedule has work today', function () {
+    $admin = createCalendarPageUser('admin', 'Администратор календаря');
+    DB::table('users')->insert([
+        'name' => 'Клинер с выходным сегодня',
+        'role' => 'cleaner',
+        'status' => 'approved',
+        'is_active' => true,
+        'work_started_at' => '2020-04-15',
+        'weekend_days' => json_encode([3]),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    Livewire::actingAs($admin)->test('profile.page-employee-calendars')
+        ->assertSee('Клинер календаря')
+        ->assertSee('Работает сегодня')
+        ->set('workFilter', 'not_working')
+        ->assertSee('Клинер с выходным сегодня')
+        ->assertDontSee('Клинер календаря')
+        ->set('workFilter', 'working')
+        ->assertSee('Клинер календаря')
+        ->assertDontSee('Клинер с выходным сегодня')
+        ->set('search', 'Клинер календаря')
+        ->assertSee('Клинер календаря')
+        ->assertDontSee('Клинер с выходным сегодня');
+
+});
+
+it('lets a supervisor mark a scheduled cleaner day today as work not assigned', function () {
+    $supervisor = createCalendarPageUser('supervisor', 'Супервайзер календаря');
+
+    Livewire::actingAs($supervisor)->test('profile.page-calendar', ['employee' => 21])
+        ->assertSee('Отметить «Работа не назначена»')
+        ->call('markTodayNoWork')
+        ->assertHasNoErrors()
+        ->assertSee('Работа не назначена')
+        ->assertDontSee('Отметить «Работа не назначена»');
+
+    $adjustment = DB::table('employee_calendar_adjustments')->first();
+    expect(json_decode($adjustment->new_state, true))->toBe(['state' => 'no_work'])
+        ->and($adjustment->actor_id)->toBe($supervisor->id)
+        ->and($adjustment->actor_name_snapshot)->toBe($supervisor->name)
+        ->and($adjustment->reason)->toBe('Работа не назначена');
+});
+
+it('does not allow marking a regular day off as a day without assigned work', function () {
+    $supervisor = createCalendarPageUser('supervisor', 'Супервайзер календаря');
+    $newValues = ['employment_start_date' => '2020-04-15', 'weekend_days' => [3]];
+    DB::table('employee_work_schedule_versions')->insert([
+        'user_id' => 21,
+        'effective_from' => '2026-11-04',
+        'version_type' => 'schedule_change',
+        'employment_start_date' => '2020-04-15',
+        'weekend_days' => json_encode([3]),
+        'previous_values' => json_encode(['employment_start_date' => '2020-04-15', 'weekend_days' => [7]]),
+        'new_values' => json_encode($newValues),
+        'actor_id' => $supervisor->id,
+        'actor_name_snapshot' => $supervisor->name,
+        'reason' => 'fixture schedule change',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    Livewire::actingAs($supervisor)->test('profile.page-calendar', ['employee' => 21])
+        ->call('markTodayNoWork')
+        ->assertHasErrors('no_work');
+
+    expect(DB::table('employee_calendar_adjustments')->count())->toBe(0);
 });
 
 it('rejects changing the employee on a hydrated calendar', function () {

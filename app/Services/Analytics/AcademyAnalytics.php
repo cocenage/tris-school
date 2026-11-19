@@ -62,10 +62,19 @@ class AcademyAnalytics
             ->where('status', 'approved')->where('is_active', true)
             ->orderBy('name')->get(['id', 'name', 'role', 'work_started_at']);
         $calendar = $this->calendar->forEmployees($staff, $from, $through);
+        $daily = $calendar->flatten(1)->groupBy('date')
+            ->map(fn (Collection $days): array => $this->calendarStatistics->summarizeDays($days));
+        $unassignedWorkByDate = $staff->where('role', 'cleaner')
+            ->flatMap(fn (User $employee) => $calendar->get($employee->id, collect()))
+            ->filter(fn (array $day): bool => $day['state'] === 'no_work')
+            ->countBy('date');
+        $daily = $daily->map(fn (array $counts, string $date): array => [
+            ...$counts,
+            'unassigned_work_days' => $unassignedWorkByDate->get($date, 0),
+        ]);
 
         return [
-            'daily' => $calendar->flatten(1)->groupBy('date')
-                ->map(fn (Collection $days): array => $this->calendarStatistics->summarizeDays($days)),
+            'daily' => $daily,
             'staff' => $staff->map(fn (User $employee): array => [
                 'employee' => $employee,
                 ...$this->calendarStatistics->summarizeDays($calendar->get($employee->id, collect())),

@@ -79,7 +79,9 @@ class EmployeeWorkCalendarStatisticsService
         $counts = array_fill_keys(self::METRICS, 0);
 
         foreach ($days as $day) {
-            $counts[$this->metricForDay($day)]++;
+            if ($day['state'] !== 'no_work') {
+                $counts[$this->metricForDay($day)]++;
+            }
 
             if ($day['state'] === 'approved_absence') {
                 $counts['approved_absence_days']++;

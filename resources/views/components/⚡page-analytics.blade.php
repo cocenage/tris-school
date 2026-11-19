@@ -1,7 +1,6 @@
 <?php
 
 use App\Services\Analytics\AcademyAnalytics;
-use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Locked;
@@ -39,6 +38,10 @@ new class extends Component
 
     protected function tabs(): array
     {
+        if (auth()->user()?->role === 'supervisor') {
+            return ['overview', 'staff', 'quality'];
+        }
+
         return Gate::allows('view-employee-calendars')
             ? ['overview', 'staff', 'districts', 'quality']
             : ['overview', 'quality'];
@@ -71,7 +74,7 @@ new class extends Component
             if (in_array($this->tab, ['overview', 'staff'], true)) {
                 $schedule = $source->schedule($from, $through);
             }
-            if (in_array($this->tab, ['overview', 'districts'], true)) {
+            if (auth()->user()?->isAdmin() && in_array($this->tab, ['overview', 'districts'], true)) {
                 $districts = $source->districtActivity($from, $through);
             }
         }

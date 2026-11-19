@@ -60,7 +60,7 @@ class AppServiceProvider extends ServiceProvider
 
         Gate::define('view-employee-calendars', fn (User $user): bool => $user->isApproved()
             && ! app(RolePreviewContext::class)->isActive()
-            && $user->canViewAllEmployeeCalendars());
+            && ($user->canViewAllEmployeeCalendars() || ($user->role === 'supervisor' && $user->is_active)));
 
         Gate::policy(Apartment::class, ApartmentPolicy::class);
         Gate::policy(CalendarEvent::class, SupervisorCalendarEventPolicy::class);
