@@ -1,5 +1,6 @@
 <?php
 
+use App\Filament\Resources\ControlResponses\Pages\ListControlResponses;
 use App\Jobs\SendControlCompletionNotification;
 use App\Models\Control;
 use App\Models\ControlCompletionNotification;
@@ -13,6 +14,7 @@ use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramOutboundMonitor;
 use App\Services\TelegramMiniAppService;
 use App\Services\UserApplicationBadgeService;
+use Filament\Facades\Filament;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\ConnectionException;
@@ -2281,4 +2283,25 @@ it('renders all fifty nine Focus questions without serializing the canonical arr
         ->and($data)->not->toHaveKey('rooms')
         ->and($data)->not->toHaveKey('savedMedia')
         ->and(strlen($snapshot))->toBeLessThan(20000);
+});
+
+it('deletes only the selected control responses in the admin table', function () {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $admin = User::create(['name' => 'Admin', 'role' => 'admin', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($admin);
+    Filament::setCurrentPanel(Filament::getPanel('admin'));
+
+    $attributes = ['control_id' => $control->id, 'cleaner_id' => $cleaner->id, 'apartment_id' => $apartment];
+    $selected = ControlResponse::create($attributes);
+    $retained = ControlResponse::create($attributes);
+
+    Livewire::test(ListControlResponses::class)
+        ->assertTableBulkActionVisible('delete')
+        ->mountTableBulkAction('delete', [$selected])
+        ->assertTableBulkActionMounted('delete')
+        ->callMountedTableBulkAction()
+        ->assertHasNoErrors();
+
+    $this->assertModelMissing($selected);
+    $this->assertModelExists($retained);
 });

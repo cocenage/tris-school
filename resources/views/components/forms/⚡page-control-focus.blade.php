@@ -1118,7 +1118,7 @@ new class extends Component
         failedComments: {},
         pendingComments: 0,
         transportBytes: @js(FocusMediaLimits::transportBytes()),
-        uploads: [], queue: Promise.resolve(), nextId: 0,
+        uploads: [], queue: Promise.resolve(), nextId: 0, attachmentTarget: null,
         destroy() {
             window.clearTimeout(this.saveTimer);
         },
@@ -1132,6 +1132,10 @@ new class extends Component
             const answered = String(selected ?? '').trim() !== '' || String(custom ?? '').trim() !== '';
             this.questionCompletion[room][question] = answered;
             if (answered && room === this.activeRoomIndex && question === this.missingQuestion) this.missingQuestion = null;
+        },
+        get setupComplete() {
+            return Boolean(this.cleanerId && this.apartmentId && this.cleaningDate && this.inspectionDate
+                && this.inspectionDate >= this.cleaningDate);
         },
         roomAnsweredCount(index) {
             return (this.requiredQuestionsByRoom[index] || []).filter(question => this.questionCompletion[index]?.[question]).length;
@@ -1311,11 +1315,22 @@ new class extends Component
                 question?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
             }));
         },
+        openAttachments(room, question) {
+            this.attachmentTarget = { room, question };
+            this.$refs.attachmentSheet.showModal();
+        },
+        pickAttachment(event) {
+            if (this.attachmentTarget) this.add(event, this.attachmentTarget.room, this.attachmentTarget.question);
+            this.$refs.attachmentSheet.close();
+        },
+        isUploadPending(item) {
+            return ['ожидание', 'загрузка', 'загружено'].includes(item.status);
+        },
         add(event, room, question) {
             for (const file of Array.from(event.target.files || [])) {
                 const uploadId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
                 const item = { id: ++this.nextId, uploadId, file, room, question, name: file.name,
-                    preview: URL.createObjectURL(file), kind: file.type.startsWith('video/') ? 'video' : 'image',
+                    preview: URL.createObjectURL(file), kind: file.type.startsWith('video/') || /\.(mp4|mov|webm)$/i.test(file.name) ? 'video' : 'image',
                     status: 'ожидание', progress: 0, cancelled: false, timedOut: false, timeout: null };
                 const max = Math.min(this.transportBytes, (item.kind === 'image' ? 10 : 100) * 1024 * 1024);
                 if (file.size > max) {
@@ -1404,10 +1419,30 @@ new class extends Component
             if (item.preview) URL.revokeObjectURL(item.preview);
             this.uploads = this.uploads.filter(candidate => candidate.id !== item.id);
         },
-        get busy() { return this.uploads.some(item => ['ожидание', 'загрузка', 'загружено'].includes(item.status)); }
+        get busy() { return this.uploads.some(item => this.isUploadPending(item)); }
     }"
     x-on:focus-question-selected.window="focusQuestion($event.detail)">
-    <div class="mx-auto w-full max-w-[640px] flex-1 rounded-t-[36px] bg-white px-4 pb-7 pt-4 sm:px-6">
+    <dialog wire:ignore x-ref="attachmentSheet" aria-label="Добавить фото или видео"
+        @click.self="$el.close()"
+        class="fixed inset-x-0 bottom-0 top-auto m-0 mx-auto max-h-[85dvh] w-full max-w-[640px] overflow-y-auto rounded-t-3xl bg-white p-0 text-[#182230] shadow-xl backdrop:bg-black/50">
+        <div class="grid gap-2 p-4 pb-[calc(16px+env(safe-area-inset-bottom))]">
+            <h2 class="text-base font-semibold">Добавить к вопросу</h2>
+            <button autofocus type="button" @click="$refs.takePhoto.click()" class="flex min-h-12 items-center gap-3 rounded-xl bg-[#EDF4FB] px-3 text-left font-medium">
+                <x-heroicon-o-camera aria-hidden="true" class="size-5" /> Снять фото
+            </button>
+            <button type="button" @click="$refs.recordVideo.click()" class="flex min-h-12 items-center gap-3 rounded-xl bg-[#EDF4FB] px-3 text-left font-medium">
+                <x-heroicon-o-video-camera aria-hidden="true" class="size-5" /> Записать видео
+            </button>
+            <button type="button" @click="$refs.chooseMedia.click()" class="flex min-h-12 items-center gap-3 rounded-xl bg-[#EDF4FB] px-3 text-left font-medium">
+                <x-heroicon-o-photo aria-hidden="true" class="size-5" /> Выбрать из галереи
+            </button>
+            <button type="button" @click="$refs.attachmentSheet.close()" class="min-h-11 rounded-xl text-sm font-semibold text-[#475569]">Отмена</button>
+            <input x-ref="takePhoto" type="file" accept="image/*" capture="environment" hidden @change="pickAttachment($event)">
+            <input x-ref="recordVideo" type="file" accept="video/*" capture="environment" hidden @change="pickAttachment($event)">
+            <input x-ref="chooseMedia" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" hidden @change="pickAttachment($event)">
+        </div>
+    </dialog>
+    <div class="mx-auto w-full min-w-0 max-w-[640px] flex-1 rounded-t-[36px] bg-white px-4 pb-7 pt-4 sm:px-6">
     @if($draftSchemaConflict)
         <div role="alert" class="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
             <p class="font-semibold">{{ $draftError ?: 'Схема контроля изменилась. Старый черновик сохранён без переноса ответов.' }}</p>
@@ -1419,12 +1454,18 @@ new class extends Component
         <div role="status" class="mb-4 rounded-2xl bg-blue-50 p-4 text-sm text-blue-900">{{ $draftSchemaNotice }}</div>
     @endif
     @if(in_array($stage, ['setup', 'questions'], true))
-        <nav wire:key="focus-tabs-{{ $stage }}" x-ref="roomTabs" class="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6" aria-label="Этапы контроля">
+        <nav wire:key="focus-tabs-{{ $stage }}" x-ref="roomTabs" class="-mx-4 flex gap-1.5 overflow-x-auto overscroll-x-contain px-4 pb-3 sm:-mx-6 sm:px-6" aria-label="Этапы контроля">
             @if($stage === 'setup')
-                <span aria-current="step" class="inline-flex min-h-10 shrink-0 items-center rounded-full bg-[#626B76] px-3.5 text-sm font-semibold text-white">Данные</span>
+                <span aria-current="step" class="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full px-3.5 text-sm font-semibold"
+                    :class="setupComplete ? 'bg-[#DCEFE5] text-[#235D3E]' : 'bg-[#626B76] text-white'">
+                    <x-heroicon-o-check x-show="setupComplete" x-cloak aria-hidden="true" class="size-4" /> Данные
+                </span>
             @else
                 <button type="button" x-on:click="enqueueMutation(() => $wire.backToSetup())"
-                    class="min-h-10 shrink-0 rounded-full bg-[#E9ECF0] px-3.5 text-sm font-semibold text-[#344054]">Данные</button>
+                    class="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full px-3.5 text-sm font-semibold"
+                    :class="setupComplete ? 'bg-[#DCEFE5] text-[#235D3E]' : 'bg-[#E9ECF0] text-[#344054]'">
+                    <x-heroicon-o-check x-show="setupComplete" x-cloak aria-hidden="true" class="size-4" /> Данные
+                </button>
             @endif
             @foreach($this->rooms as $roomIndex => $room)
                 @php
@@ -1439,8 +1480,13 @@ new class extends Component
                     <button type="button" x-on:click="goToRoom({{ $roomIndex }})"
                         :aria-current="activeRoomIndex === {{ $roomIndex }} ? 'step' : null"
                         :aria-label="@js($roomTitle) + (roomProgress({{ $roomIndex }}) === 'complete' ? ' — заполнена' : (roomProgress({{ $roomIndex }}) === 'partial' ? ' — заполнена частично' : ''))"
-                        :class="activeRoomIndex === {{ $roomIndex }} ? 'bg-[#626B76] text-white' : (roomProgress({{ $roomIndex }}) === 'complete' ? 'bg-[#DCEFE5] text-[#235D3E]' : (roomProgress({{ $roomIndex }}) === 'partial' ? 'bg-[#DCE8F7] text-[#284E89]' : 'bg-[#F0F1F3] text-[#596476]'))"
-                        class="min-h-10 shrink-0 rounded-full px-3.5 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#285B86]">
+                        :class="[
+                            roomProgress({{ $roomIndex }}) === 'complete' ? 'bg-[#DCEFE5] text-[#235D3E]' :
+                                (roomProgress({{ $roomIndex }}) === 'partial' ? 'bg-[#DCE8F7] text-[#284E89]' : 'bg-[#F0F1F3] text-[#596476]'),
+                            activeRoomIndex === {{ $roomIndex }} ? 'ring-2 ring-inset ring-[#285B86]' : ''
+                        ]"
+                        class="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full px-3.5 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#285B86]">
+                        <x-heroicon-o-check x-show="roomProgress({{ $roomIndex }}) === 'complete'" x-cloak aria-hidden="true" class="size-4" />
                         {{ $roomTitle }}
                     </button>
                 @endif
@@ -1450,8 +1496,7 @@ new class extends Component
 
     @if($stage !== 'done')
         <div wire:key="focus-draft-status" class="mb-3">
-            <p x-show="busy" class="mt-2 text-xs font-semibold text-[#8A6116]" role="status">Загружаем файлы · можно продолжать вопросы</p>
-            <p x-show="!busy && clientDraftState !== 'idle'" x-cloak class="mt-2 text-xs" :class="clientDraftState === 'error' ? 'text-[#B42318]' : 'text-[#8A97A8]'" role="status" aria-live="polite">
+            <p x-show="clientDraftState !== 'idle'" x-cloak class="mt-2 text-xs" :class="clientDraftState === 'error' ? 'text-[#B42318]' : 'text-[#8A97A8]'" role="status" aria-live="polite">
                 <span x-show="pendingComments === 0 && clientDraftState === 'dirty'">Изменения не сохранены</span>
                 <span x-show="pendingComments > 0 || clientDraftState === 'saving'">Сохранение выполняется…</span>
                 <span x-show="pendingComments === 0 && clientDraftState === 'saved'">Изменения сохранены</span>
@@ -1485,7 +1530,7 @@ new class extends Component
             <x-controls.setup-select label="Квартира" :options="$apartmentOptions" model="apartmentId" field="apartment_id"
                 placeholder="Выберите квартиру" icon="heroicon-o-home-modern" />
 
-            <div class="grid grid-cols-1 gap-2.5 min-[360px]:grid-cols-2">
+            <div class="grid grid-cols-1 gap-2.5 min-[420px]:grid-cols-2">
                 <label class="block min-w-0 text-sm font-semibold">Дата уборки <span aria-hidden="true" class="text-[#285B86]">*</span>
                     <input type="date" x-model="cleaningDate" x-on:change="scheduleAutosave()" aria-required="true" @error('cleaning_date') aria-invalid="true" @enderror
                         class="mt-1.5 min-h-12 w-full min-w-0 rounded-full border-0 bg-[#EAEBED] px-3 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]">
@@ -1498,15 +1543,8 @@ new class extends Component
                 </label>
             </div>
 
-            <label class="block text-sm font-semibold">Кто убирался до этого <span class="font-normal text-[#596476]">· необязательно</span>
-                <input type="text" x-model="previousCleaner" x-on:input="scheduleAutosave(900)" maxlength="255" list="focus-previous-cleaners" placeholder="Выберите или введите имя"
-                    class="mt-1.5 min-h-12 w-full rounded-full border-0 bg-[#EAEBED] px-4 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]">
-                <datalist id="focus-previous-cleaners">
-                    @foreach($peopleOptions as $person)
-                        <option value="{{ $person['name'] }}"></option>
-                    @endforeach
-                </datalist>
-            </label>
+            <x-controls.setup-select label="Кто убирался до этого" :options="$peopleOptions" model="previousCleaner" field="previous_cleaner"
+                placeholder="Найдите сотрудника или введите имя" icon="heroicon-o-user" :free-text="true" />
             <button type="button" x-on:click="startControl()" class="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#285B86] px-4 text-base font-semibold text-white">
                 {{ $editingReviewData ? 'Вернуться к проверке' : 'К вопросам' }} <x-heroicon-o-arrow-right class="size-4" />
             </button>
@@ -1574,12 +1612,16 @@ new class extends Component
                                 @endif
 
                                 <div class="mt-3">
-                                    <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl border border-[#C9DAEA] bg-[#EDF4FB] px-3 py-2.5 text-sm font-semibold text-[#285B86] focus-within:ring-2 focus-within:ring-[#285B86]">
+                                    <button type="button" aria-haspopup="dialog"
+                                        @click="openAttachments({{ $roomIndex }}, {{ $questionIndex }})"
+                                        class="flex min-h-12 w-full min-w-0 items-center gap-3 rounded-xl border border-[#C9DAEA] bg-[#EDF4FB] px-3 py-2.5 text-left text-sm font-semibold text-[#285B86] focus-visible:ring-2 focus-visible:ring-[#285B86]">
                                         <x-heroicon-o-paper-clip aria-hidden="true" class="size-5 shrink-0" />
-                                        <span class="flex-1">Добавить фото или видео</span>
+                                        <span class="min-w-0 flex-1">Добавить фото или видео</span>
                                         @if(count($media)) <span class="shrink-0 text-xs tabular-nums">{{ count($media) }}/12</span> @endif
-                                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" x-on:change="add($event, {{ $roomIndex }}, {{ $questionIndex }})">
-                                    </label>
+                                    </button>
+                                    <template x-if="uploads.some(file => file.room === {{ $roomIndex }} && file.question === {{ $questionIndex }} && isUploadPending(file))">
+                                        <p class="mt-1.5 text-xs font-semibold text-[#8A6116]" role="status">Загружаем файлы · можно продолжать проверку</p>
+                                    </template>
                                     <p class="mt-1.5 text-xs text-[#596476]">Фото до 10 МБ · видео до 100 МБ.
                                         @if(FocusMediaLimits::transportBytes() < FocusMediaLimits::VIDEO_KIB * 1024)
                                             На этом сервере до {{ number_format(floor(FocusMediaLimits::transportBytes() / 104857.6) / 10, 1, ',', ' ') }} МБ на файл.
