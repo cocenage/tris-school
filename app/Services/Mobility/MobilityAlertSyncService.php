@@ -11,6 +11,8 @@ use Illuminate\Support\Str;
 
 class MobilityAlertSyncService
 {
+    private const TRENORD_STRIKE_URL = 'https://www.trenord.it/news/trenord-informa/avvisi/sciopero/';
+
     public array $strikeReport = [];
 
     public array $sourcePreview = [];
@@ -326,7 +328,7 @@ class MobilityAlertSyncService
 
         foreach ([
             'trenord_news' => 'https://www.trenord.it/news/',
-            'trenord_strikes' => 'https://www.trenord.it/news/trenord-informa/avvisi/sciopero/',
+            'trenord_strikes' => self::TRENORD_STRIKE_URL,
             'trenord_home' => 'https://www.trenord.it/',
         ] as $healthKey => $url) {
             $created += $this->syncGenericPage(
@@ -510,7 +512,12 @@ class MobilityAlertSyncService
             return 0;
         }
 
-        $items = $this->extractLinks($url, $response->body());
+        $announcement = $healthKey === 'trenord_strikes'
+            ? $this->trenordAnnouncement($response->body())
+            : null;
+        $items = $announcement !== null
+            ? [['url' => $url, ...$announcement]]
+            : $this->extractLinks($url, $response->body());
         $recognized = $this->sourcePageRecognized($source, $response->body());
 
         $created = 0;
@@ -520,6 +527,11 @@ class MobilityAlertSyncService
 
         foreach ($items as $item) {
             $title = $this->cleanTitle($item['title']);
+
+            if ($source === 'trenord' && ! isset($item['body'])
+                && rtrim(strtok($item['url'], '?#'), '/') === rtrim(self::TRENORD_STRIKE_URL, '/')) {
+                continue;
+            }
 
             if (! $this->looksUseful($title, $source)) {
                 continue;
@@ -532,17 +544,18 @@ class MobilityAlertSyncService
 
             if ($isStrike) {
                 $strikeCount++;
-                if ($detailChecks < 10) {
+                if (isset($item['body'])) {
+                    $body = $item['body'];
+                } elseif ($detailChecks < 10) {
                     $detailChecks++;
-                    $body = $this->fetchAnnouncementText($item['url'], $url);
-                    if ($body === null) {
-                        $detailFailed = true;
-                    }
+                    $detail = $this->fetchAnnouncementText($item['url'], $url);
+                    $detailFailed = $detailFailed || $detail === null;
+                    $body = $detail ?? '';
                 } else {
                     $detailFailed = true;
                 }
 
-                $publicationDate = $this->publicationDate($title);
+                $publicationDate = $item['publication_date'] ?? $this->publicationDate($title);
                 $normalized = app(MobilityStrikeAnnouncementParser::class)->normalize($title, $body, $publicationDate);
                 $eventDate = $normalized['starts_at'];
                 $eventEnd = $normalized['ends_at'];
@@ -553,7 +566,7 @@ class MobilityAlertSyncService
                     'region' => 'Lombardia',
                     'scope' => 'Regionale',
                     'publication_date' => $publicationDate,
-                    'duration' => $this->confirmedDuration($title.' '.$body),
+                    'duration' => $this->confirmedDuration($title, $body),
                     'notes' => Str::limit($body, 1200, ''),
                 ];
                 $this->previewEvents[] = [
@@ -562,6 +575,8 @@ class MobilityAlertSyncService
                     'status' => $normalized['status'],
                     'starts_at' => $eventDate,
                     'ends_at' => $eventEnd,
+                    'publication_date' => $publicationDate,
+                    'duration' => $metadata['duration'],
                     'url' => $item['url'],
                 ];
 
@@ -577,10 +592,11 @@ class MobilityAlertSyncService
                     'description' => $body !== '' ? Str::limit($body, 5000, '') : null,
                     'url' => $item['url'],
                     'type' => 'strike',
-                    'risk' => in_array($normalized['status'], ['cancelled', 'postponed'], true) ? 'low' : 'high',
+                    'risk' => in_array($normalized['status'], ['scheduled', 'updated'], true) ? 'high' : 'low',
                     'district' => $this->detectDistrict($title.' '.$body),
                     'starts_at' => $eventDate,
                     'ends_at' => $eventEnd,
+                    'notice_date' => isset($item['body']) ? $eventDate : null,
                     'metadata' => $metadata,
                 ]);
 
@@ -653,6 +669,32 @@ class MobilityAlertSyncService
         return str_contains($text, $brand) || str_contains($text, 'scioper') || str_contains($text, 'agitaz');
     }
 
+    private function trenordAnnouncement(string $html): ?array
+    {
+        $xpath = new \DOMXPath($this->announcementDocument($html));
+        $heading = $xpath->query('//h1')->item(0);
+        $title = $this->cleanTitle($heading?->textContent ?? '');
+        if (preg_match('/\b(?:scioper\w*|agitazion\w*)\b/iu', $title) !== 1) {
+            return null;
+        }
+
+        $article = $xpath->query(
+            'ancestor::*[self::article or self::main or contains(concat(" ", normalize-space(@class), " "), " container-content ")][1]',
+            $heading,
+        )->item(0);
+        if ($article === null) {
+            return null;
+        }
+
+        $header = $this->cleanTitle($heading->parentNode->textContent);
+
+        return [
+            'title' => $title,
+            'body' => Str::limit($this->cleanTitle($article->textContent), 8000, ''),
+            'publication_date' => $this->publicationDate('aggiornato il '.substr($header, strlen($title))),
+        ];
+    }
+
     private function fetchAnnouncementText(string $url, string $sourceUrl): ?string
     {
         $target = parse_url($url);
@@ -686,11 +728,7 @@ class MobilityAlertSyncService
             return null;
         }
 
-        $document = new \DOMDocument;
-        $previous = libxml_use_internal_errors(true);
-        $document->loadHTML('<?xml encoding="UTF-8">'.$response->body());
-        libxml_clear_errors();
-        libxml_use_internal_errors($previous);
+        $document = $this->announcementDocument($response->body());
 
         foreach (['article', 'main'] as $tag) {
             $nodes = $document->getElementsByTagName($tag);
@@ -702,9 +740,20 @@ class MobilityAlertSyncService
         return Str::limit($this->cleanTitle($document->getElementsByTagName('body')->item(0)?->textContent ?? ''), 8000, '');
     }
 
+    private function announcementDocument(string $html): \DOMDocument
+    {
+        $document = new \DOMDocument;
+        $previous = libxml_use_internal_errors(true);
+        $document->loadHTML('<?xml encoding="UTF-8">'.$html);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        return $document;
+    }
+
     private function publicationDate(string $title): ?string
     {
-        if (preg_match('/(?:[-·]|aggiornato\s+il)\s*(?<day>\d{1,2})\/(?<month>\d{1,2})(?:\/(?<year>20\d{2}))?\s*$/iu', $title, $match) !== 1) {
+        if (preg_match('/(?:[-·]|aggiornato\s+il)\s*(?:(?:lunedì|martedì|mercoledì|giovedì|venerdì|sabato|domenica)\s+)?(?<day>\d{1,2})\/(?<month>\d{1,2})(?:\/(?<year>20\d{2}))?\s*$/iu', $title, $match) !== 1) {
             return null;
         }
 
@@ -718,13 +767,20 @@ class MobilityAlertSyncService
         return Carbon::create($year, $month, $day, 0, 0, 0, 'Europe/Rome')?->toDateString();
     }
 
-    private function confirmedDuration(string $text): ?string
+    private function confirmedDuration(string $title, string $body): ?string
     {
-        if (preg_match('/(?<!\d)(?:[01]?\d|2[0-3]):[0-5]\d\s*[-–—]\s*(?:[01]?\d|2[0-3]):[0-5]\d(?!\d)/u', $text, $match) !== 1) {
+        $time = '(?:[01]?\d|2[0-3]):[0-5]\d';
+        if (preg_match('/\bscioper\w*[^.!?]{0,120}?\bdalle\s+ore\s+('.$time.')\b[^.!?]{0,100}?\bfino\s+alle\s+ore\s+('.$time.')\b/iu', $body, $match) === 1) {
+            return $match[1].'–'.$match[2];
+        }
+
+        // Guaranteed service hours are separate from the hours of the strike.
+        $body = preg_split('/\b(?:fasce|garantit\w*)\b/iu', $body, 2)[0];
+        if (preg_match('/(?<!\d)('.$time.')\s*[-–—]\s*('.$time.')(?!\d)/u', $title.' '.$body, $match) !== 1) {
             return null;
         }
 
-        return trim((string) preg_replace('/\s*[-–—]\s*/u', '–', $match[0]));
+        return $match[1].'–'.$match[2];
     }
 
     protected function extractLinks(string $baseUrl, string $html): array

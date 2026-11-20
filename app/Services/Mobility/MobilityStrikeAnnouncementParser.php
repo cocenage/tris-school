@@ -47,10 +47,23 @@ class MobilityStrikeAnnouncementParser
         return $this->status(mb_strtolower($title.' '.$body), $title, $hasEventDate);
     }
 
+    public function excludesAtmLines(string $title, string $body): bool
+    {
+        $title = mb_strtolower($this->clean($title));
+        $body = mb_strtolower($this->clean($body));
+
+        return str_contains($title, 'linee di altri operatori')
+            || preg_match('/\bnon (?:coinvolge|interessa|coinvolgerà|interesserà) le linee atm\b/u', $body) === 1;
+    }
+
     private function status(string $text, string $title, bool $hasEventDate): string
     {
         if (! str_contains($text, 'scioper') && ! str_contains($text, 'agitazion')) {
             return 'unknown';
+        }
+
+        if ($this->excludesAtmLines($title, $text)) {
+            return 'not_affected';
         }
 
         if (preg_match('/\b(?:revocat\w*|annullat\w*|cancellat\w*)\b/u', $text) === 1) {
@@ -61,7 +74,9 @@ class MobilityStrikeAnnouncementParser
             return 'postponed';
         }
 
-        if (preg_match('/\b(?:aggiornament\w*|modificat\w*|variazion\w*|cambiament\w*)\b/u', $text) === 1) {
+        $change = '(?:aggiornament\w*|modificat\w*|variazion\w*|cambiament\w*)';
+        if (preg_match('/\b'.$change.'\b/iu', $title) === 1
+            || preg_match('/\b'.$change.'\s+(?:allo|dello|sullo)\s+sciopero\b/u', $text) === 1) {
             return 'updated';
         }
 

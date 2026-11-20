@@ -2,10 +2,86 @@
 
 namespace App\Services\Mobility;
 
+use App\Models\MobilityAlert;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 
 class MobilityStrikesSummaryFormatter
 {
+    public function formatTelegramAlert(MobilityAlert $alert, array $districts): string
+    {
+        $item = $alert->strike_metadata ?? [];
+        $kind = $item['notification_kind'] ?? 'new';
+        $coverage = app(MobilityStrikeCoverage::class);
+        $source = (string) $alert->source;
+        $mode = $coverage->transportMode($source, $item);
+        $operator = $coverage->operator($source, $item);
+        $impact = $mode === 'rail' ? 'Возможны перебои с поездами' : 'Возможны перебои с городским транспортом';
+
+        $lines = [match ($kind) {
+            'cancelled' => '✅ <b>Забастовка отменена</b>',
+            'postponed' => '🔄 <b>Забастовка перенесена</b>',
+            'updated' => '🔄 <b>Обновление забастовки</b>',
+            default => '🚨 <b>Забастовка транспорта</b>',
+        }];
+
+        $labels = array_map(fn (string $key): string => e(config('services.telegram.digest_districts.'.$key.'.label', ucfirst($key))), $districts);
+        $lines[] = '📍 <b>Зоны TRIS:</b> '.implode(' · ', $labels);
+        $inactive = in_array($kind, ['cancelled', 'postponed'], true);
+        $lines[] = '📅 <b>'.$this->telegramPeriod($alert, $inactive ? null : ($item['duration'] ?? null)).'</b>';
+
+        if ($kind === 'postponed') {
+            $lines[] = 'Новая дата не подтверждена.';
+        } elseif ($kind === 'updated' && filled($item['previous']['starts_at'] ?? null)
+            && $item['previous']['starts_at'] !== $alert->starts_at?->toDateString()) {
+            $lines[] = 'Прежняя дата: '.$this->telegramDate(CarbonImmutable::parse($item['previous']['starts_at'], 'Europe/Rome'));
+        }
+
+        $network = $mode === 'rail' ? 'Железнодорожный транспорт' : 'Городской транспорт';
+        $transport = $inactive ? ($operator ?? $network) : ($operator === null ? $impact : $operator.' · '.mb_strtolower($impact));
+        $lines[] = ($mode === 'rail' ? '🚆 ' : '🚇 ').$transport;
+
+        if (filled($alert->url)) {
+            $lines[] = '';
+            $lines[] = '<a href="'.e($alert->url).'">Официальное объявление</a>';
+        }
+
+        return implode("\n", $lines);
+    }
+
+    private function telegramPeriod(MobilityAlert $alert, ?string $duration): string
+    {
+        if ($alert->starts_at === null) {
+            return 'Дата проведения не подтверждена';
+        }
+
+        $date = $this->telegramDate($alert->starts_at);
+        $end = $alert->ends_at;
+        $time = $this->confirmedTime($duration);
+        if ($end !== null && ! $alert->starts_at->isSameDay($end)) {
+            $endDate = $this->telegramDate($end);
+            $parts = $time === null ? [] : explode('–', $time);
+            if (count($parts) === 2) {
+                return $date.', '.$parts[0].' — '.$endDate.', '.$parts[1];
+            }
+
+            $date .= ' — '.$endDate;
+        }
+
+        if ($time === null && preg_match('/^(\d+)\s+ore?$/iu', trim((string) $duration), $match) === 1) {
+            $time = $match[1].' ч';
+        }
+
+        return $time === null ? $date : $date.' · '.$time;
+    }
+
+    private function telegramDate(CarbonInterface $date): string
+    {
+        $format = $date->year === CarbonImmutable::now('Europe/Rome')->year ? 'D MMMM' : 'D MMMM YYYY';
+
+        return $date->locale('ru')->isoFormat($format);
+    }
+
     public function formatMorningSection(array $summary): string
     {
         $start = CarbonImmutable::parse($summary['date'], 'Europe/Rome');
