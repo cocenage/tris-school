@@ -121,7 +121,8 @@ class MitStrikeSource
             return true;
         }
         foreach (['region' => 'regions', 'province' => 'provinces'] as $field => $setting) {
-            if (in_array($this->key($item[$field]), config('mobility.'.$setting), true)) {
+            $areas = preg_split('/\s*[,;\/]+\s*/u', $this->key($item[$field]));
+            if (array_intersect($areas, config('mobility.'.$setting)) !== []) {
                 return true;
             }
         }

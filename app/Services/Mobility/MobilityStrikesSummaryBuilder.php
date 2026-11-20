@@ -10,6 +10,8 @@ class MobilityStrikesSummaryBuilder
     public function __construct(
         private MitStrikeSource $mit,
         private MobilityStrikeSourceStatus $sourceStatus,
+        private MobilityStrikeAnnouncementParser $announcements,
+        private MobilityStrikeCoverage $coverage,
     ) {}
 
     public function build(string $date, ?string $district = null, int $daysAhead = 0): array
@@ -94,61 +96,11 @@ class MobilityStrikesSummaryBuilder
 
     private function appliesToDistrict(MobilityAlert $alert, string $district): bool
     {
-        $district = mb_strtolower(trim($district));
-        $milanDistricts = ['navigli', 'lodi', 'certosa', 'lambrate'];
-        $metadata = $alert->strike_metadata ?? [];
-        $source = mb_strtolower((string) $alert->source);
-        $operator = mb_strtolower((string) ($metadata['operator'] ?? '').' '.$alert->title);
-        $region = mb_strtolower(trim((string) ($metadata['region'] ?? '')));
-        $province = mb_strtolower(trim((string) ($metadata['province'] ?? '')));
-        $scope = mb_strtolower(trim((string) ($metadata['scope'] ?? '')));
-        $sector = mb_strtolower(trim((string) ($metadata['sector'] ?? '')));
-
-        $isAtm = $source === 'atm' || preg_match('/\batm\b|gruppo atm/iu', $operator) === 1;
-        if ($isAtm) {
-            return in_array($district, $milanDistricts, true);
-        }
-
-        if (str_contains($province, 'como')) {
-            return $district === 'como';
-        }
-
-        if (str_contains($province, 'milano') || str_contains($province, 'milan')) {
-            return in_array($district, $milanDistricts, true);
-        }
-
-        if (str_contains($scope, 'nazional')) {
-            return true;
-        }
-
-        $location = mb_strtolower(trim((string) $alert->district));
-        if (in_array($location, ['como', 'navigli', 'lodi', 'certosa', 'lambrate'], true)) {
-            return $location === $district;
-        }
-        if (in_array($location, ['milano', 'milan'], true) || preg_match('/\bm[1-5]\b/iu', $location) === 1) {
-            return in_array($district, $milanDistricts, true);
-        }
-        if (in_array($location, ['lombardia', 'italia'], true)) {
-            return true;
-        }
-
-        $text = mb_strtolower($alert->title.' '.($alert->description ?? ''));
-        if (preg_match('/\bcomo\b/iu', $text) === 1) {
-            return $district === 'como';
-        }
-        if (preg_match('/\bmilano\b|\bmilan\b/iu', $text) === 1) {
-            return in_array($district, $milanDistricts, true);
-        }
-
-        if ($region === 'lombardia') {
-            return true;
-        }
-
-        if ($source === 'trenord' || str_contains($operator, 'trenord') || str_contains($sector, 'ferroviar')) {
-            return true;
-        }
-
-        return false;
+        return in_array(
+            mb_strtolower(trim($district)),
+            $this->coverage->districts((string) $alert->source, $alert->strike_metadata ?? [], $alert->district),
+            true,
+        );
     }
 
     private function relevant(MobilityAlert $alert, string $date): bool
@@ -161,7 +113,8 @@ class MobilityStrikesSummaryBuilder
         $source = mb_strtolower((string) $alert->source);
         $metadata = $alert->strike_metadata;
         $status = (string) data_get($metadata, 'status', 'unknown');
-        if ($status === 'unknown') {
+        if (in_array($status, ['unknown', 'not_affected'], true)
+            || ($source === 'atm' && $this->announcements->excludesAtmLines($alert->title, (string) $alert->description))) {
             return false;
         }
         if ($source === 'mit' && is_array($metadata)) {
