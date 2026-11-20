@@ -346,6 +346,68 @@ it('leaves records and deliveries unchanged when the source fails', function () 
     Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 1);
 });
 
+it('uses an official RFI notice when Trenord is blocked and reuses it when Trenord returns', function (): void {
+    $this->travelTo(Carbon::parse('2026-11-20 19:00:00', 'Europe/Rome'));
+    config(['mobility.strike_notifications_active_since' => '2026-11-20']);
+    $feedUrl = 'https://www.rfi.it/content/rfi/it/news-e-media/infomobilita.rss.notices.xml';
+    $articleUrl = 'https://www.rfi.it/it/news-e-media/infomobilita/avvisi/2026/11/20/sciopero-nazionale-del-trasporto-ferroviario.html';
+    $article = '<html><body><main><h1>Sciopero nazionale del trasporto ferroviario</h1>'
+        .'<p>In vigore: 20 NOVEMBRE 2026 - 21 NOVEMBRE 2026</p><p>Causa Modifica: Sciopero</p>'
+        .'<p>Impresa: Gruppo FS Italiane, Italo Nuovo Trasporto Viaggiatori, Trenord</p>'
+        .'<p>Dalle ore 21:00 di venerdì 20 novembre alle ore 20:00 di sabato 21 novembre 2026 è stato indetto uno sciopero del personale.</p>'
+        .'</main></body></html>';
+    $primary = '<html><body><main><header><h1>Sciopero nazionale del 20-21 novembre 2026</h1> '
+        .'<p>venerdì 13/11/2026</p></header> <p>Indetto uno sciopero nazionale dalle ore 21:00 '
+        .'di venerdì 20 novembre fino alle ore 20:00 di sabato 21 novembre 2026.</p></main></body></html>';
+    $feed = '<rss version="2.0"><channel><title>Avvisi ai viaggiatori</title><item>'
+        .'<title>Sciopero nazionale del trasporto ferroviario</title><link>'.$articleUrl.'</link>'
+        .'<pubDate>Fri, 20 Nov 2026 08:00:00 +0100</pubDate></item></channel></rss>';
+    $primaryAvailable = false;
+    Http::swap(new Factory);
+    Http::fake(function ($request) use ($feedUrl, $articleUrl, $feed, $article, &$primary, &$primaryAvailable) {
+        return match ($request->url()) {
+            $feedUrl => Http::response($feed),
+            $articleUrl => Http::response($article),
+            'https://www.trenord.it/news/trenord-informa/avvisi/sciopero/' => $primaryAvailable
+                ? Http::response($primary) : Http::response('Forbidden', 403),
+            'https://www.trenord.it/news/', 'https://www.trenord.it/' => Http::response('Forbidden', 403),
+            config('mobility.strike_source_url') => Http::response('Unavailable', 503),
+            default => Http::response('<html><body>ATM <div class="tgme_channel_info">Metro status</div></body></html>'),
+        };
+    });
+
+    $service = app(MobilityAlertSyncService::class);
+    $service->sync(dryRun: true);
+    expect($service->sourcePreview['events'])->toHaveCount(1)
+        ->and($service->sourcePreview['events'][0])->toMatchArray([
+            'source' => 'trenord', 'starts_at' => '2026-11-20', 'ends_at' => '2026-11-21', 'duration' => '21:00–20:00',
+        ])
+        ->and(MobilityAlert::count())->toBe(0);
+    Bus::assertNothingDispatched();
+
+    $service->sync();
+    $service->sync();
+    expect(MobilityAlert::sole()->url)->toBe($articleUrl)
+        ->and(MobilityAlertMessage::sole()->text)->toContain('20 ноября, 21:00 — 21 ноября, 20:00', 'Como');
+
+    $primaryAvailable = true;
+    $service->sync();
+    expect($service->sourcePreview['events'][0])->toMatchArray(['status' => 'scheduled', 'publication_date' => '2026-11-13'])
+        ->and(MobilityAlert::count())->toBe(1)
+        ->and(MobilityAlertMessage::count())->toBe(1);
+    Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 1);
+
+    $primary = str_replace(['13/11/2026', 'Indetto uno'], ['20/11/2026', 'Revocato lo'], $primary);
+    $service->sync();
+    expect($service->sourcePreview['events'][0]['status'])->toBe('cancelled');
+    $primaryAvailable = false;
+    $service->sync();
+    expect(MobilityAlert::sole()->strike_metadata['status'])->toBe('cancelled')
+        ->and(MobilityAlertMessage::count())->toBe(2)
+        ->and(MobilityAlertMessage::latest('id')->first()->text)->toContain('Забастовка отменена');
+    Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 2);
+});
+
 it('isolates a malformed item while processing valid items', function () {
     $html = mitStrikeTable(['ID' => 'bad', 'Inizio' => '32/10/2026']).mitStrikeTable();
     fakeMitHttp(['*' => Http::response($html)]);
