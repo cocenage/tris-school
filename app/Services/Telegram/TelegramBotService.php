@@ -99,6 +99,13 @@ class TelegramBotService
         );
     }
 
+    public function editAnalyticsMessage(string $chatId, string $messageId, string $text): bool
+    {
+        $token = config('services.telegram.analytics_bot_token');
+
+        return filled($token) && $this->editHtmlMessage($token, $chatId, $messageId, $text);
+    }
+
     public function sendScheduledMessage(string $chatId, string $text, ?string $threadId = null, ?array $replyMarkup = null): ?int
     {
         $token = config('services.telegram.scheduled_bot_token');
