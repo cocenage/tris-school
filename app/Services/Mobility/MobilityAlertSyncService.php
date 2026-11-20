@@ -338,6 +338,18 @@ class MobilityAlertSyncService
             );
         }
 
+        if (in_array($this->strikeSourceStatuses['trenord_strikes']['status'], ['unavailable', 'unrecognized'], true)) {
+            $rfi = app(RfiStrikeSource::class)->fetch();
+            $this->strikeSourceStatuses['rfi_trenord'] = [
+                'status' => $rfi['issue'] !== null ? 'unavailable' : ($rfi['events'] === [] ? 'checked_empty' : 'events_found'),
+                'event_count' => count($rfi['events']),
+                'issue' => $rfi['issue'],
+            ];
+            foreach ($rfi['events'] as $event) {
+                $created += $this->recordStrikeNotice($event + ['identity_url' => self::TRENORD_STRIKE_URL]);
+            }
+        }
+
         return $created;
     }
 
@@ -569,24 +581,7 @@ class MobilityAlertSyncService
                     'duration' => $this->confirmedDuration($title, $body),
                     'notes' => Str::limit($body, 1200, ''),
                 ];
-                $this->previewEvents[] = [
-                    'source' => $source,
-                    'title' => Str::limit($title, 250, ''),
-                    'status' => $normalized['status'],
-                    'starts_at' => $eventDate,
-                    'ends_at' => $eventEnd,
-                    'publication_date' => $publicationDate,
-                    'duration' => $metadata['duration'],
-                    'url' => $item['url'],
-                ];
-
-                if ($this->dryRun) {
-                    $created++;
-
-                    continue;
-                }
-
-                $created += app(MobilityStrikeSyncService::class)->syncExternalNotice([
+                $created += $this->recordStrikeNotice([
                     'source' => $source,
                     'title' => $title,
                     'description' => $body !== '' ? Str::limit($body, 5000, '') : null,
@@ -655,6 +650,22 @@ class MobilityAlertSyncService
         ]);
 
         return $created;
+    }
+
+    private function recordStrikeNotice(array $event): int
+    {
+        $this->previewEvents[] = [
+            'source' => $event['source'],
+            'title' => Str::limit($event['title'], 250, ''),
+            'status' => $event['metadata']['status'],
+            'starts_at' => $event['starts_at'],
+            'ends_at' => $event['ends_at'],
+            'publication_date' => $event['metadata']['publication_date'],
+            'duration' => $event['metadata']['duration'],
+            'url' => $event['url'],
+        ];
+
+        return $this->dryRun ? 1 : app(MobilityStrikeSyncService::class)->syncExternalNotice($event);
     }
 
     private function sourcePageRecognized(string $source, string $html): bool
