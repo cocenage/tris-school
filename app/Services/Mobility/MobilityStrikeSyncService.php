@@ -157,7 +157,7 @@ class MobilityStrikeSyncService
 
         $metadata = (array) ($event['metadata'] ?? []);
         $status = (string) ($metadata['status'] ?? 'unknown');
-        $urlKey = $source.'|'.mb_strtolower($url);
+        $urlKey = $source.'|'.mb_strtolower((string) ($event['identity_url'] ?? $url));
         $noticeDate = $event['notice_date'] ?? null;
         $identity = sha1($noticeDate === null ? $urlKey : $urlKey.'|'.$noticeDate);
         $version = hash('sha256', json_encode([
@@ -176,6 +176,18 @@ class MobilityStrikeSyncService
                     ->first();
             }
             $old = $alert?->strike_metadata ?? [];
+            $rfi = ($metadata['notice_provider'] ?? null) === 'rfi';
+            $wasRfi = ($old['notice_provider'] ?? null) === 'rfi';
+            if ($rfi && $status === 'scheduled' && in_array($old['status'] ?? null, ['cancelled', 'postponed'], true)) {
+                return;
+            }
+            if ($rfi !== $wasRfi && $status === 'scheduled' && ($old['status'] ?? null) === 'scheduled'
+                && $alert?->starts_at?->toDateString() === ($event['starts_at'] ?? null)
+                && $alert?->ends_at?->toDateString() === ($event['ends_at'] ?? null)
+                && ($old['duration'] ?? null) === ($metadata['duration'] ?? null)) {
+                $version = $old['version'];
+                $metadata['publication_date'] = max($old['publication_date'] ?? null, $metadata['publication_date'] ?? null);
+            }
             if (($old['version'] ?? null) === $version) {
                 $kind = (string) ($old['notification_kind'] ?? 'new');
                 $revision = (int) ($old['revision'] ?? 1);
@@ -214,7 +226,12 @@ class MobilityStrikeSyncService
             }
 
             $districts = app(MobilityStrikeCoverage::class)->districts($source, $metadata, $alert->district);
-            if ($districts === [] || ! $this->shouldNotifyExternal($metadata, $kind, $alert->starts_at?->toDateString())) {
+            if ($districts === [] || ! $this->shouldNotifyExternal(
+                $metadata,
+                $kind,
+                $alert->starts_at?->toDateString(),
+                $alert->ends_at?->toDateString(),
+            )) {
                 return;
             }
 
@@ -236,7 +253,7 @@ class MobilityStrikeSyncService
         return $created ? 1 : 0;
     }
 
-    private function shouldNotifyExternal(array $metadata, string $kind, ?string $eventDate): bool
+    private function shouldNotifyExternal(array $metadata, string $kind, ?string $eventDate, ?string $endDate): bool
     {
         $activation = $this->notificationActivation();
         if (! $activation || ! in_array($metadata['status'] ?? null, ['scheduled', 'updated', 'postponed', 'cancelled'], true)) {
@@ -256,7 +273,7 @@ class MobilityStrikeSyncService
         if ($kind === 'new') {
             return ($metadata['status'] ?? null) === 'scheduled'
                 && $eventDate !== null
-                && $eventDate >= CarbonImmutable::now('Europe/Rome')->toDateString();
+                && ($endDate ?? $eventDate) >= CarbonImmutable::now('Europe/Rome')->toDateString();
         }
 
         return true;

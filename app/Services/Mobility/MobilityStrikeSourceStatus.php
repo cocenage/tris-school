@@ -25,7 +25,7 @@ class MobilityStrikeSourceStatus
         $checkedAt ??= CarbonImmutable::now('Europe/Rome');
         $previous = Cache::get(self::CACHE_KEY, []);
         $statuses = [];
-        foreach (self::SOURCES as $key => $label) {
+        foreach ($this->sourceLabels($sources) as $key => $label) {
             $raw = $sources[$key] ?? false;
             $status = is_array($raw)
                 ? (string) ($raw['status'] ?? 'unavailable')
@@ -114,7 +114,7 @@ class MobilityStrikeSourceStatus
     private function normalizeSources(array $sources): array
     {
         $normalized = [];
-        foreach (self::SOURCES as $key => $label) {
+        foreach ($this->sourceLabels($sources) as $key => $label) {
             $available = data_get($sources, $key.'.available', data_get($sources, $key));
             $status = data_get($sources, $key.'.status');
             if (! is_string($status)) {
@@ -133,5 +133,10 @@ class MobilityStrikeSourceStatus
         }
 
         return $normalized;
+    }
+
+    private function sourceLabels(array $sources): array
+    {
+        return self::SOURCES + (array_key_exists('rfi_trenord', $sources) ? ['rfi_trenord' => 'RFI — Trenord'] : []);
     }
 }
