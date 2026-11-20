@@ -6,7 +6,7 @@ return [
     'strike_notifications_enabled' => env('MOBILITY_STRIKE_NOTIFICATIONS_ENABLED', false),
     'strike_notifications_active_since' => env('MOBILITY_STRIKE_NOTIFICATIONS_ACTIVE_SINCE'),
     'regions' => ['lombardia'],
-    'provinces' => ['milano'],
+    'provinces' => ['milano', 'como'],
     'operators' => ['trenord', 'atm di milano', 'gruppo atm'],
     'sectors' => ['ferroviario', 'trasporto pubblico locale', 'generale', 'plurisettoriale'],
 ];

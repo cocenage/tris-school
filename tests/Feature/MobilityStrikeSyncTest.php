@@ -141,6 +141,27 @@ it('tracks official operator notices once and sends a later published postponeme
     Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 2);
 });
 
+it('queues a still current operator notice once routing is enabled after its first import', function (): void {
+    config(['mobility.strike_notifications_enabled' => false]);
+    $event = [
+        'source' => 'trenord', 'title' => 'Sciopero Trenord', 'description' => 'Sciopero ferroviario.',
+        'url' => 'https://www.trenord.it/news/trenord-informa/avvisi/sciopero/', 'type' => 'strike', 'risk' => 'high',
+        'district' => 'Lombardia', 'starts_at' => '2026-10-30', 'ends_at' => '2026-10-30',
+        'metadata' => ['status' => 'scheduled', 'operator' => 'Trenord', 'sector' => 'Ferroviario', 'publication_date' => '2026-10-01'],
+    ];
+    $sync = app(MobilityStrikeSyncService::class);
+    $sync->syncExternalNotice($event);
+    Bus::assertNothingDispatched();
+
+    config(['mobility.strike_notifications_enabled' => true]);
+    $sync->syncExternalNotice($event);
+    $sync->syncExternalNotice($event);
+
+    expect(MobilityAlert::count())->toBe(1)
+        ->and(MobilityAlertMessage::count())->toBe(1);
+    Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 1);
+});
+
 it('does not send an existing operator notice on the first activated sync when its publication predates activation', function (): void {
     config(['mobility.strike_notifications_active_since' => '2026-10-01']);
     $event = [
@@ -248,13 +269,56 @@ it('includes national transport strikes without Lombardia metadata', function ()
     expect(app(MobilityStrikeSyncService::class)->sync()['queued'])->toBe(1);
 });
 
+it('shows only the TRIS zones covered by the strike', function (array $fields, ?string $zones): void {
+    fakeMitHttp(['*' => Http::response(mitStrikeTable($fields))]);
+    $result = app(MobilityStrikeSyncService::class)->sync();
+
+    if ($zones === null) {
+        expect($result['queued'])->toBe(0);
+        Bus::assertNothingDispatched();
+
+        return;
+    }
+
+    expect($result['queued'])->toBe(1)
+        ->and(MobilityAlertMessage::sole()->text)->toContain('📍 <b>Зоны TRIS:</b> '.$zones."\n");
+})->with([
+    'ATM Milano' => [[], 'Navigli · Lodi · Certosa · Lambrate'],
+    'Como local transport' => [['Categoria' => 'ASF Autolinee', 'Provincia' => 'Como', 'Regione' => ''], 'Como'],
+    'Milan and Como provinces' => [['Categoria' => 'Trasporto locale', 'Provincia' => 'Milano, Como', 'Regione' => ''], 'Navigli · Lodi · Certosa · Lambrate · Como'],
+    'regional trains' => [['Settore*' => 'Ferroviario', 'Categoria' => 'TRENORD', 'Rilevanza' => 'Regionale'], 'Navigli · Lodi · Certosa · Lambrate · Como'],
+    'unrelated province in Lombardia' => [['Categoria' => 'ATB Bergamo', 'Provincia' => 'Bergamo'], null],
+    'province of Lodi, outside the Milan working zone' => [['Categoria' => 'Trasporto locale', 'Provincia' => 'Lodi'], null],
+    'national strike without a transport sector' => [['Settore*' => 'Generale', 'Categoria' => 'Personale delle scuole', 'Rilevanza' => 'Nazionale'], null],
+]);
+
+it('puts the announced dates and Rome times together above a short official source link', function (): void {
+    fakeMitHttp(['*' => Http::response(mitStrikeTable([
+        'Inizio' => '20/11/2026', 'Fine' => '21/11/2026', 'Settore*' => 'Ferroviario',
+        'Categoria' => 'Personale ferroviario Trenord', 'Modalità' => '21:00–20:00',
+        'Rilevanza' => 'Regionale', 'Note' => 'Testo integrale del comunicato',
+    ]))]);
+
+    app(MobilityStrikeSyncService::class)->sync();
+    $text = MobilityAlertMessage::sole()->text;
+
+    expect($text)->toBe(implode("\n", [
+        '🚨 <b>Забастовка транспорта</b>',
+        '📍 <b>Зоны TRIS:</b> Navigli · Lodi · Certosa · Lambrate · Como',
+        '📅 <b>20 ноября, 21:00 — 21 ноября, 20:00</b>',
+        '🚆 Trenord · возможны перебои с поездами',
+        '',
+        '<a href="'.e(config('mobility.strike_source_url')).'">Официальное объявление</a>',
+    ]));
+});
+
 it('reserves exactly one notification for a meaningful update', function () {
     app(MobilityStrikeSyncService::class)->sync();
     fakeMitHttp(['*' => Http::response(mitStrikeTable(['Inizio' => '10/10/2026', 'Fine' => '10/10/2026', 'Modalità' => '4 ORE']))]);
     expect(app(MobilityStrikeSyncService::class)->sync()['updated'])->toBe(1);
     app(MobilityStrikeSyncService::class)->sync();
     expect(MobilityAlert::count())->toBe(1)->and(MobilityAlertMessage::count())->toBe(2);
-    expect(MobilityAlertMessage::latest('id')->first()->text)->toContain('Обновление забастовки', 'Прежняя дата', '4 ORE');
+    expect(MobilityAlertMessage::latest('id')->first()->text)->toContain('Обновление забастовки', 'Прежняя дата', '4 ч');
     Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 2);
 });
 
@@ -320,6 +384,91 @@ it('calls Telegram outside the database transaction after persisting the deliver
         ->and($message->fresh()->attempted_at)->not->toBeNull();
 });
 
+it('posts a newly discovered strike in the dedicated topic and edits that post when it is cancelled', function (): void {
+    config(['services.telegram.analytics_bot_token' => 'test-analytics-token']);
+    $sync = app(MobilityStrikeSyncService::class);
+    $sync->sync();
+    $first = MobilityAlertMessage::sole();
+
+    Http::swap(new Factory);
+    Http::fake([
+        'https://api.telegram.org/bottest-analytics-token/sendMessage' => Http::response([
+            'ok' => true, 'result' => ['message_id' => 987],
+        ]),
+    ]);
+    $bot = app(TelegramBotService::class);
+    (new DeliverMobilityAlert($first->id))->handle($bot);
+    Http::assertSentCount(1);
+    Http::assertSent(fn ($request) => str_ends_with($request->url(), '/sendMessage')
+        && (string) $request['chat_id'] === '-100123'
+        && $request['message_thread_id'] === 17
+        && str_contains($request['text'], 'Забастовка транспорта'));
+
+    fakeMitHttp(['*' => Http::response(mitStrikeTable(['Note' => 'SCIOPERO REVOCATO']))]);
+    $sync->sync();
+    $sync->sync();
+    $cancellation = MobilityAlertMessage::query()->latest('id')->firstOrFail();
+    Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 2);
+
+    Http::swap(new Factory);
+    Http::fake([
+        'https://api.telegram.org/bottest-analytics-token/editMessageText' => Http::response(['ok' => true]),
+        '*' => Http::response([], 404),
+    ]);
+
+    $job = new DeliverMobilityAlert($cancellation->id);
+    $job->handle($bot);
+    $job->handle($bot);
+
+    Http::assertSentCount(1);
+    Http::assertSent(fn ($request) => str_ends_with($request->url(), '/editMessageText')
+        && (string) $request['chat_id'] === '-100123'
+        && $request['message_id'] === 987
+        && str_contains($request['text'], 'Забастовка отменена')
+        && str_contains($request['text'], 'Navigli · Lodi · Certosa · Lambrate')
+        && ! str_contains($request['text'], 'возможны перебои'));
+    expect($cancellation->fresh()->delivery_status)->toBe('sent');
+});
+
+it('does not publish an older version if the cancellation was delivered first', function (): void {
+    $sync = app(MobilityStrikeSyncService::class);
+    $sync->sync();
+    $first = MobilityAlertMessage::sole();
+
+    fakeMitHttp(['*' => Http::response(mitStrikeTable(['Note' => 'SCIOPERO REVOCATO']))]);
+    $sync->sync();
+    $cancellation = MobilityAlertMessage::query()->latest('id')->firstOrFail();
+
+    $bot = Mockery::mock(TelegramBotService::class);
+    $bot->shouldReceive('sendAnalyticsMessage')->once()
+        ->withArgs(fn (string $chat, string $text, string $thread): bool => $chat === '-100123'
+            && $thread === '17' && str_contains($text, 'Забастовка отменена'))
+        ->andReturn(987);
+    $bot->shouldNotReceive('editAnalyticsMessage');
+
+    (new DeliverMobilityAlert($cancellation->id))->handle($bot);
+    (new DeliverMobilityAlert($first->id))->handle($bot);
+
+    expect($first->fresh()->delivery_status)->toBe('superseded')
+        ->and($cancellation->fresh()->telegram_message_id)->toBe('987');
+});
+
+it('keeps raw strike notices out of the general mobility alert channel', function (): void {
+    MobilityAlert::create([
+        'source' => 'telegram', 'type' => 'strike', 'title' => 'Sciopero ATM',
+        'risk' => 'high', 'external_hash' => 'raw-strike-alert',
+    ]);
+    MobilityAlert::create([
+        'source' => 'telegram', 'type' => 'closure', 'title' => 'M2 chiusa',
+        'risk' => 'high', 'external_hash' => 'raw-line-closure',
+    ]);
+
+    $this->artisan('mobility:admin-alerts', ['--dry-run' => true])
+        ->expectsOutputToContain('M2 chiusa')
+        ->doesntExpectOutputToContain('Sciopero ATM')
+        ->assertSuccessful();
+});
+
 it('marks a delivery uncertain after an interrupted in-flight attempt without another send', function () {
     app(MobilityStrikeSyncService::class)->sync();
     $message = MobilityAlertMessage::sole();
@@ -376,11 +525,19 @@ it('parses Rome dates independently of application timezone', function () {
     expect($dateMethod->invoke(app(MitStrikeSource::class), '09/10/2026')->timezoneName)->toBe('Europe/Rome');
 });
 
-it('runs the sync hourly with overlap protection', function () {
+it('polls mobility every fifteen minutes while dedicated strike notifications are enabled', function () {
     $events = app(Schedule::class)->events();
     $event = collect($events)->first(fn ($event) => str_contains($event->command ?? '', 'mobility:sync'));
     expect($event)->not->toBeNull();
-    expect($event->expression)->toBe('0 * * * *')->and($event->withoutOverlapping)->toBeTrue();
+    $this->travelTo(Carbon::parse('2026-10-01 10:15:00', 'Europe/Rome'));
+    expect($event->expression)->toBe('*/15 * * * *')
+        ->and($event->withoutOverlapping)->toBeTrue()
+        ->and($event->filtersPass(app()))->toBeTrue();
+
+    config(['mobility.strike_notifications_enabled' => false]);
+    expect($event->filtersPass(app()))->toBeFalse();
+    $this->travelTo(Carbon::parse('2026-10-01 11:00:00', 'Europe/Rome'));
+    expect($event->filtersPass(app()))->toBeTrue();
 });
 
 it('rolls back alert and reservation when queue insertion fails', function () {

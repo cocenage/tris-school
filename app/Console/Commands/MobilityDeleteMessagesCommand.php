@@ -22,6 +22,7 @@ class MobilityDeleteMessagesCommand extends Command
     {
         $query = MobilityAlertMessage::query()
             ->whereNull('deleted_at')
+            ->where('telegram_message_id', '!=', '')
             ->where('message_type', $this->option('type'));
 
         if ($this->option('today')) {

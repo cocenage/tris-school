@@ -17,15 +17,9 @@ class MobilityAdminAlertsCommand extends Command
 
     public function handle(): int
     {
-        $query = MobilityAlert::query()->whereNull('strike_metadata')
-            ->where(function ($query) {
-                $query->where('type', 'strike')
-                    ->orWhere('risk', 'high')
-                    ->orWhereRaw('LOWER(title) LIKE ?', ['%sciopero%'])
-                    ->orWhereRaw('LOWER(title) LIKE ?', ['%strike%'])
-                    ->orWhereRaw('LOWER(description) LIKE ?', ['%sciopero%'])
-                    ->orWhereRaw('LOWER(description) LIKE ?', ['%strike%']);
-            });
+        $query = MobilityAlert::query()
+            ->whereNull('strike_metadata')
+            ->where('risk', 'high');
 
         if ($this->option('since')) {
             $query->where('created_at', '>=', Carbon::parse($this->option('since')));
@@ -34,7 +28,9 @@ class MobilityAdminAlertsCommand extends Command
         $alerts = $query
             ->orderBy('starts_at')
             ->get()
-            ->reject(fn (MobilityAlert $alert): bool => $this->isRegularStatus($alert))
+            ->reject(fn (MobilityAlert $alert): bool => $alert->type === 'strike'
+                || preg_match('/scioper|agitazion|забастов|\bstrike\b/iu', $alert->title.' '.$alert->description) === 1
+                || $this->isRegularStatus($alert))
             ->values();
 
         if ($alerts->isEmpty()) {

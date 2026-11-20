@@ -135,6 +135,7 @@ class MobilityAlertsTable
         $messages = MobilityAlertMessage::query()
             ->where('mobility_alert_id', $alert->id)
             ->whereNull('deleted_at')
+            ->where('telegram_message_id', '!=', '')
             ->get();
 
         foreach ($messages as $message) {
