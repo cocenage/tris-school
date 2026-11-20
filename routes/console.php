@@ -21,7 +21,8 @@ Schedule::command('calendar:notify-celebrations')
 Schedule::command('tasks:check-deadlines')->everyFifteenMinutes();
 
 Schedule::command('mobility:sync')
-    ->hourly()
+    ->everyFifteenMinutes()
+    ->when(fn (): bool => config('mobility.strike_notifications_enabled') || now()->minute === 0)
     ->withoutOverlapping();
 
 Schedule::command('mobility:digest')

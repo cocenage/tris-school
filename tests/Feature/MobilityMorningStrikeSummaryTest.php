@@ -2,6 +2,7 @@
 
 use App\Models\MobilityAlert;
 use App\Services\Mobility\MobilityAlertSyncService;
+use App\Services\Mobility\MobilityStrikeAnnouncementParser;
 use App\Services\Mobility\MobilityStrikeSourceStatus;
 use App\Services\Mobility\MobilityStrikesSummaryBuilder;
 use App\Services\Mobility\MobilityStrikesSummaryFormatter;
@@ -384,4 +385,87 @@ it('keeps the existing mobility sync successful when source status cache storage
 
     expect(app(MobilityAlertSyncService::class)->sync())->toBe(0)
         ->and(app(MobilityStrikesSummaryBuilder::class)->build('2026-10-20', 'como', 7)['source_status']['state'])->toBe('unknown');
+});
+
+it('reads the dated Trenord announcement from the page heading and the actual strike hours from the article', function (): void {
+    $url = 'https://www.trenord.it/news/trenord-informa/avvisi/sciopero/';
+    $html = <<<'HTML'
+        <html><body>
+        <nav><a href="/servizi/">In caso di sciopero</a></nav>
+        <div class="container-content grid-margin">
+            <div class="text align-middle">
+                <h1>Sciopero nazionale del 20-21 novembre 2026</h1>
+                <p>venerdì 13/11/2026</p>
+            </div>
+            <p>È stato indetto uno sciopero dalle ore 21:00 del 20 novembre fino alle ore 20:00 del 21 novembre.</p>
+            <p>Treni garantiti nelle fasce 06:00 - 09:00 / 18:00 - 21:00.</p>
+            <p>Gli aggiornamenti in tempo reale saranno pubblicati sul sito e nell’app.</p>
+        </div>
+        </body></html>
+        HTML;
+    Http::fake(function ($request) use ($url, &$html) {
+        return Http::response($request->url() === $url ? $html : '<html><body></body></html>');
+    });
+
+    app(MobilityAlertSyncService::class)->sync();
+
+    $alert = MobilityAlert::query()->where('url', $url)->sole();
+    $summary = app(MobilityStrikesSummaryBuilder::class)->build('2026-11-21', 'como');
+
+    expect($alert->strike_metadata)->toMatchArray([
+        'status' => 'scheduled',
+        'publication_date' => '2026-11-13',
+        'duration' => '21:00–20:00',
+    ])->and($alert->starts_at->toDateString())->toBe('2026-11-20')
+        ->and($alert->ends_at->toDateString())->toBe('2026-11-21')
+        ->and($summary['strikes'])->toHaveCount(1)
+        ->and($summary['source_status']['sources']['trenord_strikes']['status'])->toBe('events_found');
+
+    $original = $html;
+    $html = str_replace('Sciopero nazionale del', 'Revocato lo sciopero nazionale del', $original);
+    app(MobilityAlertSyncService::class)->sync();
+    expect($alert->fresh()->strike_metadata['status'])->toBe('cancelled');
+
+    $html = str_replace(
+        ['20-21', '13/11', '20 novembre', '21 novembre'],
+        ['27-28', '21/11', '27 novembre', '28 novembre'],
+        $original,
+    );
+    app(MobilityAlertSyncService::class)->sync();
+
+    expect(MobilityAlert::query()->where('url', $url)->orderBy('starts_at')->pluck('starts_at')->map->toDateString()->all())
+        ->toBe(['2026-11-20', '2026-11-27']);
+});
+
+it('keeps an ATM notice about other operators out of active ATM strike results', function (): void {
+    $title = 'Possibile sciopero venerdì 20 novembre sulle linee di altri operatori';
+    $body = 'Lo sciopero nazionale generale di venerdì 20 novembre non coinvolge le linee ATM, che saranno in normale servizio.';
+    $status = app(MobilityStrikeAnnouncementParser::class)
+        ->normalize($title, $body, '2026-11-18')['status'];
+
+    morningStrike([
+        'source' => 'atm',
+        'title' => $title,
+        'description' => $body,
+        'starts_at' => '2026-11-20',
+        'ends_at' => '2026-11-20',
+    ]);
+
+    expect($status)->toBe('not_affected')
+        ->and(app(MobilityStrikesSummaryBuilder::class)->build('2026-11-20')['strikes'])->toBe([]);
+});
+
+it('continues synchronization when a linked strike notice is unavailable', function (): void {
+    $listing = 'https://www.atm.it/it/viaggiaconnoi/infotraffico/pagine/default2.aspx';
+    Http::fake([
+        $listing => Http::response('<html><body>ATM <a href="https://www.atm.it/avviso.aspx">Sciopero del 20 novembre 2026</a></body></html>'),
+        'https://www.atm.it/avviso.aspx' => Http::response('', 503),
+        '*' => Http::response('<html><body></body></html>'),
+    ]);
+
+    $sync = app(MobilityAlertSyncService::class);
+    $sync->sync(true);
+
+    expect($sync->sourcePreview['sources']['atm']['status'])->toBe('unavailable')
+        ->and($sync->sourcePreview['sources'])->toHaveKey('trenord_strikes');
 });
