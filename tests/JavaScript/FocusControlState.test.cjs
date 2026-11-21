@@ -7,6 +7,7 @@ const source = readFileSync('resources/views/components/forms/⚡page-control-fo
 const expression = source.match(/x-data="(\{\s+activeRoomIndex:[\s\S]*?)"\s+x-on:focus-question-selected/)[1]
     .replace(/@entangle\([^)]*\)/g, 'null')
     .replace('@js($this->questionCompletion)', '[[false, false]]')
+    .replace('@js($this->requiredQuestionsByRoom)', '[[0, 1]]')
     .replace('@js($draftState)', "'idle'")
     .replace('@js($draftError)', "''")
     .replace('@js(FocusMediaLimits::transportBytes())', '104857600')
@@ -18,13 +19,13 @@ test('answer interactions update room progress before the next server reply', ()
     assert.match(source, /selected = @js\(\$value\); updateQuestionCompletion\(/);
     assert.match(source, /x-on:input="updateQuestionCompletion\([^"]+\); scheduleAutosave\(900\)"/);
     state.updateQuestionCompletion(0, 0, 'yes', '');
-    assert.equal(state.completedCount, 1);
+    assert.equal(state.roomAnsweredCount(0), 1);
     assert.equal(state.roomProgress(0), 'partial');
     state.updateQuestionCompletion(0, 1, '', 'Comment');
-    assert.equal(state.completedCount, 2);
+    assert.equal(state.roomAnsweredCount(0), 2);
     assert.equal(state.roomProgress(0), 'complete');
     state.updateQuestionCompletion(0, 1, '', '  ');
-    assert.equal(state.completedCount, 1);
+    assert.equal(state.roomAnsweredCount(0), 1);
 });
 
 test('a failed comment save can be retried without advancing the saved value', async () => {
@@ -109,4 +110,39 @@ test('opening from a finding shows only its evidence and restores focus to that 
     assert.equal(gallery.current.url, '/video');
     gallery.reset();
     assert.deepEqual(focus, ['viewer', 'finding']);
+});
+
+test('next focuses the first blank required answer, then advances and opens review', () => {
+    const state = form();
+    state.activeRoomIndex = 0;
+    state.requiredQuestionsByRoom = [[0, 2], []];
+    state.questionCompletion = [[true, false, false], []];
+    const visits = [];
+    state.focusQuestion = ({ room, question }) => visits.push([room, question]);
+    state.goToRoom = index => { state.activeRoomIndex = index; visits.push(index); };
+    state.openReview = () => visits.push('review');
+    state.nextRoom();
+    state.updateQuestionCompletion(0, 2, '', 'Готово');
+    state.nextRoom();
+    state.nextRoom();
+    state.updateQuestionCompletion(0, 0, '', '');
+    state.nextRoom();
+    assert.deepEqual(visits, [[0, 2], 1, 'review', [0, 0]]);
+});
+
+test('retry saves the same edits after the server failed to acknowledge them', async () => {
+    const state = form();
+    let attempts = 0;
+    state.$wire = {
+        saveDraft: async () => ++attempts > 1,
+        get: () => 'Ошибка сохранения',
+    };
+    state.scheduleAutosave();
+    assert.equal(await state.flushAutosave(), false);
+    assert.equal(state.clientDraftState, 'error');
+    assert.equal(state.persistedSaveRevision, 0);
+    await state.retryDraft();
+    assert.equal(state.clientDraftState, 'saved');
+    assert.equal(state.persistedSaveRevision, state.saveRevision);
+    assert.equal(attempts, 2);
 });

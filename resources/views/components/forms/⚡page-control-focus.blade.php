@@ -5,8 +5,8 @@ use App\Models\Control;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\User;
-use App\Services\Controls\ControlRunManager;
 use App\Services\Controls\ControlCompletionNotificationService;
+use App\Services\Controls\ControlRunManager;
 use App\Services\Controls\ControlSchema;
 use App\Services\Controls\FocusMediaLimits;
 use Illuminate\Support\Facades\Auth;
@@ -172,22 +172,22 @@ new class extends Component
         }
 
         foreach ($responses as $roomIndex => $questions) {
-                foreach ((array) $questions as $questionIndex => $answer) {
-                    $files = is_array($answer['media'] ?? null) ? $answer['media'] : [];
-                    $media[$roomIndex][$questionIndex] = array_values(array_filter($files, function (mixed $file): bool {
-                        if (! is_array($file)) {
-                            return false;
-                        }
+            foreach ((array) $questions as $questionIndex => $answer) {
+                $files = is_array($answer['media'] ?? null) ? $answer['media'] : [];
+                $media[$roomIndex][$questionIndex] = array_values(array_filter($files, function (mixed $file): bool {
+                    if (! is_array($file)) {
+                        return false;
+                    }
 
-                        $disk = $file['disk'] ?? null;
-                        $path = (string) ($file['path'] ?? '');
+                    $disk = $file['disk'] ?? null;
+                    $path = (string) ($file['path'] ?? '');
 
-                        return in_array($disk, ['local', 'public'], true)
-                            && str_starts_with($path, 'controls/'.$this->control->id.'/')
-                            && ! str_contains($path, '..')
-                            && ! str_contains($path, '\\');
-                    }));
-                }
+                    return in_array($disk, ['local', 'public'], true)
+                        && str_starts_with($path, 'controls/'.$this->control->id.'/')
+                        && ! str_contains($path, '..')
+                        && ! str_contains($path, '\\');
+                }));
+            }
         }
 
         foreach ($this->savedMediaOverrides as $roomIndex => $questions) {
@@ -382,6 +382,7 @@ new class extends Component
             'schema_version' => (new ControlSchema((int) $this->control->id, $rooms))->version(),
         ];
     }
+
     public function saveDraft(bool $silent = false): bool
     {
         $this->ensureAuthorized();
@@ -471,7 +472,6 @@ new class extends Component
 
             return;
         }
-
 
         $draftVersion = $draft->schema_version;
         if (! $draftVersion && is_array($draft->schema_snapshot)) {
@@ -570,7 +570,8 @@ new class extends Component
         $this->draftState = 'dirty';
         $this->saveDraft(true);
     }
-    public function start(): bool
+
+    public function start(?int $roomIndex = null): bool
     {
         $this->ensureAuthorized();
         if ($this->draftSchemaConflict) {
@@ -579,15 +580,26 @@ new class extends Component
 
         $this->resetErrorBag();
         $this->validateSetup();
-        if ($this->getErrorBag()->isNotEmpty() || ! $this->saveDraft(true)) {
+        if ($this->getErrorBag()->isNotEmpty()) {
+            return false;
+        }
+        if (! $this->saveDraft(true)) {
+            $this->focusFirstInvalidQuestion();
+
             return false;
         }
 
-        $this->stage = $this->editingReviewData ? 'review' : 'questions';
+        if ($roomIndex !== null && isset($this->rooms[$roomIndex])) {
+            $this->currentRoomIndex = $roomIndex;
+        }
+
+        $returnToReview = $this->editingReviewData && $roomIndex === null;
+        $this->stage = $returnToReview || $this->rooms === [] ? 'review' : 'questions';
         $this->editingReviewData = false;
 
         return true;
     }
+
     public function goToQuestion(int $roomIndex, int $questionIndex): void
     {
         $this->ensureAuthorized();
@@ -620,15 +632,16 @@ new class extends Component
             return;
         }
 
+        $lastRoom = $this->currentRoomIndex + 1 >= count($this->rooms);
         foreach ($this->incompleteQuestions as $item) {
-            if ($item['room_index'] === $this->currentRoomIndex) {
+            if ($lastRoom || $item['room_index'] === $this->currentRoomIndex) {
                 $this->goToQuestion($item['room_index'], $item['question_index']);
 
                 return;
             }
         }
 
-        if ($this->currentRoomIndex + 1 < count($this->rooms)) {
+        if (! $lastRoom) {
             $this->currentRoomIndex++;
         } else {
             $this->review($this->currentRoomIndex);
@@ -972,10 +985,40 @@ new class extends Component
 
         return $this->getErrorBag()->isEmpty() ? $rooms : false;
     }
+
+    protected function focusFirstInvalidQuestion(): void
+    {
+        foreach ($this->questions as $item) {
+            $room = $item['room_index'];
+            $question = $item['question_index'];
+            if ($this->getErrorBag()->has("answers.$room.$question")) {
+                $this->goToQuestion($room, $question);
+
+                return;
+            }
+        }
+    }
+
     public function review(?int $roomIndex = null): bool
     {
         $this->ensureAuthorized();
-        if ($this->draftSchemaConflict || ! $this->saveDraft(true)) {
+        if ($this->stage === 'questions') {
+            $this->resetErrorBag();
+            $this->validateSetup();
+            if ($this->getErrorBag()->isNotEmpty()) {
+                $this->stage = 'setup';
+                $this->editingReviewData = true;
+
+                return false;
+            }
+        }
+
+        if ($this->draftSchemaConflict) {
+            return false;
+        }
+        if (! $this->saveDraft(true)) {
+            $this->focusFirstInvalidQuestion();
+
             return false;
         }
 
@@ -987,6 +1030,7 @@ new class extends Component
 
         return true;
     }
+
     public function submit(): void
     {
         $this->ensureAuthorized();
@@ -996,6 +1040,13 @@ new class extends Component
 
         $rooms = $this->validateControl();
         if ($rooms === false) {
+            if ($this->getErrorBag()->hasAny(['cleaner_id', 'apartment_id', 'cleaning_date', 'inspection_date'])) {
+                $this->backToSetup();
+                $this->dispatch('focus-setup-invalid');
+            } else {
+                $this->focusFirstInvalidQuestion();
+            }
+
             return;
         }
 
@@ -1079,7 +1130,6 @@ new class extends Component
             $this->isSubmitting = false;
         }
     }
-
 };
 ?>
 
@@ -1132,10 +1182,6 @@ new class extends Component
             const answered = String(selected ?? '').trim() !== '' || String(custom ?? '').trim() !== '';
             this.questionCompletion[room][question] = answered;
             if (answered && room === this.activeRoomIndex && question === this.missingQuestion) this.missingQuestion = null;
-        },
-        get setupComplete() {
-            return Boolean(this.cleanerId && this.apartmentId && this.cleaningDate && this.inspectionDate
-                && this.inspectionDate >= this.cleaningDate);
         },
         roomAnsweredCount(index) {
             return (this.requiredQuestionsByRoom[index] || []).filter(question => this.questionCompletion[index]?.[question]).length;
@@ -1194,16 +1240,21 @@ new class extends Component
                 this.clientDraftError = this.$wire.get('draftError') || 'Не удалось сохранить. Повторите попытку.';
             }
         },
-        async startControl() {
+        async startControl(room = null) {
+            window.clearTimeout(this.saveTimer);
             const revision = this.saveRevision;
             this.clientDraftState = 'saving';
             try {
-                const started = await this.enqueueMutation(() => this.$wire.start());
+                const started = await this.enqueueMutation(() => this.$wire.start(room));
                 if (started === true) {
                     this.markDraftSaved(revision);
+                    if (this.$wire.stage === 'review') this.focusTarget('focus-review');
+                    else this.goToRoom(room ?? this.activeRoomIndex);
+                } else if (this.$wire.get('draftState') === 'error') {
+                    this.syncDraftState(false);
                 } else {
-                    this.clientDraftState = 'error';
-                    this.clientDraftError = this.$wire.get('draftError') || 'Не удалось начать контроль. Проверьте данные.';
+                    this.clientDraftState = this.$wire.get('draftState');
+                    this.focusSetupError();
                 }
             } catch (error) {
                 this.clientDraftState = 'error';
@@ -1211,12 +1262,17 @@ new class extends Component
             }
         },
         async openReview() {
+            window.clearTimeout(this.saveTimer);
             const revision = this.saveRevision;
             this.clientDraftState = 'saving';
             try {
                 const reviewed = await this.enqueueMutation(() => this.$wire.review(this.activeRoomIndex));
                 if (reviewed === true) {
                     this.markDraftSaved(revision);
+                    this.focusTarget('focus-review');
+                } else if (this.$wire.get('stage') === 'setup' && !this.$wire.get('draftError')) {
+                    this.clientDraftState = this.$wire.get('draftState');
+                    this.focusSetupError();
                 } else {
                     this.clientDraftState = 'error';
                     this.clientDraftError = this.$wire.get('draftError') || 'Не удалось открыть сводку. Проверьте ответы.';
@@ -1276,44 +1332,57 @@ new class extends Component
         },
         nextRoom() {
             const room = this.activeRoomIndex;
-            const missing = (this.requiredQuestionsByRoom[room] || []).find(question => !this.questionCompletion[room]?.[question]);
-            if (missing !== undefined) {
-                this.focusQuestion({ room, question: missing });
-                return;
+            const lastRoom = room + 1 === this.roomCount;
+            const rooms = lastRoom ? Array.from({ length: this.roomCount }, (_, index) => index) : [room];
+            for (const index of rooms) {
+                const missing = (this.requiredQuestionsByRoom[index] || []).find(question => !this.questionCompletion[index]?.[question]);
+                if (missing !== undefined) {
+                    this.focusQuestion({ room: index, question: missing });
+                    return;
+                }
             }
-            if (this.activeRoomIndex + 1 < this.roomCount) {
-                this.goToRoom(this.activeRoomIndex + 1);
-                return;
-            }
-            this.openReview();
+            if (lastRoom) this.openReview();
+            else this.goToRoom(room + 1);
         },
         previousRoom() {
             if (this.activeRoomIndex > 0) {
                 this.goToRoom(this.activeRoomIndex - 1);
                 return;
             }
-            this.enqueueMutation(() => this.$wire.backToSetup());
+            this.focusTarget('focus-setup');
+        },
+        focusTarget(id) {
+            this.$nextTick(() => window.requestAnimationFrame(() => {
+                const target = document.getElementById(id);
+                target?.focus({ preventScroll: true });
+                target?.scrollIntoView({ block: 'start', behavior: 'instant' });
+            }));
+        },
+        focusSetupError() {
+            this.$nextTick(() => window.requestAnimationFrame(() => {
+                const setup = document.getElementById('focus-setup');
+                (setup?.querySelector('[aria-invalid=true]') ?? setup)?.focus();
+            }));
+        },
+        centerRoomTab() {
+            const tabs = this.$refs.roomTabs;
+            const tab = tabs?.querySelector('[aria-current=step]');
+            if (tab) tabs.scrollLeft += tab.getBoundingClientRect().left - tabs.getBoundingClientRect().left - (tabs.clientWidth - tab.offsetWidth) / 2;
         },
         scrollToActiveRoom() {
-            this.$refs.roomTop?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
-            this.$nextTick(() => {
-                const activeChip = this.$refs.roomTabs?.querySelector('[aria-current=step]');
-                const tabs = this.$refs.roomTabs;
-                if (activeChip && tabs) {
-                    tabs.scrollLeft += activeChip.getBoundingClientRect().left - tabs.getBoundingClientRect().left
-                        - (tabs.clientWidth - activeChip.offsetWidth) / 2;
-                }
-            });
+            this.centerRoomTab();
+            this.focusTarget('focus-room-' + this.activeRoomIndex);
         },
         focusQuestion(detail) {
             this.activeRoomIndex = detail.room;
             const required = this.requiredQuestionsByRoom[detail.room] || [];
             this.missingQuestion = required.includes(detail.question) && !this.questionCompletion[detail.room]?.[detail.question] ? detail.question : null;
-            window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-                const question = document.getElementById(`focus-question-${detail.room}-${detail.question}`);
-                question?.focus({ preventScroll: true });
-                question?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
-            }));
+            this.$nextTick(() => this.centerRoomTab());
+            this.focusTarget('focus-question-' + detail.room + '-' + detail.question);
+        },
+        openPhoto(button) {
+            this.$refs.fullPhoto.src = button.href;
+            this.$refs.photoViewer.showModal();
         },
         openAttachments(room, question) {
             this.attachmentTarget = { room, question };
@@ -1340,7 +1409,10 @@ new class extends Component
                     item.permanentError = true;
                 }
                 this.uploads.push(item);
-                if (!item.permanentError) this.queue = this.queue.then(() => this.send(item));
+                if (!item.permanentError) {
+                    const queuedItem = this.uploads[this.uploads.length - 1];
+                    this.queue = this.queue.then(() => this.send(queuedItem));
+                }
             }
             event.target.value = '';
         },
@@ -1421,12 +1493,23 @@ new class extends Component
         },
         get busy() { return this.uploads.some(item => this.isUploadPending(item)); }
     }"
-    x-on:focus-question-selected.window="focusQuestion($event.detail)">
+    x-on:focus-question-selected.window="focusQuestion($event.detail)"
+    x-on:focus-setup-invalid.window="focusSetupError()">
+    <dialog wire:ignore x-ref="photoViewer" aria-label="Фото к вопросу" @click.self="$el.close()" @close="$refs.fullPhoto.removeAttribute('src')"
+        class="fixed inset-0 m-auto max-h-[92dvh] max-w-[94vw] rounded-2xl bg-white p-2 backdrop:bg-black/70">
+        <img x-ref="fullPhoto" alt="Фото к вопросу" class="mx-auto max-h-[76dvh] max-w-full object-contain">
+        <button type="button" autofocus @click="$refs.photoViewer.close()" class="mt-1 min-h-11 w-full rounded-xl bg-[#F1F4F7] font-semibold">Закрыть фото</button>
+    </dialog>
     <dialog wire:ignore x-ref="attachmentSheet" aria-label="Добавить фото или видео"
         @click.self="$el.close()"
         class="fixed inset-x-0 bottom-0 top-auto m-0 mx-auto max-h-[85dvh] w-full max-w-[640px] overflow-y-auto rounded-t-3xl bg-white p-0 text-[#182230] shadow-xl backdrop:bg-black/50">
         <div class="grid gap-2 p-4 pb-[calc(16px+env(safe-area-inset-bottom))]">
             <h2 class="text-base font-semibold">Добавить к вопросу</h2>
+            <p class="mt-1.5 text-xs text-[#596476]">Фото до 10 МБ · видео до 100 МБ.
+                @if(FocusMediaLimits::transportBytes() < FocusMediaLimits::VIDEO_KIB * 1024)
+                    На этом сервере до {{ number_format(floor(FocusMediaLimits::transportBytes() / 104857.6) / 10, 1, ',', ' ') }} МБ на файл.
+                @endif
+            </p>
             <button autofocus type="button" @click="$refs.takePhoto.click()" class="flex min-h-12 items-center gap-3 rounded-xl bg-[#EDF4FB] px-3 text-left font-medium">
                 <x-heroicon-o-camera aria-hidden="true" class="size-5" /> Снять фото
             </button>
@@ -1454,60 +1537,7 @@ new class extends Component
         <div role="status" class="mb-4 rounded-2xl bg-blue-50 p-4 text-sm text-blue-900">{{ $draftSchemaNotice }}</div>
     @endif
     @if(in_array($stage, ['setup', 'questions'], true))
-        <nav wire:key="focus-tabs-{{ $stage }}" x-ref="roomTabs" class="-mx-4 flex gap-1.5 overflow-x-auto overscroll-x-contain px-4 pb-3 sm:-mx-6 sm:px-6" aria-label="Этапы контроля">
-            @if($stage === 'setup')
-                <span aria-current="step" class="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full px-3.5 text-sm font-semibold"
-                    :class="setupComplete ? 'bg-[#DCEFE5] text-[#235D3E]' : 'bg-[#626B76] text-white'">
-                    <x-heroicon-o-check x-show="setupComplete" x-cloak aria-hidden="true" class="size-4" /> Данные
-                </span>
-            @else
-                <button type="button" x-on:click="enqueueMutation(() => $wire.backToSetup())"
-                    class="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full px-3.5 text-sm font-semibold"
-                    :class="setupComplete ? 'bg-[#DCEFE5] text-[#235D3E]' : 'bg-[#E9ECF0] text-[#344054]'">
-                    <x-heroicon-o-check x-show="setupComplete" x-cloak aria-hidden="true" class="size-4" /> Данные
-                </button>
-            @endif
-            @foreach($this->rooms as $roomIndex => $room)
-                @php
-                    $roomTitle = $room['title'] ?? 'Комната '.($roomIndex + 1);
-                @endphp
-                @if($stage === 'setup')
-                    <span class="inline-flex min-h-10 shrink-0 items-center rounded-full px-3.5 text-sm font-semibold"
-                        :class="roomProgress({{ $roomIndex }}) === 'complete' ? 'bg-[#DCEFE5] text-[#235D3E]' : (roomProgress({{ $roomIndex }}) === 'partial' ? 'bg-[#DCE8F7] text-[#284E89]' : 'bg-[#F0F1F3] text-[#596476]')">
-                        {{ $roomTitle }}
-                    </span>
-                @else
-                    <button type="button" x-on:click="goToRoom({{ $roomIndex }})"
-                        :aria-current="activeRoomIndex === {{ $roomIndex }} ? 'step' : null"
-                        :aria-label="@js($roomTitle) + (roomProgress({{ $roomIndex }}) === 'complete' ? ' — заполнена' : (roomProgress({{ $roomIndex }}) === 'partial' ? ' — заполнена частично' : ''))"
-                        :class="[
-                            roomProgress({{ $roomIndex }}) === 'complete' ? 'bg-[#DCEFE5] text-[#235D3E]' :
-                                (roomProgress({{ $roomIndex }}) === 'partial' ? 'bg-[#DCE8F7] text-[#284E89]' : 'bg-[#F0F1F3] text-[#596476]'),
-                            activeRoomIndex === {{ $roomIndex }} ? 'ring-2 ring-inset ring-[#285B86]' : ''
-                        ]"
-                        class="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full px-3.5 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#285B86]">
-                        <x-heroicon-o-check x-show="roomProgress({{ $roomIndex }}) === 'complete'" x-cloak aria-hidden="true" class="size-4" />
-                        {{ $roomTitle }}
-                    </button>
-                @endif
-            @endforeach
-        </nav>
-    @endif
-
-    @if($stage !== 'done')
-        <div wire:key="focus-draft-status" class="mb-3">
-            <p x-show="clientDraftState !== 'idle'" x-cloak class="mt-2 text-xs" :class="clientDraftState === 'error' ? 'text-[#B42318]' : 'text-[#8A97A8]'" role="status" aria-live="polite">
-                <span x-show="pendingComments === 0 && clientDraftState === 'dirty'">Изменения не сохранены</span>
-                <span x-show="pendingComments > 0 || clientDraftState === 'saving'">Сохранение выполняется…</span>
-                <span x-show="pendingComments === 0 && clientDraftState === 'saved'">Изменения сохранены</span>
-                <span x-show="pendingComments === 0 && clientDraftState === 'error'" x-text="clientDraftError"></span>
-            </p>
-            <button x-show="clientDraftState === 'error' || Object.keys(failedComments).length > 0" type="button" x-on:click="retryDraft()" class="mt-2 text-xs font-semibold text-[#285B86]">Повторить сохранение</button>
-        </div>
-    @endif
-
-    @if($stage === 'setup')
-        <section wire:key="focus-setup" class="space-y-3.5">
+        <section wire:key="focus-setup" id="focus-setup" tabindex="-1" class="scroll-mt-5 space-y-3.5">
             <div>
                 <h1 class="text-[26px] font-bold leading-tight tracking-tight">Данные проверки</h1>
                 <p class="mt-1 text-sm text-[#596476]">Выбери квартиру, сотрудника и даты.</p>
@@ -1545,16 +1575,38 @@ new class extends Component
 
             <x-controls.setup-select label="Кто убирался до этого" :options="$peopleOptions" model="previousCleaner" field="previous_cleaner"
                 placeholder="Найдите сотрудника или введите имя" icon="heroicon-o-user" :free-text="true" />
-            <button type="button" x-on:click="startControl()" class="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#285B86] px-4 text-base font-semibold text-white">
-                {{ $editingReviewData ? 'Вернуться к проверке' : 'К вопросам' }} <x-heroicon-o-arrow-right class="size-4" />
-            </button>
+            @if($stage === 'setup')
+                @include('components.controls.focus-draft-status')
+                <button type="button" x-on:click="startControl()" class="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#285B86] px-4 text-base font-semibold text-white">
+                    {{ $editingReviewData ? 'Вернуться к проверке' : 'К вопросам' }} <x-heroicon-o-arrow-right class="size-4" />
+                </button>
+            @endif
         </section>
-    @elseif($stage === 'questions')
-        <div wire:key="focus-room-pages" class="space-y-3">
+        <nav wire:key="focus-tabs" x-ref="roomTabs" aria-label="Комнаты контроля"
+            class="sticky top-0 z-20 -mx-4 mt-4 flex h-16 items-center gap-2 overflow-x-auto overscroll-x-contain border-y border-[#E4EAF0] bg-white px-4 sm:-mx-6 sm:px-6">
+            @foreach($this->rooms as $roomIndex => $room)
+                <button type="button" data-room-tab="{{ $roomIndex }}"
+                    x-on:click="{{ $stage === 'setup' ? 'startControl' : 'goToRoom' }}({{ $roomIndex }})"
+                    :aria-current="@js($stage === 'questions') && activeRoomIndex === {{ $roomIndex }} ? 'step' : null"
+                    :class="activeRoomIndex === {{ $roomIndex }} && @js($stage === 'questions') ? 'bg-[#285B86] text-white' : 'bg-[#F1F4F7] text-[#344054]'"
+                    class="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-4 text-sm font-semibold">
+                    <x-heroicon-o-check x-show="roomProgress({{ $roomIndex }}) === 'complete'" x-cloak aria-hidden="true" class="size-4" />
+                    {{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}
+                    <span class="sr-only" x-text="roomProgress({{ $roomIndex }}) === 'complete' ? 'Заполнена' : (roomProgress({{ $roomIndex }}) === 'partial' ? 'Частично заполнена' : '')"></span>
+                </button>
+            @endforeach
+            @if($stage === 'questions')
+                <button type="button" x-on:click="openReview()" class="min-h-11 shrink-0 rounded-full px-4 text-sm font-semibold text-[#285B86]">Резюме</button>
+            @endif
+        </nav>
+    @endif
+
+    @if($stage === 'questions')
+        <div wire:key="focus-room-pages" class="min-h-[calc(100dvh-11rem)] space-y-3">
             @foreach($this->rooms as $roomIndex => $room)
                 @php $requiredCount = count($this->requiredQuestionsByRoom[$roomIndex] ?? []); @endphp
-                <template x-if="activeRoomIndex === {{ $roomIndex }}">
-                    <section x-ref="roomTop" data-focus-room-page class="min-w-0 scroll-mt-4 space-y-3">
+                <section wire:key="focus-room-{{ $roomIndex }}" x-show="activeRoomIndex === {{ $roomIndex }}" x-cloak
+                        id="focus-room-{{ $roomIndex }}" tabindex="-1" data-focus-room-page class="min-w-0 scroll-mt-[4.75rem] space-y-3 focus:outline-none">
                         <div class="flex items-start justify-between gap-3">
                             <h1 class="min-w-0 break-words text-[26px] font-bold leading-tight text-[#18283D]">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}</h1>
                             @if($requiredCount > 0)
@@ -1576,7 +1628,7 @@ new class extends Component
                                 aria-labelledby="focus-question-label-{{ $roomIndex }}-{{ $questionIndex }}"
                                 x-data="{ selected: @entangle($answerPath . '.selected'), custom: @entangle($answerPath . '.custom') }"
                                 :class="missingQuestion === {{ $questionIndex }} ? 'border-[#EBA39E] bg-[#FFF9F8]' : 'border-[#E4EAF0] bg-white'"
-                                class="scroll-mt-4 rounded-2xl border p-3 focus:outline-none sm:p-4">
+                                class="scroll-mt-[4.75rem] rounded-2xl border p-3 focus:outline-none sm:p-4">
                                 <div class="flex items-start justify-between gap-3">
                                     <h3 id="focus-question-label-{{ $roomIndex }}-{{ $questionIndex }}" class="min-w-0 text-base font-semibold leading-snug text-[#18283D]">{{ $question['question'] ?? 'Вопрос' }}</h3>
                                     @if($optional) <span class="shrink-0 pt-0.5 text-[11px] text-[#64748B]">Необязательно</span> @endif
@@ -1614,7 +1666,7 @@ new class extends Component
                                 <div class="mt-3">
                                     <button type="button" aria-haspopup="dialog"
                                         @click="openAttachments({{ $roomIndex }}, {{ $questionIndex }})"
-                                        class="flex min-h-12 w-full min-w-0 items-center gap-3 rounded-xl border border-[#C9DAEA] bg-[#EDF4FB] px-3 py-2.5 text-left text-sm font-semibold text-[#285B86] focus-visible:ring-2 focus-visible:ring-[#285B86]">
+                                        class="inline-flex min-h-11 max-w-full items-center gap-2 rounded-xl px-2 text-left text-sm font-semibold text-[#285B86] hover:bg-[#EDF4FB] focus-visible:ring-2 focus-visible:ring-[#285B86]">
                                         <x-heroicon-o-paper-clip aria-hidden="true" class="size-5 shrink-0" />
                                         <span class="min-w-0 flex-1">Добавить фото или видео</span>
                                         @if(count($media)) <span class="shrink-0 text-xs tabular-nums">{{ count($media) }}/12</span> @endif
@@ -1622,19 +1674,16 @@ new class extends Component
                                     <template x-if="uploads.some(file => file.room === {{ $roomIndex }} && file.question === {{ $questionIndex }} && isUploadPending(file))">
                                         <p class="mt-1.5 text-xs font-semibold text-[#8A6116]" role="status">Загружаем файлы · можно продолжать проверку</p>
                                     </template>
-                                    <p class="mt-1.5 text-xs text-[#596476]">Фото до 10 МБ · видео до 100 МБ.
-                                        @if(FocusMediaLimits::transportBytes() < FocusMediaLimits::VIDEO_KIB * 1024)
-                                            На этом сервере до {{ number_format(floor(FocusMediaLimits::transportBytes() / 104857.6) / 10, 1, ',', ' ') }} МБ на файл.
-                                        @endif
-                                    </p>
                                     @error('mediaUpload') <p class="mt-2 text-xs text-[#B42318]">{{ $message }}</p> @enderror
                                     <div class="mt-2 grid grid-cols-2 gap-2 min-[390px]:grid-cols-3" aria-live="polite">
                                         @foreach($media as $mediaIndex => $file)
-                                            <div class="min-w-0 overflow-hidden rounded-xl bg-[#F6F8FB] p-1" wire:key="focus-media-{{ $roomIndex }}-{{ $questionIndex }}-{{ $mediaIndex }}">
+                                            <div class="min-w-0 overflow-hidden rounded-xl bg-[#F6F8FB] p-1" wire:key="focus-media-{{ $roomIndex }}-{{ $questionIndex }}-{{ hash('sha256', (string) ($file['path'] ?? $mediaIndex)) }}">
                                                 @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
                                                     <video src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" controls preload="none" class="aspect-square w-full rounded-lg object-cover"></video>
                                                 @else
-                                                    <img src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId, 'thumbnail' => 1]) }}" alt="Вложение к вопросу" loading="lazy" class="aspect-square w-full rounded-lg object-cover">
+                                                    <a href="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" @click.prevent="openPhoto($el)" aria-label="Открыть фото к вопросу" class="block">
+                                                        <img src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId, 'thumbnail' => 1]) }}" alt="Вложение к вопросу" loading="lazy" class="aspect-square w-full rounded-lg object-cover">
+                                                    </a>
                                                 @endif
                                                 <div class="flex items-center justify-between gap-1 px-1 py-1 text-[10px]">
                                                     <span class="font-semibold text-[#16834B]">Сохранено</span>
@@ -1685,73 +1734,89 @@ new class extends Component
                             </article>
                         @endforeach
                     </section>
-                </template>
             @endforeach
-        </div>
-        <div wire:key="focus-room-actions" class="sticky bottom-0 z-10 -mx-4 mt-3 grid sm:-mx-6 sm:px-6 grid-cols-2 gap-2 border-t border-[#EEF1F4] bg-white/95 px-4 pt-2.5 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur-sm">
-            <button type="button" x-on:click="previousRoom()" class="min-h-11 rounded-xl bg-[#F1F5F9] px-3 text-sm font-semibold">← Назад</button>
-            <button type="button" x-on:click="nextRoom()" class="min-h-11 rounded-xl bg-[#285B86] px-3 text-sm font-semibold text-white">
-                <span x-show="activeRoomIndex + 1 !== roomCount">Дальше →</span>
-                <span x-show="activeRoomIndex + 1 === roomCount">Проверить ответы</span>
-            </button>
+            <div wire:key="focus-room-actions" class="sticky bottom-0 z-10 -mx-4 mt-3 grid sm:-mx-6 sm:px-6 grid-cols-2 gap-2 border-t border-[#EEF1F4] bg-white/95 px-4 pt-2.5 pb-[calc(12px+env(safe-area-inset-bottom))] backdrop-blur-sm">
+                <div class="col-span-2">@include('components.controls.focus-draft-status')</div>
+                <button type="button" x-on:click="previousRoom()" class="min-h-11 rounded-xl bg-[#F1F5F9] px-3 text-sm font-semibold">← Назад</button>
+                <button type="button" x-on:click="nextRoom()" class="min-h-11 rounded-xl bg-[#285B86] px-3 text-sm font-semibold text-white">
+                    <span x-show="activeRoomIndex + 1 !== roomCount">Дальше →</span>
+                    <span x-show="activeRoomIndex + 1 === roomCount">Проверить ответы</span>
+                </button>
+            </div>
         </div>
     @elseif($stage === 'review')
-        <section wire:key="focus-review" class="min-w-0 pb-5">
-            <h1 class="text-[26px] font-bold leading-tight tracking-tight">Проверка перед отправкой</h1>
-            <p class="mt-2 text-sm text-[#64748B]">{{ $this->completedCount }} ответов из {{ count($this->questions) }}. Проверьте данные и незаполненные вопросы.</p>
+        <section wire:key="focus-review" id="focus-review" tabindex="-1" class="min-w-0 scroll-mt-5 pb-5">
+            <h1 class="text-[26px] font-bold leading-tight tracking-tight">Резюме контроля</h1>
+            <p class="mt-2 text-sm text-[#64748B]">Заполнено {{ $this->completedCount }} из {{ count($this->questions) }}. Проверьте ответы перед отправкой.</p>
             <div class="mt-4 space-y-1 rounded-2xl bg-[#F8FAFC] p-4 text-sm">
                 <p><strong>Сотрудник:</strong> {{ collect($peopleOptions)->firstWhere('id', $cleaner_id)['name'] ?? 'Не выбран' }}</p>
                 <p><strong>Квартира:</strong> {{ collect($apartmentOptions)->firstWhere('id', $apartment_id)['name'] ?? 'Не выбрана' }}</p>
+                <p><strong>Закреплён за квартирой:</strong> {{ $is_assigned ? 'Да' : 'Нет' }}</p>
+                @if(filled($previous_cleaner))
+                    <p><strong>Убирался до этого:</strong> {{ $previous_cleaner }}</p>
+                @endif
                 <p><strong>Уборка:</strong> {{ $cleaning_date ?: 'Не указана' }}</p>
                 <p><strong>Проверка:</strong> {{ $inspection_date ?: 'Не указана' }}</p>
-                <button type="button" wire:click="backToSetup" class="mt-2 font-semibold text-[#285B86]">Изменить данные</button>
+                <button type="button" x-on:click="await enqueueMutation(() => $wire.backToSetup()); focusTarget('focus-setup')" class="mt-2 font-semibold text-[#285B86]">Изменить данные</button>
             </div>
-            <label class="mt-4 block text-sm font-semibold">Резюме контроля <span class="font-normal text-[#596476]">· необязательно</span>
+            @if($firstMissing = $this->incompleteQuestions[0] ?? null)
+                <div class="mt-4 rounded-2xl bg-[#FEF3F2] px-4 py-3 text-[#912018]">
+                    <p class="text-sm font-semibold">Обязательных вопросов без ответа: {{ count($this->incompleteQuestions) }}</p>
+                    <button type="button" x-on:click="enqueueMutation(() => $wire.goToQuestion({{ $firstMissing['room_index'] }}, {{ $firstMissing['question_index'] }}))"
+                        class="mt-1 min-h-11 text-left text-sm underline">Заполнить: {{ $firstMissing['room_title'] }} · {{ $firstMissing['question']['question'] ?? 'Вопрос' }}</button>
+                </div>
+            @endif
+            <h2 class="mt-5 font-semibold">Ответы по комнатам</h2>
+            <div class="mt-2 space-y-3">
+                @foreach($this->rooms as $roomIndex => $room)
+                    <details wire:ignore.self wire:key="focus-summary-room-{{ $roomIndex }}" class="rounded-2xl border border-[#E4EAF0] px-4">
+                        <summary class="cursor-pointer py-3 font-semibold">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }}
+                            <span class="ml-1 text-xs font-normal text-[#596476]">{{ count(array_filter($this->questionCompletion[$roomIndex] ?? [])) }} из {{ count($room['items'] ?? []) }}</span>
+                        </summary>
+                        @foreach(($room['items'] ?? []) as $questionIndex => $question)
+                            @php $answer = $answers[$roomIndex][$questionIndex] ?? []; @endphp
+                            <button type="button" x-on:click="enqueueMutation(() => $wire.goToQuestion({{ $roomIndex }}, {{ $questionIndex }}))"
+                                class="flex min-h-11 w-full items-center gap-3 border-t border-[#E4EAF0] py-3 text-left">
+                                <span class="min-w-0 flex-1">
+                                    <span class="block text-xs text-[#596476]">{{ $question['question'] ?? 'Вопрос' }}</span>
+                                    <span class="block whitespace-pre-wrap break-words text-sm font-semibold text-[#285B86]">{{ ($this->questionCompletion[$roomIndex][$questionIndex] ?? false) ? ControlResponse::resolveAnswerText($question, (string) ($answer['selected'] ?? ''), trim((string) ($answer['custom'] ?? ''))) : (($room['is_optional'] ?? false) || ($question['is_optional'] ?? false) ? 'Пропущено' : 'Требуется ответ') }}</span>
+                                </span>
+                                <span aria-hidden="true" class="ml-auto shrink-0 text-[#596476]">→</span>
+                                <span class="sr-only">Изменить ответ</span>
+                            </button>
+                            @php $reviewMedia = $this->savedMedia[$roomIndex][$questionIndex] ?? []; @endphp
+                            @if($reviewMedia !== [])
+                                <div class="grid grid-cols-2 gap-2 min-[390px]:grid-cols-3">
+                                    @foreach($reviewMedia as $mediaIndex => $file)
+                                        <figure class="min-w-0 overflow-hidden rounded-xl bg-white">
+                                            @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
+                                                <video src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" controls preload="none" class="aspect-square w-full object-cover"></video>
+                                            @else
+                                                <a href="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" @click.prevent="openPhoto($el)" aria-label="Открыть фото к вопросу" class="block">
+                                                    <img src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId, 'thumbnail' => 1]) }}" alt="Фото к вопросу" loading="lazy" decoding="async" class="aspect-square w-full object-cover">
+                                                </a>
+                                            @endif
+                                            @if(filled($file['comment'] ?? null))
+                                                <figcaption class="whitespace-pre-wrap break-words px-2 py-1.5 text-xs leading-5 text-[#263238]">{{ $file['comment'] }}</figcaption>
+                                            @endif
+                                        </figure>
+                                    @endforeach
+                                </div>
+                            @endif
+                        @endforeach
+                    </details>
+                @endforeach
+            </div>
+            <label class="mt-4 block text-sm font-semibold">Общий комментарий <span class="font-normal text-[#596476]">· необязательно</span>
                 <textarea x-model="controlComment" x-on:input="scheduleAutosave(900)" maxlength="2000" rows="3"
                     class="mt-1.5 w-full rounded-[22px] border-0 bg-[#F8FAFC] px-4 py-3 text-base font-normal text-[#20262D] focus:ring-2 focus:ring-[#285B86]"></textarea>
             </label>
             @error('comment') <p class="mt-2 text-sm text-[#B42318]">{{ $message }}</p> @enderror
-            @if(collect($this->savedMedia)->flatten(2)->isNotEmpty())
-                <section class="mt-4 rounded-2xl bg-[#F8FAFC] p-3">
-                    <h3 class="mb-2 text-sm font-semibold">Фото и видео с комментариями</h3>
-                    <div class="space-y-3">
-                        @foreach($this->rooms as $roomIndex => $room)
-                            @foreach(($room['items'] ?? []) as $questionIndex => $question)
-                                @php $reviewMedia = $this->savedMedia[$roomIndex][$questionIndex] ?? []; @endphp
-                                @if($reviewMedia !== [])
-                                    <div class="min-w-0">
-                                        <p class="mb-1 text-xs font-semibold text-[#475569]">{{ $room['title'] ?? 'Комната '.($roomIndex + 1) }} · {{ $question['question'] ?? 'Вопрос' }}</p>
-                                        <div class="grid grid-cols-2 gap-2 min-[390px]:grid-cols-3">
-                                            @foreach($reviewMedia as $mediaIndex => $file)
-                                                <figure class="min-w-0 overflow-hidden rounded-xl bg-white">
-                                                    @if(str_starts_with((string) ($file['mime'] ?? ''), 'video/'))
-                                                        <video src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId]) }}" controls preload="none" class="aspect-square w-full object-cover"></video>
-                                                    @else
-                                                        <img src="{{ route('page-checks.control.draft-media', [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draftId, 'thumbnail' => 1]) }}" alt="Фото к вопросу" loading="lazy" decoding="async" class="aspect-square w-full object-cover">
-                                                    @endif
-                                                    @if(filled($file['comment'] ?? null))
-                                                        <figcaption class="whitespace-pre-wrap break-words px-2 py-1.5 text-xs leading-5 text-[#263238]">{{ $file['comment'] }}</figcaption>
-                                                    @endif
-                                                </figure>
-                                            @endforeach
-                                        </div>
-                                    </div>
-                                @endif
-                            @endforeach
-                        @endforeach
-                    </div>
-                </section>
-            @endif
-            @if(count($this->incompleteQuestions))
-                <h3 class="mt-5 font-bold text-[#B42318]">Незаполненные обязательные вопросы</h3>
-                <div class="mt-2 space-y-2">
-                    @foreach($this->incompleteQuestions as $item)
-                <button type="button" wire:click="goToQuestion({{ $item['room_index'] }}, {{ $item['question_index'] }})" class="block min-h-11 w-full rounded-xl bg-[#FEF3F2] px-3 py-2 text-left text-sm text-[#B42318]">
-                            {{ $item['room_title'] }} · {{ $item['question']['question'] ?? 'Вопрос' }} →
-                        </button>
-                    @endforeach
-                </div>
-            @endif
+            <template x-for="file in uploads.filter(item => ['ошибка', 'отменено'].includes(item.status))" :key="file.id">
+                <button type="button" @click="enqueueMutation(() => $wire.goToQuestion(file.room, file.question))"
+                    class="mt-2 block min-h-11 text-left text-sm font-semibold text-[#B42318]"
+                    x-text="'Файл не прикреплён: ' + file.name + ' · Перейти к вопросу'"></button>
+            </template>
             @if($pendingMediaCount > 0)
                 <p class="mt-4 rounded-xl bg-[#FFFAEB] p-3 text-sm text-[#8A6116]">Есть незавершённые загрузки. Дождитесь их сохранения.</p>
             @else
@@ -1760,9 +1825,10 @@ new class extends Component
             @error('mediaUpload') <p class="mt-3 text-sm text-[#B42318]">{{ $message }}</p> @enderror
             @error('submit') <p class="mt-3 text-sm text-[#B42318]">{{ $message }}</p> @enderror
             @if($errors->any()) <p class="mt-3 text-sm text-[#B42318]">Проверьте отмеченные поля и вопросы.</p> @endif
-            <div class="mt-6 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
-                <button type="button" wire:click="previous" class="min-h-12 rounded-2xl bg-[#F1F5F9] px-3 font-semibold">Назад</button>
-                <button type="button" wire:click="submit" wire:loading.attr="disabled" :disabled="busy || pendingComments > 0 || Object.keys(failedComments).length > 0 || ['dirty', 'saving', 'error'].includes(clientDraftState) || @js($isSubmitting || $pendingMediaCount > 0 || count($this->incompleteQuestions) > 0)"
+            <div class="mt-4">@include('components.controls.focus-draft-status')</div>
+            <div class="mt-2 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
+                <button type="button" x-on:click="await enqueueMutation(() => $wire.previous()); scrollToActiveRoom()" class="min-h-12 rounded-2xl bg-[#F1F5F9] px-3 font-semibold">Назад</button>
+                <button type="button" wire:click="submit" wire:loading.attr="disabled" :disabled="uploads.length > 0 || pendingComments > 0 || Object.keys(failedComments).length > 0 || ['dirty', 'saving', 'error'].includes(clientDraftState) || @js($isSubmitting || $pendingMediaCount > 0 || count($this->incompleteQuestions) > 0)"
                     class="min-h-12 rounded-2xl bg-[#285B86] px-3 font-semibold text-white disabled:opacity-50">
                         <span wire:loading.remove wire:target="submit">Отправить контроль</span>
                         <span wire:loading wire:target="submit">Отправляем контроль…</span>
@@ -1770,7 +1836,7 @@ new class extends Component
             </div>
         </section>
     @elseif($stage === 'done')
-        <section wire:key="focus-done" class="rounded-3xl bg-[#E7F8EF] p-6 text-center">
+        <section wire:key="focus-done" id="focus-done" tabindex="-1" x-init="focusTarget('focus-done')" class="rounded-3xl bg-[#E7F8EF] p-6 text-center">
             <h1 class="text-xl font-bold text-[#16834B]">Контроль отправлен</h1>
             <p class="mt-2 text-sm">{{ $successMessage }}</p>
             @if($submittedResponseId)

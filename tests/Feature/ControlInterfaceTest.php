@@ -90,20 +90,23 @@ it('keeps Focus room navigation in Alpine and provides one room page at a time',
         ->toContain("activeRoomIndex: @entangle('currentRoomIndex')")
         ->toContain('x-on:click="nextRoom()"')
         ->toContain('x-on:click="previousRoom()"')
-        ->toContain('x-if="activeRoomIndex === {{ $roomIndex }}"')
+        ->toContain('x-show="activeRoomIndex === {{ $roomIndex }}"')
         ->toContain('env(safe-area-inset-bottom)')
         ->toContain('scrollToActiveRoom()')
         ->toContain('scheduleAutosave(delay = 900)')
         ->toContain('this.$wire.saveDraft()')
-        ->toContain('Изменения не сохранены')
-        ->toContain('Сохранение выполняется')
-        ->toContain('Изменения сохранены')
+        ->toContain("@include('components.controls.focus-draft-status')")
         ->toContain('Нет подтверждения сохранения')
         ->not->toContain('wire:click="setAnswer(')
         ->not->toContain('wire:model.blur="answers.')
         ->not->toContain('public array $rooms')
         ->not->toContain('public array $savedMedia')
         ->not->toContain('wire:click="goToRoom({{ $roomIndex }})"');
+
+    expect(file_get_contents(base_path('resources/views/components/controls/focus-draft-status.blade.php')))
+        ->toContain('Изменения не сохранены')
+        ->toContain('Сохранение выполняется')
+        ->toContain('Изменения сохранены');
 });
 
 it('keeps the optional control comment compact while preserving existing text', function () {

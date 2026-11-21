@@ -1766,7 +1766,7 @@ it('shows missing required questions on Focus review and requires explicit confi
         ->assertSee('Дополнительный вопрос')
         ->call('submit')
         ->assertHasErrors('answers.0.1')
-        ->call('goToQuestion', 0, 1)
+        ->assertDispatched('focus-question-selected', room: 0, question: 1)
         ->assertSet('stage', 'questions')
         ->set('answers.0.1.custom', 'Ответ')
         ->call('review', 0)
@@ -1774,6 +1774,35 @@ it('shows missing required questions on Focus review and requires explicit confi
         ->assertSet('submitted', true);
 
     expect(DB::table('control_responses')->count())->toBe(1);
+});
+
+it('returns from Focus review to the edited answer and validates changed setup data', function () {
+    [, $cleaner, $apartment] = mountControlWorkflow();
+
+    $component = Livewire::test('forms.page-control-focus')
+        ->set('cleaner_id', $cleaner->id)
+        ->set('apartment_id', $apartment)
+        ->call('start')
+        ->assertSee('Данные проверки')
+        ->assertSee('Комнаты контроля')
+        ->set('answers.0.0.selected', 'yes')
+        ->set('inspection_date', '2000-01-01')
+        ->call('review')
+        ->assertSet('stage', 'setup')
+        ->assertHasErrors('inspection_date')
+        ->set('inspection_date', now()->toDateString())
+        ->call('start')
+        ->assertSet('stage', 'review')
+        ->assertSee('Изменить ответ')
+        ->assertSee('>Да</span>', false)
+        ->call('goToQuestion', 0, 0)
+        ->assertDispatched('focus-question-selected', room: 0, question: 0)
+        ->set('answers.0.0.selected', 'no')
+        ->call('review')
+        ->assertSee('>Нет</span>', false);
+
+    expect(ControlResponse::count())->toBe(0);
+    $component->call('submit')->assertSet('stage', 'done');
 });
 
 it('accepts a 60 MB video in Focus and clears a rejected temporary upload', function () {
@@ -2163,6 +2192,7 @@ it('rejects a client supplied option that is not in the canonical Focus schema',
         ->set('apartment_id', $apartment)
         ->set('answers.0.0.selected', 'forged-value')
         ->call('review')
+        ->assertDispatched('focus-question-selected', room: 0, question: 0)
         ->call('submit')
         ->assertSet('submitted', false)
         ->assertHasErrors('answers.0.0');
