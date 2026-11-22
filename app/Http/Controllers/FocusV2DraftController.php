@@ -172,7 +172,7 @@ final class FocusV2DraftController extends Controller
                 $corrective = $answer['corrective'] ?? [];
                 if ((array_key_exists('repeats', $corrective) && ! is_bool($corrective['repeats']) && $corrective['repeats'] !== null)
                     || (array_key_exists('recheck', $corrective) && ! is_bool($corrective['recheck']) && $corrective['recheck'] !== null)
-                    || (array_key_exists('action', $corrective) && ! is_string($corrective['action']))) {
+                    || (array_key_exists('action', $corrective) && $corrective['action'] !== null && ! is_string($corrective['action']))) {
                     throw ValidationException::withMessages([
                         "answers.$roomIndex.$questionIndex" => 'Некорректный формат пояснения.',
                     ]);
