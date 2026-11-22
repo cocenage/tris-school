@@ -1,10 +1,11 @@
 # Focus Control V2 — technical audit and migration plan
 
 ## Status (2026-11-23)
-Foundation only. The classic and Focus Livewire routes are not replaced.
-The read-only V2 bootstrap endpoint is available for authorized admin/supervisor sessions:
-`GET /checks/control/focus-v2/bootstrap`.
-No V2 submissions or uploads are enabled yet. Do not expose a V2 entry in site navigation until end-to-end tests pass.
+Foundation + revisioned draft API. The classic and Focus Livewire routes are not replaced.
+Two V2 endpoints exist for authorized active admin/supervisor sessions:
+- `GET /checks/control/focus-v2/bootstrap` — read-only schema, setup, answers, and owner-scoped draft.
+- `POST /checks/control/focus-v2/draft` — server-validated draft snapshot with optimistic revision and exact-retry support.
+No V2 submissions, file uploads or Vue screens are enabled yet. Do not expose a V2 entry in site navigation until end-to-end tests pass.
 
 ## Findings in current implementation
 
@@ -54,3 +55,53 @@ These are structural risks established from source inspection. Actual bottleneck
 - Media objects contain authorized presentation URLs, not local filesystem paths.
 - Response is `Cache-Control: private, no-store`.
 - The API does **not** yet persist or submit anything.
+
+
+## Phase 2: revisioned draft API contract (implemented, not yet deployed)
+
+\`POST /checks/control/focus-v2/draft\`: same-site authenticated JSON request (normal Laravel session + CSRF protection).
+Request body:
+
+\`\`\`json
+{
+  "control_id": 1,
+  "run_id": "00000000-0000-4000-8000-000000000001",
+  "schema_version": "<64 lowercase hex chars from bootstrap>",
+  "draft_id": null,
+  "expected_revision": 0,
+  "setup": {
+    "cleaner_id": 123,
+    "apartment_id": 456,
+    "is_assigned": false,
+    "previous_cleaner": "",
+    "cleaning_date": "2026-11-23",
+    "inspection_date": "2026-11-23",
+    "comment": ""
+  },
+  "answers": [[{
+    "selected": "yes",
+    "custom": "",
+    "corrective": {"repeats": null, "action": "", "recheck": null}
+  }]]
+}
+\`\`\`
+
+The response shape is \`{run: {id, draft_id, revision, schema_version}, saved_at, replayed}\`.
+The next edit sends the returned \`draft_id\` and \`expected_revision\` set to the returned revision.
+When the client loses an acknowledgement it retries the **same snapshot with the same expected revision**. If that snapshot is already persisted as the immediately next revision, the API returns it with \`replayed: true\`; otherwise it returns a conflict.
+
+- \`409\` JSON \`error\`: \`schema_changed\`, \`active_draft_exists\`, \`draft_not_found\`, \`run_mismatch\`, \`already_submitted\`, \`revision_conflict\`. On \`revision_conflict\`, reload bootstrap and require an explicit merge decision. Never silently replace a new server revision.
+- \`422\` Laravel validation JSON: malformed answer, invalid setup, invalid room/question structure or attempted \`media\` mutation.
+- All answers are validated with \`ControlSchema\`; question IDs are attached on the server. The browser cannot edit media paths or arbitrary schema data.
+- The server preserves existing draft \`media\` for each question independently of answer edits.
+- Existing scoring and \`ControlRunManager\` are reused. No database migration is required for this phase.
+- Like bootstrap, successful and conflict responses use \`Cache-Control: private, no-store\`.
+- This API does **not** yet provide a separate media upload pipeline, completed result, durable client-side offline queue or Vue form. Do not present Phase 2 as a finished Focus V2.
+
+Validation to run on an **isolated test database**:
+
+\`\`\`bash
+php artisan test tests/Feature/ControlWorkflowTest.php
+\`\`\`
+
+Tests were added in this branch but not executed by GitHub Actions at the time of this document update. Before deploying the endpoint, test it on a staging/isolated environment and compare output with the original Livewire Focus.
