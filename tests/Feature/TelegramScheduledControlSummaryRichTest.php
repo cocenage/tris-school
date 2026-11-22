@@ -172,14 +172,14 @@ it('keeps a No to Yes history as a confirmed resolution and provides a database-
     Http::fake();
 
     expect($markdown)->toContain('Lodi — первые уборки')
-        ->and($markdown)->toContain('устранено и подтверждено')
+        ->and($markdown)->toContain('позже подтверждено выполнение')
         ->and($markdown)->toContain('10 проведённых контролей')
-        ->and($markdown)->toContain('12:30 — Lodi — устранение подтверждено')
+        ->and($markdown)->toContain('12:30 — Lodi — выполнение подтверждено')
         ->and(Artisan::call('telegram:control-summary-preview', ['--date' => '2026-11-08', '--demo' => true]))->toBe(0)
         ->and(Artisan::output())->toContain('10:25 — Lodi — проблема обнаружена', 'контроль 14:30, ответ 14:31', 'Certosa')
         ->and(Http::recorded())->toBeEmpty();
     expect(app(TelegramScheduledControlSummaryRichFormatter::class)->fallbackHtml($summary))
-        ->toContain('Подтвердили устранение', 'Ответ «нет»', 'Подтверждение');
+        ->toContain('Позже подтвердили выполнение', 'Первый ответ', 'Подтверждение');
 });
 
 it('escapes employee text and includes the same essential information in the HTML fallback', function (): void {
@@ -192,7 +192,7 @@ it('escapes employee text and includes the same essential information in the HTM
 
     expect($markdown)->toContain('&lt;details&gt;')
         ->and($markdown)->not->toContain('<details><summary>подмена')
-        ->and($fallback)->toContain('Ответили «нет»')
+        ->and($fallback)->toContain('Требует внимания')
         ->and($fallback)->toContain('https://t.me/c/100123/710')
         ->and($fallback)->toContain('&lt;details&gt;')
         ->and($fallback)->not->toContain('Тестовый автор')

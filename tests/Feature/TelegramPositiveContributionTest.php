@@ -6,6 +6,7 @@ use App\Models\TelegramOperationalObservation;
 use App\Services\Telegram\TelegramDigestFormatter;
 use App\Services\Telegram\TelegramEveningIntelligenceBuilder;
 use App\Services\Telegram\TelegramOperationalEventObserver;
+use Carbon\Carbon;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -16,12 +17,6 @@ beforeEach(function () {
     DB::purge('sqlite');
     TelegramOperationalTestDatabase::refresh();
 
-    Schema::create('users', function (Blueprint $table): void {
-        $table->id();
-        $table->string('name');
-        $table->string('telegram_id')->nullable();
-        $table->timestamps();
-    });
     Schema::create('apartments', function (Blueprint $table): void {
         $table->id();
         $table->string('name');
@@ -32,6 +27,33 @@ beforeEach(function () {
 afterEach(function () {
     TelegramOperationalTestDatabase::purge();
     DB::purge('sqlite');
+});
+
+it('reads only an explicitly saved no-cleanings choice for the reporting day', function () {
+    Schema::create('telegram_scheduled_message_deliveries', function (Blueprint $table): void {
+        $table->id();
+        $table->string('control_type');
+        $table->string('bot_type');
+        $table->string('status');
+        $table->dateTime('scheduled_for');
+        $table->text('sequence_context');
+    });
+    $id = DB::table('telegram_scheduled_message_deliveries')->insertGetId([
+        'control_type' => 'oks_shift_opening', 'bot_type' => 'work', 'status' => 'sent',
+        'scheduled_for' => '2026-06-17 09:00:00',
+        'sequence_context' => json_encode(['opening_draft' => ['como' => 0, 'lodi' => 1]]),
+    ]);
+    $method = new ReflectionMethod(TelegramEveningIntelligenceBuilder::class, 'cleaningPlan');
+    $builder = app(TelegramEveningIntelligenceBuilder::class);
+    $day = Carbon::parse('2026-06-17', 'Europe/Rome');
+    expect($method->invoke($builder, $day, 'como'))->toBeNull();
+    DB::table('telegram_scheduled_message_deliveries')->where('id', $id)->update([
+        'sequence_context' => json_encode(['opening_quick' => true, 'opening_draft' => ['como' => 0, 'lodi' => 1]]),
+    ]);
+    expect($method->invoke($builder, $day, 'como'))->toBe('no_cleanings')
+        ->and($method->invoke($builder, $day, 'lodi'))->toBeNull()
+        ->and($method->invoke($builder, $day, 'navigli'))->toBeNull()
+        ->and($method->invoke($builder, $day->copy()->addDay(), 'como'))->toBeNull();
 });
 
 it('keeps a named employees concrete action and its apartment traceable in the positive evening block', function () {
@@ -95,6 +117,16 @@ it('keeps a concrete contribution valid without apartment or inferred employee i
         ->and($positive['context_label'])->toBeNull()
         ->and($text)->toContain('• Анна помогла коллеге решить проблему с доступом.')
         ->not->toContain('Via X');
+
+});
+
+it('includes a named colleague helping in the management praise section', function () {
+    $message = TelegramOperationalTestDatabase::message('Анна помогла коллеге решить проблему с доступом.', messageId: '503');
+    app(TelegramOperationalEventObserver::class)->observe($message);
+    $preview = app(TelegramEveningIntelligenceBuilder::class)->build('2026-06-17');
+
+    expect($preview['management_sections']['praise'])->toHaveCount(1)
+        ->and($preview['management_sections']['praise'][0]['reported_text'])->toBe('Анна помогла коллеге решить проблему с доступом.');
 });
 
 it('does not merge positive evidence into a separate problem or praise routine work', function () {

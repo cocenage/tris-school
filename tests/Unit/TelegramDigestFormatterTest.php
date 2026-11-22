@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\Telegram\TelegramDigestFormatter;
+use App\Services\Telegram\TelegramLinenDefectReportBuilder;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -181,6 +182,43 @@ it('escapes source text for the existing HTML Telegram transport', function () {
 
     expect($text)->toContain('свет &amp; вытяжка', 'Test &amp; Worker', "Курьер ждёт кур'ера")
         ->not->toContain('&#039;');
+});
+
+it('does not treat an explicit denial of linen defects as a defect', function () {
+    $method = new ReflectionMethod(TelegramLinenDefectReportBuilder::class, 'isDefect');
+    $builder = app(TelegramLinenDefectReportBuilder::class);
+
+    expect($method->invoke($builder, 'Не хватало двух наволочек, а брака нет.'))->toBeFalse()
+        ->and($method->invoke($builder, 'Брака нет, но на полотенце пятно.'))->toBeTrue();
+});
+
+it('shows a confirmed no-cleanings shift choice in the district summary', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-10-15', 'district' => ['key' => 'como', 'label' => 'Como'],
+        'cleaning_plan' => 'no_cleanings', 'management_sections' => [],
+        'data_quality' => ['source_status' => 'available'],
+        'linen_report' => ['cases' => [], 'districts' => ['como' => ['source_status' => 'available']]],
+    ]);
+
+    expect($text)->toContain('При открытии смены отмечено: уборок нет.');
+});
+
+it('shows a linen defect as disputed when the follow-up denies it', function () {
+    $text = app(TelegramDigestFormatter::class)->eveningIntelligence([
+        'date' => '2026-10-15', 'district' => ['key' => 'como', 'label' => 'Como'],
+        'management_sections' => ['unresolved_problems' => [[
+            'event_key' => 'linen-1', 'reported_text' => 'Брак наволочки', 'source_url' => 'https://t.me/c/1/1',
+            'follow_ups' => [['text' => 'Не хватало двух наволочек, а брака нет.', 'source_url' => 'https://t.me/c/1/2']],
+        ]]],
+        'data_quality' => ['source_status' => 'available'],
+        'linen_report' => ['cases' => [[
+            'district' => 'como', 'event_key' => 'linen-1', 'location' => 'Via Test', 'district_label' => 'Como',
+            'details' => [['item' => 'наволочка', 'quantity' => 2]], 'source_url' => 'https://t.me/c/1/1',
+        ]], 'districts' => ['como' => ['source_status' => 'available']]],
+    ]);
+
+    expect($text)->toContain('Бельё · брак оспаривается', 'брака нет')
+        ->not->toContain('🧺 Брак белья');
 });
 
 it('does not claim a complete empty report when the linen source failed', function () {

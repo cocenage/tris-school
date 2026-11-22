@@ -238,6 +238,10 @@ class TelegramDigestFormatter
     {
         $date = Carbon::parse($preview['date'], $preview['timezone'] ?? 'Europe/Rome')->format('d.m.Y');
         $lines = ['🌙 '.htmlspecialchars($district ?: 'TRIS', ENT_QUOTES, 'UTF-8').' — оперативные итоги дня · '.$date];
+        if (($preview['cleaning_plan'] ?? null) === 'no_cleanings') {
+            $lines[] = '';
+            $lines[] = '🧹 При открытии смены отмечено: уборок нет.';
+        }
         $sourceEntries = [];
         $sections = $preview['management_sections'] ?? [];
         $linen = $preview['linen_report'] ?? [];
@@ -267,6 +271,9 @@ class TelegramDigestFormatter
             }
             foreach ($sectionItems as $item) {
                 $location = trim((string) ($item['location'] ?? ''));
+                if ($key === 'praise' && preg_match('/^я\s+/iu', trim((string) $item['reported_text'])) === 1 && filled($item['author'] ?? null)) {
+                    $location = trim($location.' '.(string) $item['author']);
+                }
                 $sourceEntries[$label][] = [
                     '• '.htmlspecialchars(($location !== '' ? $location.' — ' : '').$this->compactSourceText($item['reported_text']), ENT_QUOTES, 'UTF-8'),
                     '  🔗 '.$item['source_url'],
@@ -294,7 +301,8 @@ class TelegramDigestFormatter
                         $entry[] = '  🔗 '.$sourceUrl;
                     }
                 }
-                $sourceEntries['🧺 Брак белья'][] = [...$entry, ...$followUps];
+                $disputed = collect($management['follow_ups'] ?? [])->contains(fn (array $reply): bool => preg_match('/(?:брак(?:а)?\s+нет|не\s+брак|без\s+брака)/iu', (string) ($reply['text'] ?? '')) === 1);
+                $sourceEntries[$disputed ? '🧺 Бельё · брак оспаривается' : '🧺 Брак белья'][] = [...$entry, ...$followUps];
             }
         }
 
