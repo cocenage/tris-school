@@ -751,6 +751,142 @@ it('preserves attached Focus V2 evidence when a completed draft is deleted', fun
     Storage::disk('local')->assertExists($path);
 });
 
+function focusV2FinalPayload(ControlResponseDraft $draft): array
+{
+    return [
+        'control_id' => $draft->control_id,
+        'run_id' => $draft->run_id,
+        'schema_version' => $draft->schema_version,
+        'draft_id' => $draft->id,
+        'expected_revision' => $draft->revision,
+    ];
+}
+
+it('finishes Focus V2 from the stored draft with canonical scores and one notification', function (): void {
+    Queue::fake();
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $cleaner->forceFill(['telegram_id' => 'focus-v2-test-chat'])->save();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+    $draft = ControlResponseDraft::query()->sole();
+    $final = focusV2FinalPayload($draft);
+    $route = route('page-checks.control.focus-v2.submit');
+
+    $this->postJson($route, $final)
+        ->assertOk()
+        ->assertJsonPath('submitted', true)
+        ->assertJsonPath('replayed', false)
+        ->assertJsonPath('score_percent', 100)
+        ->assertJsonPath('total_points', 1)
+        ->assertJsonPath('max_points', 1)
+        ->assertJsonPath('result_zone', 'green');
+
+    $result = ControlResponse::query()->sole();
+    expect($result->supervisor_id)->toBe($supervisor->id)
+        ->and($result->submission_token)->toBe($payload['run_id'])
+        ->and($result->schema_version)->toBe($payload['schema_version'])
+        ->and($result->responses)->toBe($draft->responses)
+        ->and(ControlResponseDraft::count())->toBe(0)
+        ->and(ControlCompletionNotification::count())->toBe(1)
+        ->and(DB::table('activity_log')->where('event', 'control_completed')->count())->toBe(1);
+
+    $this->postJson($route, $final)
+        ->assertOk()
+        ->assertJsonPath('submitted', true)
+        ->assertJsonPath('replayed', true)
+        ->assertJsonPath('response_id', $result->id)
+        ->assertJsonPath('result_url', route('page-profile.checks.result', $result));
+
+    expect(ControlResponse::count())->toBe(1)
+        ->and(ControlCompletionNotification::count())->toBe(1)
+        ->and(DB::table('activity_log')->where('event', 'control_completed')->count())->toBe(1);
+    Queue::assertPushed(SendControlCompletionNotification::class, 1);
+});
+
+it('refuses to finish incomplete Focus V2 controls without deleting the draft', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $payload['answers'][0][0]['selected'] = '';
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+    $draft = ControlResponseDraft::query()->sole();
+
+    $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('answers.0.0');
+    expect(ControlResponseDraft::count())->toBe(1)
+        ->and(ControlResponse::count())->toBe(0);
+});
+
+it('requires the latest revision and the draft owner to finalize Focus V2', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+    $draft = ControlResponseDraft::query()->sole();
+    $route = route('page-checks.control.focus-v2.submit');
+    $input = focusV2FinalPayload($draft);
+
+    $changed = $input;
+    $changed['expected_revision'] = 999;
+    $this->postJson($route, $changed)->assertStatus(409);
+
+    $changed = $input;
+    $changed['schema_version'] = str_repeat('0', 64);
+    $this->postJson($route, $changed)->assertStatus(409);
+
+    $other = User::create(['name' => 'Other supervisor', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($other)->postJson($route, $input)->assertStatus(409);
+    $this->actingAs($cleaner)->postJson($route, $input)->assertForbidden();
+    $this->actingAs($supervisor);
+
+    expect(ControlResponse::count())->toBe(0)
+        ->and(ControlResponseDraft::count())->toBe(1);
+});
+
+it('blocks Focus V2 submission until pending and ready media are attached or cancelled', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $route = route('page-checks.control.focus-v2.submit');
+    $mediaStart = route('page-checks.control.focus-v2.media.start');
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+
+    $this->postJson($mediaStart, $init)->assertOk();
+    $this->postJson($route, focusV2FinalPayload($draft))->assertUnprocessable()
+        ->assertJsonValidationErrors('media');
+
+    focusV2PutChunk($init['upload_id'], $file)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+    $this->postJson($route, focusV2FinalPayload($draft))->assertUnprocessable()
+        ->assertJsonValidationErrors('media');
+
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id,
+        'expected_revision' => $draft->revision,
+    ])->assertOk()->assertJsonPath('run.revision', 2);
+
+    $this->postJson($route, focusV2FinalPayload($draft->fresh()))
+        ->assertOk()->assertJsonPath('submitted', true);
+    $result = ControlResponse::query()->sole();
+    expect($result->responses[0][0]['media'])->toHaveCount(1)
+        ->and($result->responses[0][0]['media'][0]['upload_id'])->toBe($init['upload_id']);
+});
+
+it('rejects missing files in Focus V2 without creating a completed result', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $responses = $draft->responses;
+    $responses[0][0]['media'] = [[
+        'disk' => 'local', 'path' => 'controls/'.$control->id.'/2026/11/missing.png',
+        'original_name' => 'missing.png', 'mime' => 'image/png', 'size' => 120,
+    ]];
+    $draft->forceFill(['responses' => $responses])->save();
+    $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))
+        ->assertUnprocessable()->assertJsonValidationErrors('answers.0.0');
+    expect(ControlResponse::count())->toBe(0)
+        ->and(ControlResponseDraft::count())->toBe(1);
+});
+
 it('queues one durable completion notification for each Classic and Focus result', function (): void {
     Queue::fake();
     [$supervisor, $cleaner, $apartment] = mountControlWorkflow();
