@@ -100,8 +100,11 @@ final class FocusV2BootstrapController extends Controller
         // ControlSchema hash or the server-side snapshot used for validation.
         $clientRooms = $rooms;
         foreach ($clientRooms as &$clientRoom) {
-            foreach ($clientRoom['items'] ?? [] as &$question) {
-                if (filled($question['question_image'] ?? null)) {
+            if (! is_array($clientRoom['items'] ?? null)) {
+                continue;
+            }
+            foreach ($clientRoom['items'] as &$question) {
+                if (is_array($question) && filled($question['question_image'] ?? null)) {
                     $question['question_image_url'] = Storage::disk('public')->url($question['question_image']);
                 }
             }
