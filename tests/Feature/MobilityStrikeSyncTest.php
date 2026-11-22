@@ -74,7 +74,7 @@ beforeEach(function () {
     fakeMitHttp(['*' => Http::response(mitStrikeTable())]);
 });
 
-it('stores historical first discoveries without sending a backlog and still notifies a later amendment', function () {
+it('notifies still current MIT strikes announced before activation and their later amendments', function () {
     config(['mobility.strike_notifications_active_since' => '2026-10-01']);
     $source = Mockery::mock(MitStrikeSource::class);
     $source->shouldReceive('relevant')->twice()->andReturnTrue();
@@ -84,11 +84,11 @@ it('stores historical first discoveries without sending a backlog and still noti
     );
     $sync = new MobilityStrikeSyncService($source);
 
-    expect($sync->sync()['queued'])->toBe(0)
-        ->and(MobilityAlert::count())->toBe(1)
-        ->and(MobilityAlertMessage::count())->toBe(0);
     expect($sync->sync()['queued'])->toBe(1)
+        ->and(MobilityAlert::count())->toBe(1)
         ->and(MobilityAlertMessage::count())->toBe(1);
+    expect($sync->sync()['queued'])->toBe(1)
+        ->and(MobilityAlertMessage::count())->toBe(2);
 });
 
 it('does not reserve strike notifications while activation is disabled', function () {
@@ -162,7 +162,7 @@ it('queues a still current operator notice once routing is enabled after its fir
     Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 1);
 });
 
-it('does not send an existing operator notice on the first activated sync when its publication predates activation', function (): void {
+it('notifies an operator strike already announced before activation exactly once', function (): void {
     config(['mobility.strike_notifications_active_since' => '2026-10-01']);
     $event = [
         'source' => 'trenord', 'title' => 'Sciopero Trenord', 'description' => 'Sciopero ferroviario.',
@@ -172,10 +172,11 @@ it('does not send an existing operator notice on the first activated sync when i
     ];
 
     app(MobilityStrikeSyncService::class)->syncExternalNotice($event);
+    app(MobilityStrikeSyncService::class)->syncExternalNotice($event);
 
     expect(MobilityAlert::count())->toBe(1)
-        ->and(MobilityAlertMessage::count())->toBe(0);
-    Bus::assertNothingDispatched();
+        ->and(MobilityAlertMessage::count())->toBe(1);
+    Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 1);
 });
 
 it('reserves one version for a newly announced strike, its move and its cancellation', function () {
@@ -406,6 +407,56 @@ it('uses an official RFI notice when Trenord is blocked and reuses it when Treno
         ->and(MobilityAlertMessage::count())->toBe(2)
         ->and(MobilityAlertMessage::latest('id')->first()->text)->toContain('Забастовка отменена');
     Bus::assertDispatchedTimes(DeliverMobilityAlert::class, 2);
+});
+
+it('accepts official RFI RSS links containing the content/rfi prefix and requests the canonical page', function (): void {
+    $this->travelTo(Carbon::parse('2026-11-20 19:00:00', 'Europe/Rome'));
+    $feedUrl = 'https://www.rfi.it/content/rfi/it/news-e-media/infomobilita.rss.notices.xml';
+    $canonical = 'https://www.rfi.it/it/news-e-media/infomobilita/avvisi/2026/11/20/sciopero-nazionale-del-trasporto-ferroviario.html';
+    $rssLink = 'https://www.rfi.it/content/rfi/it/news-e-media/infomobilita/avvisi/2026/11/20/sciopero-nazionale-del-trasporto-ferroviario.html';
+    $feed = '<rss version="2.0"><channel><item><title>Sciopero nazionale del trasporto ferroviario</title>'
+        .'<link>'.$rssLink.'</link><pubDate>Fri, 20 Nov 2026 08:00:00 +0100</pubDate>'
+        .'</item></channel></rss>';
+    $article = '<html><body><main><h1>Sciopero nazionale del trasporto ferroviario</h1>'
+        .'<p>In vigore: 20 NOVEMBRE 2026 - 21 NOVEMBRE 2026</p>'
+        .'<p>Impresa: Gruppo FS Italiane, Italo Nuovo Trasporto Viaggiatori, Trenord</p>'
+        .'<p>Dalle ore 21:00 di venerdì 20 novembre alle ore 20:00 di sabato 21 novembre 2026 è stato indetto uno sciopero.</p>'
+        .'</main></body></html>';
+    Http::swap(new Factory);
+    Http::fake([
+        $feedUrl => Http::response($feed),
+        $canonical => Http::response($article),
+    ]);
+
+    $result = app(\App\Services\Mobility\RfiStrikeSource::class)->fetch();
+
+    expect($result['issue'])->toBeNull()
+        ->and($result['events'])->toHaveCount(1)
+        ->and($result['events'][0])->toMatchArray([
+            'source' => 'trenord', 'url' => $canonical,
+            'starts_at' => '2026-11-20', 'ends_at' => '2026-11-21',
+            'metadata' => ['notice_provider' => 'rfi', 'duration' => '21:00–20:00'],
+        ]);
+    Http::assertSentCount(2);
+});
+
+it('does not send stale operator strikes or distant future notices', function (): void {
+    config(['mobility.strike_notifications_active_since' => '2026-10-01']);
+    $sync = app(MobilityStrikeSyncService::class);
+    $event = [
+        'source' => 'trenord', 'title' => 'Sciopero Trenord', 'description' => 'Sciopero ferroviario.',
+        'url' => 'https://www.trenord.it/news/trenord-informa/avvisi/sciopero/', 'type' => 'strike', 'risk' => 'high',
+        'district' => 'Lombardia', 'starts_at' => '2026-09-30', 'ends_at' => '2026-09-30',
+        'metadata' => ['status' => 'scheduled', 'operator' => 'Trenord', 'sector' => 'Ferroviario', 'publication_date' => '2026-09-20'],
+    ];
+    $sync->syncExternalNotice($event);
+    $event['starts_at'] = '2026-12-01';
+    $event['ends_at'] = '2026-12-01';
+    $event['notice_date'] = '2026-12-01';
+    $sync->syncExternalNotice($event);
+
+    expect(MobilityAlertMessage::count())->toBe(0);
+    Bus::assertNothingDispatched();
 });
 
 it('isolates a malformed item while processing valid items', function () {
