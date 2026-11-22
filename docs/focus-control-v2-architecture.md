@@ -1,18 +1,19 @@
 # Focus Control V2 — technical audit and migration plan
 
 ## Status (2026-11-23)
-Foundation + revisioned draft API + Vue 3 preview + independent chunked media. Original Livewire Focus is untouched.
+Foundation + revisioned draft API + Vue 3 preview + independent chunked media + transactional final submission. Original Livewire Focus is untouched.
 V2 endpoints (authenticated admin/supervisor only):
 - `GET /checks/control/focus-v2` — Vue preview.
 - `GET /checks/control/focus-v2/bootstrap` — schema and owner draft.
 - `POST /checks/control/focus-v2/draft` — revisioned save and safe retry.
+- `POST /checks/control/focus-v2/submit` — final submission from the persisted draft.
 - `POST /checks/control/focus-v2/media` — initialize or resume a file.
 - `PUT /checks/control/focus-v2/media/{upload}/chunks/{index}` — chunk transfer.
 - `GET /checks/control/focus-v2/media/{upload}` — received chunk status.
 - `POST /checks/control/focus-v2/media/{upload}/complete` — assemble/MIME-check.
 - `POST /checks/control/focus-v2/media/{upload}/attach` — idempotently attach.
 - `DELETE /checks/control/focus-v2/media/{upload}` — cancel unattached upload.
-Vue supports setup, questions, room navigation, progress, background save and media upload. **V2 final submission is NOT implemented.** Save and finish in old Focus. The preview is not linked in Academy navigation.
+Vue supports setup, questions, room navigation, progress, background save, media upload and final submission. The old Focus is still available as a fallback. The V2 preview is deliberately not linked in Academy navigation.
 
 ## Findings in current implementation
 
@@ -157,7 +158,7 @@ Upload sessions are stored in `focus_v2_media_uploads`. UUID, supervisor, draft,
 
 Retrying initialization returns received chunk indexes; retrying an identical chunk succeeds. Conflicting content or unauthorized access is rejected. Chunk cleanup follows database commit. The `focus-v2:prune-media` command runs daily at 03:25 Europe/Rome. It removes pending, ready and cancelled sessions older than 48 hours; when a completed run has deleted its draft, it also removes old attached upload *metadata* without deleting the evidence file. Staging rows intentionally have no cascading draft foreign key, so abandoned chunks remain discoverable for cleanup.
 
-**Limitations:** File objects do not survive closing Telegram or reloading the page; current resume requires keeping the page session. Whole-file checksum is not yet implemented. HEIC/MOV support depends on PHP `fileinfo` magic data. Removing already attached media and final submission must still be handled by old Focus.
+**Limitations:** File objects do not survive closing Telegram or reloading the page; current resume requires keeping the page session. Whole-file checksum is not yet implemented. HEIC/MOV support depends on PHP `fileinfo` magic data. Removing already attached media still requires the old Focus.
 
 ### Required checks before rollout
 
@@ -175,3 +176,27 @@ The lockfile was reconstructed from official package manifests because npm regis
 Manual Telegram tests: a small image, 100 MiB MOV/MP4, interrupted transfer retry, two parallel files, duplicate complete/attach, concurrent stale drafts, cancellation, and old Focus handoff.
 
 **No successful Laravel/Pest test run, complete Vite build or live Telegram upload has been observed in this environment.**
+## Phase 5: Vue final submission (implemented in branch, not deployed)
+
+- Route: POST /checks/control/focus-v2/submit (authenticated active admin/supervisor, CSRF, preview write guard).
+- Request includes only control_id, run_id, schema_version, draft_id and expected_revision. No client-controlled responses, scores, file paths or notification settings.
+- The endpoint locks the run using the same cache key as the existing Livewire finalizer and locks its draft row within a database transaction.
+- Before finalization it validates the latest active canonical schema, draft ownership, revision, all required answers, setup/active staff and apartment, media availability, <=12 media files/question, and **zero pending or ready upload sessions**. Legacy drafts without question IDs may pass if their schema snapshot matches; canonical IDs are attached before submission.
+- Scoring uses the existing ControlResponse::calculateScores() rules. ControlRunManager::submitOnce() protects the unique submission_token and removes the active draft only after writing the result.
+- The same notification outbox is used via ControlCompletionNotificationService::queueFor(), and the control_completed activity log entry is created inside the transaction.
+- A repeated POST with the same run ID after a committed result returns the original result (replayed=true) and does not create another notification.
+- The Vue review screen waits for acknowledged answer saves, blocks while transfers remain unresolved, sends the finalization request, and displays the saved score and link to the result. A lost response can be retried with the unchanged run ID.
+- Old Focus remains accessible while V2 is tested; there is no navigation replacement or automatic rollout.
+
+### Required release checks
+
+On an isolated test database and test server:
+
+    npm install
+    npm ci
+    npm run build
+    php artisan test tests/Feature/ControlWorkflowTest.php
+
+Before any production release, regenerate the reconstructed package-lock with real npm registry integrity metadata and commit it. Validate end-to-end inside Telegram WebView: saved answers, video transfer and retry, pending-media submission block, final score parity, link permissions, duplicate submission after response timeout, and Telegram notification dispatch.
+
+No full Laravel/Pest suite, Vite build or real mobile Telegram test has been run within this GitHub-only editing session.
