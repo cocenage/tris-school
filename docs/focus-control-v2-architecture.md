@@ -1,11 +1,12 @@
 # Focus Control V2 — technical audit and migration plan
 
 ## Status (2026-11-23)
-Foundation + revisioned draft API. The classic and Focus Livewire routes are not replaced.
-Two V2 endpoints exist for authorized active admin/supervisor sessions:
-- `GET /checks/control/focus-v2/bootstrap` — read-only schema, setup, answers, and owner-scoped draft.
-- `POST /checks/control/focus-v2/draft` — server-validated draft snapshot with optimistic revision and exact-retry support.
-No V2 submissions, file uploads or Vue screens are enabled yet. Do not expose a V2 entry in site navigation until end-to-end tests pass.
+Foundation + revisioned draft API + isolated Vue 3 preview. The classic and Focus Livewire routes are not replaced.
+Three V2 routes exist for active authenticated admin/supervisor sessions:
+- `GET /checks/control/focus-v2` — experimental Vue screen.
+- `GET /checks/control/focus-v2/bootstrap` — read-only schema and existing draft.
+- `POST /checks/control/focus-v2/draft` — revisioned save with safe exact retry.
+Vue supports setup, room navigation, options, corrective fields, text, progress and background save. Existing media can be viewed, but V2 upload and final submission are NOT implemented yet. The user can save and finish in the old Focus. The preview is not linked in navigation.
 
 ## Findings in current implementation
 
@@ -105,3 +106,38 @@ php artisan test tests/Feature/ControlWorkflowTest.php
 \`\`\`
 
 Tests were added in this branch but not executed by GitHub Actions at the time of this document update. Before deploying the endpoint, test it on a staging/isolated environment and compare output with the original Livewire Focus.
+
+
+## Phase 3: isolated Vue preview (experimental)
+
+- Build entry: `resources/js/focus-v2/main.js` and `resources/js/focus-v2/FocusV2App.vue`.
+- Preview URL: `/checks/control/focus-v2` with the existing Laravel session and CSRF token.
+- Vite loads the Vue entry only on the preview page; other Livewire and Alpine screens remain unchanged.
+- The app displays setup, questions, room progress, optional text and corrective fields for negative scored answers.
+- Autosave uses the revisioned draft endpoint. On an uncertain response it retries the exact same body before saving subsequent changes.
+- On 409 conflict, automatic writes stop. Offline restoration, upload resumability and V2 submission remain future phases.
+- Question images are exposed as display URLs by bootstrap without changing the canonical schema hash.
+
+### Install and verify
+
+On a network-connected local or staging environment, run:
+
+```bash
+npm install
+npm run build
+php artisan test tests/Feature/ControlWorkflowTest.php
+```
+
+The new lockfile entries were reconstructed from official published package manifests because npm registry access was unavailable here. `npm install` must regenerate the package integrity hashes; COMMIT the regenerated package-lock.json before release. Then run `npm ci && npm run build` as a clean-install check. PHP tests must use an isolated test database (APP_ENV=testing); never run against production data.
+
+### Preview acceptance
+
+1. Authenticate as active admin/supervisor and visit `/checks/control/focus-v2`.
+2. Verify staff, apartments, questions and optional question images.
+3. Save answers; refresh after `Сохранено`, confirm restoration.
+4. Retry a dropped response and check that draft revision was not duplicated.
+5. Simulate concurrent tabs and confirm conflict detection.
+6. Use `Сохранить и завершить в старом Focus`; verify the old page restores answers and can complete the check.
+7. Measure speed and verify no new Vue payload on unrelated pages.
+
+**Not yet verified:** full Vue build and Laravel/Pest suite. The V2 screen is a preview, not a production replacement.
