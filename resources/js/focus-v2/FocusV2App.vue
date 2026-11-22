@@ -387,12 +387,33 @@ function retryFile(item) {
     pumpTransfers();
 }
 
-function cancelFile(item) {
+async function cancelFile(item) {
     if (!['queued', 'uploading', 'error'].includes(item.status)) return;
+
+    // If attach succeeded but its response was lost, deleting from the
+    // client must not falsely claim that the evidence was removed.
+    if (item.status === 'error' && item.info?.urls?.status) {
+        try {
+            const current = await focusMediaRequest(item.info.urls.status, 'GET', undefined, csrf);
+            if (current.status === 'attached') {
+                item.error = 'Файл уже прикреплён на сервере. Нажмите «Повторить», чтобы восстановить подтверждение.';
+                return;
+            }
+        } catch (ignored) {
+            // A pending session is still eligible for server-side pruning.
+        }
+    }
     item.controller?.abort();
     item.status = 'cancelled';
     if (item.info?.urls?.cancel) {
-        void focusMediaRequest(item.info.urls.cancel, 'DELETE', undefined, csrf).catch(() => {});
+        try {
+            await focusMediaRequest(item.info.urls.cancel, 'DELETE', undefined, csrf);
+        } catch (error) {
+            if (error.status === 409) {
+                item.status = 'error';
+                item.error = 'Статус файла изменился на сервере. Повторите загрузку для синхронизации.';
+            }
+        }
     }
 }
 
