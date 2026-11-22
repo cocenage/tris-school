@@ -225,6 +225,81 @@ function signedControlResultStartData(string $telegramId, string $startParam, st
     return http_build_query($data);
 }
 
+it('boots the isolated Focus V2 API for active supervisors without changing existing controls', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('control.id', $control->id)
+        ->assertJsonPath('control.schema_version', (new ControlSchema($control->id, controlWorkflowSchema()))->version())
+        ->assertJsonPath('rooms.0.items.0.question', 'Ключи на месте?')
+        ->assertJsonPath('answers.0.0.selected', '')
+        ->assertJsonPath('run.draft_id', null)
+        ->assertJsonPath('run.revision', 0)
+        ->assertJsonPath('run.schema_conflict', false)
+        ->assertJsonFragment(['name' => 'Cleaner']);
+
+    expect(ControlResponseDraft::count())->toBe(0)
+        ->and(ControlResponse::count())->toBe(0);
+});
+
+it('restores a matching Focus V2 draft without exposing file system paths', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $schema = new ControlSchema($control->id, controlWorkflowSchema());
+    $runId = (string) Str::uuid();
+    $draft = ControlResponseDraft::create([
+        'control_id' => $control->id,
+        'supervisor_id' => $supervisor->id,
+        'cleaner_id' => $cleaner->id,
+        'apartment_id' => $apartment,
+        'run_id' => $runId,
+        'revision' => 3,
+        'state' => 'active',
+        'schema_snapshot' => controlWorkflowSchema(),
+        'schema_version' => $schema->version(),
+        'responses' => $schema->attachQuestionIds([[[
+            'selected' => 'yes', 'custom' => '', 'media' => [[
+                'disk' => 'local', 'path' => 'controls/'.$control->id.'/2026/11/image.jpg',
+                'original_name' => 'image.jpg', 'mime' => 'image/jpeg', 'size' => 100,
+            ]],
+        ]]]),
+    ]);
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('run.id', $runId)
+        ->assertJsonPath('run.draft_id', $draft->id)
+        ->assertJsonPath('run.revision', 3)
+        ->assertJsonPath('answers.0.0.selected', 'yes')
+        ->assertJsonPath('media.0.0.0.name', 'image.jpg')
+        ->assertJsonMissingPath('answers.0.0.media')
+        ->assertDontSee('controls/'.$control->id.'/2026/11/image.jpg');
+});
+
+it('isolates conflicting Focus V2 drafts and refuses unauthorized actors', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $draft = ControlResponseDraft::create([
+        'control_id' => $control->id,
+        'supervisor_id' => $supervisor->id,
+        'run_id' => (string) Str::uuid(),
+        'revision' => 2,
+        'state' => 'active',
+        'schema_version' => str_repeat('0', 64),
+        'responses' => [[['selected' => 'yes']]],
+    ]);
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('run.schema_conflict', true)
+        ->assertJsonPath('run.conflicted_draft_id', $draft->id)
+        ->assertJsonPath('run.draft_id', null)
+        ->assertJsonPath('answers.0.0.selected', '');
+
+    $this->actingAs($cleaner)->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertForbidden();
+    $supervisor->forceFill(['is_active' => false])->save();
+    $this->actingAs($supervisor)->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertForbidden();
+});
+
 it('queues one durable completion notification for each Classic and Focus result', function (): void {
     Queue::fake();
     [$supervisor, $cleaner, $apartment] = mountControlWorkflow();
