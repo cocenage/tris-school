@@ -7,6 +7,7 @@ use App\Http\Controllers\FocusMediaUploadController;
 use App\Http\Controllers\FocusV2BootstrapController;
 use App\Http\Controllers\FocusV2DraftController;
 use App\Http\Controllers\FocusV2MediaController;
+use App\Http\Controllers\FocusV2SubmitController;
 use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\LogoutController;
@@ -157,6 +158,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::post('/checks/control/focus-v2/draft', FocusV2DraftController::class)
         ->middleware([SafeguardRolePreviewData::class, 'throttle:120,1'])
         ->name('page-checks.control.focus-v2.draft');
+    Route::post('/checks/control/focus-v2/submit', FocusV2SubmitController::class)
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:20,1'])
+        ->name('page-checks.control.focus-v2.submit');
     Route::post('/checks/control/focus-v2/media', [FocusV2MediaController::class, 'start'])
         ->middleware([SafeguardRolePreviewData::class, 'throttle:60,1'])
         ->name('page-checks.control.focus-v2.media.start');
