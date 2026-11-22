@@ -44,9 +44,9 @@ class AntigocciaCommandHandler
         }
 
         try {
-            $text = "🧪 <b>ANTIGOCCIA — Антикапля</b>\n\nЗаполните анкету после уборки. Квартиру и дату можно выбрать вручную, в том числе задним числом.";
+            $text = 'АНКЕТА «АНТИКАПЛЯ» (ANTIGOCCIA)';
             $markup = ['inline_keyboard' => [[
-                ['text' => '🧪 Заполнить анкету', 'url' => $url],
+                ['text' => 'Заполнить', 'url' => $url],
             ]]];
             $sent = app(TelegramBotService::class)->sendMessage(
                 $chatId,
@@ -82,10 +82,10 @@ class AntigocciaCommandHandler
             $results[] = [
                 'type' => 'article',
                 'id' => 'antigoccia',
-                'title' => '🧪 Антикапля',
+                'title' => 'АНКЕТА «АНТИКАПЛЯ» (ANTIGOCCIA)',
                 'description' => 'Открыть анкету после уборки',
-                'input_message_content' => ['message_text' => '🧪 ANTIGOCCIA — анкета после уборки'],
-                'reply_markup' => ['inline_keyboard' => [[['text' => '🧪 Заполнить анкету', 'url' => $url]]]],
+                'input_message_content' => ['message_text' => 'АНКЕТА «АНТИКАПЛЯ» (ANTIGOCCIA)'],
+                'reply_markup' => ['inline_keyboard' => [[['text' => 'Заполнить', 'url' => $url]]]],
             ];
         }
 
