@@ -6,6 +6,7 @@ use App\Http\Controllers\ControlMediaController;
 use App\Http\Controllers\FocusMediaUploadController;
 use App\Http\Controllers\FocusV2BootstrapController;
 use App\Http\Controllers\FocusV2DraftController;
+use App\Http\Controllers\FocusV2MediaController;
 use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\LogoutController;
@@ -156,6 +157,25 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::post('/checks/control/focus-v2/draft', FocusV2DraftController::class)
         ->middleware([SafeguardRolePreviewData::class, 'throttle:120,1'])
         ->name('page-checks.control.focus-v2.draft');
+    Route::post('/checks/control/focus-v2/media', [FocusV2MediaController::class, 'start'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:60,1'])
+        ->name('page-checks.control.focus-v2.media.start');
+    Route::get('/checks/control/focus-v2/media/{upload}', [FocusV2MediaController::class, 'status'])
+        ->middleware(SafeguardRolePreviewData::class)
+        ->name('page-checks.control.focus-v2.media.status');
+    Route::put('/checks/control/focus-v2/media/{upload}/chunks/{index}', [FocusV2MediaController::class, 'chunk'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:360,1'])
+        ->whereNumber('index')
+        ->name('page-checks.control.focus-v2.media.chunk');
+    Route::post('/checks/control/focus-v2/media/{upload}/complete', [FocusV2MediaController::class, 'complete'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:30,1'])
+        ->name('page-checks.control.focus-v2.media.complete');
+    Route::post('/checks/control/focus-v2/media/{upload}/attach', [FocusV2MediaController::class, 'attach'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:60,1'])
+        ->name('page-checks.control.focus-v2.media.attach');
+    Route::delete('/checks/control/focus-v2/media/{upload}', [FocusV2MediaController::class, 'cancel'])
+        ->middleware(SafeguardRolePreviewData::class)
+        ->name('page-checks.control.focus-v2.media.cancel');
 
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
