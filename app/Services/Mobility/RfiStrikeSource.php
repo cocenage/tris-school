@@ -40,6 +40,13 @@ class RfiStrikeSource
         foreach ($xml->query('/rss/channel/item') as $item) {
             $title = Str::squish($xml->evaluate('string(title)', $item));
             $url = trim($xml->evaluate('string(link)', $item));
+            // RSS links use /content/rfi/ while the public article uses /it/.
+            // Normalize before checking URLs and fetching the canonical article.
+            $url = (string) preg_replace(
+                '~^https://www\\.rfi\\.it/content/rfi/(?=it/news-e-media/infomobilita/avvisi/)~',
+                'https://www.rfi.it/',
+                $url,
+            );
             if (preg_match('/\b(?:scioper\w*|agitazion\w*)\b/iu', $title) !== 1 || isset($checked[$url])) {
                 continue;
             }
