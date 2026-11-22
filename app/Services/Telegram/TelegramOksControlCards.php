@@ -89,7 +89,8 @@ class TelegramOksControlCards
                 };
                 $lines[] = e($label.' · '.$status);
                 $comment = $response?->classification === 'problem' ? $response->text : null;
-                $earlier = $response === null && $key === ($delivery->control_type === 'oks_start_eleven' ? 'late' : 'check') ? ($previous[$district] ?? null) : null;
+                $previousKey = $delivery->control_type === 'oks_start_eleven' && isset($questions['late']) ? 'late' : ($delivery->control_type === 'oks_start_eleven' ? 'start' : 'check');
+                $earlier = $response === null && $key === $previousKey ? ($previous[$district] ?? null) : null;
                 if ($comment !== null || $earlier !== null) {
                     $lines[] = '<i>'.e(Str::limit($comment ?? $earlier, 145)).'</i>';
                 }
