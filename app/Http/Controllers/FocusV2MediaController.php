@@ -12,7 +12,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 final class FocusV2MediaController extends Controller
@@ -40,6 +39,8 @@ final class FocusV2MediaController extends Controller
         $room = (int) $data['room_index'];
         $question = (int) $data['question_index'];
         abort_unless(isset($rooms[$room]['items'][$question]), 422);
+        abort_unless(count((array) ($draft->responses[$room][$question]['media'] ?? [])) < self::MAX_MEDIA_PER_QUESTION,
+            422, 'У вопроса уже 12 вложений.');
 
         $mime = (string) $data['mime'];
         abort_unless(in_array($mime, [...FocusMediaLimits::IMAGE_MIMES, ...FocusMediaLimits::VIDEO_MIMES], true), 422);
@@ -276,7 +277,7 @@ final class FocusV2MediaController extends Controller
                     Storage::disk('local')->delete($record->stored_path);
                 }
             }
-            return response()->json(['cancelled' => true]);
+            return response()->json(['cancelled' => true])->header('Cache-Control', 'private, no-store');
         });
     }
 
