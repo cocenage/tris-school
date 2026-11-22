@@ -422,7 +422,8 @@ async function sendOne(item) {
         uploads.value = uploads.value.filter(other => other.id !== item.id);
     } catch (error) {
         if (controller.signal.aborted) {
-            item.status = 'cancelled';
+            // Cancellation may still be awaiting its own server confirmation.
+            if (item.status !== 'error') item.status = 'cancelled';
             return;
         }
         item.status = 'error';
@@ -462,10 +463,10 @@ async function cancelFile(item) {
         try {
             await focusMediaRequest(item.info.urls.cancel, 'DELETE', undefined, csrf);
         } catch (error) {
-            if (error.status === 409) {
-                item.status = 'error';
-                item.error = 'Статус файла изменился на сервере. Повторите загрузку для синхронизации.';
-            }
+            item.status = 'error';
+            item.error = error.status === 409
+                ? 'Статус файла изменился на сервере. Проверьте вложение и повторите действие.'
+                : 'Сервер не подтвердил отмену файла. Повторите «Отменить», когда соединение восстановится.';
         }
     }
 }
