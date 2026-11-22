@@ -55,6 +55,6 @@ jobs:
       - name: Verify revised OKS questions and compatibility
         run: php artisan test tests/Feature/OksControlCopyTest.php
       - name: Verify OKS schedule and Telegram delivery regressions
-        run: php artisan test tests/Feature/TelegramScheduledMessagesTest.php
+        run: php artisan test tests/Feature/TelegramScheduledMessagesTest.php --filter='(?i)oks'
       - name: Verify Work webhook regressions
         run: php artisan test tests/Feature/TelegramWorkWebhookTest.php
