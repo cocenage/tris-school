@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Models\ControlResponseDraft;
 use App\Models\FocusV2MediaUpload;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +22,13 @@ final class PruneFocusV2MediaUploads extends Command
         $threshold = now()->subHours($hours);
 
         $ids = FocusV2MediaUpload::query()
-            ->whereIn('status', ['pending', 'ready', 'cancelled'])
+            ->where(function ($query): void {
+                $query->whereIn('status', ['pending', 'ready', 'cancelled'])
+                    ->orWhere(function ($nested): void {
+                        $nested->where('status', 'attached')
+                            ->whereNotIn('draft_id', ControlResponseDraft::query()->select('id'));
+                    });
+            })
             ->where('updated_at', '<', $threshold)
             ->orderBy('updated_at')
             ->limit($limit)
@@ -32,15 +39,22 @@ final class PruneFocusV2MediaUploads extends Command
             try {
                 DB::transaction(function () use ($id, $threshold, &$deleted): void {
                     $upload = FocusV2MediaUpload::query()->whereKey($id)->lockForUpdate()->first();
-                    if (! $upload || ! in_array($upload->status, ['pending', 'ready', 'cancelled'], true)
+                    if (! $upload || ! in_array($upload->status, ['pending', 'ready', 'cancelled', 'attached'], true)
                         || ! $upload->updated_at?->lt($threshold)) {
+                        return;
+                    }
+                    // Attached evidence may belong to an already submitted
+                    // response. Prune the transfer record, never its media file.
+                    if ($upload->status === 'attached'
+                        && ControlResponseDraft::query()->whereKey($upload->draft_id)->exists()) {
                         return;
                     }
 
                     $disk = Storage::disk('local');
                     $disk->deleteDirectory('focus-v2/uploads/'.$upload->id);
                     $path = (string) $upload->stored_path;
-                    if ($path !== '' && str_starts_with($path, 'controls/'.$upload->control_id.'/')
+                    if ($upload->status !== 'attached' && $path !== ''
+                        && str_starts_with($path, 'controls/'.$upload->control_id.'/')
                         && ! str_contains($path, '..') && ! str_contains($path, '\\')) {
                         $disk->delete($path);
                     }
