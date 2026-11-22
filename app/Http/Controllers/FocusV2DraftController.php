@@ -82,7 +82,8 @@ final class FocusV2DraftController extends Controller
             return $this->conflict('schema_changed', 'У сохранённого черновика другая версия схемы.');
         }
         if ($draft && $draft->schema_snapshot !== null
-            && ! hash_equals($schemaVersion, (new ControlSchema((int) $control->id, $draft->schema_snapshot))->version())) {
+            && (! is_array($draft->schema_snapshot)
+                || ! hash_equals($schemaVersion, (new ControlSchema((int) $control->id, $draft->schema_snapshot))->version()))) {
             return $this->conflict('schema_changed', 'Схема сохранённого черновика устарела.');
         }
         if (! $draft && $draftId === null && (clone $owned)->exists()) {
@@ -169,6 +170,13 @@ final class FocusV2DraftController extends Controller
                 }
 
                 $corrective = $answer['corrective'] ?? [];
+                if ((array_key_exists('repeats', $corrective) && ! is_bool($corrective['repeats']) && $corrective['repeats'] !== null)
+                    || (array_key_exists('recheck', $corrective) && ! is_bool($corrective['recheck']) && $corrective['recheck'] !== null)
+                    || (array_key_exists('action', $corrective) && ! is_string($corrective['action']))) {
+                    throw ValidationException::withMessages([
+                        "answers.$roomIndex.$questionIndex" => 'Некорректный формат пояснения.',
+                    ]);
+                }
                 $negative = ControlResponse::isNegativeAnswer($question, $selected);
                 $answers[$roomIndex][$questionIndex] = [
                     'selected' => $selected,
