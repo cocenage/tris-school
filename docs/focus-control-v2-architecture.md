@@ -1,12 +1,18 @@
 # Focus Control V2 — technical audit and migration plan
 
 ## Status (2026-11-23)
-Foundation + revisioned draft API + isolated Vue 3 preview. The classic and Focus Livewire routes are not replaced.
-Three V2 routes exist for active authenticated admin/supervisor sessions:
-- `GET /checks/control/focus-v2` — experimental Vue screen.
-- `GET /checks/control/focus-v2/bootstrap` — read-only schema and existing draft.
-- `POST /checks/control/focus-v2/draft` — revisioned save with safe exact retry.
-Vue supports setup, room navigation, options, corrective fields, text, progress and background save. Existing media can be viewed, but V2 upload and final submission are NOT implemented yet. The user can save and finish in the old Focus. The preview is not linked in navigation.
+Foundation + revisioned draft API + Vue 3 preview + independent chunked media. Original Livewire Focus is untouched.
+V2 endpoints (authenticated admin/supervisor only):
+- `GET /checks/control/focus-v2` — Vue preview.
+- `GET /checks/control/focus-v2/bootstrap` — schema and owner draft.
+- `POST /checks/control/focus-v2/draft` — revisioned save and safe retry.
+- `POST /checks/control/focus-v2/media` — initialize or resume a file.
+- `PUT /checks/control/focus-v2/media/{upload}/chunks/{index}` — chunk transfer.
+- `GET /checks/control/focus-v2/media/{upload}` — received chunk status.
+- `POST /checks/control/focus-v2/media/{upload}/complete` — assemble/MIME-check.
+- `POST /checks/control/focus-v2/media/{upload}/attach` — idempotently attach.
+- `DELETE /checks/control/focus-v2/media/{upload}` — cancel unattached upload.
+Vue supports setup, questions, room navigation, progress, background save and media upload. **V2 final submission is NOT implemented.** Save and finish in old Focus. The preview is not linked in Academy navigation.
 
 ## Findings in current implementation
 
@@ -140,4 +146,32 @@ The new lockfile entries were reconstructed from official published package mani
 6. Use `Сохранить и завершить в старом Focus`; verify the old page restores answers and can complete the check.
 7. Measure speed and verify no new Vue payload on unrelated pages.
 
-**Not yet verified:** full Vue build and Laravel/Pest suite. The V2 screen is a preview, not a production replacement.
+**Not yet verified:** full Vue build, Laravel/Pest suite, host upload limits, and real 100 MiB video inside Telegram. The V2 screen remains a preview.
+
+
+## Phase 4: Independent chunked media (implemented in branch, not deployed)
+
+Vue now uploads up to two files concurrently, with per-file progress, cancel and retry. Each binary HTTP PUT contains at most 512 KiB; no Livewire upload state or one-shot 100 MiB multipart POST.
+
+Upload sessions are stored in `focus_v2_media_uploads`. UUID, supervisor, draft, run, schema, question, MIME, size and status are verified server-side. Complete reassembles parts and validates file MIME with PHP fileinfo. Attach uses optimistic draft revision and ensures no more than 12 files per question; repeated attach never duplicates a file.
+
+Retrying initialization returns received chunk indexes; retrying an identical chunk succeeds. Conflicting content or unauthorized access is rejected. Chunk cleanup follows database commit. The `focus-v2:prune-media` command runs daily at 03:25 Europe/Rome and prunes pending/ready/cancelled uploads older than 48 hours, not attached evidence.
+
+**Limitations:** File objects do not survive closing Telegram or reloading the page; current resume requires keeping the page session. Whole-file checksum is not yet implemented. HEIC/MOV support depends on PHP `fileinfo` magic data. Removing already attached media and final submission must still be handled by old Focus.
+
+### Required checks before rollout
+
+On a non-production system using an isolated test database:
+
+```bash
+npm install
+npm ci
+npm run build
+php artisan test tests/Feature/ControlWorkflowTest.php
+```
+
+The lockfile was reconstructed from official package manifests because npm registry access was unavailable in the coding environment. Regenerate it using npm, commit the resulting lockfile, then run `npm ci` before any release. Migrate the new table only after staging tests pass.
+
+Manual Telegram tests: a small image, 100 MiB MOV/MP4, interrupted transfer retry, two parallel files, duplicate complete/attach, concurrent stale drafts, cancellation, and old Focus handoff.
+
+**No successful Laravel/Pest test run, complete Vite build or live Telegram upload has been observed in this environment.**
