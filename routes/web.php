@@ -5,6 +5,7 @@ use App\Http\Controllers\AntigocciaPhotoController;
 use App\Http\Controllers\ControlMediaController;
 use App\Http\Controllers\FocusMediaUploadController;
 use App\Http\Controllers\FocusV2BootstrapController;
+use App\Http\Controllers\FocusV2DraftController;
 use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\LogoutController;
@@ -144,6 +145,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::get('/checks/control/focus-v2/bootstrap', FocusV2BootstrapController::class)
         ->middleware(SafeguardRolePreviewData::class)
         ->name('page-checks.control.focus-v2.bootstrap');
+    Route::post('/checks/control/focus-v2/draft', FocusV2DraftController::class)
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:120,1'])
+        ->name('page-checks.control.focus-v2.draft');
 
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
