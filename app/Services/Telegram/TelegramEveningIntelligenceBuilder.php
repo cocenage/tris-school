@@ -5,6 +5,7 @@ namespace App\Services\Telegram;
 use App\Models\TelegramMessage;
 use App\Models\TelegramOperationalEvent;
 use App\Models\TelegramOperationalEventEvidence;
+use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -181,6 +182,7 @@ class TelegramEveningIntelligenceBuilder
                 'label' => $district['label'] ?? null,
                 'source_chat_id' => $district['chat_id'] ?? null,
             ],
+            'cleaning_plan' => $this->cleaningPlan($day, $district['key'] ?? null),
             'events' => $editorialItems->map(function (array $item): array {
                 unset($item['_citation_candidates']);
 
@@ -204,6 +206,29 @@ class TelegramEveningIntelligenceBuilder
                 'mutations' => 0,
             ],
         ];
+    }
+
+    private function cleaningPlan(Carbon $day, ?string $district): ?string
+    {
+        if ($district === null || ! Schema::hasTable('telegram_scheduled_message_deliveries')) {
+            return null;
+        }
+
+        $opening = TelegramScheduledMessageDelivery::query()
+            ->where('control_type', ScheduledControlTypes::SHIFT_OPENING)
+            ->where('bot_type', 'work')->where('status', 'sent')
+            ->where('scheduled_for', '>=', $day->copy()->startOfDay()->format('Y-m-d H:i:s'))
+            ->where('scheduled_for', '<', $day->copy()->addDay()->startOfDay()->format('Y-m-d H:i:s'))
+            ->orderBy('scheduled_for')->orderBy('id')->first();
+        $context = $opening?->sequence_context ?? [];
+        $choices = $context['opening_draft'] ?? [];
+
+        if ((! ($context['opening_quick'] ?? false) && ! isset($context['opening_confirmed_by']))
+            || ! array_key_exists($district, $choices)) {
+            return null;
+        }
+
+        return $choices[$district] === 0 ? 'no_cleanings' : null;
     }
 
     private function managementSections(Collection $items, Carbon $start, Carbon $cutoff): array
@@ -277,8 +302,7 @@ class TelegramEveningIntelligenceBuilder
 
             if (in_array('positive_contribution', $item['types'] ?? [], true)
                 && ($source['role'] ?? null) === 'positive'
-                && preg_match('/^я\s+/iu', $text) === 1
-                && filled($source['author_name'] ?? null)) {
+                && (preg_match('/^я\s+/iu', $text) !== 1 || filled($source['author_name'] ?? null))) {
                 $sections['praise'][] = $line;
             }
 

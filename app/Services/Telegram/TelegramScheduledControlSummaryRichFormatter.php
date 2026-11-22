@@ -53,7 +53,7 @@ class TelegramScheduledControlSummaryRichFormatter
             $lines = [...$lines, ...array_map(fn (string $line): string => '- '.$this->richMessages->escapeRichText($line), $data['unanswered']), ''];
         }
         if ($data['not_applicable'] !== []) {
-            $lines[] = '## Не применимо';
+            $lines[] = '## Проверка не требовалась';
             $lines = [...$lines, ...array_map(fn (string $line): string => '- '.$this->richMessages->escapeRichText($line), $data['not_applicable']), ''];
         }
         $lines[] = '';
@@ -92,7 +92,7 @@ class TelegramScheduledControlSummaryRichFormatter
         $lines = [
             '<b>🧹 TRIS — Итоги рабочего дня</b>',
             $this->html($data['date']).' · контрольных сообщений: '.$data['control_count'],
-            'Открыто: '.$metrics['Открытых проблем'].' · устранено: '.$metrics['Подтверждённых устранений']
+            'Требует внимания: '.$metrics['Открытых проблем'].' · позже подтверждено: '.$metrics['Подтверждённых устранений']
                 .' · ответы расходятся: '.$metrics['Противоречивых ответов'],
         ];
 
@@ -106,7 +106,7 @@ class TelegramScheduledControlSummaryRichFormatter
             $groups['Окно ответа ещё открыто'] = ['Точек: '.$data['pending_points']];
         }
         if ($data['not_applicable'] !== []) {
-            $groups['Не применимо'] = array_map(
+            $groups['Проверка не требовалась'] = array_map(
                 fn (string $line): string => '• '.$this->html($this->compactText($line, 200)), $data['not_applicable']);
         }
         $technical = $data['technical_counts'];
@@ -144,10 +144,10 @@ class TelegramScheduledControlSummaryRichFormatter
     private function problemGroups(array $problems): array
     {
         $labels = [
-            'problem' => 'Ответили «нет»',
+            'problem' => 'Требует внимания',
             'partial' => 'Выполнено частично',
             'unclear' => 'Устранение не подтверждено',
-            'confirmed' => 'Подтвердили устранение',
+            'confirmed' => 'Позже подтвердили выполнение',
             'conflict' => 'Ответы расходятся',
         ];
         $groups = array_fill_keys($labels, []);
@@ -168,10 +168,13 @@ class TelegramScheduledControlSummaryRichFormatter
         $description = $problem['comment'] ?? ($problem['reason'] !== 'Не установлено' ? $problem['reason'] : $problem['issue']);
         $line .= ' — '.$this->html($this->compactText($description, 104));
         if ($problem['source_url'] !== null) {
-            $line .= ' · <a href="'.$problem['source_url'].'">'.($problem['has_negative'] && $problem['initial_status'] === 'problem' ? 'Ответ «нет»' : 'Ответ').'</a>';
+            $line .= ' · <a href="'.$problem['source_url'].'">Первый ответ</a>';
         }
         if ($problem['resolution_url'] !== null) {
             $line .= ' → <a href="'.$problem['resolution_url'].'">Подтверждение'.($problem['resolution_time'] !== 'Не установлено' ? ' в '.$problem['resolution_time'] : '').'</a>';
+            if (filled($problem['resolution_text'])) {
+                $line .= ': '.$this->html($this->compactText($problem['resolution_text'], 104));
+            }
         } elseif ($problem['status'] === 'confirmed') {
             $line .= ' → '.$this->html($problem['outcome']);
         }
@@ -427,9 +430,10 @@ class TelegramScheduledControlSummaryRichFormatter
             'has_negative' => $story['first_problem'] !== null,
             'initial_status' => $bad['status'] ?? null,
             'resolution_url' => $this->safeSourceUrl($resolution['source_url'] ?? null),
+            'resolution_text' => $resolution['text'] ?? null,
             'resolution_time' => $this->time((string) ($story['resolved_at'] ?? '')),
             'status_label' => match ($story['status']) {
-                'confirmed' => 'устранено и подтверждено',
+            'confirmed' => 'позже подтверждено выполнение',
                 'conflict' => 'Противоречивые ответы · требует уточнения',
                 'partial' => 'не завершено полностью',
                 'unclear' => 'нет ясного подтверждения устранения',
@@ -462,7 +466,7 @@ class TelegramScheduledControlSummaryRichFormatter
             if ($story['resolved_at'] !== null) {
                 $resolution = collect($story['events'])->last(fn (array $event): bool => ($event['responded_at'] ?? null) === $story['resolved_at']);
                 $at = $resolution['control_time'] ?? $story['resolved_at'];
-                $events[] = ['at' => $at, 'text' => $story['district'].' — устранение подтверждено'.($this->time((string) $at) !== $this->time((string) $story['resolved_at'])
+                $events[] = ['at' => $at, 'text' => $story['district'].' — выполнение подтверждено'.($this->time((string) $at) !== $this->time((string) $story['resolved_at'])
                     ? ' (ответ в '.$this->time((string) $story['resolved_at']).')' : '')];
             }
             if ($story['conflict_at'] !== null) {
@@ -681,7 +685,7 @@ class TelegramScheduledControlSummaryRichFormatter
     private function outcome(array $story): string
     {
         return match ($story['status']) {
-            'confirmed' => $story['resolved_at'] !== null ? 'устранение подтверждено в '.$this->time((string) $story['resolved_at']) : 'выполнение подтверждено; прежняя проблема не зафиксирована',
+            'confirmed' => $story['resolved_at'] !== null ? 'выполнение подтверждено в '.$this->time((string) $story['resolved_at']) : 'выполнение подтверждено; прежняя проблема не зафиксирована',
             'conflict' => 'ответы противоречат друг другу; требуется уточнение',
             'partial' => 'часть работ остаётся незавершённой',
             'unclear' => 'устранение не подтверждено',

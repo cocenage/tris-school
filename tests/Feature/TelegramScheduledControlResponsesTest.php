@@ -3042,8 +3042,8 @@ it('keeps early silence and explicit no second cleanings out of unanswered and n
     $final = $builder->build('2026-10-01');
     $html = app(TelegramScheduledControlSummaryRichFormatter::class)->fallbackHtml($final);
     expect($final['totals']['districts_without_answer'])->toBe(4)
-        ->and($html)->toContain('Не применимо', 'Lodi — вторые уборки', 'Без ответа · точек: 4')
-        ->and($html)->not->toContain('Ответили «нет»');
+        ->and($html)->toContain('Проверка не требовалась', 'Lodi — вторые уборки', 'Без ответа · точек: 4')
+        ->and($html)->not->toContain('Требует внимания');
 });
 
 it('counts missing follow-up responses only for districts that received the repeat question', function (): void {
