@@ -514,6 +514,153 @@ it('does not accept invalid Focus V2 answers or inactive staff', function (): vo
     expect(ControlResponseDraft::count())->toBe(0);
 });
 
+function focusV2MediaFixture(): array
+{
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    test()->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+
+    return [$supervisor, $cleaner, $control, ControlResponseDraft::query()->sole(), $payload];
+}
+
+function focusV2SamplePng(): string
+{
+    return base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p6QAAAAASUVORK5CYII=', true);
+}
+
+function focusV2MediaStartPayload(Control $control, ControlResponseDraft $draft, string $binary): array
+{
+    return [
+        'upload_id' => (string) Str::uuid(),
+        'control_id' => $control->id,
+        'draft_id' => $draft->id,
+        'run_id' => $draft->run_id,
+        'schema_version' => $draft->schema_version,
+        'room_index' => 0,
+        'question_index' => 0,
+        'original_name' => 'evidence.png',
+        'mime' => 'image/png',
+        'size' => strlen($binary),
+    ];
+}
+
+function focusV2PutChunk(string $uploadId, string $body, int $index = 0): \Illuminate\Testing\TestResponse
+{
+    return test()->call(
+        'PUT',
+        route('page-checks.control.focus-v2.media.chunk', [$uploadId, $index]),
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'application/octet-stream', 'HTTP_ACCEPT' => 'application/json'],
+        $body,
+    );
+}
+
+it('uploads Focus V2 evidence in chunks, resumes and attaches it exactly once', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft, $payload] = focusV2MediaFixture();
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+    $route = route('page-checks.control.focus-v2.media.start');
+
+    $this->postJson($route, $init)
+        ->assertOk()->assertJsonPath('status', 'pending')
+        ->assertJsonPath('total_chunks', 1)->assertJsonPath('received', []);
+
+    focusV2PutChunk($init['upload_id'], $file)->assertOk()->assertJsonPath('replayed', false);
+    focusV2PutChunk($init['upload_id'], $file)->assertOk()->assertJsonPath('replayed', true);
+
+    $this->postJson($route, $init)
+        ->assertOk()->assertJsonPath('received.0', 0);
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+
+    $attach = route('page-checks.control.focus-v2.media.attach', $init['upload_id']);
+    $this->postJson($attach, ['draft_id' => $draft->id, 'expected_revision' => 1])
+        ->assertOk()->assertJsonPath('run.revision', 2)
+        ->assertJsonPath('media_item.name', 'evidence.png');
+    $this->postJson($attach, ['draft_id' => $draft->id, 'expected_revision' => 1])
+        ->assertOk()->assertJsonPath('run.revision', 2);
+
+    $saved = ControlResponseDraft::query()->sole();
+    expect($saved->revision)->toBe(2)
+        ->and($saved->responses[0][0]['media'])->toHaveCount(1)
+        ->and($saved->responses[0][0]['media'][0]['upload_id'])->toBe($init['upload_id'])
+        ->and(FocusV2MediaUpload::query()->sole()->status)->toBe('attached');
+
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 2;
+    $payload['answers'][0][0]['selected'] = 'no';
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)
+        ->assertOk()->assertJsonPath('run.revision', 3);
+    expect(ControlResponseDraft::query()->sole()->responses[0][0]['media'])->toHaveCount(1);
+});
+
+it('isolates Focus V2 uploads by supervisor and draft owner', function (): void {
+    Storage::fake('local');
+    [$supervisor, , $control, $draft] = focusV2MediaFixture();
+    $init = focusV2MediaStartPayload($control, $draft, focusV2SamplePng());
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+
+    $other = User::create(['name' => 'Other', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($other)
+        ->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
+        ->assertNotFound();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertNotFound();
+
+    $this->actingAs($supervisor);
+    $changed = $init;
+    $changed['room_index'] = 1;
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $changed)->assertStatus(422);
+    $changed = $init;
+    $changed['size']++;
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $changed)->assertStatus(409);
+});
+
+it('rejects corrupt chunks and cleans up cancelled Focus V2 uploads', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $binary = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $binary);
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], 'short')->assertStatus(422);
+    focusV2PutChunk($init['upload_id'], $binary)->assertOk();
+    focusV2PutChunk($init['upload_id'], str_repeat('X', strlen($binary)))->assertStatus(409);
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+
+    $path = FocusV2MediaUpload::query()->sole()->stored_path;
+    Storage::disk('local')->assertExists($path);
+    $this->deleteJson(route('page-checks.control.focus-v2.media.cancel', $init['upload_id']))
+        ->assertOk()->assertJsonPath('cancelled', true);
+    Storage::disk('local')->assertMissing($path);
+    expect(FocusV2MediaUpload::query()->sole()->status)->toBe('cancelled');
+});
+
+it('rejects too large media and refuses to attach a stale Focus V2 revision', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+    $huge = $init;
+    $huge['size'] = 101 * 1024 * 1024;
+    $huge['mime'] = 'video/mp4';
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $huge)->assertUnprocessable();
+
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], $file)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id, 'expected_revision' => 0,
+    ])->assertStatus(409);
+    expect(ControlResponseDraft::query()->sole()->revision)->toBe(1)
+        ->and(FocusV2MediaUpload::query()->sole()->status)->toBe('ready');
+});
+
 it('queues one durable completion notification for each Classic and Focus result', function (): void {
     Queue::fake();
     [$supervisor, $cleaner, $apartment] = mountControlWorkflow();
