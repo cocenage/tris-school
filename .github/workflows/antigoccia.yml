@@ -1,16 +1,16 @@
 name: ANTIGOCCIA checks
 
 on:
-  push:
-    branches:
-      - feat/antigoccia-history
   pull_request:
     paths:
       - 'app/Models/Antigoccia*'
       - 'app/Http/Controllers/Antigoccia*'
+      - 'app/Http/Controllers/TelegramWorkWebhookController.php'
       - 'app/Services/Antigoccia/**'
       - 'app/Services/Telegram/Antigoccia*'
       - 'resources/views/components/antigoccia/**'
+      - 'resources/views/components/apartments/**'
+      - 'routes/web.php'
       - 'tests/Feature/AntigocciaTest.php'
       - 'database/migrations/*antigoccia*'
       - '.github/workflows/antigoccia.yml'
@@ -23,6 +23,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 18
+    env:
+      APP_ENV: testing
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      DB_URL: ''
+      DB_ANALYTICS_DATABASE: ':memory:'
+      DB_OLD_DATABASE: ':memory:'
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
