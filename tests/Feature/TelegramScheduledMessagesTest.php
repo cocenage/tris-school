@@ -1090,7 +1090,7 @@ it('runs interactive OKS cards in the requested topic without altering the work 
     $failNoteEdit = true;
     Http::fake(function ($request) use (&$sent, &$finishAttempts, &$failNoteEdit) {
         $html = $request['rich_message']['html'] ?? '';
-        if (str_contains($html, 'Бельё в приоритетных квартирах')) {
+        if (str_contains($html, 'Проверка доставок постельного белья')) {
             return Http::response(['ok' => false, 'description' => 'Bad Request: rich messages are disabled'], 400);
         }
         if (str_ends_with($request->url(), '/sendRichMessage')) {
