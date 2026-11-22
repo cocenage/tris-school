@@ -300,6 +300,21 @@ it('isolates conflicting Focus V2 drafts and refuses unauthorized actors', funct
     $this->actingAs($supervisor)->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertForbidden();
 });
 
+it('serves the experimental Vue Focus page only to active supervisors and admins', function (): void {
+    [$supervisor, $cleaner] = mountControlWorkflow();
+    $this->withoutVite();
+    $route = route('page-checks.control.focus-v2');
+
+    $this->get($route)
+        ->assertOk()
+        ->assertSee('id="focus-v2-app"', false)
+        ->assertSee('Focus Control V2');
+
+    $this->actingAs($cleaner)->get($route)->assertForbidden();
+    $supervisor->forceFill(['is_active' => false])->save();
+    $this->actingAs($supervisor)->get($route)->assertForbidden();
+});
+
 function focusV2DraftSavePayload(Control $control, User $cleaner, int $apartment): array
 {
     return [
