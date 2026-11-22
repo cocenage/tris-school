@@ -4,6 +4,7 @@ use App\Http\Controllers\ApartmentAttachmentController;
 use App\Http\Controllers\AntigocciaPhotoController;
 use App\Http\Controllers\ControlMediaController;
 use App\Http\Controllers\FocusMediaUploadController;
+use App\Http\Controllers\FocusV2BootstrapController;
 use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\LogoutController;
@@ -140,6 +141,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-checks.control.result-media');
     Route::livewire('/checks/control', 'forms.page-control')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control');
     Route::livewire('/checks/control/focus', 'forms.page-control-focus')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control.focus');
+    Route::get('/checks/control/focus-v2/bootstrap', FocusV2BootstrapController::class)
+        ->middleware(SafeguardRolePreviewData::class)
+        ->name('page-checks.control.focus-v2.bootstrap');
 
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
