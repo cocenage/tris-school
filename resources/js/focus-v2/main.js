@@ -6,6 +6,7 @@ if (root) {
     createApp(FocusV2App, {
         bootstrapUrl: root.dataset.bootstrapUrl,
         draftUrl: root.dataset.draftUrl,
+        mediaStartUrl: root.dataset.mediaStartUrl,
         classicUrl: root.dataset.classicUrl,
     }).mount(root);
 }
