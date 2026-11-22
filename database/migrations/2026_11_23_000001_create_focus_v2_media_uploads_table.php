@@ -10,9 +10,11 @@ return new class extends Migration
     {
         Schema::create('focus_v2_media_uploads', function (Blueprint $table): void {
             $table->uuid('id')->primary();
-            $table->foreignId('control_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('supervisor_id')->constrained('users')->cascadeOnDelete();
-            $table->foreignId('draft_id')->constrained('control_response_drafts')->cascadeOnDelete();
+            // Staging rows deliberately outlive a draft deletion so that the
+            // pruning command can clean abandoned chunks after submission.
+            $table->unsignedBigInteger('control_id');
+            $table->unsignedBigInteger('supervisor_id');
+            $table->unsignedBigInteger('draft_id');
             $table->uuid('run_id');
             $table->string('schema_version', 64);
             $table->unsignedInteger('room_index');
