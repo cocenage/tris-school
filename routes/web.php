@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ApartmentAttachmentController;
+use App\Http\Controllers\AntigocciaPhotoController;
 use App\Http\Controllers\ControlMediaController;
 use App\Http\Controllers\FocusMediaUploadController;
 use App\Http\Controllers\FormGuideController;
@@ -160,6 +161,8 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/profile/applications', 'profile.page-applications')->middleware(SafeguardRolePreviewData::class)->name('page-profile.applications');
 
     Route::livewire('/apartments', 'apartments.page-apartments')->name('page-apartments');
+    Route::livewire('/antigoccia', 'antigoccia.page-antigoccia')->middleware(SafeguardRolePreviewData::class)->name('antigoccia.index');
+    Route::get('/antigoccia/photo/{report}/{surface}', AntigocciaPhotoController::class)->middleware(SafeguardRolePreviewData::class)->name('antigoccia.photo');
     Route::livewire('/apartments/{apartment}', 'apartments.page-apartment')->name('page-apartments.show');
     Route::get('/apartments/{apartment}/attachments/{attachment}', ApartmentAttachmentController::class)
         ->name('page-apartments.attachment');

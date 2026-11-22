@@ -8,6 +8,7 @@ use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\User;
+use App\Services\Telegram\AntigocciaCommandHandler;
 use App\Services\Telegram\HtmlBubbles\TelegramWidgetQueryHandler;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramAssistantService;
@@ -107,6 +108,21 @@ class TelegramWorkWebhookController extends Controller
 
         if (! $message) {
             return response()->json(['ok' => true, 'skipped' => 'no_message']);
+        }
+
+        // ANTIGOCCIA is available in private chats and every group/topic where this bot receives commands.
+        // Do not pass this command through the private-message fallback or assistant pipeline.
+        if (isset($update['message']) && app(AntigocciaCommandHandler::class)->isCommand($message)) {
+            if (! $actionFreshness->messageIsCurrent($message)) {
+                return response()->json(['ok' => true, 'skipped' => 'stale_antigoccia_command']);
+            }
+
+            try {
+                return app(AntigocciaCommandHandler::class)->handle($message);
+            } catch (\Throwable $e) {
+                Log::error('ANTIGOCCIA command reply failed', ['exception' => class_basename($e)]);
+                return response()->json(['ok' => false], 500);
+            }
         }
 
         if (($message['chat']['type'] ?? null) === 'private') {
