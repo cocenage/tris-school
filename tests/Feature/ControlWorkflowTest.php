@@ -599,6 +599,33 @@ it('uploads Focus V2 evidence in chunks, resumes and attaches it exactly once', 
     expect(ControlResponseDraft::query()->sole()->responses[0][0]['media'])->toHaveCount(1);
 });
 
+it('enforces the 12 media limit for in-flight uploads and permits exact start replay', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $route = route('page-checks.control.focus-v2.media.start');
+    $binary = focusV2SamplePng();
+    $first = null;
+
+    for ($index = 0; $index < 12; $index++) {
+        $init = focusV2MediaStartPayload($control, $draft, $binary);
+        $this->postJson($route, $init)->assertOk()->assertJsonPath('status', 'pending');
+        $first ??= $init;
+    }
+    expect(FocusV2MediaUpload::query()->count())->toBe(12);
+    // Replaying an existing upload must not consume another reservation.
+    $this->postJson($route, $first)->assertOk()->assertJsonPath('upload_id', $first['upload_id']);
+
+    $thirteenth = focusV2MediaStartPayload($control, $draft, $binary);
+    $this->postJson($route, $thirteenth)->assertStatus(422);
+    expect(FocusV2MediaUpload::query()->count())->toBe(12);
+
+    // Cancellation releases a reservation for a new upload.
+    $this->deleteJson(route('page-checks.control.focus-v2.media.cancel', $first['upload_id']))
+        ->assertOk()->assertJsonPath('cancelled', true);
+    $this->postJson($route, $thirteenth)->assertOk();
+    expect(FocusV2MediaUpload::query()->whereIn('status', ['pending', 'ready'])->count())->toBe(12);
+});
+
 it('isolates Focus V2 uploads by supervisor and draft owner', function (): void {
     Storage::fake('local');
     [$supervisor, , $control, $draft] = focusV2MediaFixture();
