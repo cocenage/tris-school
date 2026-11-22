@@ -3,6 +3,7 @@
 use App\Services\Antigoccia\AntigocciaAssessment;
 use App\Services\Telegram\AntigocciaCommandHandler;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
 
 function antigocciaValidAnswers(): array
@@ -62,6 +63,33 @@ it('recognizes the antigoccia Telegram command with correct bot mention', functi
 
     expect($handler->isCommand(['text' => '/antigoccia']))->toBeTrue()
         ->and($handler->isCommand(['text' => '/Antigoccia@TrisAcademyBot']))->toBeTrue()
+        ->and($handler->isCommand(['text' => '@TrisAcademyBot /antigoccia']))->toBeTrue()
+        ->and($handler->isCommand(['text' => '@ForeignBot /antigoccia']))->toBeFalse()
         ->and($handler->isCommand(['text' => '/antigoccia@ForeignBot']))->toBeFalse()
         ->and($handler->isCommand(['text' => 'hello /antigoccia']))->toBeFalse();
+});
+
+it('sends the mini app link to the same forum topic', function () {
+    config(['services.telegram.bot_username' => 'TrisAcademyBot', 'services.telegram.bot_token' => 'test-token']);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 25]])]);
+
+    $response = app(AntigocciaCommandHandler::class)->handle([
+        'chat' => ['id' => '-1001'], 'message_id' => 10, 'message_thread_id' => 12,
+    ]);
+
+    expect($response->getStatusCode())->toBe(200);
+    Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/sendMessage')
+        && $request['message_thread_id'] === 12
+        && $request['reply_markup']['inline_keyboard'][0][0]['url'] === 'https://t.me/TrisAcademyBot?startapp=antigoccia&mode=compact');
+});
+
+it('returns an inline result that opens the mini app', function () {
+    config(['services.telegram.bot_username' => 'TrisAcademyBot', 'services.telegram.bot_token' => 'test-token']);
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true])]);
+
+    $response = app(AntigocciaCommandHandler::class)->handleInline(['id' => 'query-1', 'query' => 'antigoccia']);
+
+    expect($response->getStatusCode())->toBe(200);
+    Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/answerInlineQuery')
+        && $request['results'][0]['reply_markup']['inline_keyboard'][0][0]['url'] === 'https://t.me/TrisAcademyBot?startapp=antigoccia&mode=compact');
 });

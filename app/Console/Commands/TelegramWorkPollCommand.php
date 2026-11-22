@@ -88,7 +88,7 @@ class TelegramWorkPollCommand extends Command
             $attempts = 0;
             $htmlBubblesEnabled = (bool) config('services.telegram.htmlbubbles.enabled', false)
                 && $htmlBubblesTarget->hasSafeConfiguredTarget();
-            $allowedUpdates = ['message', 'edited_message', 'channel_post', 'callback_query'];
+            $allowedUpdates = ['message', 'edited_message', 'channel_post', 'callback_query', 'inline_query'];
 
             if ($htmlBubblesEnabled) {
                 $allowedUpdates[] = 'widget_query';

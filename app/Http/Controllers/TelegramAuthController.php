@@ -50,6 +50,10 @@ class TelegramAuthController extends Controller
             $redirect = $authService->redirectRouteFor($user);
         }
 
+        if ($startParam === 'antigoccia' && $user->status === 'approved' && $user->is_active) {
+            $redirect = route('antigoccia.index');
+        }
+
         if (preg_match('/^control_result_([1-9][0-9]*)$/D', $startParam, $match)) {
             abort_unless($user->status === 'approved' && $user->is_active
                 && in_array($user->role, ['cleaner', 'supervisor', 'admin'], true), 403);

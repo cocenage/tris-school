@@ -1103,7 +1103,7 @@ it('polls an allowed work message through the existing ingest path', function ()
         ->and($stored->sent_at->format('Y-m-d H:i:s'))->toBe('2026-07-15 08:00:00');
 
     $requests = Http::recorded()->pluck(0)->values();
-    expect($requests[0]['allowed_updates'])->toBe(['message', 'edited_message', 'channel_post', 'callback_query'])
+    expect($requests[0]['allowed_updates'])->toBe(['message', 'edited_message', 'channel_post', 'callback_query', 'inline_query'])
         ->and($requests[1]['offset'])->toBe(202);
 });
 
@@ -1217,7 +1217,7 @@ it('handles and acknowledges new day-off callbacks after the backlog guard is di
         && $httpRequest['text'] === 'Дата уже одобрена');
     Http::assertSent(fn (ClientRequest $httpRequest): bool => str_ends_with($httpRequest->url(), '/getUpdates')
         && ($httpRequest->data()['offset'] ?? null) === 304
-        && $httpRequest['allowed_updates'] === ['message', 'edited_message', 'channel_post', 'callback_query']);
+        && $httpRequest['allowed_updates'] === ['message', 'edited_message', 'channel_post', 'callback_query', 'inline_query']);
 });
 
 it('long polls for fresh callbacks and carries the acknowledged offset into the next fetch', function () {
