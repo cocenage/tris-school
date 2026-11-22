@@ -1,0 +1,63 @@
+name: ANTIGOCCIA checks
+
+on:
+  pull_request:
+    paths:
+      - 'app/Models/Antigoccia*'
+      - 'app/Http/Controllers/Antigoccia*'
+      - 'app/Http/Controllers/TelegramWorkWebhookController.php'
+      - 'app/Services/Antigoccia/**'
+      - 'app/Services/Telegram/Antigoccia*'
+      - 'resources/views/components/antigoccia/**'
+      - 'resources/views/components/apartments/**'
+      - 'routes/web.php'
+      - 'tests/Feature/AntigocciaTest.php'
+      - 'database/migrations/*antigoccia*'
+      - '.github/workflows/antigoccia.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      APP_ENV: testing
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      DB_URL: ''
+      DB_ANALYTICS_DATABASE: ':memory:'
+      DB_OLD_DATABASE: ':memory:'
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, dom, fileinfo, pdo_sqlite, sqlite3, gd, intl, zip
+          coverage: none
+          tools: composer:v2
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build frontend assets
+        run: npm run build
+      - name: Prepare application
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+      - name: ANTIGOCCIA feature tests
+        run: php artisan test tests/Feature/AntigocciaTest.php
+      - name: Apartment permissions regression tests
+        run: php artisan test tests/Feature/ApartmentKnowledgeBaseTest.php
+      - name: Telegram webhook regression tests
+        run: php artisan test tests/Feature/TelegramWorkWebhookTest.php

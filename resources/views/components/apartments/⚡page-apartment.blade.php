@@ -82,6 +82,11 @@ new class extends Component {
             </div>
         </div>
 
+        <a href="{{ route('antigoccia.index', ['apartment' => $apartment->id]) }}" class="mt-[14px] flex items-center justify-between rounded-[24px] bg-[#213259] px-[18px] py-[16px] text-[15px] font-semibold text-white">
+            <span>🧪 ANTIGOCCIA — анкета и история</span>
+            <x-heroicon-o-chevron-right class="h-[19px] w-[19px]" />
+        </a>
+
         <div class="mt-[14px] space-y-[10px]">
             @forelse($this->sections as $section)
                 <section class="rounded-[28px] bg-[#F6F6F6] p-[17px]">
