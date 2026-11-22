@@ -84,8 +84,8 @@ class TelegramOksControlCards
                 $status = match (true) {
                     $response === null => '▫️ Ждём ответа',
                     self::isSkipped($response) => '— '.$response->text,
-                    $response->classification === 'problem' => '🔴 '.$question['no'],
-                    default => '✅ '.$question['yes'],
+                    $response->classification === 'problem' => '🔴 '.$this->withoutAnswerIcon($question['no']),
+                    default => '✅ '.$this->withoutAnswerIcon($question['yes']),
                 };
                 $lines[] = e($label.' · '.$status);
                 $comment = $response?->classification === 'problem' ? $response->text : null;
@@ -138,8 +138,14 @@ class TelegramOksControlCards
             'late' => $type === 'oks_start_eleven'
                 ? ($positive ? 'Гости выехали' : 'Гости ещё в квартире')
                 : ($positive ? 'Поздние выезды под контролем' : 'Есть риск из-за позднего выезда'),
-            default => $question[$positive ? 'yes' : 'no'],
+            default => $this->withoutAnswerIcon($question[$positive ? 'yes' : 'no']),
         };
+    }
+
+    private function withoutAnswerIcon(string $label): string
+    {
+        // The answer buttons include an icon, while the district status already has its own.
+        return preg_replace('/^[✅🔴]\\s*/u', '', $label) ?? $label;
     }
 
     public function callback(array $callback): string
