@@ -260,20 +260,27 @@ class MobilityStrikeSyncService
             return false;
         }
 
+        $now = CarbonImmutable::now('Europe/Rome');
+        if ($now->lt($activation)) {
+            return false;
+        }
+
         try {
             $published = CarbonImmutable::createFromFormat('!Y-m-d', (string) ($metadata['publication_date'] ?? ''), 'Europe/Rome');
         } catch (\Throwable) {
             return false;
         }
+        // Keep active strikes even if they were first announced before monitoring was enabled.
         if (! $published || $published->toDateString() !== ($metadata['publication_date'] ?? null)
-            || $published->lt($activation) || $published->gt(CarbonImmutable::now('Europe/Rome'))) {
+            || $published->gt($now)) {
             return false;
         }
 
         if ($kind === 'new') {
             return ($metadata['status'] ?? null) === 'scheduled'
                 && $eventDate !== null
-                && ($endDate ?? $eventDate) >= CarbonImmutable::now('Europe/Rome')->toDateString();
+                && ($endDate ?? $eventDate) >= $now->toDateString()
+                && $eventDate <= $now->addDays(30)->toDateString();
         }
 
         return true;
@@ -294,11 +301,13 @@ class MobilityStrikeSyncService
     private function shouldNotify(array $item, string $kind, array $old): bool
     {
         $activation = $this->notificationActivation();
-        if (! $activation) {
+        $now = CarbonImmutable::now('Europe/Rome');
+        if (! $activation || $now->lt($activation)) {
             return false;
         }
 
-        if ($item['ends_at'] < CarbonImmutable::now('Europe/Rome')->toDateString()) {
+        if ($item['ends_at'] < $now->toDateString()
+            || $item['starts_at'] > $now->addDays(30)->toDateString()) {
             return false;
         }
 
@@ -320,7 +329,7 @@ class MobilityStrikeSyncService
             return false;
         }
 
-        return $announced && $announced->gte($activation) && $announced->lte(CarbonImmutable::now('Europe/Rome'));
+        return $announced && $announced->lte($now);
     }
 
     private function notificationActivation(): ?CarbonImmutable
