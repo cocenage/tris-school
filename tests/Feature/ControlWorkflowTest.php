@@ -300,6 +300,184 @@ it('isolates conflicting Focus V2 drafts and refuses unauthorized actors', funct
     $this->actingAs($supervisor)->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertForbidden();
 });
 
+function focusV2DraftSavePayload(Control $control, User $cleaner, int $apartment): array
+{
+    return [
+        'control_id' => $control->id,
+        'run_id' => (string) Str::uuid(),
+        'schema_version' => (new ControlSchema($control->id, controlWorkflowSchema()))->version(),
+        'draft_id' => null,
+        'expected_revision' => 0,
+        'setup' => [
+            'cleaner_id' => $cleaner->id,
+            'apartment_id' => $apartment,
+            'is_assigned' => false,
+            'previous_cleaner' => '',
+            'cleaning_date' => '2026-11-23',
+            'inspection_date' => '2026-11-23',
+            'comment' => '',
+        ],
+        'answers' => [[[
+            'selected' => 'yes',
+            'custom' => '',
+            'corrective' => ['repeats' => null, 'action' => '', 'recheck' => null],
+        ]]],
+    ];
+}
+
+it('saves Focus V2 answers independently and restores them via bootstrap', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)
+        ->assertOk()
+        ->assertJsonPath('run.revision', 1)
+        ->assertJsonPath('run.id', $payload['run_id'])
+        ->assertJsonPath('replayed', false);
+
+    $draft = ControlResponseDraft::query()->sole();
+    expect($draft->supervisor_id)->toBe($supervisor->id)
+        ->and($draft->schema_version)->toBe($payload['schema_version'])
+        ->and(data_get($draft->responses, '0.0.selected'))->toBe('yes')
+        ->and(data_get($draft->responses, '0.0.question_id'))->toBeString()
+        ->and(ControlResponse::count())->toBe(0);
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('run.id', $payload['run_id'])
+        ->assertJsonPath('run.draft_id', $draft->id)
+        ->assertJsonPath('run.revision', 1)
+        ->assertJsonPath('answers.0.0.selected', 'yes');
+});
+
+it('replays an exact Focus V2 save without writing a second revision', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+
+    $this->postJson($route, $payload)->assertOk()->assertJsonPath('run.revision', 1);
+    $this->postJson($route, $payload)
+        ->assertOk()
+        ->assertJsonPath('replayed', true)
+        ->assertJsonPath('run.revision', 1);
+
+    expect(ControlResponseDraft::count())->toBe(1)
+        ->and(ControlResponseDraft::sole()->revision)->toBe(1);
+});
+
+it('rejects stale Focus V2 saves and accepts the current revision', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+
+    $this->postJson($route, $payload)->assertOk();
+    $draft = ControlResponseDraft::sole();
+    $payload['draft_id'] = $draft->id;
+    $payload['answers'][0][0]['selected'] = 'no';
+
+    $this->postJson($route, $payload)
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'revision_conflict')
+        ->assertJsonPath('current_revision', 1);
+
+    $payload['expected_revision'] = 1;
+    $this->postJson($route, $payload)->assertOk()->assertJsonPath('run.revision', 2);
+    $this->postJson($route, $payload)->assertOk()->assertJsonPath('replayed', true);
+
+    $stale = $payload;
+    $stale['expected_revision'] = 0;
+    $stale['answers'][0][0]['selected'] = 'yes';
+    $this->postJson($route, $stale)->assertStatus(409);
+    expect(ControlResponseDraft::sole()->revision)->toBe(2)
+        ->and(data_get(ControlResponseDraft::sole()->responses, '0.0.selected'))->toBe('no');
+});
+
+it('preserves server-owned media and rejects browser supplied media paths', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+
+    $this->postJson($route, $payload)->assertOk();
+    $draft = ControlResponseDraft::sole();
+    $responses = $draft->responses;
+    $responses[0][0]['media'] = [[
+        'disk' => 'local', 'path' => 'controls/'.$control->id.'/2026/11/evidence.jpg',
+        'original_name' => 'evidence.jpg', 'mime' => 'image/jpeg', 'size' => 100,
+    ]];
+    $draft->forceFill(['responses' => $responses])->save();
+
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 1;
+    $payload['answers'][0][0]['selected'] = 'no';
+    $this->postJson($route, $payload)->assertOk()->assertJsonPath('run.revision', 2);
+    expect(data_get(ControlResponseDraft::sole()->responses, '0.0.media.0.original_name'))->toBe('evidence.jpg');
+
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 2;
+    $payload['answers'][0][0]['media'] = [['disk' => 'local', 'path' => 'controls/999/fake.jpg']];
+    $this->postJson($route, $payload)->assertUnprocessable();
+    expect(ControlResponseDraft::sole()->revision)->toBe(2);
+});
+
+it('rejects mismatched Focus V2 schemas and a second run while a draft is active', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+
+    $wrong = $payload;
+    $wrong['schema_version'] = str_repeat('0', 64);
+    $this->postJson($route, $wrong)
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'schema_changed');
+
+    $this->postJson($route, $payload)->assertOk();
+    $another = $payload;
+    $another['run_id'] = (string) Str::uuid();
+    $this->postJson($route, $another)
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'active_draft_exists');
+    expect(ControlResponseDraft::count())->toBe(1);
+});
+
+it('authorizes Focus V2 saves only for the active supervisor who owns the draft', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+    $this->postJson($route, $payload)->assertOk();
+
+    $draft = ControlResponseDraft::sole();
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 1;
+    $payload['answers'][0][0]['selected'] = 'no';
+
+    $this->actingAs($cleaner)->postJson($route, $payload)->assertForbidden();
+
+    $other = User::create(['name' => 'Another supervisor', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($other)->postJson($route, $payload)
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'draft_not_found');
+
+    $supervisor->forceFill(['is_active' => false])->save();
+    $this->actingAs($supervisor)->postJson($route, $payload)->assertForbidden();
+
+    expect(ControlResponseDraft::sole()->revision)->toBe(1);
+});
+
+it('does not accept invalid Focus V2 answers or inactive staff', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+    $payload['answers'][0][0]['selected'] = 'not-an-option';
+
+    $this->postJson($route, $payload)->assertUnprocessable();
+    expect(ControlResponseDraft::count())->toBe(0);
+
+    $payload['answers'][0][0]['selected'] = 'yes';
+    $cleaner->forceFill(['is_active' => false])->save();
+    $this->postJson($route, $payload)->assertUnprocessable();
+    expect(ControlResponseDraft::count())->toBe(0);
+});
+
 it('queues one durable completion notification for each Classic and Focus result', function (): void {
     Queue::fake();
     [$supervisor, $cleaner, $apartment] = mountControlWorkflow();
