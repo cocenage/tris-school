@@ -209,7 +209,26 @@ final class FocusV2DraftController extends Controller
             && $draft->inspection_date?->toDateString() === $attributes['inspection_date']
             && (string) $draft->comment === $attributes['comment']
             && $draft->schema_version === $attributes['schema_version']
-            && $draft->responses === $attributes['responses'];
+            && $this->canonicalize($draft->responses) === $this->canonicalize($attributes['responses']);
+    }
+
+    /**
+     * PostgreSQL JSONB may reorder object keys. Compare snapshots structurally,
+     * while preserving the order of rooms, questions and files in list arrays.
+     */
+    private function canonicalize(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+        foreach ($value as $key => $item) {
+            $value[$key] = $this->canonicalize($item);
+        }
+
+        return $value;
     }
 
     private function success(ControlResponseDraft $draft, string $runId, bool $replayed = false): JsonResponse
