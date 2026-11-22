@@ -2,12 +2,10 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Apartment;
 use App\Models\Control;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\FocusV2MediaUpload;
-use App\Models\User;
 use App\Services\Controls\ControlCompletionNotificationService;
 use App\Services\Controls\ControlRunManager;
 use App\Services\Controls\ControlSchema;
@@ -94,7 +92,11 @@ final class FocusV2SubmitController extends Controller
                 $errors = $schema->validateAnswers($answers, requireComplete: true);
                 foreach ($schema->questionIds() as $roomIndex => $questions) {
                     foreach ($questions as $questionIndex => $questionId) {
-                        if (($answers[$roomIndex][$questionIndex]['question_id'] ?? null) !== $questionId) {
+                        $storedId = $answers[$roomIndex][$questionIndex]['question_id'] ?? null;
+                        // Older drafts did not store question IDs. Match the
+                        // existing Focus restore rule: validate any ID present,
+                        // then attach canonical IDs before final submission.
+                        if ($storedId !== null && $storedId !== $questionId) {
                             $errors["answers.$roomIndex.$questionIndex"] = 'Ответ относится к другой версии вопроса.';
                         }
                     }
@@ -102,6 +104,7 @@ final class FocusV2SubmitController extends Controller
                 if ($errors !== []) {
                     throw ValidationException::withMessages($errors);
                 }
+                $answers = $schema->attachQuestionIds($answers);
 
                 $this->validateSetup($draft);
                 $this->validateMedia($draft, $rooms);
