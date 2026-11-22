@@ -62,7 +62,8 @@ async function fetchJson(url, options = {}) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-        const exception = new Error(data.message || (response.status === 419
+        const firstError = Object.values(data.errors ?? {}).flat().find(message => typeof message === 'string');
+        const exception = new Error(firstError || data.message || (response.status === 419
             ? 'Сессия истекла. Войдите снова.' : 'Сервер не ответил.'));
         exception.status = response.status;
         exception.code = data.error;
@@ -252,7 +253,7 @@ function openReview() {
 }
 
 async function openClassic() {
-    if (state.value === 'conflict') {
+    if (!run.value || state.value === 'conflict') {
         window.location.assign(props.classicUrl);
         return;
     }
