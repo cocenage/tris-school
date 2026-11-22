@@ -252,6 +252,10 @@ function openReview() {
 }
 
 async function openClassic() {
+    if (state.value === 'conflict') {
+        window.location.assign(props.classicUrl);
+        return;
+    }
     const ok = await ensureSynced();
     if (ok) window.location.assign(props.classicUrl);
 }
@@ -281,7 +285,7 @@ onBeforeUnmount(() => {
                     <p class="text-xs font-bold uppercase tracking-[0.18em] text-[#4274A3]">TRIS Academy · Beta</p>
                     <h1 class="mt-1 text-2xl font-extrabold tracking-tight">Focus Control V2</h1>
                 </div>
-                <a :href="classicUrl" class="rounded-full border border-[#D7E0EA] bg-white px-4 py-2 text-xs font-bold text-[#325B82]">Старый Focus</a>
+                <a :href="classicUrl" class="rounded-full border border-[#D7E0EA] bg-white px-4 py-2 text-xs font-bold text-[#325B82]" @click.prevent="openClassic">Старый Focus</a>
             </header>
 
             <div v-if="loading" role="status" class="rounded-3xl bg-white p-7 text-center text-sm">Загружаем вопросы…</div>
