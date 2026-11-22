@@ -96,13 +96,26 @@ final class FocusV2BootstrapController extends Controller
             }
         }
 
+        // Presentation URLs are client-only; they do not change the canonical
+        // ControlSchema hash or the server-side snapshot used for validation.
+        $clientRooms = $rooms;
+        foreach ($clientRooms as &$clientRoom) {
+            foreach ($clientRoom['items'] ?? [] as &$question) {
+                if (filled($question['question_image'] ?? null)) {
+                    $question['question_image_url'] = Storage::disk('public')->url($question['question_image']);
+                }
+            }
+            unset($question);
+        }
+        unset($clientRoom);
+
         return response()->json([
             'control' => [
                 'id' => $control->id,
                 'name' => $control->name,
                 'schema_version' => $version,
             ],
-            'rooms' => $rooms,
+            'rooms' => $clientRooms,
             'question_ids' => $schema->questionIds(),
             'run' => [
                 'id' => ! $conflict && $draft?->run_id ? $draft->run_id : (string) Str::uuid(),
