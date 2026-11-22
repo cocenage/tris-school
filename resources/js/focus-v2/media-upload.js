@@ -73,7 +73,7 @@ async function sendChunk(url, bytes, csrf, signal) {
  * init is safe to call repeatedly with the same upload ID. The returned
  * received indices allow retries to skip chunks that reached the server.
  */
-export async function transferFocusFile({ startUrl, file, uploadId, draft, room, question, csrf, signal, onProgress }) {
+export async function transferFocusFile({ startUrl, file, uploadId, draft, room, question, csrf, signal, onProgress, onInit = () => {} }) {
     const info = await focusMediaRequest(startUrl, 'POST', {
         upload_id: uploadId,
         control_id: draft.control_id,
@@ -87,6 +87,7 @@ export async function transferFocusFile({ startUrl, file, uploadId, draft, room,
         size: file.size,
     }, csrf, signal);
 
+    onInit(info);
     if (info.status === 'attached' || info.status === 'ready') {
         onProgress(100);
         return info;
