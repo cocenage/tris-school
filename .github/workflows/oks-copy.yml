@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 20
     env:
       APP_ENV: testing
+      TELEGRAM_BOT_TOKEN: test-work-token
+      TELEGRAM_SCHEDULED_BOT_TOKEN: test-scheduled-token
       DB_CONNECTION: sqlite
       DB_DATABASE: ':memory:'
       DB_URL: ''
