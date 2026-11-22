@@ -6,6 +6,7 @@ use App\Models\Control;
 use App\Models\ControlCompletionNotification;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
+use App\Models\FocusV2MediaUpload;
 use App\Models\User;
 use App\Services\Controls\ControlCompletionNotificationService;
 use App\Services\Controls\ControlRunManager;
@@ -34,7 +35,7 @@ use Livewire\Livewire;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function () {
-    foreach (['control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
+    foreach (['focus_v2_media_uploads', 'control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
         Schema::dropIfExists($table);
     }
 
@@ -140,6 +141,26 @@ beforeEach(function () {
         $table->timestamps();
     });
 
+    Schema::create('focus_v2_media_uploads', function (Blueprint $table): void {
+        $table->uuid('id')->primary();
+        $table->unsignedBigInteger('control_id');
+        $table->unsignedBigInteger('supervisor_id');
+        $table->unsignedBigInteger('draft_id');
+        $table->uuid('run_id');
+        $table->string('schema_version', 64);
+        $table->unsignedInteger('room_index');
+        $table->unsignedInteger('question_index');
+        $table->string('original_name', 180);
+        $table->string('declared_mime', 100);
+        $table->unsignedBigInteger('size_bytes');
+        $table->unsignedInteger('chunk_bytes');
+        $table->unsignedInteger('total_chunks');
+        $table->string('status', 20)->default('pending');
+        $table->string('stored_path')->nullable();
+        $table->string('actual_mime', 100)->nullable();
+        $table->timestamps();
+    });
+
     Schema::create('control_completion_notifications', function (Blueprint $table): void {
         $table->id();
         $table->unsignedBigInteger('control_response_id')->unique();
@@ -157,7 +178,7 @@ beforeEach(function () {
 });
 
 afterEach(function () {
-    foreach (['control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
+    foreach (['focus_v2_media_uploads', 'control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
         Schema::dropIfExists($table);
     }
 });
