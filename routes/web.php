@@ -142,6 +142,14 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-checks.control.result-media');
     Route::livewire('/checks/control', 'forms.page-control')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control');
     Route::livewire('/checks/control/focus', 'forms.page-control-focus')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control.focus');
+    // Experimental Vue entry: old Focus stays the default until acceptance tests pass.
+    Route::get('/checks/control/focus-v2', function () {
+        $user = Auth::user();
+        abort_unless($user?->is_active && in_array($user->role, ['admin', 'supervisor'], true), 403);
+
+        return response()->view('focus-v2')->header('Cache-Control', 'private, no-store');
+    })->middleware(SafeguardRolePreviewData::class)->name('page-checks.control.focus-v2');
+
     Route::get('/checks/control/focus-v2/bootstrap', FocusV2BootstrapController::class)
         ->middleware(SafeguardRolePreviewData::class)
         ->name('page-checks.control.focus-v2.bootstrap');
