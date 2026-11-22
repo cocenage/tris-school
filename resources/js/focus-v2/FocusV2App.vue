@@ -5,6 +5,7 @@ import { allowedFocusFile, focusMediaRequest, transferFocusFile } from './media-
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
     draftUrl: { type: String, required: true },
+    submitUrl: { type: String, required: true },
     mediaStartUrl: { type: String, required: true },
     classicUrl: { type: String, required: true },
 });
@@ -24,6 +25,9 @@ const media = ref([]);
 const stage = ref('setup');
 const activeRoom = ref(0);
 const blockedQuestion = ref(null);
+const submitting = ref(false);
+const submitError = ref('');
+const finalResult = ref(null);
 const uploads = ref([]);
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
@@ -258,9 +262,58 @@ function openReview() {
         return;
     }
     stage.value = 'review';
+    submitError.value = '';
+}
+
+async function submitControl() {
+    if (submitting.value || stage.value !== 'review' || !canEdit.value) return;
+    if (busyUploads.value) {
+        submitError.value = 'Разберитесь с загрузками: дождитесь завершения, повторите ошибочные или отмените лишние файлы.';
+        return;
+    }
+    const missing = firstMissing();
+    if (missing) {
+        goRoom(missing.roomIndex);
+        blockedQuestion.value = missing.questionIndex;
+        return;
+    }
+    submitting.value = true;
+    submitError.value = '';
+    try {
+        if (!(await ensureSynced())) {
+            throw new Error(syncError.value || 'Сначала сохраните ответы.');
+        }
+        if (!run.value?.draft_id || busyUploads.value) {
+            throw new Error('Черновик или вложения ещё не готовы к отправке.');
+        }
+        const result = await fetchJson(props.submitUrl, {
+            method: 'POST',
+            body: JSON.stringify({
+                control_id: control.value.id,
+                run_id: run.value.id,
+                schema_version: control.value.schema_version,
+                draft_id: run.value.draft_id,
+                expected_revision: run.value.revision,
+            }),
+        });
+        if (!result.submitted || !result.result_url) {
+            throw new Error('Сервер не подтвердил завершение проверки.');
+        }
+        finalResult.value = result;
+        stage.value = 'done';
+        state.value = 'synced';
+    } catch (error) {
+        submitError.value = error.message || 'Не удалось завершить контроль. Повторите отправку.';
+        if (error.status === 409 && error.code !== 'submission_in_progress') {
+            state.value = 'conflict';
+        }
+    } finally {
+        submitting.value = false;
+    }
 }
 
 async function openClassic() {
+    if (submitting.value || stage.value === 'done') return;
     if (busyUploads.value) {
         syncError.value = 'Дождитесь завершения загрузки файлов или отмените их.';
         return;
@@ -423,7 +476,7 @@ function dismissFile(item) {
 }
 
 function warnBeforeUnload(event) {
-    if (busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {
+    if (submitting.value || busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {
         event.preventDefault();
         event.returnValue = '';
     }
@@ -627,14 +680,38 @@ onBeforeUnmount(() => {
                             <span class="text-sm font-semibold">{{ room.title }}</span>
                             <span class="text-sm font-bold text-[#285B86]">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
                         </div>
-                        <div class="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900">
-                            Это тестовый интерфейс с независимой загрузкой медиа. Итоговая отправка пока выполняется в действующем Focus.
-                            Пока проверку можно завершить в действующем Focus: он восстановит сохранённые ответы.
+                        <div v-if="busyUploads" class="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+                            Есть файлы в процессе загрузки или с ошибками. Дождитесь окончания, повторите или отмените их, прежде чем отправлять контроль.
                         </div>
-                        <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-[#285B86] p-4 text-sm font-bold text-white disabled:opacity-50" @click="openClassic">
-                            Сохранить и завершить в старом Focus
+                        <div v-if="submitError" class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
+                            {{ submitError }}
+                        </div>
+                        <button type="button" :disabled="!canEdit || submitting || busyUploads" class="w-full rounded-xl bg-[#285B86] p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
+                            {{ submitting ? 'Отправляем контроль…' : 'Отправить контроль' }}
                         </button>
-                        <button type="button" class="w-full rounded-xl bg-slate-100 p-3 text-sm font-bold" @click="goRoom(rooms.length - 1)">Вернуться к вопросам</button>
+                        <button type="button" :disabled="submitting || busyUploads" class="w-full rounded-xl bg-[#EAF2FB] p-3 text-sm font-bold text-[#285B86] disabled:opacity-50" @click="openClassic">
+                            Продолжить в старом Focus
+                        </button>
+                        <button type="button" :disabled="submitting" class="w-full rounded-xl bg-slate-100 p-3 text-sm font-bold disabled:opacity-50" @click="goRoom(rooms.length - 1)">Вернуться к вопросам</button>
+                    </section>
+                </template>
+                <template v-else-if="stage === 'done'">
+                    <section class="space-y-4 rounded-3xl border border-emerald-200 bg-white p-6 shadow-sm" aria-live="polite">
+                        <div class="text-4xl" aria-hidden="true">✓</div>
+                        <h2 class="text-2xl font-extrabold text-emerald-800">Контроль отправлен</h2>
+                        <p class="text-sm text-slate-600">Результат сохранён в Академии. Повторное нажатие не создаст другую проверку.</p>
+                        <div class="rounded-2xl bg-slate-50 p-4">
+                            <p class="text-sm text-slate-600">Оценка</p>
+                            <p class="mt-1 text-3xl font-extrabold">{{ finalResult?.total_points }} / {{ finalResult?.max_points }} · {{ finalResult?.score_percent }}%</p>
+                            <p class="mt-2 text-sm font-bold" :class="finalResult?.result_zone === 'green' ? 'text-emerald-700' : finalResult?.result_zone === 'red' ? 'text-red-700' : 'text-amber-700'">
+                                {{ finalResult?.result_zone === 'green' ? 'Зелёная зона' : finalResult?.result_zone === 'red' ? 'Красная зона' : 'Жёлтая зона' }}
+                            </p>
+                            <p v-if="finalResult?.result_zone_reason" class="mt-1 text-xs text-slate-500">{{ finalResult.result_zone_reason }}</p>
+                        </div>
+                        <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-[#285B86] p-4 text-center text-sm font-bold text-white">
+                            Открыть результат
+                        </a>
+                        <a href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
                     </section>
                 </template>
             </template>
