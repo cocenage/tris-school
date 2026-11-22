@@ -155,7 +155,7 @@ Vue now uploads up to two files concurrently, with per-file progress, cancel and
 
 Upload sessions are stored in `focus_v2_media_uploads`. UUID, supervisor, draft, run, schema, question, MIME, size and status are verified server-side. Complete reassembles parts and validates file MIME with PHP fileinfo. Attach uses optimistic draft revision and ensures no more than 12 files per question; repeated attach never duplicates a file.
 
-Retrying initialization returns received chunk indexes; retrying an identical chunk succeeds. Conflicting content or unauthorized access is rejected. Chunk cleanup follows database commit. The `focus-v2:prune-media` command runs daily at 03:25 Europe/Rome and prunes pending/ready/cancelled uploads older than 48 hours, not attached evidence.
+Retrying initialization returns received chunk indexes; retrying an identical chunk succeeds. Conflicting content or unauthorized access is rejected. Chunk cleanup follows database commit. The `focus-v2:prune-media` command runs daily at 03:25 Europe/Rome. It removes pending, ready and cancelled sessions older than 48 hours; when a completed run has deleted its draft, it also removes old attached upload *metadata* without deleting the evidence file. Staging rows intentionally have no cascading draft foreign key, so abandoned chunks remain discoverable for cleanup.
 
 **Limitations:** File objects do not survive closing Telegram or reloading the page; current resume requires keeping the page session. Whole-file checksum is not yet implemented. HEIC/MOV support depends on PHP `fileinfo` magic data. Removing already attached media and final submission must still be handled by old Focus.
 
