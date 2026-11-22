@@ -699,6 +699,31 @@ it('prunes abandoned Focus V2 files but never removes attached evidence', functi
     Storage::disk('local')->assertMissing($path);
 });
 
+it('preserves attached Focus V2 evidence when a completed draft is deleted', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], $file)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id,
+        'expected_revision' => $draft->revision,
+    ])->assertOk();
+
+    $upload = FocusV2MediaUpload::query()->sole();
+    $path = $upload->stored_path;
+    $draft->delete(); // The normal Focus submit removes the active draft.
+    $upload->forceFill(['updated_at' => now()->subDays(3)])->save();
+
+    $this->artisan('focus-v2:prune-media')->assertExitCode(0);
+
+    expect(FocusV2MediaUpload::query()->count())->toBe(0);
+    Storage::disk('local')->assertExists($path);
+});
+
 it('queues one durable completion notification for each Classic and Focus result', function (): void {
     Queue::fake();
     [$supervisor, $cleaner, $apartment] = mountControlWorkflow();
