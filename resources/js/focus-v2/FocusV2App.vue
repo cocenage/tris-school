@@ -25,7 +25,7 @@ const stage = ref('setup');
 const activeRoom = ref(0);
 const blockedQuestion = ref(null);
 const uploads = ref([]);
-const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching'].includes(item.status)));
+const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
 let attachInFlight = false;
 let attachQueue = Promise.resolve();
@@ -388,7 +388,7 @@ function retryFile(item) {
 }
 
 function cancelFile(item) {
-    if (!['queued', 'uploading', 'attaching', 'error'].includes(item.status)) return;
+    if (!['queued', 'uploading', 'error'].includes(item.status)) return;
     item.controller?.abort();
     item.status = 'cancelled';
     if (item.info?.urls?.cancel) {
@@ -581,7 +581,7 @@ onBeforeUnmount(() => {
                                     <p v-if="item.error" role="alert" class="mt-2 text-red-700">{{ item.error }}</p>
                                     <div class="mt-2 flex gap-2">
                                         <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-[#285B86] px-3 py-1.5 font-semibold text-white" @click="retryFile(item)">Повторить</button>
-                                        <button v-if="['queued', 'uploading', 'attaching', 'error'].includes(item.status)" type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="cancelFile(item)">Отменить</button>
+                                        <button v-if="['queued', 'uploading', 'error'].includes(item.status)" type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="cancelFile(item)">Отменить</button>
                                         <button v-else type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="dismissFile(item)">Скрыть</button>
                                     </div>
                                 </div>
