@@ -133,6 +133,6 @@ final class FocusV2BootstrapController extends Controller
                     'id' => $apartment->id, 'name' => $apartment->name,
                     'thumbnail' => filled($apartment->image) ? Storage::disk('public')->url($apartment->image) : null,
                 ])->all(),
-        ]);
+        ])->header('Cache-Control', 'private, no-store');
     }
 }
