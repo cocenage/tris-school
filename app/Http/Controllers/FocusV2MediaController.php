@@ -132,7 +132,7 @@ final class FocusV2MediaController extends Controller
     {
         $record = $this->ownedUpload($request, $preview, $upload);
 
-        return DB::transaction(function () use ($record): JsonResponse {
+        $response = DB::transaction(function () use ($record): JsonResponse {
             $upload = FocusV2MediaUpload::query()->whereKey($record->id)->lockForUpdate()->firstOrFail();
             abort_if($upload->status === 'cancelled', 409);
             if (in_array($upload->status, ['ready', 'attached'], true)) {
@@ -185,10 +185,14 @@ final class FocusV2MediaController extends Controller
             $upload->forceFill([
                 'status' => 'ready', 'stored_path' => $finalPath, 'actual_mime' => $actualMime,
             ])->save();
-            $disk->deleteDirectory($directory);
-
             return $this->describe($upload);
         });
+
+        // Clean chunks only after the database confirms the ready file. If a
+        // transaction fails, the parts remain available for safe retry.
+        Storage::disk('local')->deleteDirectory($this->tempDirectory($record));
+
+        return $response;
     }
 
     public function attach(Request $request, RolePreviewContext $preview, string $upload): JsonResponse
