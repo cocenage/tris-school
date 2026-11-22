@@ -12,6 +12,7 @@ use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\TelegramTopic;
 use App\Models\User;
+use App\Services\Telegram\OksControlSchedule;
 use App\Services\Telegram\ScheduledControlTypes;
 use App\Services\Telegram\TelegramBotService;
 use App\Services\Telegram\TelegramDestinationCatalog;
@@ -821,6 +822,27 @@ it('queues the new OKS posts independently of the legacy closing controls in the
     Queue::assertPushed(DeliverScheduledTelegramMessage::class, 10);
 });
 
+it('switches newly scheduled OKS controls to the revised single-question format on 23 November', function (): void {
+    config(['services.telegram.oks_current_controls_enabled' => true]);
+    makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    Queue::fake();
+
+    Carbon::setTestNow(Carbon::parse('2026-11-23 11:00:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')->assertSuccessful();
+    $first = TelegramScheduledMessageDelivery::query()->where('control_type', 'oks_start_eleven')->sole();
+    expect($first->sequence_context[OksControlSchedule::COPY_VERSION] ?? null)->toBe(2)
+        ->and(array_keys(OksControlSchedule::questionsFor($first)))->toBe(['start']);
+
+    Carbon::setTestNow(Carbon::parse('2026-11-23 12:30:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')->assertSuccessful();
+    $second = TelegramScheduledMessageDelivery::query()->where('control_type', 'oks_first_finish')->sole();
+    expect($second->sequence_context[OksControlSchedule::COPY_VERSION] ?? null)->toBe(2)
+        ->and($second->sequence_context[OksControlSchedule::SPLIT_FIRST_FINISH] ?? false)->toBeFalse()
+        ->and(array_keys(OksControlSchedule::questionsFor($second)))->toBe(['check']);
+
+    Queue::assertPushed(DeliverScheduledTelegramMessage::class, 2);
+});
+
 it('keeps the two OKS questions independent and saves a reason in the original public card', function (): void {
     (require database_path('migrations/2026_10_03_000000_allow_replyless_scheduled_control_responses.php'))->up();
     (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
@@ -1068,7 +1090,7 @@ it('runs interactive OKS cards in the requested topic without altering the work 
     $failNoteEdit = true;
     Http::fake(function ($request) use (&$sent, &$finishAttempts, &$failNoteEdit) {
         $html = $request['rich_message']['html'] ?? '';
-        if (str_contains($html, 'Бельё в приоритетных квартирах')) {
+        if (str_contains($html, 'Проверка доставок постельного белья')) {
             return Http::response(['ok' => false, 'description' => 'Bad Request: rich messages are disabled'], 400);
         }
         if (str_ends_with($request->url(), '/sendRichMessage')) {
@@ -1128,7 +1150,7 @@ it('runs interactive OKS cards in the requested topic without altering the work 
     }
     $fallback = Http::recorded(fn ($request): bool => str_ends_with($request->url(), '/sendMessage'))->sole()[0];
     expect($fallback['message_thread_id'])->toBe(134)
-        ->and($fallback['text'])->toContain('Бельё в приоритетных квартирах')
+        ->and($fallback['text'])->toContain('Проверка доставок постельного белья')
         ->and($fallback['reply_markup']['inline_keyboard'][0][0]['text'])->toBe('Открыть контроль');
 
     $card = TelegramScheduledMessageDelivery::query()->withOksTests()->where('control_type', 'oks_start_eleven')->sole();

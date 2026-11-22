@@ -84,12 +84,13 @@ class TelegramOksControlCards
                 $status = match (true) {
                     $response === null => '▫️ Ждём ответа',
                     self::isSkipped($response) => '— '.$response->text,
-                    $response->classification === 'problem' => '🔴 '.$question['no'],
-                    default => '✅ '.$question['yes'],
+                    $response->classification === 'problem' => '🔴 '.$this->withoutAnswerIcon($question['no']),
+                    default => '✅ '.$this->withoutAnswerIcon($question['yes']),
                 };
                 $lines[] = e($label.' · '.$status);
                 $comment = $response?->classification === 'problem' ? $response->text : null;
-                $earlier = $response === null && $key === ($delivery->control_type === 'oks_start_eleven' ? 'late' : 'check') ? ($previous[$district] ?? null) : null;
+                $previousKey = $delivery->control_type === 'oks_start_eleven' && isset($questions['late']) ? 'late' : ($delivery->control_type === 'oks_start_eleven' ? 'start' : 'check');
+                $earlier = $response === null && $key === $previousKey ? ($previous[$district] ?? null) : null;
                 if ($comment !== null || $earlier !== null) {
                     $lines[] = '<i>'.e(Str::limit($comment ?? $earlier, 145)).'</i>';
                 }
@@ -137,8 +138,14 @@ class TelegramOksControlCards
             'late' => $type === 'oks_start_eleven'
                 ? ($positive ? 'Гости выехали' : 'Гости ещё в квартире')
                 : ($positive ? 'Поздние выезды под контролем' : 'Есть риск из-за позднего выезда'),
-            default => $question[$positive ? 'yes' : 'no'],
+            default => $this->withoutAnswerIcon($question[$positive ? 'yes' : 'no']),
         };
+    }
+
+    private function withoutAnswerIcon(string $label): string
+    {
+        // The answer buttons include an icon, while the district status already has its own.
+        return preg_replace('/^[✅🔴]\\s*/u', '', $label) ?? $label;
     }
 
     public function callback(array $callback): string
