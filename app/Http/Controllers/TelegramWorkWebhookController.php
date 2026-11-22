@@ -69,6 +69,7 @@ class TelegramWorkWebhookController extends Controller
         $updateType = match (true) {
             isset($update['callback_query']) => 'callback_query',
             isset($update['widget_query']) => 'widget_query',
+            isset($update['inline_query']) => 'inline_query',
             isset($update['message']) => 'message',
             isset($update['edited_message']) => 'edited_message',
             isset($update['channel_post']) => 'channel_post',
@@ -81,6 +82,16 @@ class TelegramWorkWebhookController extends Controller
             'has_callback_query' => $updateType === 'callback_query',
             'has_widget_query' => $updateType === 'widget_query',
         ]);
+
+        if (isset($update['inline_query'])) {
+            try {
+                return app(AntigocciaCommandHandler::class)->handleInline($update['inline_query']);
+            } catch (\Throwable $e) {
+                Log::error('Telegram inline query failed.', ['exception' => class_basename($e)]);
+
+                return response()->json(['ok' => false], 500);
+            }
+        }
 
         if (isset($update['widget_query'])) {
             if (! (bool) config('services.telegram.htmlbubbles.enabled', false)) {

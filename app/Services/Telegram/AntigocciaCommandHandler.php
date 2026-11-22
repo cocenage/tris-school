@@ -12,7 +12,9 @@ class AntigocciaCommandHandler
         if (! is_string($message['text'] ?? null)) {
             return false;
         }
-        if (! preg_match('/^\/antigoccia(?:@([A-Za-z0-9_]{5,32}))?(?:\s|$)/i', trim($message['text']), $matches)) {
+        $text = trim($message['text']);
+        if (preg_match('/^@([A-Za-z0-9_]{5,32})\s+\/antigoccia(?:\s|$)/i', $text, $matches) !== 1
+            && preg_match('/^\/antigoccia(?:@([A-Za-z0-9_]{5,32}))?(?:\s|$)/i', $text, $matches) !== 1) {
             return false;
         }
 
@@ -31,6 +33,11 @@ class AntigocciaCommandHandler
             return response()->json(['ok' => true, 'skipped' => 'missing_address']);
         }
 
+        $url = TelegramOksRichCard::miniAppUrl('antigoccia');
+        if ($url === null) {
+            return response()->json(['ok' => false, 'error' => 'bot_username_missing'], 503);
+        }
+
         $key = 'antigoccia:command:'.hash('sha256', $chatId.':'.$messageId);
         if (! Cache::add($key, true, now()->addDay())) {
             return response()->json(['ok' => true, 'skipped' => 'duplicate_command']);
@@ -39,7 +46,7 @@ class AntigocciaCommandHandler
         try {
             $text = "🧪 <b>ANTIGOCCIA — Антикапля</b>\n\nЗаполните анкету после уборки. Квартиру и дату можно выбрать вручную, в том числе задним числом.";
             $markup = ['inline_keyboard' => [[
-                ['text' => '🧪 Заполнить анкету', 'url' => route('antigoccia.index')],
+                ['text' => '🧪 Заполнить анкету', 'url' => $url],
             ]]];
             $sent = app(TelegramBotService::class)->sendMessage(
                 $chatId,
@@ -59,5 +66,31 @@ class AntigocciaCommandHandler
         }
 
         return response()->json(['ok' => true, 'antigoccia' => 'sent']);
+    }
+
+    public function handleInline(array $query): JsonResponse
+    {
+        $queryId = $query['id'] ?? null;
+        if (! is_string($queryId) || $queryId === '') {
+            return response()->json(['ok' => false, 'error' => 'missing_inline_query_id'], 400);
+        }
+
+        $url = TelegramOksRichCard::miniAppUrl('antigoccia');
+        $search = mb_strtolower(trim((string) ($query['query'] ?? '')));
+        $results = [];
+        if ($url !== null && in_array($search, ['', 'antigoccia', '/antigoccia', 'антикапля'], true)) {
+            $results[] = [
+                'type' => 'article',
+                'id' => 'antigoccia',
+                'title' => '🧪 Антикапля',
+                'description' => 'Открыть анкету после уборки',
+                'input_message_content' => ['message_text' => '🧪 ANTIGOCCIA — анкета после уборки'],
+                'reply_markup' => ['inline_keyboard' => [[['text' => '🧪 Заполнить анкету', 'url' => $url]]]],
+            ];
+        }
+
+        $sent = app(TelegramBotService::class)->answerInlineQuery($queryId, $results);
+
+        return response()->json(['ok' => $sent], $sent ? 200 : 500);
     }
 }

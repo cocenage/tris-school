@@ -28,7 +28,7 @@ Route::get('/', function () {
         : [];
 
     $telegramStart = request()->query('tgWebAppStartParam');
-    if (! auth()->check() || (is_string($telegramStart) && str_starts_with($telegramStart, 'oks_'))) {
+    if (! auth()->check() || (is_string($telegramStart) && (str_starts_with($telegramStart, 'oks_') || $telegramStart === 'antigoccia'))) {
         return redirect()->route('landing.page', $previewParameters);
     }
 

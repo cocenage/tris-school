@@ -11,6 +11,23 @@ use Illuminate\Support\Facades\Log;
 
 class TelegramBotService
 {
+    public function answerInlineQuery(string $queryId, array $results): bool
+    {
+        $token = config('services.telegram.bot_token');
+        if (! filled($token)) {
+            return false;
+        }
+
+        $response = $this->postTelegramApi($token, 'answerInlineQuery', [
+            'inline_query_id' => $queryId,
+            'results' => $results,
+            'cache_time' => 0,
+            'is_personal' => true,
+        ], 5, 3);
+
+        return $response->successful() && data_get($response->json(), 'ok') === true;
+    }
+
     public function sendMessage(
         string $chatId,
         string $text,
