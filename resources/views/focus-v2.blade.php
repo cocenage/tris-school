@@ -13,6 +13,7 @@
         id="focus-v2-app"
         data-bootstrap-url="{{ route('page-checks.control.focus-v2.bootstrap') }}"
         data-draft-url="{{ route('page-checks.control.focus-v2.draft') }}"
+        data-media-start-url="{{ route('page-checks.control.focus-v2.media.start') }}"
         data-classic-url="{{ route('page-checks.control.focus') }}"
     >
         <div class="mx-auto max-w-2xl p-6 text-center text-sm text-slate-600">
