@@ -39,9 +39,6 @@ final class FocusV2MediaController extends Controller
         $room = (int) $data['room_index'];
         $question = (int) $data['question_index'];
         abort_unless(isset($rooms[$room]['items'][$question]), 422);
-        abort_unless(count((array) ($draft->responses[$room][$question]['media'] ?? [])) < self::MAX_MEDIA_PER_QUESTION,
-            422, 'У вопроса уже 12 вложений.');
-
         $mime = (string) $data['mime'];
         abort_unless(in_array($mime, [...FocusMediaLimits::IMAGE_MIMES, ...FocusMediaLimits::VIDEO_MIMES], true), 422);
         $isImage = in_array($mime, FocusMediaLimits::IMAGE_MIMES, true);
@@ -53,6 +50,10 @@ final class FocusV2MediaController extends Controller
         $totalChunks = (int) ceil(((int) $data['size']) / self::CHUNK_BYTES);
 
         $upload = DB::transaction(function () use ($uploadId, $data, $request, $control, $draft, $room, $question, $filename, $mime, $totalChunks): FocusV2MediaUpload {
+            // Serialize reservations for this draft so concurrent start requests
+            // cannot bypass the 12-file limit before files get attached.
+            $lockedDraft = ControlResponseDraft::query()->whereKey($draft->id)->lockForUpdate()->firstOrFail();
+            abort_unless($lockedDraft->state === 'active' && $lockedDraft->run_id === $data['run_id'], 409);
             $existing = FocusV2MediaUpload::query()->whereKey($uploadId)->lockForUpdate()->first();
             if ($existing) {
                 abort_unless(
@@ -73,6 +74,16 @@ final class FocusV2MediaController extends Controller
 
                 return $existing;
             }
+
+            $attachedCount = count((array) ($lockedDraft->responses[$room][$question]['media'] ?? []));
+            $reservedCount = FocusV2MediaUpload::query()
+                ->where('draft_id', $lockedDraft->id)
+                ->where('room_index', $room)
+                ->where('question_index', $question)
+                ->whereIn('status', ['pending', 'ready'])
+                ->count();
+            abort_unless($attachedCount + $reservedCount < self::MAX_MEDIA_PER_QUESTION,
+                422, 'На один вопрос допускается не больше 12 вложений, включая загружаемые.');
 
             return FocusV2MediaUpload::create([
                 'id' => $uploadId,
