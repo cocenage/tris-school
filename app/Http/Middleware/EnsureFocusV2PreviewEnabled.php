@@ -10,7 +10,9 @@ final class EnsureFocusV2PreviewEnabled
 {
     public function handle(Request $request, Closure $next): Response
     {
-        abort_unless(config('focus-v2.enabled', false), 404);
+        // The experimental preview must never become public on production
+        // because an environment flag was accidentally enabled.
+        abort_unless(config('focus-v2.enabled', false) && ! app()->environment('production'), 404);
 
         return $next($request);
     }
