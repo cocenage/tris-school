@@ -252,6 +252,7 @@ it('boots the isolated Focus V2 API for active supervisors without changing exis
 
     $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
         ->assertOk()
+        ->assertJsonPath('viewer.id', $supervisor->id)
         ->assertJsonPath('control.id', $control->id)
         ->assertJsonPath('control.schema_version', (new ControlSchema($control->id, controlWorkflowSchema()))->version())
         ->assertJsonPath('rooms.0.items.0.question', 'Ключи на месте?')
