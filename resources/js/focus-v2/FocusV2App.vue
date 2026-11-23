@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { allowedFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
+import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
@@ -571,7 +571,7 @@ async function sendOne(item) {
 }
 
 function retryFile(item) {
-    if (!canEdit.value || item.status !== 'error' || !item.file) return;
+    if (!canRetryFocusFile(item, canEdit.value, finalResult.value?.response_id)) return;
     item.status = 'queued';
     item.error = '';
     pumpTransfers();
@@ -886,8 +886,13 @@ onBeforeUnmount(() => {
                                 <div v-if="uploads.some(item => item.id === record.upload_id && ['queued','uploading','attaching'].includes(item.status))" class="mt-2 text-blue-700">
                                     Загружается · {{ uploads.find(item => item.id === record.upload_id)?.progress ?? 0 }}%
                                 </div>
-                                <div v-if="uploads.some(item => item.id === record.upload_id && item.status === 'error')" class="mt-2 text-red-700" role="alert">
-                                    {{ uploads.find(item => item.id === record.upload_id)?.error }}
+                                <div v-if="uploads.some(item => item.id === record.upload_id && item.status === 'error')" class="mt-2 space-y-2 text-red-700" role="alert">
+                                    <p>{{ uploads.find(item => item.id === record.upload_id)?.error }}</p>
+                                    <button type="button"
+                                        class="rounded-lg bg-blue-600 px-3 py-2 font-bold text-white"
+                                        @click="retryFile(uploads.find(item => item.id === record.upload_id))">
+                                        Повторить загрузку
+                                    </button>
                                 </div>
                                 <div v-if="record.status === 'pending'" class="mt-2">
                                     <label class="inline-flex cursor-pointer rounded-lg bg-blue-50 px-3 py-2 font-bold text-blue-700">
