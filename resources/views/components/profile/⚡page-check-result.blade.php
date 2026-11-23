@@ -133,7 +133,9 @@ new class extends Component {
     $apartmentName = $record->apartment?->name ?? 'Квартира не указана';
     $resume = trim((string) ($record->comment ?? ''));
     $canReviewEvidence = Auth::id() === $record->supervisor_id || Auth::user()?->role === 'admin';
-    $hasV2Evidence = $canReviewEvidence && \App\Models\FocusV2MediaUpload::query()
+    $hasV2Evidence = $canReviewEvidence
+        && \Illuminate\Support\Facades\Schema::hasTable('focus_v2_media_uploads')
+        && \App\Models\FocusV2MediaUpload::query()
         ->where('control_response_id', $record->getKey())->exists();
     $evidenceProgress = $hasV2Evidence
         ? app(\App\Services\Controls\FocusV2MediaProgress::class)->forResponse($record, false)
