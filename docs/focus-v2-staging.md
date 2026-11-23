@@ -6,6 +6,12 @@ This is a **staging procedure**, not a production deployment. V2 changes
 are on branch `codex/focus-control-v2-foundation`; do not merge or deploy
 to the production Academy simply to run the media acceptance test.
 
+The Focus V2 CI run at
+https://github.com/cocenage/tris-school/actions/runs/45114440899
+passed Composer installation, `npm ci`, Vite compilation, and the
+ControlWorkflowTest suite using in-memory SQLite. It also exported the
+`focus-v2-vite-build` artifact for five days.
+
 A successful GitHub Actions workflow provides a tested `public/build/`
 artifact (`focus-v2-vite-build`), but **does not publish the application
 or create a staging server**. The built assets must be deployed with the
