@@ -1,5 +1,18 @@
 # Focus Control V2 — technical audit and migration plan
 
+## Automated verification (2026-11-23)
+
+GitHub Actions run 45113995739 completed successfully on this experimental branch:
+https://github.com/cocenage/tris-school/actions/runs/45113995739
+
+The workflow successfully ran composer install, npm ci, npm run build and
+php artisan test tests/Feature/ControlWorkflowTest.php against the isolated
+in-memory SQLite test configuration. This verifies the build and the
+existing feature regression suite. **It does not verify** real Telegram
+WebView upload performance, large photo batches, real 100 MiB videos,
+weak-network recovery, or staging/production migrations.
+
+
 ## Status (2026-11-23)
 Foundation + revisioned draft API + Vue 3 preview + independent chunked media + transactional final submission. Original Livewire Focus is untouched.
 V2 endpoints (authenticated admin/supervisor only):
