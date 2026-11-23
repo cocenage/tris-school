@@ -93,3 +93,29 @@ CI is necessary but not sufficient for safe mobile acceptance.
 The experimental pruning command remains disabled on production for now;
 monitor free storage manually and implement an audited retention policy
 before enabling automatic cleanup of completed media.
+
+## Follow-up: November 2026 supervisor UX and safe testing
+
+- Staff and apartment pickers include search and image thumbnails. The inspection
+  comment is visible on the first page. The corrective-question section is
+  temporarily hidden on negative answers.
+- The per-question media menu offers **take photo**, **record video**, and
+  **choose files**, with a thumbnail/video gallery and transfer progress.
+  Mobile camera capture is a browser/OS capability, not an app permission
+  guarantee.
+- Every registered photo/video must be attached to the server-side draft
+  before final submission. The backend rejects incomplete uploads regardless
+  of browser state. After closing Telegram mid-transfer, the next bootstrap
+  lists outstanding uploads and asks the supervisor to select matching originals;
+  previously received chunks are reused.
+- The built-in **Тестовый сотрудник** option appears only to administrators.
+  It is a strictly **client-side sandbox**: no API writes, no database result,
+  no statistics, no bot messages, no file upload. It allows checking controls,
+  navigation, capture selection and local previews, **not** benchmarking
+  real network upload performance. Leaving the test reloads the unchanged
+  real draft from the server.
+- An unfinished control cannot be sent when uploads are pending, even in a
+  second tab via direct POST. Explicitly cancelled uploads are omitted from
+  the final manifest. This prevents falsely completed evidence.
+- Stage and device testing still required: iOS/Android camera capture,
+  retries, large video, interrupted transfers, and authenticated thumbnails.
