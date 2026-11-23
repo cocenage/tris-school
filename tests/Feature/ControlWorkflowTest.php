@@ -344,6 +344,10 @@ it('blocks experimental Focus V2 routes in production even if the flag is enable
     $environment = app()->environment();
 
     try {
+        // Switching APP_ENV inside a test enables Laravel's normal production
+        // CSRF middleware (419) before our route guard runs. Disable only
+        // CSRF here so the POST assertions exercise the Focus V2 gate.
+        $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
         app()->detectEnvironment(fn (): string => 'production');
         $this->get(route('page-checks.control.focus-v2'))->assertNotFound();
         $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertNotFound();
