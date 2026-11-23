@@ -236,3 +236,15 @@ Closing Telegram stops live HTTP transfers. After reopening the review page, use
 Cancelled media remains visibly flagged as needs_review and cannot be quietly swapped with a different file. Audited replacement/review workflow, object storage, capacity planning, whole-file checksums, and long-term retention remain future tasks. The pruning command skips completed-result manifests, preventing silent deletion but requiring an explicit storage retention policy.
 
 Do not roll out before npm lockfile regeneration, npm ci, npm run build, Laravel tests on a dedicated test database, and real Telegram WebView testing (large photo batches, 100MB video, retry after interruption, logout/reopen, delayed notifications, and multi-device race behavior). None of these full integration checks have been observed passing in this GitHub editing environment.
+
+## Phase 7: best-effort recovery of unsynced Vue answers (experimental)
+
+- The Vue client now writes **only form setup and answer values** to browser IndexedDB on every edit. File blobs, media paths, people lists and auth data are not stored. The cache is scoped to the authenticated user ID, active control ID and canonical schema version.
+- On boot, the server is read first; the browser then checks the local copy. If the server revision and draft identity still match (or the run was never saved and there is no server draft), it **offers** restoration. It never silently replaces server answers.
+- If the server changed, recovery is blocked. The local JSON is available for manual comparison/copy until the user explicitly selects the server copy. Browser session storage remains a *best effort*, not a durable guarantee; Telegram WebView/OS may evict IndexedDB.
+- Every acknowledged draft save clears the local copy when no newer edits remain. If the user continues typing during the request, the recovery record is updated with the new revision instead. Writes and deletes are serialized.
+- A successful final submission also queues local cleanup. If a user closes Telegram during final submission, the server is still authoritative and its run/revision checks prevent silent duplicate edits; stale local data may require manual dismissal.
+- Error/status UI tells the supervisor when IndexedDB is unavailable. This change does not store binary uploads for resume: for pending files after WebView shutdown, the user still needs to reselect the original file.
+
+Validation: the branch's Focus V2 workflow includes Node unit tests covering user/schema scope, identical snapshots, revision conflicts, expiry and local write ordering, plus the existing Vue build and Laravel feature suite. Device-level testing remains required before rollout.
+
