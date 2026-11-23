@@ -239,8 +239,8 @@ async function choosePerson(id) {
         if (testMode.value) return;
         // Never discard unfinished real work when switching to a local-only
         // sandbox. Existing server drafts remain completely untouched.
-        if (busyUploads.value || interruptedUploads.value.length) {
-            syncError.value = 'Сначала завершите реальные загрузки перед переходом в тестовый режим.';
+        if (busyUploads.value) {
+            syncError.value = 'Подождите, пока активная загрузка завершится, прежде чем открывать тест.';
             return;
         }
         if (!(await ensureSynced())) {
@@ -1212,11 +1212,12 @@ onBeforeUnmount(() => {
                 <template v-else-if="stage === 'done'">
                     <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5" aria-live="polite">
                         <div class="text-3xl" aria-hidden="true">✓</div>
-                        <h2 class="text-xl font-semibold text-emerald-800">Контроль завершён</h2>
+                        <h2 class="text-xl font-semibold text-emerald-800">{{ testMode ? 'Тест завершён' : 'Контроль завершён' }}</h2>
                         <p v-if="testMode" class="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
                             Тест выполнен. На сервер ничего не отправлено; статистика, оценки и уведомления не создавались.
                         </p>
-                        <p v-else class="text-sm text-slate-600">Ответы и оценка сохранены. Фото и видео подтверждены сервером.</p>
+                        <p v-else-if="finalResult?.media?.state === 'complete'" class="text-sm text-slate-600">Ответы и оценка сохранены. Фото и видео подтверждены сервером.</p>
+                        <p v-else class="text-sm text-amber-900">Это ранее завершённый контроль. Материалы требуют восстановления.</p>
                         <div v-if="!testMode" class="rounded-xl bg-slate-50 p-4">
                             <p class="text-sm text-slate-600">Оценка уборки</p>
                             <p class="mt-1 text-2xl font-semibold">{{ finalResult?.total_points }} / {{ finalResult?.max_points }} · {{ finalResult?.score_percent }}%</p>
