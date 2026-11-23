@@ -443,7 +443,7 @@ function addFiles(event, room, question) {
 }
 
 function pumpTransfers() {
-    while (activeTransfers < 2 && canEdit.value) {
+    while (activeTransfers < 2 && (canEdit.value || stage.value === 'done')) {
         const next = uploads.value.find(item => item.status === 'queued');
         if (!next) break;
         next.status = 'uploading';
@@ -460,20 +460,31 @@ async function sendOne(item) {
     item.controller = controller;
     item.error = '';
     try {
-        // A draft must exist before the first media transfer.
-        if (!run.value?.draft_id) touch();
-        if (!(await ensureSynced())) throw new Error('Сначала сохраните ответы. Затем повторите загрузку.');
+        // Before completion, the draft must be saved. Afterwards, transfers
+        // resume against their original registered upload ID and result.
+        if (!finalResult.value) {
+            if (!run.value?.draft_id) touch();
+            if (!(await ensureSynced())) throw new Error('Сначала сохраните ответы. Затем повторите загрузку.');
+        }
+        const context = item.record
+            ? {
+                control_id: item.record.control_id,
+                draft_id: item.record.draft_id,
+                run_id: item.record.run_id,
+                schema_version: item.record.schema_version,
+            }
+            : {
+                control_id: control.value.id,
+                draft_id: run.value.draft_id,
+                run_id: run.value.id,
+                schema_version: control.value.schema_version,
+            };
 
         const result = await transferFocusFile({
             startUrl: props.mediaStartUrl,
             file: item.file,
             uploadId: item.id,
-            draft: {
-                control_id: control.value.id,
-                draft_id: run.value.draft_id,
-                run_id: run.value.id,
-                schema_version: control.value.schema_version,
-            },
+            draft: context,
             room: item.room,
             question: item.question,
             csrf,
@@ -485,22 +496,28 @@ async function sendOne(item) {
         item.status = 'attaching';
 
         const task = attachQueue.catch(() => {}).then(async () => {
-            if (!(await ensureSynced())) throw new Error('Ответы не сохранены. Повторите прикрепление.');
+            if (!finalResult.value && !(await ensureSynced())) {
+                throw new Error('Ответы не сохранены. Повторите прикрепление.');
+            }
             attachInFlight = true;
             try {
                 const attached = await focusMediaRequest(result.urls.attach, 'POST', {
-                    draft_id: run.value.draft_id,
-                    expected_revision: run.value.revision,
+                    draft_id: context.draft_id,
+                    expected_revision: finalResult.value ? 0 : run.value.revision,
                 }, csrf, controller.signal);
-                run.value = { ...run.value, ...attached.run };
-                const arr = media.value[item.room] ?? (media.value[item.room] = []);
-                const files = arr[item.question] ?? (arr[item.question] = []);
-                if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
-                    files.push(attached.media_item);
+                if (finalResult.value) {
+                    await refreshMediaReview();
+                } else {
+                    run.value = { ...run.value, ...attached.run };
+                    const arr = media.value[item.room] ?? (media.value[item.room] = []);
+                    const files = arr[item.question] ?? (arr[item.question] = []);
+                    if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
+                        files.push(attached.media_item);
+                    }
                 }
             } finally {
                 attachInFlight = false;
-                if (changeSerial !== acknowledgedSerial) queueSave(0);
+                if (!finalResult.value && changeSerial !== acknowledgedSerial) queueSave(0);
             }
         });
         attachQueue = task.catch(() => {});
