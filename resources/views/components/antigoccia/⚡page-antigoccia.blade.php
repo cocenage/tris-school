@@ -29,7 +29,8 @@ new class extends Component {
     {
         $this->newForm();
         $suggested = request()->query('apartment');
-        if (ctype_digit((string) $suggested)) {
+        if (ctype_digit((string) $suggested)
+            && app(ApartmentAccessService::class)->visibleQuery(auth()->user())->whereKey((int) $suggested)->exists()) {
             $this->selectApartment((int) $suggested);
         }
     }
