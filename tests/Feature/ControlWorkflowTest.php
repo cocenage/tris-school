@@ -338,21 +338,30 @@ it('hides every Focus V2 page and API endpoint when preview is disabled', functi
     expect(route('page-checks.control.focus'))->toContain('/checks/control/focus');
 });
 
-it('blocks experimental Focus V2 routes in production even if the flag is enabled', function (): void {
+it('serves Vue Focus V2 in production to eligible supervisors and keeps its rollback switch', function (): void {
     [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
     config()->set('focus-v2.enabled', true);
+    $this->withoutVite();
     $environment = app()->environment();
 
     try {
         // Switching APP_ENV inside a test enables Laravel's normal production
-        // CSRF middleware (419) before our route guard runs. Disable only
-        // CSRF here so the POST assertions exercise the Focus V2 gate.
+        // CSRF middleware (419) before route/controller authorization.
         $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
         app()->detectEnvironment(fn (): string => 'production');
+        $this->get(route('page-checks.control.focus-v2'))
+            ->assertOk()->assertSee('id="focus-v2-app"', false);
+        $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+            ->assertOk()->assertJsonPath('viewer.id', $supervisor->id);
+        $this->postJson(route('page-checks.control.focus-v2.draft'), [])
+            ->assertUnprocessable();
+        $this->actingAs($cleaner)->get(route('page-checks.control.focus-v2'))
+            ->assertForbidden();
+        $this->actingAs($supervisor);
+        config()->set('focus-v2.enabled', false);
         $this->get(route('page-checks.control.focus-v2'))->assertNotFound();
         $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertNotFound();
         $this->postJson(route('page-checks.control.focus-v2.draft'), [])->assertNotFound();
-        $this->postJson(route('page-checks.control.focus-v2.media.start'), [])->assertNotFound();
     } finally {
         app()->detectEnvironment(fn (): string => $environment);
     }
