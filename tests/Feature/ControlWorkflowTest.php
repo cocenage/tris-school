@@ -338,6 +338,22 @@ it('hides every Focus V2 page and API endpoint when preview is disabled', functi
     expect(route('page-checks.control.focus'))->toContain('/checks/control/focus');
 });
 
+it('blocks experimental Focus V2 routes in production even if the flag is enabled', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    config()->set('focus-v2.enabled', true);
+    $environment = app()->environment();
+
+    try {
+        app()->detectEnvironment(fn (): string => 'production');
+        $this->get(route('page-checks.control.focus-v2'))->assertNotFound();
+        $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertNotFound();
+        $this->postJson(route('page-checks.control.focus-v2.draft'), [])->assertNotFound();
+        $this->postJson(route('page-checks.control.focus-v2.media.start'), [])->assertNotFound();
+    } finally {
+        app()->detectEnvironment(fn (): string => $environment);
+    }
+});
+
 it('serves the experimental Vue Focus page only to active supervisors and admins', function (): void {
     [$supervisor, $cleaner] = mountControlWorkflow();
     $this->withoutVite();
