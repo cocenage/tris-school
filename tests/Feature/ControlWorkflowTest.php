@@ -322,6 +322,21 @@ it('isolates conflicting Focus V2 drafts and refuses unauthorized actors', funct
     $this->actingAs($supervisor)->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertForbidden();
 });
 
+it('hides every Focus V2 page and API endpoint when preview is disabled', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    config()->set('focus-v2.enabled', false);
+    $this->withoutVite();
+
+    $this->get(route('page-checks.control.focus-v2'))->assertNotFound();
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertNotFound();
+    $this->postJson(route('page-checks.control.focus-v2.draft'), [])->assertNotFound();
+    $this->postJson(route('page-checks.control.focus-v2.submit'), [])->assertNotFound();
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), [])->assertNotFound();
+
+    // A disabled experimental UI must not affect the production Focus route.
+    expect(route('page-checks.control.focus'))->toContain('/checks/control/focus');
+});
+
 it('serves the experimental Vue Focus page only to active supervisors and admins', function (): void {
     [$supervisor, $cleaner] = mountControlWorkflow();
     $this->withoutVite();
