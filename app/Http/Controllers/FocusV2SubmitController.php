@@ -109,17 +109,12 @@ final class FocusV2SubmitController extends Controller
                 $this->validateSetup($draft);
                 $this->validateMedia($draft, $rooms);
 
-                // Holding the draft row lock here also serializes upload start
-                // and attachment operations, which lock the same row.
-                $pending = FocusV2MediaUpload::query()
-                    ->where('draft_id', $draft->getKey())
-                    ->whereIn('status', ['pending', 'ready'])
-                    ->exists();
-                if ($pending) {
-                    throw ValidationException::withMessages([
-                        'media' => 'Есть файлы, загрузка или прикрепление которых не завершены. Дождитесь их или отмените.',
-                    ]);
-                }
+                // Finalization seals the list of registered evidence. Pending
+                // photos and videos stay uploadable after the draft is deleted.
+                // New uploads cannot be registered after finalization.
+                $evidence = FocusV2MediaUpload::query()->where('draft_id', $draft->getKey());
+                $hasUnresolvedMedia = (clone $evidence)->whereIn('status', ['pending', 'ready'])->exists();
+                $hasCancelledMedia = (clone $evidence)->where('status', 'cancelled')->exists();
 
                 $score = ControlResponse::calculateScores($rooms, $answers);
                 $response = $runs->submitOnce(
@@ -144,8 +139,12 @@ final class FocusV2SubmitController extends Controller
                         'status' => ControlResponse::STATUS_SENT,
                         'sent_at' => now(),
                     ],
-                    afterCreate: function (ControlResponse $response) use ($notifications, $user, $control, $draft, $score): void {
-                        $notifications->queueFor($response);
+                    afterCreate: function (ControlResponse $response) use ($notifications, $user, $control, $draft, $score, $hasUnresolvedMedia, $hasCancelledMedia): void {
+                        // Never send a "fully completed" notification while
+                        // registered evidence is still outstanding or cancelled.
+                        if (! $hasUnresolvedMedia && ! $hasCancelledMedia) {
+                            $notifications->queueFor($response);
+                        }
 
                         activity()->causedBy($user)->performedOn($response)->event('control_completed')
                             ->withProperties([
@@ -166,6 +165,11 @@ final class FocusV2SubmitController extends Controller
                             ->log('Супервайзер отправил контроль качества');
                     },
                 );
+
+                FocusV2MediaUpload::query()
+                    ->where('draft_id', $input['draft_id'])
+                    ->where('run_id', $input['run_id'])
+                    ->update(['control_response_id' => $response->getKey()]);
 
                 return $this->submittedResponse($response, $input, (int) $user->getKey(), false);
             });
@@ -238,6 +242,8 @@ final class FocusV2SubmitController extends Controller
             'replayed' => $replayed,
             'response_id' => $response->getKey(),
             'result_url' => route('page-profile.checks.result', $response->getKey()),
+            'media_review_url' => route('page-checks.control.focus-v2.review', $response->getKey()),
+            'media' => app(\App\Services\Controls\FocusV2MediaProgress::class)->forResponse($response),
             'total_points' => $response->total_points,
             'max_points' => $response->max_points,
             'score_percent' => $response->score_percent,
