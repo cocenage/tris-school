@@ -5,6 +5,7 @@ namespace App\Filament\Pages;
 use App\Models\AntigocciaReport;
 use App\Models\Apartment;
 use App\Services\Antigoccia\AntigocciaAnalytics;
+use App\Services\Antigoccia\AntigocciaOverview;
 use BackedEnum;
 use Filament\Facades\Filament;
 use Filament\Pages\Page;
@@ -37,22 +38,30 @@ class AntigocciaStatistics extends Page
             && (auth()->user()?->isAdmin() ?? false);
     }
 
-    public function getApartmentMatchesProperty()
+    public function updatedApartmentSearch(): void
     {
-        $search = mb_strtolower(trim($this->apartmentSearch));
+        $this->resetPage('antigocciaOverview');
+    }
 
-        return Apartment::query()
-            ->when($search !== '', fn ($query) => $query->where(function ($query) use ($search) {
-                $query->whereRaw('LOWER(name) LIKE ?', ['%'.$search.'%'])
-                    ->orWhereRaw("LOWER(COALESCE(address, '')) LIKE ?", ['%'.$search.'%']);
-            }))
-            ->orderBy('name')->limit(30)->get(['id', 'name', 'address']);
+    public function getOverviewTotalsProperty(): array
+    {
+        return app(AntigocciaOverview::class)->totals();
+    }
+
+    public function getOverviewRowsProperty()
+    {
+        $overview = app(AntigocciaOverview::class);
+        $apartments = $overview->apartmentQuery($this->apartmentSearch)
+            ->paginate(15, ['id', 'name', 'address'], 'antigocciaOverview');
+        $apartments->setCollection(collect($overview->rowsForApartments($apartments->getCollection())));
+
+        return $apartments;
     }
 
     public function selectApartment(int $id): void
     {
         abort_unless(static::canAccess(), 403);
-        abort_unless(Apartment::query()->whereKey($id)->exists(), 404);
+        abort_unless(app(AntigocciaOverview::class)->apartmentQuery()->whereKey($id)->exists(), 404);
 
         $this->apartmentId = (string) $id;
         $this->apartmentSearch = '';
@@ -64,6 +73,7 @@ class AntigocciaStatistics extends Page
         $this->apartmentId = '';
         $this->apartmentSearch = '';
         $this->resetPage('antigocciaHistory');
+        $this->resetPage('antigocciaOverview');
     }
 
     public function getApartmentProperty(): ?Apartment

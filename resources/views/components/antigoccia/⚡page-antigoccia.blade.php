@@ -4,6 +4,7 @@ use App\Models\AntigocciaApplication;
 use App\Models\AntigocciaReport;
 use App\Models\Apartment;
 use App\Services\Antigoccia\AntigocciaAssessment;
+use App\Services\Antigoccia\DeleteOwnAntigocciaReport;
 use App\Services\Apartments\ApartmentAccessService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -23,6 +24,8 @@ new class extends Component {
     public array $answers = [];
     public array $photos = [];
     public bool $saved = false;
+    public bool $showMyReports = false;
+    public ?int $deleteCandidateId = null;
     public string $coatingDate = '';
 
     public function mount(): void
@@ -120,6 +123,52 @@ new class extends Component {
 
         return AntigocciaApplication::query()->where('apartment_id', $this->apartment->id)
             ->orderByDesc('applied_on')->orderByDesc('id')->first();
+    }
+
+    public function getMyReportsProperty()
+    {
+        return AntigocciaReport::query()
+            ->with('apartment:id,name')
+            ->where('user_id', auth()->id())
+            ->latest('created_at')->latest('id')
+            ->limit(15)
+            ->get(['id', 'apartment_id', 'user_id', 'cleaning_date', 'created_at']);
+    }
+
+    public function requestDelete(int $id): void
+    {
+        abort_unless(auth()->check() && auth()->user()->isApproved() && auth()->user()->is_active, 403);
+        abort_unless(AntigocciaReport::query()
+            ->whereKey($id)->where('user_id', auth()->id())->exists(), 404);
+
+        $this->deleteCandidateId = $id;
+        $this->showMyReports = true;
+    }
+
+    public function cancelDelete(): void
+    {
+        $this->deleteCandidateId = null;
+    }
+
+    public function deleteMyReport(DeleteOwnAntigocciaReport $deletion): void
+    {
+        abort_unless(auth()->check(), 403);
+        abort_unless($this->deleteCandidateId !== null, 400);
+
+        $current = AntigocciaReport::query()
+            ->whereKey($this->deleteCandidateId)
+            ->where('user_id', auth()->id())
+            ->firstOrFail();
+
+        $wasCurrentSubmission = $current->submission_uuid === $this->submissionUuid;
+        $deletion->delete(auth()->user(), (int) $this->deleteCandidateId);
+        $this->deleteCandidateId = null;
+
+        if ($wasCurrentSubmission) {
+            $this->newForm();
+        }
+
+        $this->dispatch('toast', type: 'success', title: 'Ответ удалён');
     }
 
     public function submit(AntigocciaAssessment $assessment): void
@@ -354,5 +403,42 @@ new class extends Component {
                 </button>
             </form>
         @endif
+
+        <section class="mt-5 rounded-[25px] bg-[#F6F6F6] p-[17px]">
+            <button type="button" wire:click="$toggle('showMyReports')"
+                class="flex w-full items-center justify-between text-left text-[15px] font-semibold">
+                <span>Мои ответы</span>
+                <span class="text-[13px] text-black/50">{{ $showMyReports ? 'Скрыть' : 'Показать' }}</span>
+            </button>
+            @if($showMyReports)
+                <div class="mt-3 space-y-2">
+                    @forelse($this->myReports as $report)
+                        <div wire:key="antigoccia-own-report-{{ $report->id }}" class="rounded-[16px] bg-white p-3">
+                            <div class="flex items-center justify-between gap-3">
+                                <div class="min-w-0">
+                                    <p class="truncate text-[13px] font-medium">{{ $report->apartment?->name ?? 'Квартира' }}</p>
+                                    <p class="text-[12px] text-black/50">{{ $report->cleaning_date->format('d.m.Y') }}</p>
+                                </div>
+                                <button type="button" wire:click="requestDelete({{ $report->id }})"
+                                    class="shrink-0 rounded-[12px] px-3 py-2 text-[12px] font-medium text-red-700">Удалить</button>
+                            </div>
+                            @if($deleteCandidateId === $report->id)
+                                <div class="mt-3 border-t border-black/10 pt-3">
+                                    <p class="text-[13px]">Удалить этот ответ и его фотографии?</p>
+                                    <div class="mt-3 flex gap-2">
+                                        <button type="button" wire:click="deleteMyReport" wire:loading.attr="disabled" wire:target="deleteMyReport"
+                                            class="rounded-[12px] bg-red-700 px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50">Да, удалить</button>
+                                        <button type="button" wire:click="cancelDelete"
+                                            class="rounded-[12px] bg-[#F6F6F6] px-4 py-2 text-[13px]">Отмена</button>
+                                    </div>
+                                </div>
+                            @endif
+                        </div>
+                    @empty
+                        <p class="text-[13px] text-black/50">Ответов пока нет</p>
+                    @endforelse
+                </div>
+            @endif
+        </section>
     </div>
 </div>
