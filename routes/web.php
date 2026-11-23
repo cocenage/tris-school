@@ -145,6 +145,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-checks.control.result-media');
     Route::livewire('/checks/control', 'forms.page-control')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control');
     Route::livewire('/checks/control/focus', 'forms.page-control-focus')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control.focus');
+    // All preview routes are disabled by default outside local/tests.
+    // Only an isolated staging deployment explicitly opts in.
+    Route::middleware(\App\Http\Middleware\EnsureFocusV2PreviewEnabled::class)->group(function () {
     // Experimental Vue entry: old Focus stays the default until acceptance tests pass.
     Route::get('/checks/control/focus-v2', function () {
         $user = Auth::user();
@@ -194,6 +197,7 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::delete('/checks/control/focus-v2/media/{upload}', [FocusV2MediaController::class, 'cancel'])
         ->middleware(SafeguardRolePreviewData::class)
         ->name('page-checks.control.focus-v2.media.cancel');
+    });
 
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
