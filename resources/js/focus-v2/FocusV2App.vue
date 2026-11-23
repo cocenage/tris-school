@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
+import { chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
@@ -30,6 +31,74 @@ const submitting = ref(false);
 const submitError = ref('');
 const finalResult = ref(null);
 const uploads = ref([]);
+const recoveryRecord = ref(null);
+const recoveryMode = ref('');
+const recoveryBusy = ref(false);
+const recoveryError = ref('');
+const localStorageAvailable = ref(true);
+let recoveryKey = null;
+const localWriter = createLocalRecoveryQueue(async operation => {
+    if (operation.type === 'delete') {
+        await deleteLocalRecovery(operation.scope);
+    } else {
+        await writeLocalRecovery(operation.record);
+    }
+});
+function queueLocalWrite(operation) {
+    const pending = localWriter(operation);
+    pending.catch(() => { localStorageAvailable.value = false; });
+    return pending;
+}
+
+function saveLocalSnapshot() {
+    if (!recoveryKey || !run.value || !control.value || recoveryMode.value || state.value === 'conflict') return;
+    void queueLocalWrite({
+        type: 'write',
+        record: {
+            scope: recoveryKey,
+            saved_at: Date.now(),
+            run_id: run.value.id,
+            draft_id: run.value.draft_id,
+            base_revision: run.value.revision,
+            setup: JSON.parse(JSON.stringify(setup.value)),
+            answers: JSON.parse(JSON.stringify(answers.value)),
+        },
+    });
+}
+function settleLocalSnapshot() {
+    if (!recoveryKey) return;
+    if (changeSerial === acknowledgedSerial) {
+        void queueLocalWrite({ type: 'delete', scope: recoveryKey });
+    } else {
+        saveLocalSnapshot();
+    }
+}
+async function keepServerVersion() {
+    if (!recoveryKey || recoveryBusy.value) return;
+    recoveryBusy.value = true;
+    recoveryError.value = '';
+    try {
+        await queueLocalWrite({ type: 'delete', scope: recoveryKey });
+        recoveryRecord.value = null;
+        recoveryMode.value = '';
+    } catch (error) {
+        recoveryError.value = 'Не удалось удалить локальную копию. Проверьте разрешения браузера.';
+    } finally {
+        recoveryBusy.value = false;
+    }
+}
+function restoreLocalVersion() {
+    if (recoveryMode.value !== 'safe' || !recoveryRecord.value) return;
+    const saved = recoveryRecord.value;
+    if (run.value.draft_id == null) {
+        run.value = { ...run.value, id: saved.run_id };
+    }
+    setup.value = JSON.parse(JSON.stringify(saved.setup));
+    answers.value = JSON.parse(JSON.stringify(saved.answers));
+    recoveryRecord.value = null;
+    recoveryMode.value = '';
+    touch();
+}
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
 let attachInFlight = false;
@@ -58,7 +127,7 @@ const completedRequired = computed(() => rooms.value.reduce((sum, room, roomInde
         !room.is_optional && !question.is_optional && filled(roomIndex, questionIndex)).length
 ), 0));
 const currentRoom = computed(() => rooms.value[activeRoom.value] ?? { title: '', items: [] });
-const canEdit = computed(() => Boolean(run.value && !run.value.schema_conflict && state.value !== 'conflict'));
+const canEdit = computed(() => Boolean(run.value && !run.value.schema_conflict && state.value !== 'conflict' && !recoveryMode.value));
 
 const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
 
@@ -108,6 +177,31 @@ async function initialize() {
             syncError.value = 'У найденного черновика другая схема вопросов. Старая версия сохранена отдельно; изменения заблокированы.';
         } else {
             state.value = 'idle';
+            recoveryKey = recoveryScope(data.viewer?.id, data.control?.id, data.control?.schema_version);
+            if (recoveryKey) {
+                try {
+                    const saved = await readLocalRecovery(recoveryKey);
+                    const shapeMatches = saved && rooms.value.every((room, index) => (
+                        Array.isArray(saved.answers?.[index])
+                        && saved.answers[index].length === (room.items ?? []).length
+                    ));
+                    const decision = shapeMatches
+                        ? chooseLocalRecovery(saved, {
+                            scope: recoveryKey, run: data.run, setup: data.setup, answers: data.answers,
+                        })
+                        : 'none';
+                    if (decision === 'safe' || decision === 'conflict') {
+                        recoveryRecord.value = saved;
+                        recoveryMode.value = decision;
+                    } else if (saved && (decision === 'synced' || decision === 'expired')) {
+                        await queueLocalWrite({ type: 'delete', scope: recoveryKey });
+                    }
+                } catch (ignored) {
+                    localStorageAvailable.value = false;
+                }
+            } else {
+                localStorageAvailable.value = false;
+            }
         }
         stage.value = 'setup';
     } catch (error) {
@@ -162,6 +256,7 @@ function touch() {
     changeSerial++;
     state.value = 'dirty';
     syncError.value = '';
+    saveLocalSnapshot();
     queueSave();
 }
 
@@ -206,6 +301,7 @@ async function flush() {
             acknowledgedSerial = Math.max(acknowledgedSerial, serial);
             state.value = changeSerial === acknowledgedSerial ? 'synced' : 'dirty';
             syncError.value = '';
+            settleLocalSnapshot();
             return true;
         } catch (error) {
             // Retry the identical body before sending any newer edits. The backend
@@ -420,6 +516,7 @@ async function submitControl() {
         finalResult.value = result;
         stage.value = 'done';
         state.value = 'synced';
+        if (recoveryKey) void queueLocalWrite({ type: 'delete', scope: recoveryKey });
         pumpTransfers();
     } catch (error) {
         submitError.value = error.message || 'Не удалось завершить контроль. Повторите отправку.';
@@ -433,6 +530,10 @@ async function submitControl() {
 
 async function openClassic() {
     if (submitting.value || stage.value === 'done') return;
+    if (recoveryMode.value) {
+        syncError.value = 'Сначала выберите, какую версию черновика оставить.';
+        return;
+    }
     if (busyUploads.value) {
         syncError.value = 'Дождитесь завершения загрузки файлов или отмените их.';
         return;
@@ -542,6 +643,7 @@ async function sendOne(item) {
                     await refreshMediaReview();
                 } else {
                     run.value = { ...run.value, ...attached.run };
+                    if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
                     const arr = media.value[item.room] ?? (media.value[item.room] = []);
                     const files = arr[item.question] ?? (arr[item.question] = []);
                     if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
@@ -658,6 +760,33 @@ onBeforeUnmount(() => {
                     </button>
                 </div>
 
+                <div v-if="!localStorageAvailable && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                    Локальное восстановление недоступно в этом браузере. Дождитесь статуса «Сохранено» перед закрытием Telegram.
+                </div>
+                <section v-if="recoveryMode && recoveryRecord" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+                    <h2 class="font-bold">Найдена локальная копия ответов</h2>
+                    <p v-if="recoveryMode === 'safe'" class="mt-2">
+                        Эти изменения могли не успеть сохраниться на сервере. Выберите, какую версию продолжить.
+                    </p>
+                    <p v-else class="mt-2">
+                        Серверный черновик изменился после создания локальной копии либо принадлежит другому запуску.
+                        Чтобы не перезаписать более свежие ответы, автоматическое восстановление заблокировано.
+                        Можно просмотреть локальную копию и перенести нужные ответы вручную.
+                    </p>
+                    <details v-if="recoveryMode === 'conflict'" class="mt-3 rounded-lg border border-amber-200 bg-white p-3">
+                        <summary class="cursor-pointer font-semibold">Показать локальные ответы для копирования</summary>
+                        <textarea readonly :value="JSON.stringify({ setup: recoveryRecord.setup, answers: recoveryRecord.answers }, null, 2)"
+                            rows="8" class="mt-2 w-full rounded-lg border border-slate-200 p-2 font-mono text-xs"></textarea>
+                    </details>
+                    <p v-if="recoveryError" role="alert" class="mt-2 font-semibold text-red-700">{{ recoveryError }}</p>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                        <button v-if="recoveryMode === 'safe'" type="button" :disabled="recoveryBusy"
+                            class="rounded-xl bg-blue-600 px-4 py-3 font-bold text-white disabled:opacity-50"
+                            @click="restoreLocalVersion">Восстановить локальные ответы</button>
+                        <button type="button" :disabled="recoveryBusy" class="rounded-xl border border-amber-300 bg-white px-4 py-3 font-bold disabled:opacity-50"
+                            @click="keepServerVersion">Оставить серверную версию</button>
+                    </div>
+                </section>
                 <div v-if="uploads.length && stage !== 'done'" class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs" role="status" aria-live="polite">
                     <div class="min-w-0">
                         <strong class="text-slate-700">Фото и видео</strong>
