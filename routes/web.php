@@ -145,10 +145,10 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-checks.control.result-media');
     Route::livewire('/checks/control', 'forms.page-control')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control');
     Route::livewire('/checks/control/focus', 'forms.page-control-focus')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control.focus');
-    // All preview routes are disabled by default outside local/tests.
-    // Only an isolated staging deployment explicitly opts in.
+    // Vue Focus rollout for active admins/supervisors; emergency rollback
+    // remains available via FOCUS_V2_ENABLED=false.
     Route::middleware(\App\Http\Middleware\EnsureFocusV2PreviewEnabled::class)->group(function () {
-    // Experimental Vue entry: old Focus stays the default until acceptance tests pass.
+    // Primary Focus card links here. Classic Focus stays available as a fallback.
     Route::get('/checks/control/focus-v2', function () {
         $user = Auth::user();
         abort_unless($user?->is_active && in_array($user->role, ['admin', 'supervisor'], true), 403);
