@@ -1014,19 +1014,15 @@ onBeforeUnmount(() => {
                             <p class="mt-1 text-sm text-slate-500">{{ control?.name }}</p>
                         </div>
 
-                        <label class="block text-sm font-semibold">
-                            Сотрудник
-                            <select v-model="setup.cleaner_id" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base" @change="touch">
-                                <option :value="null">Выбрать сотрудника</option>
-                                <option v-for="person in people" :key="person.id" :value="person.id">{{ person.name }}</option>
-                            </select>
-                        </label>
-                        <label class="block text-sm font-semibold">
-                            Квартира
-                            <select v-model="setup.apartment_id" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base" @change="touch">
-                                <option :value="null">Выбрать квартиру</option>
-                                <option v-for="apartment in apartments" :key="apartment.id" :value="apartment.id">{{ apartment.name }}</option>
-                            </select>
+                        <FocusSearchSelect id="focus-cleaner" :items="peopleOptions" :model-value="setup.cleaner_id"
+                            label="Сотрудник" placeholder="Найти сотрудника по имени" :disabled="!canEdit"
+                            @select="choosePerson" />
+                        <FocusSearchSelect id="focus-apartment" :items="apartments" :model-value="setup.apartment_id"
+                            label="Квартира" placeholder="Найти квартиру по названию" :disabled="!canEdit"
+                            @select="chooseApartment" />
+                        <label class="block text-sm font-semibold">Комментарий к проверке
+                            <textarea v-model="setup.comment" rows="3" maxlength="2000" placeholder="Напишите важные детали перед проверкой"
+                                :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch"></textarea>
                         </label>
 
                         <div class="grid grid-cols-2 gap-3">
@@ -1044,9 +1040,7 @@ onBeforeUnmount(() => {
                         <label class="block text-sm font-semibold">Предыдущий сотрудник
                             <input v-model="setup.previous_cleaner" type="text" maxlength="255" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch">
                         </label>
-                        <label class="block text-sm font-semibold">Комментарий
-                            <textarea v-model="setup.comment" rows="2" maxlength="2000" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch"></textarea>
-                        </label>
+
                         <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="goRoom(0)">
                             К вопросам
                         </button>
