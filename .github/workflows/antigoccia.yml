@@ -12,6 +12,7 @@ on:
       - 'resources/views/components/apartments/**'
       - 'routes/web.php'
       - 'tests/Feature/AntigocciaTest.php'
+      - 'tests/Feature/AntigocciaStatisticsTest.php'
       - 'database/migrations/*antigoccia*'
       - '.github/workflows/antigoccia.yml'
   workflow_dispatch:
@@ -56,7 +57,7 @@ jobs:
           cp .env.example .env
           php artisan key:generate --no-interaction
       - name: ANTIGOCCIA feature tests
-        run: php artisan test tests/Feature/AntigocciaTest.php
+        run: php artisan test tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaStatisticsTest.php
       - name: Apartment permissions regression tests
         run: php artisan test tests/Feature/ApartmentKnowledgeBaseTest.php
       - name: Telegram webhook regression tests

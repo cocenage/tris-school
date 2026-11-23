@@ -9,52 +9,75 @@ use Illuminate\Validation\ValidationException;
 function antigocciaValidAnswers(): array
 {
     return collect(AntigocciaAssessment::SURFACES)->mapWithKeys(
-        fn ($label, $key) => [$key => ['dirt' => 0, 'removal' => null]]
+        fn ($label, $key) => [$key => ['dirt' => 0, 'removal' => null, 'remaining' => 'no']]
     )->all();
 }
 
-it('stores no-removal-required when a surface is clean', function () {
+it('requires answers to all four surfaces, including remaining contamination', function () {
     $answers = antigocciaValidAnswers();
-    $answers['mirrors'] = ['dirt' => 0, 'removal' => 1]; // stale client data
+    $answers['mirrors']['remaining'] = '';
 
-    $normalized = app(AntigocciaAssessment::class)->validate($answers, 'no', [], null);
-    expect($normalized['mirrors'])->toBe(['dirt' => 0, 'removal' => null]);
-});
-
-it('requires a removal answer for contaminated surfaces', function () {
-    $answers = antigocciaValidAnswers();
-    $answers['shower_inside'] = ['dirt' => 2, 'removal' => null];
-
-    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, 'no', [], null))
+    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, []))
         ->toThrow(ValidationException::class);
 });
 
-it('requires surface photos when contamination is not removed', function () {
+it('normalizes removal as not required for a clean surface', function () {
     $answers = antigocciaValidAnswers();
-    $answers['shower_walls'] = ['dirt' => 2, 'removal' => 2];
+    $answers['mirrors']['removal'] = 1; // stale client data
 
-    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, 'yes', [], null))
+    $normalized = app(AntigocciaAssessment::class)->validate($answers, []);
+    expect($normalized['mirrors'])->toBe(['dirt' => 0, 'removal' => null, 'remaining' => 'no']);
+});
+
+it('requires removal answer when a surface is contaminated', function () {
+    $answers = antigocciaValidAnswers();
+    $answers['shower_inside'] = ['dirt' => 2, 'removal' => null, 'remaining' => 'no'];
+
+    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, []))
         ->toThrow(ValidationException::class);
 });
 
-it('accepts one surface photo as the proof for remaining contamination', function () {
+it('requires photo on the exact surface where contamination remains', function () {
     $answers = antigocciaValidAnswers();
-    $answers['shower_walls'] = ['dirt' => 2, 'removal' => 2];
+    $answers['mirrors'] = ['dirt' => 1, 'removal' => 1, 'remaining' => 'yes'];
 
-    $normalized = app(AntigocciaAssessment::class)->validate(
-        $answers,
-        'yes',
-        ['shower_walls' => UploadedFile::fake()->image('wall.jpg')],
-        null,
-    );
-    expect($normalized['shower_walls'])->toBe(['dirt' => 2, 'removal' => 2]);
+    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, []))
+        ->toThrow(ValidationException::class);
+
+    // A photo of another surface cannot satisfy mirrors.
+    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, [
+        'shower_inside' => UploadedFile::fake()->image('inside.jpg'),
+    ]))->toThrow(ValidationException::class);
+
+    $result = app(AntigocciaAssessment::class)->validate($answers, [
+        'mirrors' => UploadedFile::fake()->image('mirror.jpg'),
+    ]);
+    expect($result['mirrors']['remaining'])->toBe('yes');
 });
 
-it('requires a general photo when contamination remains but no surface scored failed', function () {
+it('requires a positive remaining answer and a photo when dirt cannot be removed', function () {
     $answers = antigocciaValidAnswers();
-
-    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, 'yes', [], null))
+    $answers['shower_walls'] = ['dirt' => 2, 'removal' => 2, 'remaining' => 'no'];
+    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, []))
         ->toThrow(ValidationException::class);
+
+    $answers['shower_walls']['remaining'] = 'yes';
+    expect(fn () => app(AntigocciaAssessment::class)->validate($answers, []))
+        ->toThrow(ValidationException::class);
+    $result = app(AntigocciaAssessment::class)->validate($answers, [
+        'shower_walls' => UploadedFile::fake()->image('wall.jpg'),
+    ]);
+    expect($result['shower_walls'])->toBe(['dirt' => 2, 'removal' => 2, 'remaining' => 'yes']);
+});
+
+it('allows independent answers for all four simultaneously visible surfaces', function () {
+    $answers = antigocciaValidAnswers();
+    $answers['shower_outside'] = ['dirt' => 2, 'removal' => 1, 'remaining' => 'no'];
+    $answers['shower_inside'] = ['dirt' => 1, 'removal' => 0, 'remaining' => 'no'];
+    $result = app(AntigocciaAssessment::class)->validate($answers, []);
+    expect(array_keys($result))->toBe(array_keys(AntigocciaAssessment::SURFACES))
+        ->and($result['shower_outside']['removal'])->toBe(1)
+        ->and($result['shower_inside']['removal'])->toBe(0);
 });
 
 it('recognizes the antigoccia Telegram command with correct bot mention', function () {

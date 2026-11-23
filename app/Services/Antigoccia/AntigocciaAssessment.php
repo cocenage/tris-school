@@ -9,68 +9,59 @@ use Illuminate\Validation\ValidationException;
 class AntigocciaAssessment
 {
     public const SURFACES = [
-        'mirrors' => 'Зеркала',
-        'shower_outside' => 'Стекло душевой снаружи',
-        'shower_inside' => 'Стекло душевой внутри',
-        'shower_walls' => 'Стены внутри душевой',
+        'mirrors' => 'ЗЕРКАЛА',
+        'shower_outside' => 'Стекло душевой кабины СНАРУЖИ',
+        'shower_inside' => 'Стекло ВНУТРИ ДУШЕВОЙ КАБИНЫ',
+        'shower_walls' => 'СТЕНЫ ВНУТРИ ДУШЕВОЙ КАБИНЫ',
     ];
 
     public static function blankAnswers(): array
     {
-        return array_fill_keys(array_keys(self::SURFACES), ['dirt' => null, 'removal' => null]);
+        return array_fill_keys(array_keys(self::SURFACES), [
+            'dirt' => null, 'removal' => null, 'remaining' => '',
+        ]);
     }
 
     /**
-     * Cleans and validates answers against the canonical four-surface questionnaire.
-     * A zero dirt score always means cleaning was not required (null removal).
-     * Photo requirements are checked against uploaded file objects, not client paths.
+     * All four surfaces are independently required. Photo is required per
+     * surface if contamination remains, including when removal was scored 2.
      */
-    public function validate(array $answers, string $remaining, array $photos, mixed $generalPhoto): array
+    public function validate(array $answers, array $photos): array
     {
-        $rules = ['remaining' => ['required', Rule::in(['yes', 'no'])]];
-        $input = ['remaining' => $remaining];
+        $input = ['answers' => [], 'photos' => []];
+        $rules = [];
 
         foreach (self::SURFACES as $key => $label) {
-            $input['answers'][$key]['dirt'] = data_get($answers, "$key.dirt");
-            $input['answers'][$key]['removal'] = data_get($answers, "$key.removal");
+            $input['answers'][$key] = [
+                'dirt' => data_get($answers, "$key.dirt"),
+                'removal' => data_get($answers, "$key.removal"),
+                'remaining' => data_get($answers, "$key.remaining"),
+            ];
+            $input['photos'][$key] = $photos[$key] ?? null;
             $rules["answers.$key.dirt"] = ['required', Rule::in([0, 1, 2])];
             $rules["answers.$key.removal"] = ['nullable', Rule::in([0, 1, 2])];
+            $rules["answers.$key.remaining"] = ['required', Rule::in(['yes', 'no'])];
             $rules["photos.$key"] = ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:10240'];
-            $input['photos'][$key] = $photos[$key] ?? null;
         }
 
-        $rules['generalPhoto'] = ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:10240'];
-        $input['generalPhoto'] = $generalPhoto;
         $validator = Validator::make($input, $rules);
-
         $validator->after(function ($validator) use ($input): void {
-            $anyNotRemoved = false;
-            $hasRequiredSurfacePhoto = false;
-
             foreach (self::SURFACES as $key => $label) {
                 $dirt = data_get($input, "answers.$key.dirt");
                 $removal = data_get($input, "answers.$key.removal");
+                $remaining = data_get($input, "answers.$key.remaining");
                 if (! in_array((string) $dirt, ['0', '1', '2'], true)) {
                     continue;
                 }
-                if ((int) $dirt !== 0 && ! in_array((string) $removal, ['0', '1', '2'], true)) {
+                if ((int) $dirt > 0 && ! in_array((string) $removal, ['0', '1', '2'], true)) {
                     $validator->errors()->add("answers.$key.removal", "Укажите результат очистки: $label.");
                 }
-                if ((int) $dirt !== 0 && (string) $removal === '2') {
-                    $anyNotRemoved = true;
-                    if (! data_get($input, "photos.$key")) {
-                        $validator->errors()->add("photos.$key", "Добавьте фотографию поверхности: $label.");
-                    } else {
-                        $hasRequiredSurfacePhoto = true;
-                    }
+                if ((int) $dirt > 0 && (string) $removal === '2' && $remaining !== 'yes') {
+                    $validator->errors()->add("answers.$key.remaining", "Остались загрязнения — выберите «Да»: $label.");
                 }
-            }
-
-            if ($anyNotRemoved && $input['remaining'] !== 'yes') {
-                $validator->errors()->add('remaining', 'Если загрязнение не удалилось, выберите «Да».');
-            }
-            if ($input['remaining'] === 'yes' && ! $input['generalPhoto'] && ! $hasRequiredSurfacePhoto) {
-                $validator->errors()->add('generalPhoto', 'Приложите фото оставшихся загрязнений.');
+                if ($remaining === 'yes' && ! ($input['photos'][$key] ?? null)) {
+                    $validator->errors()->add("photos.$key", "Добавьте фото оставшихся загрязнений: $label.");
+                }
             }
         });
 
@@ -80,10 +71,11 @@ class AntigocciaAssessment
 
         $normalized = [];
         foreach (self::SURFACES as $key => $label) {
-            $dirt = (int) data_get($input, "answers.$key.dirt");
+            $dirt = (int) $input['answers'][$key]['dirt'];
             $normalized[$key] = [
                 'dirt' => $dirt,
-                'removal' => $dirt === 0 ? null : (int) data_get($input, "answers.$key.removal"),
+                'removal' => $dirt === 0 ? null : (int) $input['answers'][$key]['removal'],
+                'remaining' => $input['answers'][$key]['remaining'],
             ];
         }
 
