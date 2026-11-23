@@ -604,7 +604,8 @@ onBeforeUnmount(() => {
                     <p class="text-xs font-bold uppercase tracking-[0.18em] text-[#4274A3]">TRIS Academy · Beta</p>
                     <h1 class="mt-1 text-2xl font-extrabold tracking-tight">Focus Control V2</h1>
                 </div>
-                <a :href="classicUrl" class="rounded-full border border-[#D7E0EA] bg-white px-4 py-2 text-xs font-bold text-[#325B82]" @click.prevent="openClassic">Старый Focus</a>
+                <a v-if="stage !== 'done'" :href="classicUrl" class="rounded-full border border-[#D7E0EA] bg-white px-4 py-2 text-xs font-bold text-[#325B82]" @click.prevent="openClassic">Старый Focus</a>
+                <a v-else-if="finalResult?.result_url" :href="finalResult.result_url" class="rounded-full border border-[#D7E0EA] bg-white px-4 py-2 text-xs font-bold text-[#325B82]">Результат</a>
             </header>
 
             <div v-if="loading" role="status" class="rounded-3xl bg-white p-7 text-center text-sm">Загружаем вопросы…</div>
@@ -784,13 +785,13 @@ onBeforeUnmount(() => {
                             <span class="text-sm font-semibold">{{ room.title }}</span>
                             <span class="text-sm font-bold text-[#285B86]">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
                         </div>
-                        <div v-if="busyUploads" class="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
-                            Есть файлы в процессе загрузки или с ошибками. Дождитесь окончания, повторите или отмените их, прежде чем отправлять контроль.
+                        <div v-if="busyUploads" class="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900" role="status">
+                            Фото и видео ещё загружаются. Вы можете завершить проверку сейчас: мы зарегистрируем оставшиеся файлы на сервере, а материалы догрузятся отдельно. Если Telegram закроется, понадобится снова выбрать исходные файлы.
                         </div>
                         <div v-if="submitError" class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
                             {{ submitError }}
                         </div>
-                        <button type="button" :disabled="!canEdit || submitting || busyUploads" class="w-full rounded-xl bg-[#285B86] p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
+                        <button type="button" :disabled="!canEdit || submitting" class="w-full rounded-xl bg-[#285B86] p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
                             {{ submitting ? 'Отправляем контроль…' : 'Отправить контроль' }}
                         </button>
                         <button type="button" :disabled="submitting || busyUploads" class="w-full rounded-xl bg-[#EAF2FB] p-3 text-sm font-bold text-[#285B86] disabled:opacity-50" @click="openClassic">
@@ -802,19 +803,63 @@ onBeforeUnmount(() => {
                 <template v-else-if="stage === 'done'">
                     <section class="space-y-4 rounded-3xl border border-emerald-200 bg-white p-6 shadow-sm" aria-live="polite">
                         <div class="text-4xl" aria-hidden="true">✓</div>
-                        <h2 class="text-2xl font-extrabold text-emerald-800">Контроль отправлен</h2>
-                        <p class="text-sm text-slate-600">Результат сохранён в Академии. Повторное нажатие не создаст другую проверку.</p>
+                        <h2 class="text-2xl font-extrabold text-emerald-800">Контроль завершён</h2>
+                        <p class="text-sm text-slate-600">Ответы и оценка сохранены. Готовность фото и видео отслеживается отдельно.</p>
                         <div class="rounded-2xl bg-slate-50 p-4">
-                            <p class="text-sm text-slate-600">Оценка</p>
+                            <p class="text-sm text-slate-600">Оценка уборки</p>
                             <p class="mt-1 text-3xl font-extrabold">{{ finalResult?.total_points }} / {{ finalResult?.max_points }} · {{ finalResult?.score_percent }}%</p>
                             <p class="mt-2 text-sm font-bold" :class="finalResult?.result_zone === 'green' ? 'text-emerald-700' : finalResult?.result_zone === 'red' ? 'text-red-700' : 'text-amber-700'">
                                 {{ finalResult?.result_zone === 'green' ? 'Зелёная зона' : finalResult?.result_zone === 'red' ? 'Красная зона' : 'Жёлтая зона' }}
                             </p>
                             <p v-if="finalResult?.result_zone_reason" class="mt-1 text-xs text-slate-500">{{ finalResult.result_zone_reason }}</p>
                         </div>
-                        <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-[#285B86] p-4 text-center text-sm font-bold text-white">
-                            Открыть результат
-                        </a>
+                        <div class="rounded-2xl border border-slate-200 p-4">
+                            <div class="flex items-center justify-between gap-3">
+                                <h3 class="text-base font-bold">Фото и видео</h3>
+                                <button type="button" class="rounded-xl bg-[#EAF2FB] px-3 py-2 text-xs font-bold text-[#285B86]" @click="refreshMediaReview">Обновить</button>
+                            </div>
+                            <p v-if="finalResult?.media?.state === 'complete'" class="mt-2 text-sm font-bold text-emerald-700">✓ Все зарегистрированные материалы получены.</p>
+                            <p v-else-if="finalResult?.media?.state === 'awaiting_media'" class="mt-2 text-sm font-bold text-amber-800">⏳ Контроль завершён · Ожидаются материалы.</p>
+                            <p v-else-if="finalResult?.media?.state === 'needs_review'" class="mt-2 text-sm font-bold text-red-700">⚠ Материалы требуют проверки: есть отменённые загрузки.</p>
+                            <div class="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                                <div class="rounded-xl bg-emerald-50 p-2"><strong class="block text-lg">{{ finalResult?.media?.attached ?? 0 }}</strong>Прикреплено</div>
+                                <div class="rounded-xl bg-amber-50 p-2"><strong class="block text-lg">{{ (finalResult?.media?.pending ?? 0) + (finalResult?.media?.ready_to_attach ?? 0) }}</strong>Ожидается</div>
+                                <div class="rounded-xl bg-red-50 p-2"><strong class="block text-lg">{{ finalResult?.media?.cancelled ?? 0 }}</strong>Отменено</div>
+                            </div>
+                            <p v-if="!finalResult?.media?.total" class="mt-3 text-xs text-slate-500">Новых загрузок нет. Вложения из черновика сохранены вместе с результатом.</p>
+                            <div v-for="record in finalResult?.media?.uploads ?? []" :key="record.upload_id" class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+                                <div class="flex items-start justify-between gap-2">
+                                    <div class="min-w-0">
+                                        <p class="truncate font-bold">{{ record.original_name }}</p>
+                                        <p class="text-slate-500">{{ record.mime.startsWith('video/') ? 'Видео' : 'Фото' }} · {{ Math.ceil(record.size / 1024) }} КБ · Комната {{ record.room_index + 1 }}, вопрос {{ record.question_index + 1 }}</p>
+                                    </div>
+                                    <span class="shrink-0 font-semibold" :class="record.status === 'attached' ? 'text-emerald-700' : record.status === 'cancelled' ? 'text-red-700' : 'text-amber-800'">
+                                        {{ record.status === 'attached' ? 'Сохранено' : record.status === 'cancelled' ? 'Не получено' : record.status === 'ready' ? 'Нужно прикрепить' : 'Ожидает загрузки' }}
+                                    </span>
+                                </div>
+                                <div v-if="uploads.some(item => item.id === record.upload_id && ['queued','uploading','attaching'].includes(item.status))" class="mt-2 text-[#285B86]">
+                                    Загружается · {{ uploads.find(item => item.id === record.upload_id)?.progress ?? 0 }}%
+                                </div>
+                                <div v-if="uploads.some(item => item.id === record.upload_id && item.status === 'error')" class="mt-2 text-red-700" role="alert">
+                                    {{ uploads.find(item => item.id === record.upload_id)?.error }}
+                                </div>
+                                <div v-if="record.status === 'pending'" class="mt-2">
+                                    <label class="inline-flex cursor-pointer rounded-lg bg-[#EAF2FB] px-3 py-2 font-bold text-[#285B86]">
+                                        Выбрать исходный файл и продолжить
+                                        <input type="file" class="sr-only" :accept="record.mime" @change="resumeDeferredFile($event, record)">
+                                    </label>
+                                </div>
+                                <button v-if="record.status === 'ready'" type="button" class="mt-2 rounded-lg bg-[#EAF2FB] px-3 py-2 font-bold text-[#285B86]" @click="attachReadyEvidence(record)">
+                                    Прикрепить готовый файл
+                                </button>
+                            </div>
+                            <p v-if="finalResult?.media?.state !== 'complete'" class="mt-4 rounded-xl bg-amber-50 p-3 text-xs text-amber-900">
+                                Передача продолжается, пока открыта эта страница. После закрытия Telegram откройте проверку материалов снова и выберите те же фото/видео: ранее полученные сервером части будут пропущены. Исходные файлы остаются на вашем устройстве.
+                            </p>
+                            <div v-if="submitError" role="alert" class="mt-3 rounded-xl bg-red-50 p-3 text-xs text-red-700">{{ submitError }}</div>
+                        </div>
+                        <a v-if="finalResult?.media_review_url" :href="finalResult.media_review_url" class="block rounded-xl bg-[#EAF2FB] p-3 text-center text-sm font-bold text-[#285B86]">Открыть проверку материалов позже</a>
+                        <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-[#285B86] p-4 text-center text-sm font-bold text-white">Открыть результат</a>
                         <a href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
                     </section>
                 </template>
