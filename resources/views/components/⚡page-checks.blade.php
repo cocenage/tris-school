@@ -24,12 +24,16 @@ new class extends Component
     </div>
     <div class="px-[20px] pb-[20px] flex flex-col gap-[10px]">
 
-      <a href="{{ route('page-checks.control.focus') }}">
+      @if(auth()->user()?->is_active && in_array(auth()->user()?->role, ['admin', 'supervisor'], true))
+      <a href="{{ config('focus-v2.enabled') ? route('page-checks.control.focus-v2') : route('page-checks.control.focus') }}">
             <div class="grid grid-cols-3 gap-[10px] bg-[#E1E1E1] rounded-[30px]">
 
                 {{-- большая --}}
                 <div class="col-span-2 rounded-[30px] bg-[#E1E1E1] h-full flex items-start">
                     <p class="p-[15px]">Фокус контроль</p>
+                    @if(config('focus-v2.enabled'))
+                        <p class="px-[15px] pb-[12px] text-xs text-[#425570]">Новая версия</p>
+                    @endif
                 </div>
 
                 {{-- квадрат --}}
@@ -39,6 +43,7 @@ new class extends Component
 
             </div>
         </a>
+      @endif
 
        <a href="{{ route('page-checks.control') }}">
             <div class="grid grid-cols-3 gap-[10px] bg-[#E1E1E1] rounded-[30px]">
