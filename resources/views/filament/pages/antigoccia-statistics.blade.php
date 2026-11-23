@@ -1,35 +1,32 @@
 <x-filament-panels::page>
+    @php($totals = $this->overviewTotals)
     <div class="space-y-6">
-        <x-filament::section>
-            <label for="antigoccia-admin-search" class="block text-sm font-semibold">Квартира</label>
-            @if($this->apartment)
-                <div class="mt-3 flex items-center justify-between gap-3">
-                    <div>
-                        <p class="font-semibold">{{ $this->apartment->name }}</p>
-                        @if($this->apartment->address)<p class="text-sm text-gray-500">{{ $this->apartment->address }}</p>@endif
-                    </div>
-                    <x-filament::button color="gray" wire:click="clearApartment">Изменить</x-filament::button>
-                </div>
-            @else
-                <input id="antigoccia-admin-search" type="search" wire:model.live.debounce.250ms="apartmentSearch"
-                    placeholder="Название или адрес"
-                    class="mt-3 block w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900">
-                <div class="mt-2 max-h-64 overflow-y-auto rounded-lg border border-gray-200 p-1 dark:border-gray-700">
-                    @forelse($this->apartmentMatches as $option)
-                        <button type="button" wire:key="antigoccia-admin-{{ $option->id }}"
-                            wire:click="selectApartment({{ $option->id }})"
-                            class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 dark:hover:bg-gray-800">
-                            <span class="font-medium">{{ $option->name }}</span>
-                            @if($option->address)<span class="ml-2 text-gray-500">{{ $option->address }}</span>@endif
-                        </button>
-                    @empty
-                        <p class="px-3 py-3 text-sm text-gray-500">Квартира не найдена</p>
-                    @endforelse
-                </div>
-            @endif
-        </x-filament::section>
+        <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            @foreach([
+                ['label' => 'Обработано квартир', 'value' => $totals['treated_apartments']],
+                ['label' => 'Всего проверок', 'value' => $totals['reports']],
+                ['label' => 'С загрязнениями', 'value' => $totals['with_contamination']],
+                ['label' => 'Проверок за 30 дней', 'value' => $totals['last_30_days']],
+            ] as $card)
+                <x-filament::section>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">{{ $card['label'] }}</p>
+                    <p class="mt-2 text-3xl font-semibold tabular-nums">{{ $card['value'] }}</p>
+                </x-filament::section>
+            @endforeach
+        </div>
 
         @if($this->apartment)
+            <x-filament::section>
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h2 class="text-xl font-semibold">{{ $this->apartment->name }}</h2>
+                        @if($this->apartment->address)<p class="text-sm text-gray-500">{{ $this->apartment->address }}</p>@endif
+                    </div>
+                    <x-filament::button color="gray" icon="heroicon-m-arrow-left" wire:click="clearApartment">
+                        Все квартиры
+                    </x-filament::button>
+                </div>
+            </x-filament::section>
             @php($stats = $this->statistics)
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <x-filament::section>
@@ -104,6 +101,68 @@
                 </div>
                 @if($this->history instanceof \Illuminate\Pagination\LengthAwarePaginator && $this->history->hasPages())
                     <div class="mt-4">{{ $this->history->links() }}</div>
+                @endif
+            </x-filament::section>
+        @else
+            <x-filament::section>
+                <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                        <h2 class="text-lg font-semibold">Квартиры под наблюдением</h2>
+                        <p class="text-xs text-gray-500">Только квартиры с обработкой или проверками ANTIGOCCIA</p>
+                    </div>
+                    <label class="block w-full max-w-sm text-sm font-medium">
+                        <span class="sr-only">Поиск квартиры по названию или адресу</span>
+                        <input type="search" wire:model.live.debounce.300ms="apartmentSearch"
+                            placeholder="Поиск по квартире или адресу"
+                            class="block w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900">
+                    </label>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full min-w-[760px] text-left text-sm">
+                        <thead class="border-b border-gray-200 text-gray-500 dark:border-gray-700">
+                            <tr>
+                                <th class="px-3 py-3 font-medium">Квартира</th>
+                                <th class="px-3 py-3 font-medium">Обработка</th>
+                                <th class="px-3 py-3 font-medium">Дней прошло</th>
+                                <th class="px-3 py-3 font-medium">Проверки</th>
+                                <th class="px-3 py-3 font-medium">С загрязнениями</th>
+                                <th class="px-3 py-3 font-medium">Последний контроль</th>
+                                <th class="px-3 py-3"></th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+                            @forelse($this->overviewRows as $row)
+                                <tr wire:key="antigoccia-overview-{{ $row['id'] }}">
+                                    <td class="px-3 py-3">
+                                        <p class="font-semibold">{{ $row['name'] }}</p>
+                                        @if($row['address'])<p class="max-w-[250px] truncate text-xs text-gray-500">{{ $row['address'] }}</p>@endif
+                                    </td>
+                                    <td class="px-3 py-3">{{ $row['applied_on'] ?? '—' }}</td>
+                                    <td class="px-3 py-3 tabular-nums">{{ $row['days_since_application'] ?? '—' }}</td>
+                                    <td class="px-3 py-3 tabular-nums">{{ $row['reports'] }}</td>
+                                    <td class="px-3 py-3">
+                                        @if($row['issues'] > 0)
+                                            <span class="rounded-lg bg-red-50 px-2 py-1 font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">{{ $row['issues'] }}</span>
+                                        @else
+                                            <span class="text-gray-400">0</span>
+                                        @endif
+                                    </td>
+                                    <td class="px-3 py-3">{{ $row['last_control_date'] ?? '—' }}</td>
+                                    <td class="px-3 py-3 text-right">
+                                        <x-filament::button size="sm" color="gray" wire:click="selectApartment({{ $row['id'] }})">
+                                            Подробнее
+                                        </x-filament::button>
+                                    </td>
+                                </tr>
+                            @empty
+                                <tr><td colspan="7" class="px-3 py-10 text-center text-gray-500">Нет данных по выбранному поиску</td></tr>
+                            @endforelse
+                        </tbody>
+                    </table>
+                </div>
+                @if($this->overviewRows->hasPages())
+                    <div class="mt-4">{{ $this->overviewRows->links() }}</div>
                 @endif
             </x-filament::section>
         @endif
