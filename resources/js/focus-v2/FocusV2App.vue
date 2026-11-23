@@ -1191,14 +1191,17 @@ onBeforeUnmount(() => {
                             <span class="text-sm font-semibold">{{ room.title }}</span>
                             <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
                         </div>
-                        <div v-if="busyUploads" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="status">
-                            Фото и видео ещё загружаются. Вы можете завершить проверку сейчас: мы зарегистрируем оставшиеся файлы на сервере, а материалы догрузятся отдельно. Если Telegram закроется, понадобится снова выбрать исходные файлы.
+                        <div v-if="!testMode && !canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+                            Остались файлы без подтверждения · {{ outstandingMedia }}. Дождитесь завершения загрузки, повторите ошибочные файлы или восстановите их после закрытия Telegram. До этого отправка недоступна.
                         </div>
+                        <p v-else-if="testMode" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
+                            Тестовая проверка завершится только на этом экране — без записи в базу, статистику или Telegram.
+                        </p>
                         <div v-if="submitError" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
                             {{ submitError }}
                         </div>
-                        <button type="button" :disabled="!canEdit || submitting" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
-                            {{ submitting ? 'Отправляем контроль…' : 'Отправить контроль' }}
+                        <button type="button" :disabled="!canEdit || submitting || !canSubmitMedia" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
+                            {{ submitting ? 'Завершаем…' : testMode ? 'Завершить тест без отправки' : 'Отправить контроль' }}
                         </button>
                         <button type="button" :disabled="submitting || busyUploads" class="w-full rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-700 disabled:opacity-50" @click="openClassic">
                             Продолжить в старом Focus
@@ -1210,8 +1213,11 @@ onBeforeUnmount(() => {
                     <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5" aria-live="polite">
                         <div class="text-3xl" aria-hidden="true">✓</div>
                         <h2 class="text-xl font-semibold text-emerald-800">Контроль завершён</h2>
-                        <p class="text-sm text-slate-600">Ответы и оценка сохранены. Готовность фото и видео отслеживается отдельно.</p>
-                        <div class="rounded-xl bg-slate-50 p-4">
+                        <p v-if="testMode" class="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
+                            Тест выполнен. На сервер ничего не отправлено; статистика, оценки и уведомления не создавались.
+                        </p>
+                        <p v-else class="text-sm text-slate-600">Ответы и оценка сохранены. Фото и видео подтверждены сервером.</p>
+                        <div v-if="!testMode" class="rounded-xl bg-slate-50 p-4">
                             <p class="text-sm text-slate-600">Оценка уборки</p>
                             <p class="mt-1 text-2xl font-semibold">{{ finalResult?.total_points }} / {{ finalResult?.max_points }} · {{ finalResult?.score_percent }}%</p>
                             <p class="mt-2 text-sm font-bold" :class="finalResult?.result_zone === 'green' ? 'text-emerald-700' : finalResult?.result_zone === 'red' ? 'text-red-700' : 'text-amber-700'">
@@ -1219,7 +1225,7 @@ onBeforeUnmount(() => {
                             </p>
                             <p v-if="finalResult?.result_zone_reason" class="mt-1 text-xs text-slate-500">{{ finalResult.result_zone_reason }}</p>
                         </div>
-                        <div class="rounded-xl border border-slate-200 p-4">
+                        <div v-if="!testMode" class="rounded-xl border border-slate-200 p-4">
                             <div class="flex items-center justify-between gap-3">
                                 <h3 class="text-base font-bold">Фото и видео</h3>
                                 <button type="button" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" @click="refreshMediaReview">Обновить</button>
@@ -1275,7 +1281,8 @@ onBeforeUnmount(() => {
                         </div>
                         <a v-if="finalResult?.media_review_url" :href="finalResult.media_review_url" class="block rounded-xl bg-blue-50 p-3 text-center text-sm font-bold text-blue-700">Открыть проверку материалов позже</a>
                         <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white">Открыть результат</a>
-                        <a href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
+                        <button v-if="testMode" type="button" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white" @click="exitTestMode">Вернуться к настоящим контролям</button>
+                        <a v-else href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
                     </section>
                 </template>
             </template>
