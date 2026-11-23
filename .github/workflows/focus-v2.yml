@@ -11,6 +11,7 @@ on:
       - 'app/Models/FocusV2*.php'
       - 'app/Services/Controls/**'
       - 'app/Console/Commands/PruneFocusV2MediaUploads.php'
+      - 'app/Console/Commands/FocusV2StagingCheck.php'
       - 'database/migrations/*focus_v2*'
       - 'resources/js/focus-v2/**'
       - 'resources/views/focus-v2.blade.php'
@@ -21,6 +22,7 @@ on:
       - 'phpunit.xml'
       - 'vite.config.js'
       - 'tests/Feature/ControlWorkflowTest.php'
+      - 'tests/Feature/FocusV2StagingCheckTest.php'
       - '.github/workflows/focus-v2.yml'
   pull_request:
     paths:
@@ -30,6 +32,7 @@ on:
       - 'app/Models/FocusV2*.php'
       - 'app/Services/Controls/**'
       - 'app/Console/Commands/PruneFocusV2MediaUploads.php'
+      - 'app/Console/Commands/FocusV2StagingCheck.php'
       - 'database/migrations/*focus_v2*'
       - 'resources/js/focus-v2/**'
       - 'resources/views/focus-v2.blade.php'
@@ -40,6 +43,7 @@ on:
       - 'phpunit.xml'
       - 'vite.config.js'
       - 'tests/Feature/ControlWorkflowTest.php'
+      - 'tests/Feature/FocusV2StagingCheckTest.php'
       - '.github/workflows/focus-v2.yml'
   workflow_dispatch:
 
@@ -81,7 +85,7 @@ jobs:
       - name: Validate reproducible frontend install
         run: npm ci
       - name: Focus V2 JavaScript retry regression tests
-        run: node --test tests/JavaScript/FocusV2MediaRetry.test.mjs tests/JavaScript/FocusV2LocalRecovery.test.mjs
+        run: node --test tests/JavaScript/FocusV2MediaRetry.test.mjs tests/JavaScript/FocusV2LocalRecovery.test.mjs tests/JavaScript/FocusV2Transport.test.mjs
       - name: Build Vue and existing assets
         run: npm run build
       - name: Prepare isolated test application
@@ -89,7 +93,7 @@ jobs:
           cp .env.example .env
           php artisan key:generate --no-interaction
       - name: Focus control feature and media regression tests
-        run: php artisan test tests/Feature/ControlWorkflowTest.php
+        run: php artisan test tests/Feature/ControlWorkflowTest.php tests/Feature/FocusV2StagingCheckTest.php
       - name: Package compiled assets for isolated staging
         uses: actions/upload-artifact@v4
         with:
