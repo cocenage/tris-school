@@ -10,6 +10,7 @@ class AntigocciaReport extends Model
     protected $fillable = [
         'apartment_id', 'user_id', 'cleaner_name', 'cleaning_date',
         'answers', 'photos', 'remaining', 'submission_uuid',
+        'days_since_previous_cleaning',
     ];
 
     protected $casts = [
@@ -17,6 +18,7 @@ class AntigocciaReport extends Model
         'answers' => 'array',
         'photos' => 'array',
         'remaining' => 'boolean',
+        'days_since_previous_cleaning' => 'integer',
     ];
 
     public function apartment(): BelongsTo
