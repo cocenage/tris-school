@@ -70,8 +70,9 @@ git pull --ff-only origin codex/focus-control-v2-foundation
 composer install --no-interaction --prefer-dist --no-progress --optimize-autoloader
 npm ci
 npm run build
-php artisan migrate --force
 php artisan config:clear
+php artisan focus-v2:staging-check
+php artisan migrate --force
 php artisan route:clear
 php artisan view:clear
 ```
@@ -87,9 +88,18 @@ production `public/build`.
 https://<your-staging-host>/checks/control/focus-v2
 ```
 
-The old Focus route stays available on staging. A production deployment
-where `FOCUS_V2_ENABLED` is unset should return 404 for every V2 page
-and API endpoint (after normal session/auth middleware).
+The old Focus route stays available on staging. **Production is hard-blocked**
+by `EnsureFocusV2PreviewEnabled` even if someone accidentally sets
+`FOCUS_V2_ENABLED=true`: all V2 preview pages and API endpoints return 404.
+Production rollout will require a separate reviewed change to this safety gate.
+
+The read-only `focus-v2:staging-check` command must succeed **before**
+database migrations or large-media acceptance testing. It checks a staging
+runtime, HTTPS on a non-production hostname, an enabled preview flag, disabled
+debugging, an app key, a configured non-memory database, queue sync and mail log.
+The checker cannot prove that database/storage, Telegram tokens and chat IDs
+are different from production; a human must inspect those separately. No
+database migrations, writes or outbound messages are performed by the check.
 
 ## Mobile acceptance sequence
 
@@ -139,3 +149,16 @@ completed-result references**.
   has not yet been durably recorded on the server.
 - Config flag and staging artifact preparation are **not** a hosted
   staging deployment.
+
+## Automated transport checks (CI)
+
+`tests/JavaScript/FocusV2Transport.test.mjs` simulates a connection drop and
+retry, a 100 MiB video split into 200 requests of 512 KiB, out-of-order
+acknowledged chunks and invalid server receipts. GitHub Actions runs these
+alongside Vue compilation, Laravel media/submit regression tests and the
+staging-preflight gate tests. **These simulations do not test real Telegram
+WebView performance, phone storage eviction, network limits or actual
+HTTP/proxy configuration.**
+
+Do not substitute a passing CI run for an HTTPS staging host, a separate
+test Telegram bot and manual Android/iOS acceptance measurements.
