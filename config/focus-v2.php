@@ -8,5 +8,5 @@ return [
      * APP_URL, database and storage. Production defaults to 404 for every
      * Focus V2 page and API endpoint, even if the code is deployed there.
      */
-    'enabled' => (bool) env('FOCUS_V2_ENABLED', app()->environment('local', 'testing')),
+    'enabled' => (bool) env('FOCUS_V2_ENABLED', false),
 ];
