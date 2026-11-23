@@ -232,6 +232,112 @@ async function initialize() {
     }
 }
 
+async function choosePerson(id) {
+    if (!canEdit.value) return;
+    if (id === '__test__') {
+        if (viewerRole.value !== 'admin') return;
+        if (testMode.value) return;
+        // Never discard unfinished real work when switching to a local-only
+        // sandbox. Existing server drafts remain completely untouched.
+        if (busyUploads.value || interruptedUploads.value.length) {
+            syncError.value = 'Сначала завершите реальные загрузки перед переходом в тестовый режим.';
+            return;
+        }
+        if (!(await ensureSynced())) {
+            syncError.value = syncError.value || 'Сначала сохраните текущий черновик.';
+            return;
+        }
+        cleanupPreviews();
+        testMode.value = true;
+        uploads.value = [];
+        media.value = rooms.value.map(room => (room.items ?? []).map(() => []));
+        answers.value = rooms.value.map(room => (room.items ?? []).map(() =>
+            ({ selected: '', custom: '', corrective: { repeats: null, action: '', recheck: null } })));
+        setup.value = { ...setup.value, cleaner_id: '__test__', apartment_id: null,
+            previous_cleaner: '', is_assigned: false, comment: '' };
+        state.value = 'synced';
+        syncError.value = '';
+        stage.value = 'setup';
+        return;
+    }
+    if (testMode.value) return;
+    setup.value.cleaner_id = id;
+    touch();
+}
+function chooseApartment(id) {
+    if (!canEdit.value) return;
+    setup.value.apartment_id = id;
+    touch();
+}
+function exitTestMode() {
+    if (!testMode.value) return;
+    testMode.value = false;
+    finalResult.value = null;
+    void initialize(); // Restore the real server-owned draft, never test values.
+}
+function resumeDraftFiles(event) {
+    const selected = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    mediaError.value = '';
+    if (!canEdit.value || testMode.value) return;
+    let restored = 0;
+    for (const file of selected) {
+        const record = interruptedUploads.value.find(item =>
+            item.status === 'pending'
+            && item.original_name === file.name && Number(item.size) === file.size
+            && item.mime === focusFileMime(file)
+            && !uploads.value.some(upload => upload.id === item.upload_id &&
+                ['queued', 'uploading', 'attaching'].includes(upload.status)));
+        if (!record) continue;
+        const error = allowedFocusFile(file);
+        if (error) { mediaError.value = error; continue; }
+        const previous = uploads.value.find(upload => upload.id === record.upload_id);
+        const data = {
+            id: record.upload_id, file, record, room: record.room_index,
+            question: record.question_index, status: 'queued', progress: 0,
+            error: '', controller: null, info: null, preview_url: URL.createObjectURL(file),
+        };
+        if (previous) {
+            if (previous.preview_url) URL.revokeObjectURL(previous.preview_url);
+            Object.assign(previous, data);
+        } else uploads.value.push(data);
+        restored++;
+    }
+    if (restored) pumpTransfers();
+    if (restored !== selected.length) {
+        mediaError.value = 'Не все файлы совпали с прерванными загрузками. Выберите оригиналы с тем же названием, размером и форматом.';
+    }
+}
+async function attachReadyDraft(record) {
+    if (!canEdit.value || testMode.value || record.status !== 'ready') return;
+    if (activeTransfers || attachInFlight) {
+        mediaError.value = 'Подождите завершения текущих загрузок.';
+        return;
+    }
+    mediaError.value = '';
+    try {
+        if (!(await ensureSynced())) throw new Error('Не удалось сохранить ответы.');
+        attachInFlight = true;
+        const info = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
+        if (info.status !== 'ready' && info.status !== 'attached') {
+            throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
+        }
+        const attached = await focusMediaRequest(info.urls.attach, 'POST', {
+            draft_id: run.value.draft_id, expected_revision: run.value.revision,
+        }, csrf);
+        run.value = { ...run.value, ...attached.run };
+        const files = media.value[record.room_index][record.question_index];
+        if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
+            files.push(attached.media_item);
+        }
+        interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
+    } catch (error) {
+        mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
+    } finally {
+        attachInFlight = false;
+    }
+}
+
 function filled(room, question) {
     const answer = answers.value[room]?.[question];
     return Boolean(String(answer?.selected ?? '').trim() || String(answer?.custom ?? '').trim());
