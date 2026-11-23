@@ -2,9 +2,10 @@
 
 ## Deployment status
 
-This is a **staging procedure**, not a production deployment. V2 changes
-are on branch `codex/focus-control-v2-foundation`; do not merge or deploy
-to the production Academy simply to run the media acceptance test.
+This describes an **isolated staging environment** for testing and benchmarking.
+The Vue 3 release is now part of the main branch: for production setup and
+rollback see [Focus V2 production rollout](focus-v2-production-rollout.md).
+Staging continues to require its own HTTPS host, DB, test bot and storage.
 
 The Focus V2 CI run at
 https://github.com/cocenage/tris-school/actions/runs/45114440899
@@ -28,9 +29,9 @@ matching commit of Laravel source. Mixing different commits is unsupported.
   IDs or outbound integrations. Set up a separate test bot if testing
   inside a Telegram WebView. Otherwise use staging test-account sessions.
 - Never use the production `.env` on staging.
-- **V2 feature flag:** `config/focus-v2.php` is off by default in all environments (isolated PHPUnit tests
-  explicitly enable it). Enable only in the
-  separate staging `.env`:
+- **V2 feature flag:** the public release defaults to enabled (unless overridden).
+  Set `FOCUS_V2_ENABLED=true` explicitly on staging to document the intended
+  test configuration. Use `FOCUS_V2_ENABLED=false` for a rollback:
 
 ```dotenv
 APP_ENV=staging
@@ -88,10 +89,10 @@ production `public/build`.
 https://<your-staging-host>/checks/control/focus-v2
 ```
 
-The old Focus route stays available on staging. **Production is hard-blocked**
-by `EnsureFocusV2PreviewEnabled` even if someone accidentally sets
-`FOCUS_V2_ENABLED=true`: all V2 preview pages and API endpoints return 404.
-Production rollout will require a separate reviewed change to this safety gate.
+The old Focus route stays available on staging and in production. The
+production rollout is permitted for authorized staff, and can be disabled
+immediately with `FOCUS_V2_ENABLED=false`; in that case all V2 pages and
+API endpoints return 404.
 
 The read-only `focus-v2:staging-check` command must succeed **before**
 database migrations or large-media acceptance testing. It checks a staging

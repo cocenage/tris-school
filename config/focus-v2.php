@@ -2,11 +2,13 @@
 
 return [
     /*
-     * Focus Control V2 is disabled by default in every runtime.
+     * Vue 3 Focus Control is the public entry for active admins/supervisors.
+     * The Classic Focus route remains available as a fallback.
      *
-     * Enable only on an isolated staging installation after checking its
-     * APP_URL, database and storage. Production defaults to 404 for every
-     * Focus V2 page and API endpoint, even if the code is deployed there.
+     * Emergency rollback without code changes:
+     * FOCUS_V2_ENABLED=false, then php artisan optimize:clear.
+     * This disables all V2 API endpoints and makes the checks landing page
+     * point back to Classic Focus. Never bypass per-user authorization.
      */
-    'enabled' => (bool) env('FOCUS_V2_ENABLED', false),
+    'enabled' => (bool) env('FOCUS_V2_ENABLED', true),
 ];
