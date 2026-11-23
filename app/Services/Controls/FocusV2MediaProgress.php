@@ -41,6 +41,7 @@ final class FocusV2MediaProgress
             'uploads' => $includeUploads
                 ? $rows->map(static fn (FocusV2MediaUpload $upload): array => [
                     'upload_id' => $upload->id,
+                    'status_url' => route('page-checks.control.focus-v2.media.status', $upload->id),
                     'status' => $upload->status,
                     'room_index' => $upload->room_index,
                     'question_index' => $upload->question_index,
