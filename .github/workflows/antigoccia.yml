@@ -7,12 +7,15 @@ on:
       - 'app/Http/Controllers/Antigoccia*'
       - 'app/Http/Controllers/TelegramWorkWebhookController.php'
       - 'app/Services/Antigoccia/**'
+      - 'app/Filament/Pages/AntigocciaStatistics.php'
+      - 'resources/views/filament/pages/antigoccia-statistics.blade.php'
       - 'app/Services/Telegram/Antigoccia*'
       - 'resources/views/components/antigoccia/**'
       - 'resources/views/components/apartments/**'
       - 'routes/web.php'
       - 'tests/Feature/AntigocciaTest.php'
       - 'tests/Feature/AntigocciaStatisticsTest.php'
+      - 'tests/Feature/AntigocciaAnalyticsTest.php'
       - 'database/migrations/*antigoccia*'
       - '.github/workflows/antigoccia.yml'
   workflow_dispatch:
@@ -60,8 +63,9 @@ jobs:
         run: |
           php artisan view:cache
           php artisan route:list --path=antigoccia
+          php artisan route:list --path=admin/antigoccia
       - name: ANTIGOCCIA feature tests
-        run: php artisan test tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaStatisticsTest.php
+        run: php artisan test tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaStatisticsTest.php tests/Feature/AntigocciaAnalyticsTest.php
       - name: Apartment permissions regression tests
         run: php artisan test tests/Feature/ApartmentKnowledgeBaseTest.php
       - name: Telegram webhook regression tests
