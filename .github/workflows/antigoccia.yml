@@ -56,6 +56,10 @@ jobs:
         run: |
           cp .env.example .env
           php artisan key:generate --no-interaction
+      - name: Compile Blade views and inspect ANTIGOCCIA route
+        run: |
+          php artisan view:cache
+          php artisan route:list --path=antigoccia
       - name: ANTIGOCCIA feature tests
         run: php artisan test tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaStatisticsTest.php
       - name: Apartment permissions regression tests
