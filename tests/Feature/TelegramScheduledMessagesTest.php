@@ -5,6 +5,8 @@ use App\Filament\Resources\TelegramScheduledMessages\TelegramScheduledMessageRes
 use App\Jobs\DeliverScheduledControlFollowup;
 use App\Jobs\DeliverScheduledTelegramMessage;
 use App\Jobs\RefreshTelegramOksCard;
+use App\Jobs\RefreshTelegramOksOpening;
+use App\Jobs\RefreshTelegramWorkControlMessage;
 use App\Models\ShiftDuty;
 use App\Models\TelegramChat;
 use App\Models\TelegramMessage;
@@ -45,6 +47,8 @@ beforeEach(function (): void {
         'app.timezone' => 'Europe/Rome',
         'queue.default' => 'database',
         'services.telegram.main_bot_auto_replies_enabled' => false,
+        // Existing tests assert synchronous Telegram edits; the fast queue path is tested separately.
+        'services.telegram.work_fast_callbacks_enabled' => false,
         'database.default' => 'sqlite',
         'database.connections.sqlite.database' => ':memory:',
         'database.connections.analytics.database' => ':memory:',
@@ -1240,4 +1244,106 @@ it('does not send an OKS card again when Telegram delivery is uncertain', functi
     $job->handle(app(TelegramBotService::class));
     $job->handle(app(TelegramBotService::class));
     expect($delivery->fresh()->status)->toBe('uncertain')->and($attempts)->toBe(1);
+});
+
+
+it('saves OKS callbacks before acknowledging and refreshes Telegram cards in background', function (): void {
+    (require database_path('migrations/2026_10_03_000000_allow_replyless_scheduled_control_responses.php'))->up();
+    (require database_path('migrations/2026_10_14_000000_support_scheduled_control_button_responses.php'))->up();
+    (require database_path('migrations/2026_11_15_000000_create_shift_duties_table.php'))->up();
+
+    Schema::create('users', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+        $table->string('role');
+        $table->string('status');
+        $table->boolean('is_active');
+        $table->string('telegram_id')->nullable();
+        $table->timestamps();
+    });
+
+    $duty = User::query()->forceCreate([
+        'name' => 'Дежурный', 'role' => 'supervisor',
+        'status' => 'approved', 'is_active' => true, 'telegram_id' => '102',
+    ]);
+    $anchor = makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    config([
+        'services.telegram.work_fast_callbacks_enabled' => true,
+        'services.telegram.bot_token' => 'test-work-token',
+        'services.telegram.bot_username' => 'test_work_bot',
+        'services.telegram.work_webhook_secret' => 'test-fast-callbacks',
+    ]);
+    Queue::fake();
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => true])]);
+
+    $message = function (int $messageId): array {
+        return ['message_id' => $messageId, 'message_thread_id' => 42,
+            'chat' => ['id' => -100000000001, 'type' => 'supergroup']];
+    };
+    $click = function (string $id, string $data, int $messageId) use ($message): void {
+        $this->postJson('/telegram/work-webhook/test-fast-callbacks', [
+            'callback_query' => [
+                'id' => $id,
+                'from' => ['id' => 102, 'is_bot' => false, 'first_name' => 'Дежурный'],
+                'data' => $data, 'message' => $message($messageId),
+            ],
+        ])->assertOk();
+    };
+
+    $oks = $anchor->deliveries()->create([
+        'control_type' => 'oks_schedule', 'bot_type' => 'work', 'status' => 'sent',
+        'scheduled_for' => now()->startOfMinute(), 'sent_at' => now(), 'telegram_message_id' => 501,
+        'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => ['oks_assignments' => ['navigli' => $duty->id]],
+    ]);
+
+    $click('fast-oks-1', 'oksc:'.$oks->id.':check:navigli:yes', 501);
+    expect($oks->responses()->count())->toBe(1);
+    Queue::assertPushed(RefreshTelegramOksCard::class, 1);
+    Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/answerCallbackQuery')
+        && $request['callback_query_id'] === 'fast-oks-1'
+        && $request['text'] === 'Ответ сохранён.');
+    Http::assertNotSent(fn ($request): bool => str_ends_with($request->url(), '/editMessageText'));
+
+    // Re-delivering the same callback does not duplicate the stored answer.
+    $click('fast-oks-1', 'oksc:'.$oks->id.':check:navigli:yes', 501);
+    expect($oks->responses()->count())->toBe(1);
+
+    $opening = $anchor->deliveries()->create([
+        'control_type' => ScheduledControlTypes::SHIFT_OPENING,
+        'bot_type' => 'work', 'status' => 'sent',
+        'scheduled_for' => now()->startOfDay()->setTime(9, 0), 'sent_at' => now(),
+        'telegram_message_id' => 502, 'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => ['opening_quick' => true],
+    ]);
+    $click('fast-opening-1', 'oks:'.$opening->id.':quick:navigli:yes', 502);
+    expect($opening->refresh()->sequence_context['opening_draft']['navigli'])->toBe($duty->id);
+    Queue::assertPushed(RefreshTelegramOksOpening::class, 1);
+    Http::assertNotSent(fn ($request): bool => str_ends_with($request->url(), '/editMessageText'));
+
+    $control = $anchor->deliveries()->create([
+        'control_type' => 'first_cleanings_started', 'bot_type' => 'work', 'status' => 'sent',
+        'scheduled_for' => now()->startOfMinute()->addMinute(), 'sent_at' => now(),
+        'telegram_message_id' => 503, 'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => ['oks_assignments' => ['navigli' => $duty->id]],
+    ]);
+    $click('fast-work-1', 'sc:'.$control->id.':navigli:yes', 503);
+    expect($control->responses()->count())->toBe(1);
+    Queue::assertPushed(RefreshTelegramWorkControlMessage::class, 1);
+    Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/answerCallbackQuery')
+        && $request['callback_query_id'] === 'fast-work-1'
+        && $request['text'] === 'Ответ сохранён.');
+    Http::assertNotSent(fn ($request): bool => str_ends_with($request->url(), '/editMessageText'));
+
+    // The existing retryable jobs edit cards only after the user has been acknowledged.
+    Queue::pushed(RefreshTelegramOksCard::class)->first()->handle(app(TelegramOksControlCards::class));
+    Queue::pushed(RefreshTelegramOksOpening::class)->sole()->handle(
+        app(\App\Services\Telegram\TelegramShiftOpening::class),
+        app(TelegramBotService::class),
+    );
+    Queue::pushed(RefreshTelegramWorkControlMessage::class)->sole()->handle(
+        app(\App\Services\Telegram\TelegramWorkControlMessageSync::class),
+    );
+    Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/editMessageText')
+        && in_array((int) $request['message_id'], [501, 502, 503], true));
 });

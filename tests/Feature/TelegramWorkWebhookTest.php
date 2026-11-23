@@ -43,6 +43,7 @@ beforeEach(function () {
         'services.telegram.chat_id_formweekend' => '-100',
         'services.telegram.thread_id_formweekend' => null,
         'services.telegram.rich_messages_enabled' => true,
+        'services.telegram.work_fast_callbacks_enabled' => false,
     ]);
 
     Cache::flush();
@@ -1162,7 +1163,10 @@ it('records callbacks for manual reconciliation while backlog protection is enab
             && $context['callback_type'] === 'dayoffday'
             && $context['callback_target_id'] === $day->id,
     ));
-    Http::assertNothingSent();
+    Http::assertSentCount(1);
+    Http::assertSent(fn (ClientRequest $request): bool => str_ends_with($request->url(), '/answerCallbackQuery')
+        && $request['callback_query_id'] === 'backlog-callback'
+        && str_contains((string) $request['text'], 'устарело'));
 });
 
 it('handles and acknowledges new day-off callbacks after the backlog guard is disabled', function () {

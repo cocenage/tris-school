@@ -2,6 +2,7 @@
 
 namespace App\Services\Telegram;
 
+use App\Jobs\RefreshTelegramOksOpening;
 use App\Models\ShiftDuty;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\User;
@@ -9,6 +10,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -267,17 +269,17 @@ class TelegramShiftOpening
         if ($actor === null || $delivery === null || ! $this->canMark($delivery, $actor)) {
             return 'Открытие этой смены недоступно.';
         }
-        [$saved, $edited] = $this->mark($delivery, $district, $actor, $action, $telegram);
+        [$saved, $edited] = $this->mark($delivery, $district, $actor, $action, $telegram, deferSync: true);
 
         return $edited ? ($saved ? 'Отметка сохранена.' : 'Район уже отмечен.') : 'Отметка сохранена. Карточка пока не обновилась.';
     }
 
     /** @return array{bool, bool} */
-    public function mark(TelegramScheduledMessageDelivery $delivery, string $district, User $actor, string $action, TelegramBotService $telegram): array
+    public function mark(TelegramScheduledMessageDelivery $delivery, string $district, User $actor, string $action, TelegramBotService $telegram, bool $deferSync = false): array
     {
         abort_unless(isset(ScheduledControlTypes::DISTRICTS[$district]) && in_array($action, ['yes', 'no'], true), 422);
 
-        return Cache::lock('oks-opening:'.$delivery->id, 30)->block(3, function () use ($delivery, $district, $actor, $action, $telegram): array {
+        return Cache::lock('oks-opening:'.$delivery->id, 30)->block(3, function () use ($delivery, $district, $actor, $action, $telegram, $deferSync): array {
             $saved = DB::transaction(function () use ($delivery, $district, $actor, $action): bool {
                 $current = TelegramScheduledMessageDelivery::query()->withOksTests()->lockForUpdate()->findOrFail($delivery->id);
                 abort_unless($this->canMark($current, $actor), 403);
@@ -299,6 +301,22 @@ class TelegramShiftOpening
 
                 return true;
             });
+
+            if ($deferSync && config('services.telegram.work_fast_callbacks_enabled', true)
+                && config('queue.connections.'.config('queue.default').'.driver') !== 'sync') {
+                try {
+                    RefreshTelegramOksOpening::dispatch((int) $delivery->id);
+
+                    return [$saved, true];
+                } catch (Throwable $exception) {
+                    Log::warning('OKS opening saved but refresh could not be queued.', [
+                        'delivery_id' => $delivery->id,
+                        'exception' => class_basename($exception),
+                    ]);
+
+                    return [$saved, false];
+                }
+            }
 
             return [$saved, $this->syncQuick($delivery, $telegram)];
         });
