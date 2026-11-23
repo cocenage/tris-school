@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Control;
+use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
 use App\Models\FocusV2MediaUpload;
 use App\Services\Controls\ControlSchema;
@@ -35,6 +36,30 @@ final class FocusV2MediaController extends Controller
             'mime' => ['required', 'string', 'max:100'],
             'size' => ['required', 'integer', 'min:1', 'max:104857600'],
         ]);
+        // After finalization only a previously registered upload ID may be
+        // resumed. No new evidence can be silently introduced after sign-off.
+        $existingForResult = FocusV2MediaUpload::query()->whereKey($data['upload_id'])
+            ->whereNotNull('control_response_id')->first();
+        if ($existingForResult) {
+            $this->ownedUpload($request, $preview, $data['upload_id']);
+            abort_unless(
+                (int) $existingForResult->control_id === (int) $data['control_id']
+                && (int) $existingForResult->draft_id === (int) $data['draft_id']
+                && $existingForResult->run_id === $data['run_id']
+                && $existingForResult->schema_version === $data['schema_version']
+                && $existingForResult->room_index === (int) $data['room_index']
+                && $existingForResult->question_index === (int) $data['question_index']
+                && $existingForResult->original_name === mb_substr(basename(str_replace('\\', '/', $data['original_name'])), 0, 180)
+                && $existingForResult->declared_mime === $data['mime']
+                && $existingForResult->size_bytes === (int) $data['size']
+                && $existingForResult->status !== 'cancelled',
+                409,
+                'Загрузку можно продолжить только с исходным файлом.',
+            );
+
+            return $this->describe($existingForResult);
+        }
+
         [$control, $draft, $rooms] = $this->context($request, $preview, $data);
         $room = (int) $data['room_index'];
         $question = (int) $data['question_index'];
@@ -216,6 +241,10 @@ final class FocusV2MediaController extends Controller
         $record = $this->ownedUpload($request, $preview, $upload);
         abort_unless($record->draft_id === (int) $input['draft_id'], 409);
 
+        if ($record->control_response_id !== null) {
+            return $this->attachToResult($record);
+        }
+
         return DB::transaction(function () use ($record, $input): JsonResponse {
             $draft = ControlResponseDraft::query()->whereKey($record->draft_id)->lockForUpdate()->firstOrFail();
             $locked = FocusV2MediaUpload::query()->whereKey($record->id)->lockForUpdate()->firstOrFail();
@@ -292,6 +321,78 @@ final class FocusV2MediaController extends Controller
         });
     }
 
+    /**
+     * Post-finalization attachment updates evidence on the immutable scored
+     * result. It never recalculates the score or edits the inspection answers.
+     */
+    private function attachToResult(FocusV2MediaUpload $record): JsonResponse
+    {
+        $response = DB::transaction(function () use ($record): array {
+            $result = ControlResponse::query()->whereKey($record->control_response_id)
+                ->lockForUpdate()->firstOrFail();
+            $upload = FocusV2MediaUpload::query()->whereKey($record->id)
+                ->lockForUpdate()->firstOrFail();
+            abort_unless((int) $upload->control_response_id === (int) $result->getKey()
+                && in_array($upload->status, ['ready', 'attached'], true), 409);
+
+            $room = $upload->room_index;
+            $question = $upload->question_index;
+            abort_unless(isset($result->schema_snapshot[$room]['items'][$question]), 409);
+            $answers = is_array($result->responses) ? $result->responses : [];
+            $files = array_values((array) ($answers[$room][$question]['media'] ?? []));
+            $index = null;
+            foreach ($files as $i => $file) {
+                if (is_array($file) && ($file['upload_id'] ?? null) === $upload->id) {
+                    $index = $i;
+                    break;
+                }
+            }
+            if ($index === null) {
+                abort_unless($upload->status === 'ready', 409);
+                abort_unless(count($files) < self::MAX_MEDIA_PER_QUESTION, 422);
+                abort_unless($upload->stored_path
+                    && Storage::disk('local')->exists($upload->stored_path), 409);
+                $files[] = [
+                    'disk' => 'local', 'path' => $upload->stored_path,
+                    'original_name' => $upload->original_name,
+                    'mime' => $upload->actual_mime,
+                    'size' => $upload->size_bytes,
+                    'uploaded_at' => now()->toDateTimeString(),
+                    'upload_id' => $upload->id,
+                ];
+                $index = count($files) - 1;
+                $answers[$room][$question]['media'] = $files;
+                $result->responses = $answers;
+                $result->save();
+                $upload->status = 'attached';
+                $upload->save();
+            }
+
+            $params = [$result, $room, $question, $index];
+            return [$result, [
+                'run' => ['draft_id' => null, 'revision' => null],
+                'room_index' => $room,
+                'question_index' => $question,
+                'media_item' => [
+                    'index' => $index, 'upload_id' => $upload->id,
+                    'name' => $upload->original_name, 'mime' => $upload->actual_mime,
+                    'size' => $upload->size_bytes,
+                    'url' => route('page-checks.control.result-media', $params),
+                    'thumbnail_url' => route('page-checks.control.result-media', [...$params, 'thumbnail' => 1]),
+                ],
+            ]];
+        });
+
+        [$result, $body] = $response;
+        $progress = app(\App\Services\Controls\FocusV2MediaProgress::class)->forResponse($result, false);
+        if ($progress['state'] === 'complete') {
+            app(\App\Services\Controls\ControlCompletionNotificationService::class)->queueFor($result);
+        }
+        $body['media'] = $progress;
+
+        return response()->json($body)->header('Cache-Control', 'private, no-store');
+    }
+
     private function context(Request $request, RolePreviewContext $preview, array $data): array
     {
         $preview->assertWritable();
@@ -322,10 +423,18 @@ final class FocusV2MediaController extends Controller
         abort_unless(\Illuminate\Support\Str::isUuid($id), 404);
         $upload = FocusV2MediaUpload::query()->whereKey($id)
             ->where('supervisor_id', $request->user()->getKey())->firstOrFail();
-        $this->context($request, $preview, [
-            'control_id' => $upload->control_id, 'draft_id' => $upload->draft_id,
-            'run_id' => $upload->run_id, 'schema_version' => $upload->schema_version,
-        ]);
+        if ($upload->control_response_id !== null) {
+            $response = ControlResponse::query()->whereKey($upload->control_response_id)->firstOrFail();
+            abort_unless((int) $response->supervisor_id === (int) $request->user()->getKey()
+                && (int) $response->control_id === (int) $upload->control_id
+                && $response->submission_token === $upload->run_id
+                && $response->schema_version === $upload->schema_version, 403);
+        } else {
+            $this->context($request, $preview, [
+                'control_id' => $upload->control_id, 'draft_id' => $upload->draft_id,
+                'run_id' => $upload->run_id, 'schema_version' => $upload->schema_version,
+            ]);
+        }
 
         return $upload;
     }
