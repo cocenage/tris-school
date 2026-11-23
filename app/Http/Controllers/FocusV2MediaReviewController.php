@@ -21,6 +21,7 @@ final class FocusV2MediaReviewController extends Controller
             'submitted' => true,
             'result_url' => route('page-profile.checks.result', $controlResponse),
             'media_status_url' => route('page-checks.control.focus-v2.result-media-status', $controlResponse->getKey()),
+            'media_review_url' => route('page-checks.control.focus-v2.review', $controlResponse->getKey()),
             'total_points' => $controlResponse->total_points,
             'max_points' => $controlResponse->max_points,
             'score_percent' => $controlResponse->score_percent,
