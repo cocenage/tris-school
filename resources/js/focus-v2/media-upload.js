@@ -15,6 +15,19 @@ export function focusFileMime(file) {
     })[ext] || '';
 }
 
+/**
+ * Draft uploads can be retried while the form is editable. After sign-off,
+ * only uploads already registered to that completed run are eligible.
+ * Never turn an unknown local file into a new post-submit attachment.
+ */
+export function canRetryFocusFile(item, canEdit, responseId) {
+    if (!item || item.status !== 'error' || !item.file) return false;
+    if (canEdit) return true;
+    return Boolean(responseId && (
+        item.record?.upload_id === item.id || item.info?.upload_id === item.id
+    ));
+}
+
 export function allowedFocusFile(file) {
     const mime = focusFileMime(file);
     const image = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(mime);
