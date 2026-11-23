@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { allowedFocusFile, focusMediaRequest, transferFocusFile } from './media-upload';
+import { allowedFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
     draftUrl: { type: String, required: true },
     submitUrl: { type: String, required: true },
+    reviewStatusUrl: { type: String, default: '' },
     mediaStartUrl: { type: String, required: true },
     classicUrl: { type: String, required: true },
 });
@@ -87,6 +88,12 @@ async function initialize() {
     loading.value = true;
     loadError.value = '';
     try {
+        if (props.reviewStatusUrl) {
+            finalResult.value = await fetchJson(props.reviewStatusUrl);
+            stage.value = 'done';
+            state.value = 'synced';
+            return;
+        }
         const data = await fetchJson(props.bootstrapUrl);
         control.value = data.control;
         run.value = data.run;
