@@ -22,6 +22,10 @@ final class PruneFocusV2MediaUploads extends Command
         $threshold = now()->subHours($hours);
 
         $ids = FocusV2MediaUpload::query()
+            // Finalized inspections retain their evidence manifest, including
+            // failed or cancelled uploads, until an explicit retention policy
+            // and review workflow can safely account for every file.
+            ->whereNull('control_response_id')
             ->where(function ($query): void {
                 $query->whereIn('status', ['pending', 'ready', 'cancelled'])
                     ->orWhere(function ($nested): void {
@@ -43,8 +47,10 @@ final class PruneFocusV2MediaUploads extends Command
                         || ! $upload->updated_at?->lt($threshold)) {
                         return;
                     }
-                    // Attached evidence may belong to an already submitted
-                    // response. Prune the transfer record, never its media file.
+                    // Never prune a manifest tied to a completed result.
+                    if ($upload->control_response_id !== null) {
+                        return;
+                    }
                     if ($upload->status === 'attached'
                         && ControlResponseDraft::query()->whereKey($upload->draft_id)->exists()) {
                         return;
