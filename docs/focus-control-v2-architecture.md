@@ -181,11 +181,11 @@ Manual Telegram tests: a small image, 100 MiB MOV/MP4, interrupted transfer retr
 - Route: POST /checks/control/focus-v2/submit (authenticated active admin/supervisor, CSRF, preview write guard).
 - Request includes only control_id, run_id, schema_version, draft_id and expected_revision. No client-controlled responses, scores, file paths or notification settings.
 - The endpoint locks the run using the same cache key as the existing Livewire finalizer and locks its draft row within a database transaction.
-- Before finalization it validates the latest active canonical schema, draft ownership, revision, all required answers, setup/active staff and apartment, media availability, <=12 media files/question, and **zero pending or ready upload sessions**. Legacy drafts without question IDs may pass if their schema snapshot matches; canonical IDs are attached before submission.
+- Before finalization it validates the canonical schema, draft owner/revision, setup, required answers and already attached evidence. Registered pending/ready upload sessions are now permitted at sign-off. Legacy drafts without question IDs may pass if their schema snapshot matches; canonical IDs are attached before submission.
 - Scoring uses the existing ControlResponse::calculateScores() rules. ControlRunManager::submitOnce() protects the unique submission_token and removes the active draft only after writing the result.
 - The same notification outbox is used via ControlCompletionNotificationService::queueFor(), and the control_completed activity log entry is created inside the transaction.
 - A repeated POST with the same run ID after a committed result returns the original result (replayed=true) and does not create another notification.
-- The Vue review screen waits for acknowledged answer saves, blocks while transfers remain unresolved, sends the finalization request, and displays the saved score and link to the result. A lost response can be retried with the unchanged run ID.
+- The Vue review screen waits for acknowledged answer saves, registers selected files in a durable server manifest, and allows completion while transfers are pending. It displays saved score and evidence readiness separately. A lost response can be retried with the unchanged run ID.
 - Old Focus remains accessible while V2 is tested; there is no navigation replacement or automatic rollout.
 
 ### Required release checks
@@ -200,3 +200,26 @@ On an isolated test database and test server:
 Before any production release, regenerate the reconstructed package-lock with real npm registry integrity metadata and commit it. Validate end-to-end inside Telegram WebView: saved answers, video transfer and retry, pending-media submission block, final score parity, link permissions, duplicate submission after response timeout, and Telegram notification dispatch.
 
 No full Laravel/Pest suite, Vite build or real mobile Telegram test has been run within this GitHub-only editing session.
+
+
+## Phase 6: deferred photo AND video evidence (experimental, not deployed)
+
+After completion, the registered evidence manifest survives deletion of the draft. Upload sessions reference the final ControlResponse via control_response_id. No new uploads may be silently registered after sign-off; only previously registered upload UUIDs can resume.
+
+Evidence readiness is calculated from server-side records:
+- awaiting_media: at least one transfer is pending or assembled but not yet attached.
+- needs_review: no transfer is pending, but at least one selected upload was cancelled or never delivered.
+- complete: all registered transfers are attached, with no cancelled transfers.
+
+The canonical scoring, answers and completion time are independent of evidence readiness. Final Telegram completion notifications are deferred until evidence state is complete. Files attached later update only the authorized result's evidence list; scored fields remain unchanged.
+
+Private post-submit status endpoint: GET /checks/control/focus-v2/results/{controlResponse}/media.
+Resume/review page: /checks/control/focus-v2/review/{controlResponse}. The existing profile result shows an evidence status link to this page for authorized supervisors/admins.
+
+The browser uploads up to two files at a time. Before sign-off, it creates an idempotent server reservation for every selected photo/video still waiting in the client. If these reservations cannot be confirmed due to network errors, final sign-off is blocked rather than silently dropping evidence.
+
+Closing Telegram stops live HTTP transfers. After reopening the review page, users can reselect single or multiple matching original files; received server chunks are reused. A fully assembled file can be attached without reselecting its binary. Browser file objects are not guaranteed to survive WebView termination.
+
+Cancelled media remains visibly flagged as needs_review and cannot be quietly swapped with a different file. Audited replacement/review workflow, object storage, capacity planning, whole-file checksums, and long-term retention remain future tasks. The pruning command skips completed-result manifests, preventing silent deletion but requiring an explicit storage retention policy.
+
+Do not roll out before npm lockfile regeneration, npm ci, npm run build, Laravel tests on a dedicated test database, and real Telegram WebView testing (large photo batches, 100MB video, retry after interruption, logout/reopen, delayed notifications, and multi-device race behavior). None of these full integration checks have been observed passing in this GitHub editing environment.
