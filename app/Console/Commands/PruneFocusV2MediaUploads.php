@@ -17,6 +17,14 @@ final class PruneFocusV2MediaUploads extends Command
 
     public function handle(): int
     {
+        // Do not touch Focus V2 tables on the production Academy or while
+        // the experimental feature is switched off.
+        if (app()->environment('production') || ! config('focus-v2.enabled', false)) {
+            $this->info('Focus V2 cleanup skipped (preview disabled).');
+
+            return self::SUCCESS;
+        }
+
         $hours = max(24, (int) $this->option('hours'));
         $limit = max(1, min(1000, (int) $this->option('limit')));
         $threshold = now()->subHours($hours);

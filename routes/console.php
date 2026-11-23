@@ -69,9 +69,12 @@ Schedule::command('controls:dispatch-completion-notifications')
     ->everyMinute()
     ->withoutOverlapping();
 
+// Experimental uploads must not schedule DB queries on production while
+// Focus V2 is disabled or before its isolated staging migrations exist.
 Schedule::command('focus-v2:prune-media')
     ->dailyAt('03:25')
     ->timezone('Europe/Rome')
+    ->when(fn (): bool => config('focus-v2.enabled', false) && ! app()->environment('production'))
     ->withoutOverlapping();
 
 app(EmergencyScheduleRegistrar::class)->register(app(Illuminate\Console\Scheduling\Schedule::class));
