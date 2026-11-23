@@ -113,6 +113,7 @@ final class FocusV2BootstrapController extends Controller
         unset($clientRoom);
 
         return response()->json([
+            'viewer' => ['id' => (int) $user->getKey()],
             'control' => [
                 'id' => $control->id,
                 'name' => $control->name,
