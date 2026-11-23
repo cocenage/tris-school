@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import FocusSearchSelect from './FocusSearchSelect.vue';
 import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
 import { chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
@@ -31,6 +32,11 @@ const submitting = ref(false);
 const submitError = ref('');
 const finalResult = ref(null);
 const uploads = ref([]);
+const interruptedUploads = ref([]);
+const viewerRole = ref('');
+const testMode = ref(false);
+const pickerFor = ref(null);
+const mediaError = ref('');
 const recoveryRecord = ref(null);
 const recoveryMode = ref('');
 const recoveryBusy = ref(false);
@@ -51,6 +57,7 @@ function queueLocalWrite(operation) {
 }
 
 function saveLocalSnapshot() {
+    if (testMode.value) return;
     if (!recoveryKey || !run.value || !control.value || recoveryMode.value || state.value === 'conflict') return;
     void queueLocalWrite({
         type: 'write',
@@ -66,7 +73,7 @@ function saveLocalSnapshot() {
     });
 }
 function settleLocalSnapshot() {
-    if (!recoveryKey) return;
+    if (testMode.value || !recoveryKey) return;
     if (changeSerial === acknowledgedSerial) {
         void queueLocalWrite({ type: 'delete', scope: recoveryKey });
     } else {
@@ -128,6 +135,12 @@ const completedRequired = computed(() => rooms.value.reduce((sum, room, roomInde
 ), 0));
 const currentRoom = computed(() => rooms.value[activeRoom.value] ?? { title: '', items: [] });
 const canEdit = computed(() => Boolean(run.value && !run.value.schema_conflict && state.value !== 'conflict' && !recoveryMode.value));
+const peopleOptions = computed(() => viewerRole.value === 'admin'
+    ? [{ id: '__test__', name: 'Тестовый сотрудник · без сохранения', thumbnail: null }, ...people.value]
+    : people.value);
+const outstandingMedia = computed(() => interruptedUploads.value.length + uploads.value.filter(item =>
+    ['queued', 'uploading', 'attaching', 'error'].includes(item.status)).length);
+const canSubmitMedia = computed(() => testMode.value || outstandingMedia.value === 0);
 
 const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
 
@@ -156,6 +169,12 @@ async function fetchJson(url, options = {}) {
 async function initialize() {
     loading.value = true;
     loadError.value = '';
+    testMode.value = false;
+    interruptedUploads.value = [];
+    pickerFor.value = null;
+    mediaError.value = '';
+    cleanupPreviews();
+    uploads.value = [];
     try {
         if (props.reviewStatusUrl) {
             finalResult.value = await fetchJson(props.reviewStatusUrl);
@@ -164,6 +183,8 @@ async function initialize() {
             return;
         }
         const data = await fetchJson(props.bootstrapUrl);
+        viewerRole.value = data.viewer?.role ?? '';
+        interruptedUploads.value = data.pending_uploads ?? [];
         control.value = data.control;
         run.value = data.run;
         rooms.value = data.rooms ?? [];
@@ -245,14 +266,17 @@ function changeAnswer(room, index, value) {
     const answer = answers.value[room][index];
     if (answer.selected === value) return;
     answer.selected = value;
-    if (!isNegative(rooms.value[room].items[index], value)) {
-        answer.corrective = { repeats: null, action: '', recheck: null };
-    }
+    // Corrective form is intentionally hidden in this release.
+    answer.corrective = { repeats: null, action: '', recheck: null };
     touch();
 }
 
 function touch() {
     if (!canEdit.value) return;
+    if (testMode.value) {
+        state.value = 'synced';
+        return; // Client-side test: never send any draft writes.
+    }
     changeSerial++;
     state.value = 'dirty';
     syncError.value = '';
@@ -278,6 +302,7 @@ function takeSnapshot() {
 }
 
 async function flush() {
+    if (testMode.value) return true;
     clearTimeout(timer);
     timer = null;
     if (!canEdit.value) return false;
@@ -319,6 +344,7 @@ async function flush() {
 }
 
 async function ensureSynced() {
+    if (testMode.value) return true;
     clearTimeout(timer);
     for (let attempt = 0; attempt < 5; attempt++) {
         const ok = await flush();
@@ -489,14 +515,28 @@ async function submitControl() {
     submitting.value = true;
     submitError.value = '';
     try {
+        if (testMode.value) {
+            const count = media.value.flat().reduce((sum, files) => sum + files.length, 0);
+            finalResult.value = {
+                test_mode: true, media: { state: 'complete', total: count, attached: count,
+                    pending: 0, ready_to_attach: 0, cancelled: 0, uploads: [] },
+            };
+            stage.value = 'done';
+            return;
+        }
+        if (!canSubmitMedia.value) {
+            throw new Error('Дождитесь загрузки всех фото и видео. Ошибочные файлы повторите или отмените. При восстановлении выберите исходные файлы.');
+        }
         if (!(await ensureSynced())) {
             throw new Error(syncError.value || 'Сначала сохраните ответы.');
         }
         if (!run.value?.draft_id) {
             throw new Error('Черновик ещё не сохранён.');
         }
-        await registerRemainingEvidence();
         await attachQueue;
+        if (!canSubmitMedia.value) {
+            throw new Error('Не все фото и видео подтверждены сервером.');
+        }
         if (!(await ensureSynced())) {
             throw new Error(syncError.value || 'Не удалось синхронизировать ответы.');
         }
@@ -517,7 +557,6 @@ async function submitControl() {
         stage.value = 'done';
         state.value = 'synced';
         if (recoveryKey) void queueLocalWrite({ type: 'delete', scope: recoveryKey });
-        pumpTransfers();
     } catch (error) {
         submitError.value = error.message || 'Не удалось завершить контроль. Повторите отправку.';
         if (error.status === 409 && error.code !== 'submission_in_progress') {
@@ -555,10 +594,13 @@ function pendingAt(room, question) {
 function addFiles(event, room, question) {
     const selected = Array.from(event.target.files ?? []);
     event.target.value = '';
+    pickerFor.value = null;
+    mediaError.value = '';
     if (!canEdit.value) return;
 
     const current = media.value[room]?.[question]?.length ?? 0;
-    let reserved = pendingAt(room, question).length;
+    let reserved = pendingAt(room, question).length
+        + interruptedUploads.value.filter(item => item.room_index === room && item.question_index === question).length;
     for (const file of selected) {
         const error = allowedFocusFile(file);
         if (current + reserved >= 12) {
@@ -567,13 +609,21 @@ function addFiles(event, room, question) {
             continue;
         }
         const id = crypto.randomUUID();
-        uploads.value.push({
-            id, file, room, question, status: error ? 'error' : 'queued',
-            progress: 0, error, controller: null, info: null,
-        });
+        if (testMode.value && !error) {
+            const files = media.value[room][question] ?? (media.value[room][question] = []);
+            const url = URL.createObjectURL(file);
+            files.push({ upload_id: id, name: file.name, mime: focusFileMime(file),
+                size: file.size, url, thumbnail_url: url, local: true });
+        } else {
+            uploads.value.push({
+                id, file, room, question, status: error ? 'error' : 'queued',
+                progress: 0, error, controller: null, info: null,
+                preview_url: !error ? URL.createObjectURL(file) : null,
+            });
+        }
         if (!error) reserved++;
     }
-    pumpTransfers();
+    if (!testMode.value) pumpTransfers();
 }
 
 function pumpTransfers() {
@@ -657,6 +707,8 @@ async function sendOne(item) {
         });
         attachQueue = task.catch(() => {});
         await task;
+        interruptedUploads.value = interruptedUploads.value.filter(other => other.upload_id !== item.id);
+        if (item.preview_url) URL.revokeObjectURL(item.preview_url);
         uploads.value = uploads.value.filter(other => other.id !== item.id);
     } catch (error) {
         if (controller.signal.aborted) {
@@ -697,6 +749,10 @@ async function cancelFile(item) {
     }
     item.controller?.abort();
     item.status = 'cancelled';
+    if (item.preview_url) {
+        URL.revokeObjectURL(item.preview_url);
+        item.preview_url = null;
+    }
     if (item.info?.urls?.cancel) {
         try {
             await focusMediaRequest(item.info.urls.cancel, 'DELETE', undefined, csrf);
@@ -711,8 +767,27 @@ async function cancelFile(item) {
 
 function dismissFile(item) {
     if (['queued', 'uploading', 'attaching'].includes(item.status)) return;
+    if (item.preview_url) URL.revokeObjectURL(item.preview_url);
     uploads.value = uploads.value.filter(other => other.id !== item.id);
 }
+function cleanupPreviews() {
+    uploads.value.forEach(item => { if (item.preview_url) URL.revokeObjectURL(item.preview_url); });
+    media.value.flat().flat().forEach(file => {
+        if (file.local && file.url) URL.revokeObjectURL(file.url);
+    });
+}
+function removeTestMedia(room, question, file) {
+    if (!testMode.value) return;
+    if (file.local && file.url) URL.revokeObjectURL(file.url);
+    media.value[room][question] = media.value[room][question].filter(item => item !== file);
+}
+function pickerKey(room, question) { return room + '-' + question; }
+function togglePicker(room, question) {
+    const key = pickerKey(room, question);
+    pickerFor.value = pickerFor.value === key ? null : key;
+}
+function mediaIsVideo(file) { return String(file.mime || focusFileMime(file.file || {})).startsWith('video/'); }
+function mediaPreview(file) { return file.preview_url || file.thumbnail_url || file.url || ''; }
 
 function warnBeforeUnload(event) {
     if (submitting.value || busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {
@@ -726,6 +801,7 @@ onMounted(() => {
     void initialize();
 });
 onBeforeUnmount(() => {
+    cleanupPreviews();
     clearTimeout(timer);
     window.removeEventListener('beforeunload', warnBeforeUnload);
 });
