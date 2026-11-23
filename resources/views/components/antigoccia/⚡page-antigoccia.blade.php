@@ -12,9 +12,10 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Livewire\Component;
 use Livewire\WithFileUploads;
+use Livewire\WithPagination;
 
 new class extends Component {
-    use WithFileUploads;
+    use WithFileUploads, WithPagination;
 
     public string $apartmentId = '';
     public string $apartmentSearch = '';
@@ -131,8 +132,7 @@ new class extends Component {
             ->with('apartment:id,name')
             ->where('user_id', auth()->id())
             ->latest('created_at')->latest('id')
-            ->limit(15)
-            ->get(['id', 'apartment_id', 'user_id', 'cleaning_date', 'created_at']);
+            ->paginate(10, ['id', 'apartment_id', 'user_id', 'cleaning_date', 'created_at'], 'antigocciaMine');
     }
 
     public function requestDelete(int $id): void
@@ -163,6 +163,7 @@ new class extends Component {
         $wasCurrentSubmission = $current->submission_uuid === $this->submissionUuid;
         $deletion->delete(auth()->user(), (int) $this->deleteCandidateId);
         $this->deleteCandidateId = null;
+        $this->resetPage('antigocciaMine');
 
         if ($wasCurrentSubmission) {
             $this->newForm();
@@ -437,6 +438,9 @@ new class extends Component {
                     @empty
                         <p class="text-[13px] text-black/50">Ответов пока нет</p>
                     @endforelse
+                    @if($this->myReports->hasPages())
+                        <div class="mt-3">{{ $this->myReports->links() }}</div>
+                    @endif
                 </div>
             @endif
         </section>
