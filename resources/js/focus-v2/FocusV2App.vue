@@ -272,12 +272,85 @@ function openReview() {
     submitError.value = '';
 }
 
-async function submitControl() {
-    if (submitting.value || stage.value !== 'review' || !canEdit.value) return;
-    if (busyUploads.value) {
-        submitError.value = 'Разберитесь с загрузками: дождитесь завершения, повторите ошибочные или отмените лишние файлы.';
+
+async function refreshMediaReview() {
+    const url = finalResult.value?.media_status_url || props.reviewStatusUrl;
+    if (!url) return;
+    try {
+        const latest = await fetchJson(url);
+        finalResult.value = { ...finalResult.value, ...latest };
+        submitError.value = '';
+    } catch (error) {
+        submitError.value = error.message || 'Не удалось обновить статус материалов.';
+    }
+}
+
+async function registerRemainingEvidence() {
+    // All selected files need a server reservation before sign-off. Without
+    // it, a closed WebView would forget the evidence was ever selected.
+    const waiting = uploads.value.filter(item => item.status !== 'cancelled');
+    for (const item of waiting) {
+        if (!item.file || allowedFocusFile(item.file)) {
+            throw new Error('Некоторые файлы нельзя зарегистрировать. Уберите неподдерживаемые вложения перед завершением.');
+        }
+        if (item.info) continue;
+        const info = await focusMediaRequest(props.mediaStartUrl, 'POST', {
+            upload_id: item.id,
+            control_id: control.value.id,
+            draft_id: run.value.draft_id,
+            run_id: run.value.id,
+            schema_version: control.value.schema_version,
+            room_index: item.room,
+            question_index: item.question,
+            original_name: item.file.name,
+            mime: focusFileMime(item.file),
+            size: item.file.size,
+        }, csrf);
+        item.info = info;
+    }
+}
+
+async function attachReadyEvidence(record) {
+    if (!finalResult.value || record.status !== 'ready') return;
+    submitError.value = '';
+    try {
+        const current = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
+        await focusMediaRequest(current.urls.attach, 'POST', {
+            draft_id: record.draft_id, expected_revision: 0,
+        }, csrf);
+        await refreshMediaReview();
+    } catch (error) {
+        submitError.value = error.message || 'Файл пока не удалось прикрепить.';
+    }
+}
+
+function resumeDeferredFile(event, record) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !finalResult.value || record.status !== 'pending') return;
+    if (file.name !== record.original_name || file.size !== record.size || focusFileMime(file) !== record.mime) {
+        submitError.value = 'Выберите исходный файл с тем же названием, размером и форматом.';
         return;
     }
+    const existing = uploads.value.find(item => item.id === record.upload_id);
+    if (existing && ['queued', 'uploading', 'attaching'].includes(existing.status)) {
+        return;
+    }
+    if (existing) {
+        Object.assign(existing, { file, record, status: 'queued', error: '', progress: 0 });
+    } else {
+        uploads.value.push({
+            id: record.upload_id,
+            file, room: record.room_index, question: record.question_index,
+            record, status: 'queued', progress: 0, error: '', controller: null, info: null,
+        });
+    }
+    submitError.value = '';
+    pumpTransfers();
+}
+
+async function submitControl() {
+    if (submitting.value || stage.value !== 'review' || !canEdit.value) return;
     const missing = firstMissing();
     if (missing) {
         goRoom(missing.roomIndex);
@@ -290,8 +363,13 @@ async function submitControl() {
         if (!(await ensureSynced())) {
             throw new Error(syncError.value || 'Сначала сохраните ответы.');
         }
-        if (!run.value?.draft_id || busyUploads.value) {
-            throw new Error('Черновик или вложения ещё не готовы к отправке.');
+        if (!run.value?.draft_id) {
+            throw new Error('Черновик ещё не сохранён.');
+        }
+        await registerRemainingEvidence();
+        await attachQueue;
+        if (!(await ensureSynced())) {
+            throw new Error(syncError.value || 'Не удалось синхронизировать ответы.');
         }
         const result = await fetchJson(props.submitUrl, {
             method: 'POST',
@@ -309,6 +387,7 @@ async function submitControl() {
         finalResult.value = result;
         stage.value = 'done';
         state.value = 'synced';
+        pumpTransfers();
     } catch (error) {
         submitError.value = error.message || 'Не удалось завершить контроль. Повторите отправку.';
         if (error.status === 409 && error.code !== 'submission_in_progress') {
