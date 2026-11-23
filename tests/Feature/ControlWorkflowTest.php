@@ -367,6 +367,20 @@ it('serves Vue Focus V2 in production to eligible supervisors and keeps its roll
     }
 });
 
+it('shows Vue Focus as the checks entry and switches back to Classic on rollback', function (): void {
+    [$supervisor, $cleaner] = mountControlWorkflow();
+    $this->withoutVite();
+
+    config()->set('focus-v2.enabled', true);
+    $this->get(route('page-checks'))->assertOk()
+        ->assertSee('href="'.route('page-checks.control.focus-v2').'"', false);
+
+    config()->set('focus-v2.enabled', false);
+    $this->get(route('page-checks'))->assertOk()
+        ->assertSee('href="'.route('page-checks.control.focus').'"', false)
+        ->assertDontSee('href="'.route('page-checks.control.focus-v2').'"', false);
+});
+
 it('serves the experimental Vue Focus page only to active supervisors and admins', function (): void {
     [$supervisor, $cleaner] = mountControlWorkflow();
     $this->withoutVite();
