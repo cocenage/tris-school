@@ -6,6 +6,8 @@ on:
       - 'codex/focus-control-v2-foundation'
     paths:
       - 'app/Http/Controllers/FocusV2*.php'
+      - 'app/Http/Middleware/EnsureFocusV2PreviewEnabled.php'
+      - 'config/focus-v2.php'
       - 'app/Models/FocusV2*.php'
       - 'app/Services/Controls/**'
       - 'app/Console/Commands/PruneFocusV2MediaUploads.php'
@@ -22,6 +24,8 @@ on:
   pull_request:
     paths:
       - 'app/Http/Controllers/FocusV2*.php'
+      - 'app/Http/Middleware/EnsureFocusV2PreviewEnabled.php'
+      - 'config/focus-v2.php'
       - 'app/Models/FocusV2*.php'
       - 'app/Services/Controls/**'
       - 'app/Console/Commands/PruneFocusV2MediaUploads.php'
@@ -82,3 +86,10 @@ jobs:
           php artisan key:generate --no-interaction
       - name: Focus control feature and media regression tests
         run: php artisan test tests/Feature/ControlWorkflowTest.php
+      - name: Package compiled assets for isolated staging
+        uses: actions/upload-artifact@v4
+        with:
+          name: focus-v2-vite-build
+          path: public/build/
+          if-no-files-found: error
+          retention-days: 5
