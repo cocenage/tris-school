@@ -13,7 +13,7 @@ final class FocusV2MediaUpload extends Model
     protected $keyType = 'string';
 
     protected $fillable = [
-        'id', 'control_id', 'supervisor_id', 'draft_id', 'run_id',
+        'id', 'control_id', 'supervisor_id', 'draft_id', 'control_response_id', 'run_id',
         'schema_version', 'room_index', 'question_index', 'original_name',
         'declared_mime', 'size_bytes', 'chunk_bytes', 'total_chunks',
         'status', 'stored_path', 'actual_mime',
