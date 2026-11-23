@@ -117,7 +117,7 @@ let timer = null;
 let inFlight = null;
 let uncertainSnapshot = null;
 
-const statusLabel = computed(() => ({
+const statusLabel = computed(() => testMode.value ? 'Тестовый режим · без отправки' : ({
     idle: 'Готово',
     dirty: 'Не сохранено',
     saving: 'Сохраняем…',
@@ -694,7 +694,13 @@ async function openClassic() {
 
 function pendingAt(room, question) {
     return uploads.value.filter(item => item.room === room && item.question === question
-        && ['queued', 'uploading', 'attaching'].includes(item.status));
+        && ['queued', 'uploading', 'attaching', 'error'].includes(item.status));
+}
+function mediaCountAt(room, question) {
+    return (media.value[room]?.[question] ?? []).length
+        + pendingAt(room, question).length
+        + interruptedUploads.value.filter(item => item.room_index === room && item.question_index === question
+            && !uploads.value.some(upload => upload.id === item.upload_id)).length;
 }
 
 function addFiles(event, room, question) {
@@ -918,10 +924,11 @@ onBeforeUnmount(() => {
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
-                    <p class="text-xs font-medium text-slate-500">TRIS Academy · Тестовая версия</p>
+                    <p class="text-xs font-medium text-slate-500">TRIS Academy · Focus Control</p>
                     <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
-                <a v-if="stage !== 'done'" :href="classicUrl" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700" @click.prevent="openClassic">Старый Focus</a>
+                <button v-if="testMode" type="button" class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900" @click="exitTestMode">Выйти из теста</button>
+                <a v-else-if="stage !== 'done'" :href="classicUrl" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700" @click.prevent="openClassic">Старый Focus</a>
                 <a v-else-if="finalResult?.result_url" :href="finalResult.result_url" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700">Результат</a>
             </header>
 
@@ -937,12 +944,16 @@ onBeforeUnmount(() => {
                         <span class="size-2.5 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
                         <strong>{{ statusLabel }}</strong>
                     </div>
-                    <button type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
+                    <button v-if="!testMode && stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
                         {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
                     </button>
                 </div>
 
-                <div v-if="!localStorageAvailable && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
+                    <strong>Тестовый сотрудник</strong>
+                    <p class="mt-1">Это демонстрационный контроль: ответы и выбранные файлы остаются только в этом окне. Никаких записей в базе, статистики, уведомлений или загрузок на сервер.</p>
+                </div>
+                <div v-if="!localStorageAvailable && !testMode && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
                     Локальное восстановление недоступно в этом браузере. Дождитесь статуса «Сохранено» перед закрытием Telegram.
                 </div>
                 <section v-if="recoveryMode && recoveryRecord" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
@@ -969,13 +980,26 @@ onBeforeUnmount(() => {
                             @click="keepServerVersion">Оставить серверную версию</button>
                     </div>
                 </section>
+                <section v-if="interruptedUploads.length && !testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+                    <h2 class="font-bold">Есть незавершённые загрузки · {{ interruptedUploads.length }}</h2>
+                    <p class="mt-2">Telegram закрылся до подтверждения файлов. Контроль нельзя отправить, пока материалы не будут восстановлены. Повторная загрузка пропускает уже принятые сервером части.</p>
+                    <label v-if="interruptedUploads.some(item => item.status === 'pending')" class="mt-3 inline-flex cursor-pointer rounded-xl bg-blue-700 px-4 py-3 font-semibold text-white">
+                        Выбрать исходные фото и видео
+                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" @change="resumeDraftFiles">
+                    </label>
+                    <div v-for="record in interruptedUploads" :key="record.upload_id" class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-white p-3">
+                        <span class="min-w-0 truncate text-xs font-semibold">{{ record.original_name }} · {{ record.status === 'ready' ? 'Получено сервером' : 'Нужно продолжить' }}</span>
+                        <button v-if="record.status === 'ready'" type="button" class="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800" @click="attachReadyDraft(record)">Прикрепить</button>
+                    </div>
+                </section>
+                <div v-if="mediaError" class="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</div>
                 <div v-if="uploads.length && stage !== 'done'" class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs" role="status" aria-live="polite">
                     <div class="min-w-0">
                         <strong class="text-slate-700">Фото и видео</strong>
                         <span class="ml-2 text-slate-500">В очереди: {{ uploads.filter(item => ['queued', 'uploading', 'attaching'].includes(item.status)).length }}</span>
                         <span v-if="uploads.some(item => item.status === 'error')" class="ml-2 font-semibold text-red-700">Ошибки: {{ uploads.filter(item => item.status === 'error').length }}</span>
                     </div>
-                    <span class="shrink-0 text-slate-500">Файлы загружаются отдельно</span>
+                    <span class="shrink-0 text-slate-500">Дождитесь подтверждения</span>
                 </div>
 
                 <div v-if="syncError" role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
