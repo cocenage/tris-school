@@ -1092,49 +1092,84 @@ onBeforeUnmount(() => {
                                 <textarea v-model="answers[activeRoom][questionIndex].custom" :disabled="!canEdit" rows="2" maxlength="2000" class="mt-2 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch"></textarea>
                             </label>
 
-                            <section v-if="isNegative(question, answers[activeRoom][questionIndex].selected)" class="mt-4 space-y-3 rounded-xl bg-amber-50 p-3">
-                                <p class="text-sm font-bold text-amber-950">Уточнение по замечанию</p>
-                                <label class="block text-xs font-semibold text-amber-950">Повторяется?
-                                    <select v-model="answers[activeRoom][questionIndex].corrective.repeats" :disabled="!canEdit" class="mt-1 w-full rounded-lg border border-amber-200 bg-white p-2 text-sm" @change="touch">
-                                        <option :value="null">Не указано</option><option :value="true">Да</option><option :value="false">Нет</option>
-                                    </select>
-                                </label>
-                                <label class="block text-xs font-semibold text-amber-950">Что сделать
-                                    <textarea v-model="answers[activeRoom][questionIndex].corrective.action" :disabled="!canEdit" rows="2" maxlength="2000" class="mt-1 w-full rounded-lg border border-amber-200 bg-white p-2 text-sm" @input="touch"></textarea>
-                                </label>
-                                <label class="block text-xs font-semibold text-amber-950">Повторная проверка?
-                                    <select v-model="answers[activeRoom][questionIndex].corrective.recheck" :disabled="!canEdit" class="mt-1 w-full rounded-lg border border-amber-200 bg-white p-2 text-sm" @change="touch">
-                                        <option :value="null">Не указано</option><option :value="true">Да</option><option :value="false">Нет</option>
-                                    </select>
-                                </label>
-                            </section>
 
                             <div class="mt-4 border-t border-slate-100 pt-3">
                                 <div class="flex items-center justify-between gap-3">
-                                    <p class="text-xs font-bold text-slate-500">Фото и видео · {{ (media[activeRoom]?.[questionIndex] ?? []).length + pendingAt(activeRoom, questionIndex).length }}/12</p>
-                                    <label class="cursor-pointer rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" :class="!canEdit ? 'pointer-events-none opacity-50' : ''">
-                                        + Добавить
-                                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
-                                    </label>
-                                </div>
-                                <div v-if="(media[activeRoom]?.[questionIndex] ?? []).length" class="mt-2 flex flex-wrap gap-2">
-                                    <a v-for="file in media[activeRoom][questionIndex]" :key="file.upload_id || file.index" :href="file.url" target="_blank" rel="noopener noreferrer" class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-blue-700">{{ file.name || 'Вложение' }}</a>
-                                </div>
-                                <div v-for="item in uploads.filter(file => file.room === activeRoom && file.question === questionIndex)" :key="item.id" class="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
-                                    <div class="flex items-center justify-between gap-2">
-                                        <span class="min-w-0 truncate font-semibold">{{ item.file?.name }}</span>
-                                        <span class="shrink-0 text-slate-500">{{ item.status === 'queued' ? 'В очереди' : item.status === 'uploading' ? 'Загрузка' : item.status === 'attaching' ? 'Прикрепляем' : item.status === 'cancelled' ? 'Отменено' : 'Ошибка' }}</span>
+                                    <p class="text-xs font-bold text-slate-500">Фото и видео · {{ mediaCountAt(activeRoom, questionIndex) }}/12</p>
+                                    <div class="relative">
+                                        <button type="button" :disabled="!canEdit || mediaCountAt(activeRoom, questionIndex) >= 12"
+                                            class="rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"
+                                            :aria-expanded="pickerFor === pickerKey(activeRoom, questionIndex)"
+                                            @click="togglePicker(activeRoom, questionIndex)">+ Фото / видео</button>
+                                        <div v-if="pickerFor === pickerKey(activeRoom, questionIndex)"
+                                            class="absolute right-0 top-full z-20 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold hover:bg-blue-50">
+                                                <span aria-hidden="true">📷</span> Сделать фото
+                                                <input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" capture="environment" class="sr-only"
+                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
+                                            </label>
+                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold hover:bg-blue-50">
+                                                <span aria-hidden="true">🎥</span> Снять видео
+                                                <input type="file" accept="video/mp4,video/quicktime,video/webm" capture="environment" class="sr-only"
+                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
+                                            </label>
+                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold hover:bg-blue-50">
+                                                <span aria-hidden="true">▦</span> Выбрать файлы
+                                                <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only"
+                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
+                                            </label>
+                                        </div>
                                     </div>
-                                    <div v-if="['uploading', 'attaching'].includes(item.status)" class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200">
-                                        <div class="h-full bg-blue-600" :style="{ width: item.progress + '%' }"></div>
-                                    </div>
-                                    <p v-if="item.error" role="alert" class="mt-2 text-red-700">{{ item.error }}</p>
-                                    <div class="mt-2 flex gap-2">
-                                        <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white" @click="retryFile(item)">Повторить</button>
-                                        <button v-if="['queued', 'uploading', 'error'].includes(item.status)" type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="cancelFile(item)">Отменить</button>
-                                        <button v-else type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="dismissFile(item)">Скрыть</button>
+                                </div>
+                                <div v-if="(media[activeRoom]?.[questionIndex] ?? []).length" class="mt-3 grid grid-cols-3 gap-2">
+                                    <div v-for="file in media[activeRoom][questionIndex]" :key="file.upload_id || file.index"
+                                        class="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                                        <a v-if="!mediaIsVideo(file)" :href="file.url" target="_blank" rel="noopener noreferrer"
+                                            class="block aspect-square bg-slate-100">
+                                            <img :src="mediaPreview(file)" :alt="'Фото: ' + (file.name || 'Вложение')"
+                                                class="size-full object-cover" loading="lazy">
+                                        </a>
+                                        <video v-else :src="file.url" controls playsinline preload="metadata"
+                                            class="aspect-square w-full bg-slate-900 object-contain" :aria-label="'Видео: ' + (file.name || 'Вложение')"></video>
+                                        <div class="flex items-center gap-1 p-2">
+                                            <a :href="file.url" target="_blank" rel="noopener noreferrer" class="min-w-0 flex-1 truncate text-xs font-medium text-blue-700">{{ file.name || 'Открыть файл' }}</a>
+                                            <button v-if="testMode" type="button" class="shrink-0 p-1 text-xs font-semibold text-red-700" @click="removeTestMedia(activeRoom, questionIndex, file)">×</button>
+                                        </div>
                                     </div>
                                 </div>
+                                <div v-if="uploads.some(file => file.room === activeRoom && file.question === questionIndex)"
+                                    class="mt-3 grid grid-cols-2 gap-2">
+                                    <div v-for="item in uploads.filter(file => file.room === activeRoom && file.question === questionIndex)"
+                                        :key="item.id" class="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                                        <div class="relative aspect-video bg-slate-100">
+                                            <video v-if="item.preview_url && mediaIsVideo(item)" :src="item.preview_url" playsinline muted preload="metadata"
+                                                class="size-full object-contain"></video>
+                                            <img v-else-if="item.preview_url" :src="item.preview_url" alt="Предпросмотр" class="size-full object-cover">
+                                            <div v-else class="grid size-full place-items-center text-xs text-slate-500">Файл</div>
+                                            <span class="absolute bottom-1 right-1 rounded-md bg-slate-900/75 px-2 py-1 text-xs font-bold text-white">
+                                                {{ item.status === 'queued' ? 'В очереди' : item.status === 'uploading' ? item.progress + '%' : item.status === 'attaching' ? 'Сохраняем' : item.status === 'cancelled' ? 'Отменено' : 'Ошибка' }}
+                                            </span>
+                                        </div>
+                                        <div class="space-y-2 p-2 text-xs">
+                                            <p class="truncate font-semibold">{{ item.file?.name }}</p>
+                                            <div v-if="['uploading', 'attaching'].includes(item.status)" class="h-1.5 overflow-hidden rounded-full bg-slate-200">
+                                                <div class="h-full bg-blue-600" :style="{ width: item.progress + '%' }"></div>
+                                            </div>
+                                            <p v-if="item.error" role="alert" class="text-red-700">{{ item.error }}</p>
+                                            <div class="flex flex-wrap gap-1">
+                                                <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-blue-600 px-2 py-2 font-bold text-white"
+                                                    @click="retryFile(item)">Повторить</button>
+                                                <button v-if="['queued', 'uploading', 'error'].includes(item.status)" type="button"
+                                                    class="rounded-lg bg-white px-2 py-2 font-bold text-slate-700" @click="cancelFile(item)">Отменить</button>
+                                                <button v-else type="button" class="rounded-lg bg-white px-2 py-2 font-bold text-slate-700"
+                                                    @click="dismissFile(item)">Скрыть</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <p v-if="!testMode && outstandingMedia > 0" class="mt-3 text-xs text-amber-800">
+                                    Не закрывайте Telegram до окончания загрузки. Отправка откроется только после подтверждения всех материалов.
+                                </p>
                             </div>
                         </article>
                     </div>
