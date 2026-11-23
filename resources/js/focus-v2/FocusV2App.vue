@@ -630,41 +630,50 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <div class="min-h-screen bg-[#EDF0F4] text-[#18283D]">
-        <div class="mx-auto min-h-screen max-w-2xl px-3 pb-12 pt-5 sm:px-6">
-            <header class="mb-5 flex items-center justify-between gap-3">
+    <div class="min-h-screen bg-slate-50 text-slate-900">
+        <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
+            <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
-                    <p class="text-xs font-bold uppercase tracking-[0.18em] text-[#4274A3]">TRIS Academy · Beta</p>
-                    <h1 class="mt-1 text-2xl font-extrabold tracking-tight">Focus Control V2</h1>
+                    <p class="text-xs font-medium text-slate-500">TRIS Academy · Тестовая версия</p>
+                    <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
-                <a v-if="stage !== 'done'" :href="classicUrl" class="rounded-full border border-[#D7E0EA] bg-white px-4 py-2 text-xs font-bold text-[#325B82]" @click.prevent="openClassic">Старый Focus</a>
-                <a v-else-if="finalResult?.result_url" :href="finalResult.result_url" class="rounded-full border border-[#D7E0EA] bg-white px-4 py-2 text-xs font-bold text-[#325B82]">Результат</a>
+                <a v-if="stage !== 'done'" :href="classicUrl" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700" @click.prevent="openClassic">Старый Focus</a>
+                <a v-else-if="finalResult?.result_url" :href="finalResult.result_url" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700">Результат</a>
             </header>
 
-            <div v-if="loading" role="status" class="rounded-3xl bg-white p-7 text-center text-sm">Загружаем вопросы…</div>
-            <div v-else-if="loadError" role="alert" class="rounded-3xl bg-white p-5">
+            <div v-if="loading" role="status" class="rounded-xl bg-white p-7 text-center text-sm">Загружаем вопросы…</div>
+            <div v-else-if="loadError" role="alert" class="rounded-xl bg-white p-5">
                 <p class="font-bold text-red-700">{{ loadError }}</p>
-                <button type="button" class="mt-3 rounded-xl bg-[#285B86] px-4 py-2 font-semibold text-white" @click="initialize">Повторить</button>
+                <button type="button" class="mt-3 rounded-xl bg-blue-600 px-4 py-2 font-semibold text-white" @click="initialize">Повторить</button>
             </div>
 
             <template v-else>
-                <div class="mb-4 flex items-center justify-between gap-2 rounded-2xl bg-white px-4 py-3 shadow-sm">
+                <div class="mb-3 flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3">
                     <div class="flex items-center gap-2 text-sm" role="status" aria-live="polite">
                         <span class="size-2.5 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
                         <strong>{{ statusLabel }}</strong>
                     </div>
-                    <button type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-[#EAF2FB] px-3 py-2 text-xs font-bold text-[#285B86] disabled:opacity-50" @click="flush">
+                    <button type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
                         {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
                     </button>
                 </div>
 
-                <div v-if="syncError" role="alert" class="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                <div v-if="uploads.length && stage !== 'done'" class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs" role="status" aria-live="polite">
+                    <div class="min-w-0">
+                        <strong class="text-slate-700">Фото и видео</strong>
+                        <span class="ml-2 text-slate-500">В очереди: {{ uploads.filter(item => ['queued', 'uploading', 'attaching'].includes(item.status)).length }}</span>
+                        <span v-if="uploads.some(item => item.status === 'error')" class="ml-2 font-semibold text-red-700">Ошибки: {{ uploads.filter(item => item.status === 'error').length }}</span>
+                    </div>
+                    <span class="shrink-0 text-slate-500">Файлы загружаются отдельно</span>
+                </div>
+
+                <div v-if="syncError" role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
                     {{ syncError }}
                     <p v-if="state === 'conflict'" class="mt-2 font-semibold">Не перезагружайте страницу, если есть несохранённые ответы. Для восстановления сначала разберите конфликт черновика.</p>
                 </div>
 
                 <template v-if="stage === 'setup'">
-                    <section class="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
+                    <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
                         <div>
                             <h2 class="text-xl font-bold">Данные проверки</h2>
                             <p class="mt-1 text-sm text-slate-500">{{ control?.name }}</p>
@@ -703,35 +712,35 @@ onBeforeUnmount(() => {
                         <label class="block text-sm font-semibold">Комментарий
                             <textarea v-model="setup.comment" rows="2" maxlength="2000" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch"></textarea>
                         </label>
-                        <button type="button" :disabled="!canEdit" class="w-full rounded-2xl bg-[#285B86] p-4 text-base font-bold text-white disabled:opacity-50" @click="goRoom(0)">
+                        <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="goRoom(0)">
                             К вопросам
                         </button>
                     </section>
                 </template>
 
                 <template v-else-if="stage === 'questions'">
-                    <section class="mb-4 rounded-3xl bg-white p-4 shadow-sm">
+                    <section class="mb-4 rounded-xl border border-slate-200 bg-white p-4">
                         <div class="mb-2 flex items-center justify-between gap-2">
                             <strong class="text-sm">Заполнено {{ completedRequired }} из {{ totalRequired }}</strong>
                             <span class="text-xs text-slate-500">{{ rooms.length }} комнат</span>
                         </div>
                         <div class="h-2 overflow-hidden rounded-full bg-slate-200" role="progressbar" :aria-valuenow="completedRequired" :aria-valuemax="totalRequired" aria-valuemin="0">
-                            <div class="h-full rounded-full bg-[#3181BB] transition-all" :style="{ width: (totalRequired ? completedRequired / totalRequired * 100 : 100) + '%' }"></div>
+                            <div class="h-full rounded-full bg-blue-600 transition-all" :style="{ width: (totalRequired ? completedRequired / totalRequired * 100 : 100) + '%' }"></div>
                         </div>
                         <nav class="mt-4 flex gap-2 overflow-x-auto pb-1" aria-label="Комнаты">
-                            <button v-for="(room, index) in rooms" :key="index" type="button" class="shrink-0 rounded-xl px-3 py-2 text-xs font-semibold" :class="activeRoom === index ? 'bg-[#285B86] text-white' : 'bg-[#E9EEF4] text-[#305578]'" :aria-current="activeRoom === index ? 'step' : undefined" @click="goRoom(index)">
+                            <button v-for="(room, index) in rooms" :key="index" type="button" class="shrink-0 rounded-xl px-3 py-2 text-xs font-semibold" :class="activeRoom === index ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'" :aria-current="activeRoom === index ? 'step' : undefined" @click="goRoom(index)">
                                 {{ room.title || 'Комната ' + (index + 1) }} · {{ roomCompleted(index) }}/{{ roomRequired(index) }}
                             </button>
                         </nav>
                     </section>
 
                     <div class="mb-4 flex items-start justify-between gap-2 px-1">
-                        <h2 class="text-2xl font-extrabold">{{ currentRoom.title }}</h2>
-                        <span class="whitespace-nowrap text-xs font-semibold text-[#4274A3]">{{ activeRoom + 1 }}/{{ rooms.length }}</span>
+                        <h2 class="text-xl font-semibold">{{ currentRoom.title }}</h2>
+                        <span class="whitespace-nowrap text-xs font-semibold text-slate-500">{{ activeRoom + 1 }}/{{ rooms.length }}</span>
                     </div>
 
                     <div class="space-y-3">
-                        <article v-for="(question, questionIndex) in currentRoom.items" :key="activeRoom + '-' + questionIndex" class="rounded-3xl border bg-white p-4 shadow-sm" :class="blockedQuestion === questionIndex ? 'border-red-400' : 'border-transparent'">
+                        <article v-for="(question, questionIndex) in currentRoom.items" :key="activeRoom + '-' + questionIndex" class="rounded-xl border bg-white p-4" :class="blockedQuestion === questionIndex ? 'border-red-400' : 'border-slate-200'">
                             <div class="flex justify-between gap-3">
                                 <h3 class="text-base font-bold leading-snug">{{ question.question || 'Вопрос' }}</h3>
                                 <span v-if="currentRoom.is_optional || question.is_optional" class="shrink-0 text-xs text-slate-500">Необязательно</span>
@@ -740,11 +749,11 @@ onBeforeUnmount(() => {
                             <img v-if="question.question_image_url" :src="question.question_image_url" alt="" class="mt-3 max-h-48 rounded-xl object-contain">
 
                             <div v-if="['options', 'both'].includes(question.answer_type ?? 'options')" class="mt-4 grid gap-2">
-                                <button v-for="(option, optionIndex) in question.answer_options_scored ?? []" :key="optionIndex" type="button" :disabled="!canEdit"
-                                    class="min-h-12 rounded-xl border px-4 py-3 text-left text-sm font-semibold disabled:opacity-50"
-                                    :class="answers[activeRoom][questionIndex].selected === optionValue(option, optionIndex) ? 'border-[#285B86] bg-[#EAF2FB] text-[#194C75]' : 'border-[#E1E6EC] bg-[#F6F8FA] text-[#2D4054]'"
+                                <button v-for="(option, optionIndex) in question.answer_options_scored ?? []" :key="optionIndex" type="button" :disabled="!canEdit" :aria-pressed="answers[activeRoom][questionIndex].selected === optionValue(option, optionIndex)"
+                                    class="min-h-11 rounded-lg border px-3 py-3 text-left text-sm font-medium disabled:opacity-50"
+                                    :class="answers[activeRoom][questionIndex].selected === optionValue(option, optionIndex) ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-200 bg-white text-slate-700'"
                                     @click="changeAnswer(activeRoom, questionIndex, optionValue(option, optionIndex))">
-                                    <span class="mr-2">{{ answers[activeRoom][questionIndex].selected === optionValue(option, optionIndex) ? '●' : '○' }}</span>
+                                    <span class="mr-2 inline-block w-4 text-center" aria-hidden="true">{{ answers[activeRoom][questionIndex].selected === optionValue(option, optionIndex) ? '●' : '○' }}</span>
                                     {{ option.label ?? option.value }}
                                 </button>
                             </div>
@@ -774,13 +783,13 @@ onBeforeUnmount(() => {
                             <div class="mt-4 border-t border-slate-100 pt-3">
                                 <div class="flex items-center justify-between gap-3">
                                     <p class="text-xs font-bold text-slate-500">Фото и видео · {{ (media[activeRoom]?.[questionIndex] ?? []).length + pendingAt(activeRoom, questionIndex).length }}/12</p>
-                                    <label class="cursor-pointer rounded-xl bg-[#EAF2FB] px-3 py-2 text-xs font-bold text-[#285B86]" :class="!canEdit ? 'pointer-events-none opacity-50' : ''">
+                                    <label class="cursor-pointer rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" :class="!canEdit ? 'pointer-events-none opacity-50' : ''">
                                         + Добавить
                                         <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
                                     </label>
                                 </div>
                                 <div v-if="(media[activeRoom]?.[questionIndex] ?? []).length" class="mt-2 flex flex-wrap gap-2">
-                                    <a v-for="file in media[activeRoom][questionIndex]" :key="file.upload_id || file.index" :href="file.url" target="_blank" rel="noopener noreferrer" class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-[#285B86]">{{ file.name || 'Вложение' }}</a>
+                                    <a v-for="file in media[activeRoom][questionIndex]" :key="file.upload_id || file.index" :href="file.url" target="_blank" rel="noopener noreferrer" class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-blue-700">{{ file.name || 'Вложение' }}</a>
                                 </div>
                                 <div v-for="item in uploads.filter(file => file.room === activeRoom && file.question === questionIndex)" :key="item.id" class="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
                                     <div class="flex items-center justify-between gap-2">
@@ -788,11 +797,11 @@ onBeforeUnmount(() => {
                                         <span class="shrink-0 text-slate-500">{{ item.status === 'queued' ? 'В очереди' : item.status === 'uploading' ? 'Загрузка' : item.status === 'attaching' ? 'Прикрепляем' : item.status === 'cancelled' ? 'Отменено' : 'Ошибка' }}</span>
                                     </div>
                                     <div v-if="['uploading', 'attaching'].includes(item.status)" class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200">
-                                        <div class="h-full bg-[#3181BB]" :style="{ width: item.progress + '%' }"></div>
+                                        <div class="h-full bg-blue-600" :style="{ width: item.progress + '%' }"></div>
                                     </div>
                                     <p v-if="item.error" role="alert" class="mt-2 text-red-700">{{ item.error }}</p>
                                     <div class="mt-2 flex gap-2">
-                                        <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-[#285B86] px-3 py-1.5 font-semibold text-white" @click="retryFile(item)">Повторить</button>
+                                        <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white" @click="retryFile(item)">Повторить</button>
                                         <button v-if="['queued', 'uploading', 'error'].includes(item.status)" type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="cancelFile(item)">Отменить</button>
                                         <button v-else type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="dismissFile(item)">Скрыть</button>
                                     </div>
@@ -801,55 +810,55 @@ onBeforeUnmount(() => {
                         </article>
                     </div>
 
-                    <div class="sticky bottom-0 z-10 mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-white/95 p-3 shadow-lg">
+                    <div class="sticky bottom-3 z-10 mt-4 grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
                         <button type="button" class="rounded-xl bg-slate-100 p-3 text-sm font-bold text-slate-700" @click="activeRoom === 0 ? stage = 'setup' : goRoom(activeRoom - 1)">Назад</button>
-                        <button type="button" class="rounded-xl bg-[#285B86] p-3 text-sm font-bold text-white" @click="nextRoom">
+                        <button type="button" class="rounded-xl bg-blue-600 p-3 text-sm font-bold text-white" @click="nextRoom">
                             {{ activeRoom === rooms.length - 1 ? 'К сводке' : 'Далее' }}
                         </button>
                     </div>
                 </template>
 
                 <template v-else-if="stage === 'review'">
-                    <section class="space-y-4 rounded-3xl bg-white p-5 shadow-sm">
-                        <p class="text-xs font-bold uppercase tracking-wider text-[#4274A3]">Проверка ответов</p>
-                        <h2 class="text-2xl font-extrabold">Все вопросы заполнены</h2>
+                    <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+                        <p class="text-xs font-bold uppercase tracking-wider text-slate-500">Проверка ответов</p>
+                        <h2 class="text-xl font-semibold">Все вопросы заполнены</h2>
                         <p class="text-sm text-slate-600">{{ completedRequired }} из {{ totalRequired }} обязательных вопросов. Сохраните ответы перед завершением.</p>
                         <div v-for="(room, index) in rooms" :key="index" class="flex items-center justify-between border-b border-slate-100 py-2">
                             <span class="text-sm font-semibold">{{ room.title }}</span>
-                            <span class="text-sm font-bold text-[#285B86]">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
+                            <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
                         </div>
-                        <div v-if="busyUploads" class="rounded-2xl bg-amber-50 p-4 text-sm text-amber-900" role="status">
+                        <div v-if="busyUploads" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="status">
                             Фото и видео ещё загружаются. Вы можете завершить проверку сейчас: мы зарегистрируем оставшиеся файлы на сервере, а материалы догрузятся отдельно. Если Telegram закроется, понадобится снова выбрать исходные файлы.
                         </div>
-                        <div v-if="submitError" class="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
+                        <div v-if="submitError" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
                             {{ submitError }}
                         </div>
-                        <button type="button" :disabled="!canEdit || submitting" class="w-full rounded-xl bg-[#285B86] p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
+                        <button type="button" :disabled="!canEdit || submitting" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
                             {{ submitting ? 'Отправляем контроль…' : 'Отправить контроль' }}
                         </button>
-                        <button type="button" :disabled="submitting || busyUploads" class="w-full rounded-xl bg-[#EAF2FB] p-3 text-sm font-bold text-[#285B86] disabled:opacity-50" @click="openClassic">
+                        <button type="button" :disabled="submitting || busyUploads" class="w-full rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-700 disabled:opacity-50" @click="openClassic">
                             Продолжить в старом Focus
                         </button>
                         <button type="button" :disabled="submitting" class="w-full rounded-xl bg-slate-100 p-3 text-sm font-bold disabled:opacity-50" @click="goRoom(rooms.length - 1)">Вернуться к вопросам</button>
                     </section>
                 </template>
                 <template v-else-if="stage === 'done'">
-                    <section class="space-y-4 rounded-3xl border border-emerald-200 bg-white p-6 shadow-sm" aria-live="polite">
-                        <div class="text-4xl" aria-hidden="true">✓</div>
-                        <h2 class="text-2xl font-extrabold text-emerald-800">Контроль завершён</h2>
+                    <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5" aria-live="polite">
+                        <div class="text-3xl" aria-hidden="true">✓</div>
+                        <h2 class="text-xl font-semibold text-emerald-800">Контроль завершён</h2>
                         <p class="text-sm text-slate-600">Ответы и оценка сохранены. Готовность фото и видео отслеживается отдельно.</p>
-                        <div class="rounded-2xl bg-slate-50 p-4">
+                        <div class="rounded-xl bg-slate-50 p-4">
                             <p class="text-sm text-slate-600">Оценка уборки</p>
-                            <p class="mt-1 text-3xl font-extrabold">{{ finalResult?.total_points }} / {{ finalResult?.max_points }} · {{ finalResult?.score_percent }}%</p>
+                            <p class="mt-1 text-2xl font-semibold">{{ finalResult?.total_points }} / {{ finalResult?.max_points }} · {{ finalResult?.score_percent }}%</p>
                             <p class="mt-2 text-sm font-bold" :class="finalResult?.result_zone === 'green' ? 'text-emerald-700' : finalResult?.result_zone === 'red' ? 'text-red-700' : 'text-amber-700'">
                                 {{ finalResult?.result_zone === 'green' ? 'Зелёная зона' : finalResult?.result_zone === 'red' ? 'Красная зона' : 'Жёлтая зона' }}
                             </p>
                             <p v-if="finalResult?.result_zone_reason" class="mt-1 text-xs text-slate-500">{{ finalResult.result_zone_reason }}</p>
                         </div>
-                        <div class="rounded-2xl border border-slate-200 p-4">
+                        <div class="rounded-xl border border-slate-200 p-4">
                             <div class="flex items-center justify-between gap-3">
                                 <h3 class="text-base font-bold">Фото и видео</h3>
-                                <button type="button" class="rounded-xl bg-[#EAF2FB] px-3 py-2 text-xs font-bold text-[#285B86]" @click="refreshMediaReview">Обновить</button>
+                                <button type="button" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" @click="refreshMediaReview">Обновить</button>
                             </div>
                             <p v-if="finalResult?.media?.state === 'complete'" class="mt-2 text-sm font-bold text-emerald-700">✓ Все зарегистрированные материалы получены.</p>
                             <p v-else-if="finalResult?.media?.state === 'awaiting_media'" class="mt-2 text-sm font-bold text-amber-800">⏳ Контроль завершён · Ожидаются материалы.</p>
@@ -860,7 +869,7 @@ onBeforeUnmount(() => {
                                 <div class="rounded-xl bg-red-50 p-2"><strong class="block text-lg">{{ finalResult?.media?.cancelled ?? 0 }}</strong>Отменено</div>
                             </div>
                             <p v-if="!finalResult?.media?.total" class="mt-3 text-xs text-slate-500">Новых загрузок нет. Вложения из черновика сохранены вместе с результатом.</p>
-                            <label v-if="(finalResult?.media?.pending ?? 0) > 0" class="mt-3 inline-flex cursor-pointer rounded-xl bg-[#EAF2FB] px-4 py-3 text-xs font-bold text-[#285B86]">
+                            <label v-if="(finalResult?.media?.pending ?? 0) > 0" class="mt-3 inline-flex cursor-pointer rounded-xl bg-blue-50 px-4 py-3 text-xs font-bold text-blue-700">
                                 Возобновить сразу несколько фото и видео
                                 <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" @change="resumeDeferredFiles">
                             </label>
@@ -874,19 +883,19 @@ onBeforeUnmount(() => {
                                         {{ record.status === 'attached' ? 'Сохранено' : record.status === 'cancelled' ? 'Не получено' : record.status === 'ready' ? 'Нужно прикрепить' : 'Ожидает загрузки' }}
                                     </span>
                                 </div>
-                                <div v-if="uploads.some(item => item.id === record.upload_id && ['queued','uploading','attaching'].includes(item.status))" class="mt-2 text-[#285B86]">
+                                <div v-if="uploads.some(item => item.id === record.upload_id && ['queued','uploading','attaching'].includes(item.status))" class="mt-2 text-blue-700">
                                     Загружается · {{ uploads.find(item => item.id === record.upload_id)?.progress ?? 0 }}%
                                 </div>
                                 <div v-if="uploads.some(item => item.id === record.upload_id && item.status === 'error')" class="mt-2 text-red-700" role="alert">
                                     {{ uploads.find(item => item.id === record.upload_id)?.error }}
                                 </div>
                                 <div v-if="record.status === 'pending'" class="mt-2">
-                                    <label class="inline-flex cursor-pointer rounded-lg bg-[#EAF2FB] px-3 py-2 font-bold text-[#285B86]">
+                                    <label class="inline-flex cursor-pointer rounded-lg bg-blue-50 px-3 py-2 font-bold text-blue-700">
                                         Выбрать исходный файл и продолжить
                                         <input type="file" class="sr-only" :accept="record.mime" @change="resumeDeferredFile($event, record)">
                                     </label>
                                 </div>
-                                <button v-if="record.status === 'ready'" type="button" class="mt-2 rounded-lg bg-[#EAF2FB] px-3 py-2 font-bold text-[#285B86]" @click="attachReadyEvidence(record)">
+                                <button v-if="record.status === 'ready'" type="button" class="mt-2 rounded-lg bg-blue-50 px-3 py-2 font-bold text-blue-700" @click="attachReadyEvidence(record)">
                                     Прикрепить готовый файл
                                 </button>
                             </div>
@@ -895,8 +904,8 @@ onBeforeUnmount(() => {
                             </p>
                             <div v-if="submitError" role="alert" class="mt-3 rounded-xl bg-red-50 p-3 text-xs text-red-700">{{ submitError }}</div>
                         </div>
-                        <a v-if="finalResult?.media_review_url" :href="finalResult.media_review_url" class="block rounded-xl bg-[#EAF2FB] p-3 text-center text-sm font-bold text-[#285B86]">Открыть проверку материалов позже</a>
-                        <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-[#285B86] p-4 text-center text-sm font-bold text-white">Открыть результат</a>
+                        <a v-if="finalResult?.media_review_url" :href="finalResult.media_review_url" class="block rounded-xl bg-blue-50 p-3 text-center text-sm font-bold text-blue-700">Открыть проверку материалов позже</a>
+                        <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white">Открыть результат</a>
                         <a href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
                     </section>
                 </template>
