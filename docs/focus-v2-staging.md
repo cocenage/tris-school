@@ -22,8 +22,8 @@ matching commit of Laravel source. Mixing different commits is unsupported.
   IDs or outbound integrations. Set up a separate test bot if testing
   inside a Telegram WebView. Otherwise use staging test-account sessions.
 - Never use the production `.env` on staging.
-- **V2 feature flag:** `config/focus-v2.php` is off by default for
-  non-local/non-testing environments. Explicitly enable only in the
+- **V2 feature flag:** `config/focus-v2.php` is off by default in all environments (isolated PHPUnit tests
+  explicitly enable it). Enable only in the
   separate staging `.env`:
 
 ```dotenv
