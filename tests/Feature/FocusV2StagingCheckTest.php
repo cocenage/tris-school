@@ -37,3 +37,17 @@ it('accepts an explicitly isolated staging configuration without connecting to i
         app()->detectEnvironment(fn (): string => $original);
     }
 });
+
+it('does not prune Focus V2 uploads when disabled or in production', function (): void {
+    config()->set('focus-v2.enabled', false);
+    $this->artisan('focus-v2:prune-media')->assertExitCode(0);
+
+    $environment = app()->environment();
+    try {
+        config()->set('focus-v2.enabled', true);
+        app()->detectEnvironment(fn (): string => 'production');
+        $this->artisan('focus-v2:prune-media')->assertExitCode(0);
+    } finally {
+        app()->detectEnvironment(fn (): string => $environment);
+    }
+});
