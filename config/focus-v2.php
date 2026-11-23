@@ -2,7 +2,7 @@
 
 return [
     /*
-     * Focus Control V2 is opt-in outside local and automated tests.
+     * Focus Control V2 is disabled by default in every runtime.
      *
      * Enable only on an isolated staging installation after checking its
      * APP_URL, database and storage. Production defaults to 404 for every
