@@ -243,6 +243,7 @@ final class FocusV2SubmitController extends Controller
             'response_id' => $response->getKey(),
             'result_url' => route('page-profile.checks.result', $response->getKey()),
             'media_review_url' => route('page-checks.control.focus-v2.review', $response->getKey()),
+            'media_status_url' => route('page-checks.control.focus-v2.result-media-status', $response->getKey()),
             'media' => app(\App\Services\Controls\FocusV2MediaProgress::class)->forResponse($response),
             'total_points' => $response->total_points,
             'max_points' => $response->max_points,
