@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Jobs\ProcessTelegramAssistantMessage;
 use App\Jobs\ProcessTelegramOperationalMessage;
+use App\Jobs\RefreshTelegramWorkControlMessage;
 use App\Models\DayOffRequest;
 use App\Models\DayOffRequestDay;
 use App\Models\TelegramScheduledMessageDelivery;
@@ -24,6 +25,8 @@ use App\Services\Telegram\TelegramScheduledMessageDeliveryService;
 use App\Services\Telegram\TelegramShiftOpening;
 use App\Services\Telegram\TelegramUpdateIngestService;
 use App\Services\Telegram\TelegramWorkActionFreshness;
+use App\Services\Telegram\TelegramWorkCallbackFeedback;
+use App\Services\Telegram\TelegramWorkControlMessageSync;
 use App\Services\TelegramUserNotificationService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -104,6 +107,8 @@ class TelegramWorkWebhookController extends Controller
 
         if (isset($update['callback_query'])) {
             if ($actionFreshness->callbackRequiresReconciliation()) {
+                // Even a discarded stale callback needs acknowledgement, or Telegram spins indefinitely.
+                $this->answerCallback($update['callback_query'], '⌛ Действие устарело. Проверьте статус в Academy.');
                 $actionFreshness->recordManualReconciliation($update, 'callback_backlog_guard');
 
                 return response()->json(['ok' => true, 'skipped' => 'manual_reconciliation_required']);
@@ -337,50 +342,36 @@ class TelegramWorkWebhookController extends Controller
             Log::warning('Scheduled control payment follow-up could not be queued.', ['delivery_id' => $delivery->id]);
         }
 
-        $synced = $this->syncWorkControlMessage($delivery);
-        $this->answerCallback($callbackQuery, $synced ? 'Ответ сохранён.' : 'Ответ сохранён; сообщение пока не обновилось.');
+        $refreshScheduled = $this->refreshWorkControlAfterCallback($delivery);
+        $this->answerCallback($callbackQuery, $refreshScheduled ? 'Ответ сохранён.' : 'Ответ сохранён; сообщение пока не обновилось.');
 
         return response()->json(['ok' => true, 'callback_status' => $result['status']]);
     }
 
+    private function refreshWorkControlAfterCallback(TelegramScheduledMessageDelivery $delivery): bool
+    {
+        if (config('services.telegram.work_fast_callbacks_enabled', true)
+            && config('queue.connections.'.config('queue.default').'.driver') !== 'sync') {
+            try {
+                RefreshTelegramWorkControlMessage::dispatch((int) $delivery->id);
+
+                return true;
+            } catch (\Throwable $exception) {
+                Log::warning('Work callback saved but message refresh could not be queued.', [
+                    'delivery_id' => $delivery->id,
+                    'exception' => class_basename($exception),
+                ]);
+
+                return false;
+            }
+        }
+
+        return $this->syncWorkControlMessage($delivery);
+    }
+
     private function syncWorkControlMessage(TelegramScheduledMessageDelivery $delivery): bool
     {
-        if ($delivery->bot_type !== 'work' || $delivery->status !== 'sent' || ! $delivery->telegram_message_id) {
-            return false;
-        }
-
-        try {
-            $edited = Cache::lock('telegram_work_control_sync:'.$delivery->id, 10)->block(3, function () use ($delivery): bool {
-                $current = $delivery->fresh();
-                if ($current === null) {
-                    return false;
-                }
-                $payload = app(TelegramScheduledControlSummaryFormatter::class)->interactivePayload($current);
-                if (is_string($current->render_hash) && hash_equals($current->render_hash, $payload['render_hash'])) {
-                    return true;
-                }
-
-                $edited = app(TelegramBotService::class)->editMessage(
-                    (string) $current->chat_id, (int) $current->telegram_message_id, [], $payload['text'],
-                    $payload['reply_markup'], true,
-                );
-                if ($edited) {
-                    $current->update(['render_hash' => $payload['render_hash']]);
-                }
-
-                return $edited;
-            });
-        } catch (\Throwable $exception) {
-            Log::warning('Work control message sync failed.', ['delivery_id' => $delivery->id, 'exception' => class_basename($exception)]);
-
-            return false;
-        }
-
-        if (! $edited) {
-            Log::warning('Work control message edit was rejected.', ['delivery_id' => $delivery->id]);
-        }
-
-        return $edited;
+        return app(TelegramWorkControlMessageSync::class)->sync($delivery);
     }
 
     private function handleAccessCallback(array $callbackQuery)
@@ -949,44 +940,12 @@ class TelegramWorkWebhookController extends Controller
 
     private function answerCallback(array $callbackQuery, string $text): void
     {
-        $callbackQueryId = $callbackQuery['id'] ?? null;
-
-        if (! $callbackQueryId) {
-            return;
-        }
-
-        try {
-            $response = Http::withOptions([
-                'force_ip_resolve' => config('services.telegram.ip_resolve', 'v6'),
-            ])->timeout(2)
-                ->connectTimeout(1)
-                ->post($this->telegramApiUrl('answerCallbackQuery'), [
-                    'callback_query_id' => $callbackQueryId,
-                    'text' => $text,
-                ]);
-
-            if (! $response->successful() || data_get($response->json(), 'ok') === false) {
-                $parts = explode(':', (string) ($callbackQuery['data'] ?? ''), 3);
-
-                Log::warning('Telegram callback answer rejected', [
-                    'callback_received' => true,
-                    'callback_type' => $parts[0] ?? 'unknown',
-                    'callback_action' => $parts[1] ?? 'unknown',
-                    'handler_result' => 'answer_failed',
-                    'http_status' => $response->status(),
-                ]);
-            }
-        } catch (\Throwable $e) {
-            $parts = explode(':', (string) ($callbackQuery['data'] ?? ''), 3);
-
-            Log::warning('Telegram callback answer failed', [
-                'callback_received' => true,
-                'callback_type' => $parts[0] ?? 'unknown',
-                'callback_action' => $parts[1] ?? 'unknown',
-                'handler_result' => 'answer_failed',
-                'exception' => class_basename($e),
-            ]);
-        }
+        app(TelegramWorkCallbackFeedback::class)->answer(
+            $callbackQuery,
+            $text,
+            $this->telegramApiUrl('answerCallbackQuery'),
+            $this->callbackStartedAt,
+        );
     }
 
     private function sendPrivateFallbackMessageStrict(array $message): void

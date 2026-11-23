@@ -43,6 +43,7 @@ beforeEach(function () {
         'services.telegram.chat_id_formweekend' => '-100',
         'services.telegram.thread_id_formweekend' => null,
         'services.telegram.rich_messages_enabled' => true,
+        'services.telegram.work_fast_callbacks_enabled' => false,
     ]);
 
     Cache::flush();

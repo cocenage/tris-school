@@ -1,0 +1,62 @@
+name: Telegram callback feedback
+
+on:
+  pull_request:
+    paths:
+      - 'app/Http/Controllers/TelegramWorkWebhookController.php'
+      - 'app/Services/Telegram/TelegramOksControlCards.php'
+      - 'app/Services/Telegram/TelegramShiftOpening.php'
+      - 'app/Services/Telegram/TelegramWorkCallbackFeedback.php'
+      - 'app/Services/Telegram/TelegramWorkControlMessageSync.php'
+      - 'app/Jobs/RefreshTelegramOksOpening.php'
+      - 'app/Jobs/RefreshTelegramWorkControlMessage.php'
+      - 'tests/Feature/TelegramScheduledMessagesTest.php'
+      - 'tests/Feature/TelegramWorkWebhookTest.php'
+      - '.github/workflows/telegram-callback-feedback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_ENV: testing
+      TELEGRAM_BOT_TOKEN: test-work-token
+      TELEGRAM_SCHEDULED_BOT_TOKEN: test-scheduled-token
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      DB_URL: ''
+      DB_ANALYTICS_DATABASE: ':memory:'
+      DB_OLD_DATABASE: ':memory:'
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, dom, fileinfo, pdo_sqlite, sqlite3, gd, intl, zip
+          coverage: none
+          tools: composer:v2
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Build frontend assets
+        run: |
+          npm ci
+          npm run build
+      - name: Prepare application
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+      - name: Fast callback regression test
+        run: php artisan test tests/Feature/TelegramScheduledMessagesTest.php --filter='(?i)(callbacks before acknowledging|oks)'
+      - name: Work webhook regression tests
+        run: php artisan test tests/Feature/TelegramWorkWebhookTest.php

@@ -176,7 +176,7 @@ class TelegramOksControlCards
                 : 'Карточку пока не удалось обновить. Попробуй ещё раз позже.';
         }
 
-        $synced = $this->save($delivery, $key, $district, $actor, $action, $action === 'skip' ? $question['skip'] : $question['yes'], $callbackId);
+        $synced = $this->save($delivery, $key, $district, $actor, $action, $action === 'skip' ? $question['skip'] : $question['yes'], $callbackId, deferSync: true);
 
         return $synced ? 'Ответ сохранён.' : 'Ответ сохранён. Карточка пока не обновилась.';
     }
@@ -235,14 +235,14 @@ class TelegramOksControlCards
             ->latest('id')->first();
     }
 
-    public function save(TelegramScheduledMessageDelivery $delivery, string $key, string $district, User $user, string $action, string $text, ?string $callbackId = null, ?int $version = null): bool
+    public function save(TelegramScheduledMessageDelivery $delivery, string $key, string $district, User $user, string $action, string $text, ?string $callbackId = null, ?int $version = null, bool $deferSync = false): bool
     {
         Cache::lock('scheduled_control_delivery:'.$delivery->id, 15)->block(3, function () use ($delivery, $key, $district, $user, $action, $text, $callbackId, $version): void {
             abort_unless($this->canAnswer($delivery->refresh(), $key, $district, $user), 403);
             $this->recordAnswer($delivery, $key, $district, $user, $action, $text, $callbackId, $version);
         });
 
-        return $this->syncAfterAnswer($delivery);
+        return $deferSync ? $this->refreshAfterCallback($delivery) : $this->syncAfterAnswer($delivery);
     }
 
     public function saveChecklist(TelegramScheduledMessageDelivery $delivery, string $district, User $user, array $answers): bool
@@ -263,6 +263,29 @@ class TelegramOksControlCards
         });
 
         return $this->syncAfterAnswer($delivery);
+    }
+
+    private function refreshAfterCallback(TelegramScheduledMessageDelivery $delivery): bool
+    {
+        // Only the Telegram edit is asynchronous. The answer has already been committed.
+        // Keep a synchronous fallback for installs without an async queue worker.
+        if (! config('services.telegram.work_fast_callbacks_enabled', true)
+            || config('queue.connections.'.config('queue.default').'.driver') === 'sync') {
+            return $this->syncAfterAnswer($delivery);
+        }
+
+        try {
+            RefreshTelegramOksCard::dispatch((int) $delivery->id);
+
+            return true;
+        } catch (Throwable $exception) {
+            Log::warning('OKS callback saved but card refresh could not be queued.', [
+                'delivery_id' => $delivery->id,
+                'exception' => class_basename($exception),
+            ]);
+
+            return false;
+        }
     }
 
     private function syncAfterAnswer(TelegramScheduledMessageDelivery $delivery): bool
