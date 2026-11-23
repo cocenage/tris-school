@@ -329,17 +329,14 @@ async function attachReadyEvidence(record) {
     }
 }
 
-function resumeDeferredFile(event, record) {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file || !finalResult.value || record.status !== 'pending') return;
+function enqueueDeferredFile(file, record) {
+    if (!file || !finalResult.value || record.status !== 'pending') return false;
     if (file.name !== record.original_name || file.size !== record.size || focusFileMime(file) !== record.mime) {
-        submitError.value = 'Выберите исходный файл с тем же названием, размером и форматом.';
-        return;
+        return false;
     }
     const existing = uploads.value.find(item => item.id === record.upload_id);
     if (existing && ['queued', 'uploading', 'attaching'].includes(existing.status)) {
-        return;
+        return false;
     }
     if (existing) {
         Object.assign(existing, { file, record, status: 'queued', error: '', progress: 0 });
@@ -350,9 +347,40 @@ function resumeDeferredFile(event, record) {
             record, status: 'queued', progress: 0, error: '', controller: null, info: null,
         });
     }
-    submitError.value = '';
-    pumpTransfers();
+    return true;
 }
+
+function resumeDeferredFile(event, record) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (enqueueDeferredFile(file, record)) {
+        submitError.value = '';
+        pumpTransfers();
+    } else {
+        submitError.value = 'Выберите исходный файл с тем же названием, размером и форматом.';
+    }
+}
+
+function resumeDeferredFiles(event) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    const pending = (finalResult.value?.media?.uploads ?? [])
+        .filter(upload => upload.status === 'pending');
+    let accepted = 0;
+    for (const file of files) {
+        const record = pending.find(upload =>
+            upload.original_name === file.name && upload.size === file.size
+            && upload.mime === focusFileMime(file)
+            && !uploads.value.some(item => item.id === upload.upload_id
+                && ['queued', 'uploading', 'attaching'].includes(item.status)));
+        if (record && enqueueDeferredFile(file, record)) accepted++;
+    }
+    if (accepted > 0) pumpTransfers();
+    submitError.value = files.length > accepted
+        ? 'Не все выбранные файлы совпали с ожидаемыми. Проверьте названия, размер и формат материалов.'
+        : '';
+}
+
 
 async function submitControl() {
     if (submitting.value || stage.value !== 'review' || !canEdit.value) return;
@@ -832,6 +860,10 @@ onBeforeUnmount(() => {
                                 <div class="rounded-xl bg-red-50 p-2"><strong class="block text-lg">{{ finalResult?.media?.cancelled ?? 0 }}</strong>Отменено</div>
                             </div>
                             <p v-if="!finalResult?.media?.total" class="mt-3 text-xs text-slate-500">Новых загрузок нет. Вложения из черновика сохранены вместе с результатом.</p>
+                            <label v-if="(finalResult?.media?.pending ?? 0) > 0" class="mt-3 inline-flex cursor-pointer rounded-xl bg-[#EAF2FB] px-4 py-3 text-xs font-bold text-[#285B86]">
+                                Возобновить сразу несколько фото и видео
+                                <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" @change="resumeDeferredFiles">
+                            </label>
                             <div v-for="record in finalResult?.media?.uploads ?? []" :key="record.upload_id" class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
                                 <div class="flex items-start justify-between gap-2">
                                     <div class="min-w-0">
