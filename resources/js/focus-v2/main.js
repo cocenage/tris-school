@@ -7,6 +7,7 @@ if (root) {
         bootstrapUrl: root.dataset.bootstrapUrl,
         draftUrl: root.dataset.draftUrl,
         submitUrl: root.dataset.submitUrl,
+        reviewStatusUrl: root.dataset.reviewStatusUrl || '',
         mediaStartUrl: root.dataset.mediaStartUrl,
         classicUrl: root.dataset.classicUrl,
     }).mount(root);
