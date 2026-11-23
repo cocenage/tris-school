@@ -132,6 +132,14 @@ new class extends Component {
 
     $apartmentName = $record->apartment?->name ?? 'Квартира не указана';
     $resume = trim((string) ($record->comment ?? ''));
+    $canReviewEvidence = Auth::id() === $record->supervisor_id || Auth::user()?->role === 'admin';
+    $hasV2Evidence = $canReviewEvidence
+        && \Illuminate\Support\Facades\Schema::hasTable('focus_v2_media_uploads')
+        && \App\Models\FocusV2MediaUpload::query()
+        ->where('control_response_id', $record->getKey())->exists();
+    $evidenceProgress = $hasV2Evidence
+        ? app(\App\Services\Controls\FocusV2MediaProgress::class)->forResponse($record, false)
+        : null;
 @endphp
 
 <div class="flex h-full min-h-0 flex-col bg-[#F4F7FB]">
@@ -213,6 +221,18 @@ new class extends Component {
 
                     </div>
                 </div>
+
+                @if($hasV2Evidence)
+                    <a href="{{ route('page-checks.control.focus-v2.review', $record) }}"
+                        class="mb-[18px] flex items-center justify-between gap-3 rounded-[22px] border px-4 py-4 text-sm font-semibold"
+                        style="background: {{ $evidenceProgress['state'] === 'complete' ? '#ECFDF3' : '#FFFAEB' }}; border-color: {{ $evidenceProgress['state'] === 'complete' ? '#ABEFC6' : '#FEDF89' }}; color: #213259">
+                        <span>
+                            <span class="block font-bold">Фото и видео · {{ $evidenceProgress['state'] === 'complete' ? 'всё сохранено' : ($evidenceProgress['state'] === 'needs_review' ? 'нужна проверка' : 'догружаются') }}</span>
+                            <span class="mt-1 block text-xs font-medium opacity-75">Прикреплено: {{ $evidenceProgress['attached'] }}, ожидается: {{ $evidenceProgress['pending'] + $evidenceProgress['ready_to_attach'] }}, отменено: {{ $evidenceProgress['cancelled'] }}</span>
+                        </span>
+                        <span class="text-xl" aria-hidden="true">›</span>
+                    </a>
+                @endif
 
                 @if($resume !== '')
                     <section aria-labelledby="control-resume-title" class="mb-[18px] rounded-[18px] bg-[#F8F8F8] px-[14px] py-[12px]">

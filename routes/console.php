@@ -69,4 +69,9 @@ Schedule::command('controls:dispatch-completion-notifications')
     ->everyMinute()
     ->withoutOverlapping();
 
+Schedule::command('focus-v2:prune-media')
+    ->dailyAt('03:25')
+    ->timezone('Europe/Rome')
+    ->withoutOverlapping();
+
 app(EmergencyScheduleRegistrar::class)->register(app(Illuminate\Console\Scheduling\Schedule::class));

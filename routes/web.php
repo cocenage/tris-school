@@ -4,6 +4,11 @@ use App\Http\Controllers\ApartmentAttachmentController;
 use App\Http\Controllers\AntigocciaPhotoController;
 use App\Http\Controllers\ControlMediaController;
 use App\Http\Controllers\FocusMediaUploadController;
+use App\Http\Controllers\FocusV2BootstrapController;
+use App\Http\Controllers\FocusV2DraftController;
+use App\Http\Controllers\FocusV2MediaController;
+use App\Http\Controllers\FocusV2MediaReviewController;
+use App\Http\Controllers\FocusV2SubmitController;
 use App\Http\Controllers\FormGuideController;
 use App\Http\Controllers\KnowledgeController;
 use App\Http\Controllers\LogoutController;
@@ -140,6 +145,59 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-checks.control.result-media');
     Route::livewire('/checks/control', 'forms.page-control')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control');
     Route::livewire('/checks/control/focus', 'forms.page-control-focus')->middleware(SafeguardRolePreviewData::class)->name('page-checks.control.focus');
+    // All preview routes are disabled by default outside local/tests.
+    // Only an isolated staging deployment explicitly opts in.
+    Route::middleware(\App\Http\Middleware\EnsureFocusV2PreviewEnabled::class)->group(function () {
+    // Experimental Vue entry: old Focus stays the default until acceptance tests pass.
+    Route::get('/checks/control/focus-v2', function () {
+        $user = Auth::user();
+        abort_unless($user?->is_active && in_array($user->role, ['admin', 'supervisor'], true), 403);
+
+        return response()->view('focus-v2')->header('Cache-Control', 'private, no-store');
+    })->middleware(SafeguardRolePreviewData::class)->name('page-checks.control.focus-v2');
+
+    Route::get('/checks/control/focus-v2/bootstrap', FocusV2BootstrapController::class)
+        ->middleware(SafeguardRolePreviewData::class)
+        ->name('page-checks.control.focus-v2.bootstrap');
+    Route::post('/checks/control/focus-v2/draft', FocusV2DraftController::class)
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:120,1'])
+        ->name('page-checks.control.focus-v2.draft');
+    Route::post('/checks/control/focus-v2/submit', FocusV2SubmitController::class)
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:20,1'])
+        ->name('page-checks.control.focus-v2.submit');
+    Route::get('/checks/control/focus-v2/results/{controlResponse}/media', FocusV2MediaReviewController::class)
+        ->middleware(SafeguardRolePreviewData::class)
+        ->whereNumber('controlResponse')
+        ->name('page-checks.control.focus-v2.result-media-status');
+    Route::get('/checks/control/focus-v2/review/{controlResponse}', function (\App\Models\ControlResponse $controlResponse) {
+        $user = Auth::user();
+        abort_unless($user?->is_active && in_array($user->role, ['admin', 'supervisor'], true), 403);
+        abort_unless($user->role === 'admin' || (int) $controlResponse->supervisor_id === (int) $user->getKey(), 403);
+
+        return response()->view('focus-v2', ['reviewResponse' => $controlResponse])
+            ->header('Cache-Control', 'private, no-store');
+    })->middleware(SafeguardRolePreviewData::class)->whereNumber('controlResponse')
+        ->name('page-checks.control.focus-v2.review');
+    Route::post('/checks/control/focus-v2/media', [FocusV2MediaController::class, 'start'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:400,1'])
+        ->name('page-checks.control.focus-v2.media.start');
+    Route::get('/checks/control/focus-v2/media/{upload}', [FocusV2MediaController::class, 'status'])
+        ->middleware(SafeguardRolePreviewData::class)
+        ->name('page-checks.control.focus-v2.media.status');
+    Route::put('/checks/control/focus-v2/media/{upload}/chunks/{index}', [FocusV2MediaController::class, 'chunk'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:1500,1'])
+        ->whereNumber('index')
+        ->name('page-checks.control.focus-v2.media.chunk');
+    Route::post('/checks/control/focus-v2/media/{upload}/complete', [FocusV2MediaController::class, 'complete'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:300,1'])
+        ->name('page-checks.control.focus-v2.media.complete');
+    Route::post('/checks/control/focus-v2/media/{upload}/attach', [FocusV2MediaController::class, 'attach'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:300,1'])
+        ->name('page-checks.control.focus-v2.media.attach');
+    Route::delete('/checks/control/focus-v2/media/{upload}', [FocusV2MediaController::class, 'cancel'])
+        ->middleware(SafeguardRolePreviewData::class)
+        ->name('page-checks.control.focus-v2.media.cancel');
+    });
 
     Route::livewire('/applications', 'page-applications')->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');

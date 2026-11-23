@@ -6,6 +6,7 @@ use App\Models\Control;
 use App\Models\ControlCompletionNotification;
 use App\Models\ControlResponse;
 use App\Models\ControlResponseDraft;
+use App\Models\FocusV2MediaUpload;
 use App\Models\User;
 use App\Services\Controls\ControlCompletionNotificationService;
 use App\Services\Controls\ControlRunManager;
@@ -34,7 +35,7 @@ use Livewire\Livewire;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function () {
-    foreach (['control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
+    foreach (['focus_v2_media_uploads', 'control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
         Schema::dropIfExists($table);
     }
 
@@ -140,6 +141,27 @@ beforeEach(function () {
         $table->timestamps();
     });
 
+    Schema::create('focus_v2_media_uploads', function (Blueprint $table): void {
+        $table->uuid('id')->primary();
+        $table->unsignedBigInteger('control_id');
+        $table->unsignedBigInteger('supervisor_id');
+        $table->unsignedBigInteger('draft_id');
+        $table->unsignedBigInteger('control_response_id')->nullable();
+        $table->uuid('run_id');
+        $table->string('schema_version', 64);
+        $table->unsignedInteger('room_index');
+        $table->unsignedInteger('question_index');
+        $table->string('original_name', 180);
+        $table->string('declared_mime', 100);
+        $table->unsignedBigInteger('size_bytes');
+        $table->unsignedInteger('chunk_bytes');
+        $table->unsignedInteger('total_chunks');
+        $table->string('status', 20)->default('pending');
+        $table->string('stored_path')->nullable();
+        $table->string('actual_mime', 100)->nullable();
+        $table->timestamps();
+    });
+
     Schema::create('control_completion_notifications', function (Blueprint $table): void {
         $table->id();
         $table->unsignedBigInteger('control_response_id')->unique();
@@ -157,7 +179,7 @@ beforeEach(function () {
 });
 
 afterEach(function () {
-    foreach (['control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
+    foreach (['focus_v2_media_uploads', 'control_completion_notifications', 'activity_log', 'control_responses', 'control_response_drafts', 'apartments', 'controls', 'users'] as $table) {
         Schema::dropIfExists($table);
     }
 });
@@ -224,6 +246,746 @@ function signedControlResultStartData(string $telegramId, string $startParam, st
 
     return http_build_query($data);
 }
+
+it('boots the isolated Focus V2 API for active supervisors without changing existing controls', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('viewer.id', $supervisor->id)
+        ->assertJsonPath('control.id', $control->id)
+        ->assertJsonPath('control.schema_version', (new ControlSchema($control->id, controlWorkflowSchema()))->version())
+        ->assertJsonPath('rooms.0.items.0.question', 'Ключи на месте?')
+        ->assertJsonPath('answers.0.0.selected', '')
+        ->assertJsonPath('run.draft_id', null)
+        ->assertJsonPath('run.revision', 0)
+        ->assertJsonPath('run.schema_conflict', false)
+        ->assertJsonFragment(['name' => 'Cleaner']);
+
+    expect(ControlResponseDraft::count())->toBe(0)
+        ->and(ControlResponse::count())->toBe(0);
+});
+
+it('restores a matching Focus V2 draft without exposing file system paths', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $schema = new ControlSchema($control->id, controlWorkflowSchema());
+    $runId = (string) Str::uuid();
+    $draft = ControlResponseDraft::create([
+        'control_id' => $control->id,
+        'supervisor_id' => $supervisor->id,
+        'cleaner_id' => $cleaner->id,
+        'apartment_id' => $apartment,
+        'run_id' => $runId,
+        'revision' => 3,
+        'state' => 'active',
+        'schema_snapshot' => controlWorkflowSchema(),
+        'schema_version' => $schema->version(),
+        'responses' => $schema->attachQuestionIds([[[
+            'selected' => 'yes', 'custom' => '', 'media' => [[
+                'disk' => 'local', 'path' => 'controls/'.$control->id.'/2026/11/image.jpg',
+                'original_name' => 'image.jpg', 'mime' => 'image/jpeg', 'size' => 100,
+            ]],
+        ]]]),
+    ]);
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('run.id', $runId)
+        ->assertJsonPath('run.draft_id', $draft->id)
+        ->assertJsonPath('run.revision', 3)
+        ->assertJsonPath('answers.0.0.selected', 'yes')
+        ->assertJsonPath('media.0.0.0.name', 'image.jpg')
+        ->assertJsonMissingPath('answers.0.0.media')
+        ->assertDontSee('controls/'.$control->id.'/2026/11/image.jpg');
+});
+
+it('isolates conflicting Focus V2 drafts and refuses unauthorized actors', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $draft = ControlResponseDraft::create([
+        'control_id' => $control->id,
+        'supervisor_id' => $supervisor->id,
+        'run_id' => (string) Str::uuid(),
+        'revision' => 2,
+        'state' => 'active',
+        'schema_version' => str_repeat('0', 64),
+        'responses' => [[['selected' => 'yes']]],
+    ]);
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('run.schema_conflict', true)
+        ->assertJsonPath('run.conflicted_draft_id', $draft->id)
+        ->assertJsonPath('run.draft_id', null)
+        ->assertJsonPath('answers.0.0.selected', '');
+
+    $this->actingAs($cleaner)->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertForbidden();
+    $supervisor->forceFill(['is_active' => false])->save();
+    $this->actingAs($supervisor)->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertForbidden();
+});
+
+it('hides every Focus V2 page and API endpoint when preview is disabled', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    config()->set('focus-v2.enabled', false);
+    $this->withoutVite();
+
+    $this->get(route('page-checks.control.focus-v2'))->assertNotFound();
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertNotFound();
+    $this->postJson(route('page-checks.control.focus-v2.draft'), [])->assertNotFound();
+    $this->postJson(route('page-checks.control.focus-v2.submit'), [])->assertNotFound();
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), [])->assertNotFound();
+
+    // A disabled experimental UI must not affect the production Focus route.
+    expect(route('page-checks.control.focus'))->toContain('/checks/control/focus');
+});
+
+it('blocks experimental Focus V2 routes in production even if the flag is enabled', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    config()->set('focus-v2.enabled', true);
+    $environment = app()->environment();
+
+    try {
+        // Switching APP_ENV inside a test enables Laravel's normal production
+        // CSRF middleware (419) before our route guard runs. Disable only
+        // CSRF here so the POST assertions exercise the Focus V2 gate.
+        $this->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
+        app()->detectEnvironment(fn (): string => 'production');
+        $this->get(route('page-checks.control.focus-v2'))->assertNotFound();
+        $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertNotFound();
+        $this->postJson(route('page-checks.control.focus-v2.draft'), [])->assertNotFound();
+        $this->postJson(route('page-checks.control.focus-v2.media.start'), [])->assertNotFound();
+    } finally {
+        app()->detectEnvironment(fn (): string => $environment);
+    }
+});
+
+it('serves the experimental Vue Focus page only to active supervisors and admins', function (): void {
+    [$supervisor, $cleaner] = mountControlWorkflow();
+    $this->withoutVite();
+    $route = route('page-checks.control.focus-v2');
+
+    $this->get($route)
+        ->assertOk()
+        ->assertSee('id="focus-v2-app"', false)
+        ->assertSee('Focus Control V2');
+
+    $this->actingAs($cleaner)->get($route)->assertForbidden();
+    $supervisor->forceFill(['is_active' => false])->save();
+    $this->actingAs($supervisor)->get($route)->assertForbidden();
+});
+
+function focusV2DraftSavePayload(Control $control, User $cleaner, int $apartment): array
+{
+    return [
+        'control_id' => $control->id,
+        'run_id' => (string) Str::uuid(),
+        'schema_version' => (new ControlSchema($control->id, controlWorkflowSchema()))->version(),
+        'draft_id' => null,
+        'expected_revision' => 0,
+        'setup' => [
+            'cleaner_id' => $cleaner->id,
+            'apartment_id' => $apartment,
+            'is_assigned' => false,
+            'previous_cleaner' => '',
+            'cleaning_date' => '2026-11-23',
+            'inspection_date' => '2026-11-23',
+            'comment' => '',
+        ],
+        'answers' => [[[
+            'selected' => 'yes',
+            'custom' => '',
+            'corrective' => ['repeats' => null, 'action' => '', 'recheck' => null],
+        ]]],
+    ];
+}
+
+it('saves Focus V2 answers independently and restores them via bootstrap', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)
+        ->assertOk()
+        ->assertJsonPath('run.revision', 1)
+        ->assertJsonPath('run.id', $payload['run_id'])
+        ->assertJsonPath('replayed', false);
+
+    $draft = ControlResponseDraft::query()->sole();
+    expect($draft->supervisor_id)->toBe($supervisor->id)
+        ->and($draft->schema_version)->toBe($payload['schema_version'])
+        ->and(data_get($draft->responses, '0.0.selected'))->toBe('yes')
+        ->and(data_get($draft->responses, '0.0.question_id'))->toBeString()
+        ->and(ControlResponse::count())->toBe(0);
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('run.id', $payload['run_id'])
+        ->assertJsonPath('run.draft_id', $draft->id)
+        ->assertJsonPath('run.revision', 1)
+        ->assertJsonPath('answers.0.0.selected', 'yes');
+});
+
+it('replays an exact Focus V2 save without writing a second revision', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+
+    $this->postJson($route, $payload)->assertOk()->assertJsonPath('run.revision', 1);
+    $this->postJson($route, $payload)
+        ->assertOk()
+        ->assertJsonPath('replayed', true)
+        ->assertJsonPath('run.revision', 1);
+
+    expect(ControlResponseDraft::count())->toBe(1)
+        ->and(ControlResponseDraft::sole()->revision)->toBe(1);
+});
+
+it('rejects stale Focus V2 saves and accepts the current revision', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+
+    $this->postJson($route, $payload)->assertOk();
+    $draft = ControlResponseDraft::sole();
+    $payload['draft_id'] = $draft->id;
+    $payload['answers'][0][0]['selected'] = 'no';
+
+    $this->postJson($route, $payload)
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'revision_conflict')
+        ->assertJsonPath('current_revision', 1);
+
+    $payload['expected_revision'] = 1;
+    $this->postJson($route, $payload)->assertOk()->assertJsonPath('run.revision', 2);
+    $this->postJson($route, $payload)->assertOk()->assertJsonPath('replayed', true);
+
+    $stale = $payload;
+    $stale['expected_revision'] = 0;
+    $stale['answers'][0][0]['selected'] = 'yes';
+    $this->postJson($route, $stale)->assertStatus(409);
+    expect(ControlResponseDraft::sole()->revision)->toBe(2)
+        ->and(data_get(ControlResponseDraft::sole()->responses, '0.0.selected'))->toBe('no');
+});
+
+it('preserves server-owned media and rejects browser supplied media paths', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+
+    $this->postJson($route, $payload)->assertOk();
+    $draft = ControlResponseDraft::sole();
+    $responses = $draft->responses;
+    $responses[0][0]['media'] = [[
+        'disk' => 'local', 'path' => 'controls/'.$control->id.'/2026/11/evidence.jpg',
+        'original_name' => 'evidence.jpg', 'mime' => 'image/jpeg', 'size' => 100,
+    ]];
+    $draft->forceFill(['responses' => $responses])->save();
+
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 1;
+    $payload['answers'][0][0]['selected'] = 'no';
+    $this->postJson($route, $payload)->assertOk()->assertJsonPath('run.revision', 2);
+    expect(data_get(ControlResponseDraft::sole()->responses, '0.0.media.0.original_name'))->toBe('evidence.jpg');
+
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 2;
+    $payload['answers'][0][0]['media'] = [['disk' => 'local', 'path' => 'controls/999/fake.jpg']];
+    $this->postJson($route, $payload)->assertUnprocessable();
+    expect(ControlResponseDraft::sole()->revision)->toBe(2);
+});
+
+it('rejects mismatched Focus V2 schemas and a second run while a draft is active', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+
+    $wrong = $payload;
+    $wrong['schema_version'] = str_repeat('0', 64);
+    $this->postJson($route, $wrong)
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'schema_changed');
+
+    $this->postJson($route, $payload)->assertOk();
+    $another = $payload;
+    $another['run_id'] = (string) Str::uuid();
+    $this->postJson($route, $another)
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'active_draft_exists');
+    expect(ControlResponseDraft::count())->toBe(1);
+});
+
+it('authorizes Focus V2 saves only for the active supervisor who owns the draft', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+    $this->postJson($route, $payload)->assertOk();
+
+    $draft = ControlResponseDraft::sole();
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 1;
+    $payload['answers'][0][0]['selected'] = 'no';
+
+    $this->actingAs($cleaner)->postJson($route, $payload)->assertForbidden();
+
+    $other = User::create(['name' => 'Another supervisor', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($other)->postJson($route, $payload)
+        ->assertStatus(409)
+        ->assertJsonPath('error', 'draft_not_found');
+
+    $supervisor->forceFill(['is_active' => false])->save();
+    $this->actingAs($supervisor)->postJson($route, $payload)->assertForbidden();
+
+    expect(ControlResponseDraft::sole()->revision)->toBe(1);
+});
+
+it('does not accept invalid Focus V2 answers or inactive staff', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $route = route('page-checks.control.focus-v2.draft');
+    $payload['answers'][0][0]['selected'] = 'not-an-option';
+
+    $this->postJson($route, $payload)->assertUnprocessable();
+    expect(ControlResponseDraft::count())->toBe(0);
+
+    $payload['answers'][0][0]['selected'] = 'yes';
+    $cleaner->forceFill(['is_active' => false])->save();
+    $this->postJson($route, $payload)->assertUnprocessable();
+    expect(ControlResponseDraft::count())->toBe(0);
+});
+
+function focusV2MediaFixture(): array
+{
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    test()->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+
+    return [$supervisor, $cleaner, $control, ControlResponseDraft::query()->sole(), $payload];
+}
+
+function focusV2SamplePng(): string
+{
+    return base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p6QAAAAASUVORK5CYII=', true);
+}
+
+function focusV2MediaStartPayload(Control $control, ControlResponseDraft $draft, string $binary): array
+{
+    return [
+        'upload_id' => (string) Str::uuid(),
+        'control_id' => $control->id,
+        'draft_id' => $draft->id,
+        'run_id' => $draft->run_id,
+        'schema_version' => $draft->schema_version,
+        'room_index' => 0,
+        'question_index' => 0,
+        'original_name' => 'evidence.png',
+        'mime' => 'image/png',
+        'size' => strlen($binary),
+    ];
+}
+
+function focusV2PutChunk(string $uploadId, string $body, int $index = 0): \Illuminate\Testing\TestResponse
+{
+    return test()->call(
+        'PUT',
+        route('page-checks.control.focus-v2.media.chunk', [$uploadId, $index]),
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'application/octet-stream', 'HTTP_ACCEPT' => 'application/json'],
+        $body,
+    );
+}
+
+it('uploads Focus V2 evidence in chunks, resumes and attaches it exactly once', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft, $payload] = focusV2MediaFixture();
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+    $route = route('page-checks.control.focus-v2.media.start');
+
+    $this->postJson($route, $init)
+        ->assertOk()->assertJsonPath('status', 'pending')
+        ->assertJsonPath('total_chunks', 1)->assertJsonPath('received', []);
+
+    focusV2PutChunk($init['upload_id'], $file)->assertOk()->assertJsonPath('replayed', false);
+    focusV2PutChunk($init['upload_id'], $file)->assertOk()->assertJsonPath('replayed', true);
+
+    $this->postJson($route, $init)
+        ->assertOk()->assertJsonPath('received.0', 0);
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+
+    $attach = route('page-checks.control.focus-v2.media.attach', $init['upload_id']);
+    $this->postJson($attach, ['draft_id' => $draft->id, 'expected_revision' => 1])
+        ->assertOk()->assertJsonPath('run.revision', 2)
+        ->assertJsonPath('media_item.name', 'evidence.png');
+    $this->postJson($attach, ['draft_id' => $draft->id, 'expected_revision' => 1])
+        ->assertOk()->assertJsonPath('run.revision', 2);
+
+    $saved = ControlResponseDraft::query()->sole();
+    expect($saved->revision)->toBe(2)
+        ->and($saved->responses[0][0]['media'])->toHaveCount(1)
+        ->and($saved->responses[0][0]['media'][0]['upload_id'])->toBe($init['upload_id'])
+        ->and(FocusV2MediaUpload::query()->sole()->status)->toBe('attached');
+
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 2;
+    $payload['answers'][0][0]['selected'] = 'no';
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)
+        ->assertOk()->assertJsonPath('run.revision', 3);
+    expect(ControlResponseDraft::query()->sole()->responses[0][0]['media'])->toHaveCount(1);
+});
+
+it('enforces the 12 media limit for in-flight uploads and permits exact start replay', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $route = route('page-checks.control.focus-v2.media.start');
+    $binary = focusV2SamplePng();
+    $first = null;
+
+    for ($index = 0; $index < 12; $index++) {
+        $init = focusV2MediaStartPayload($control, $draft, $binary);
+        $this->postJson($route, $init)->assertOk()->assertJsonPath('status', 'pending');
+        $first ??= $init;
+    }
+    expect(FocusV2MediaUpload::query()->count())->toBe(12);
+    // Replaying an existing upload must not consume another reservation.
+    $this->postJson($route, $first)->assertOk()->assertJsonPath('upload_id', $first['upload_id']);
+
+    $thirteenth = focusV2MediaStartPayload($control, $draft, $binary);
+    $this->postJson($route, $thirteenth)->assertStatus(422);
+    expect(FocusV2MediaUpload::query()->count())->toBe(12);
+
+    // Cancellation releases a reservation for a new upload.
+    $this->deleteJson(route('page-checks.control.focus-v2.media.cancel', $first['upload_id']))
+        ->assertOk()->assertJsonPath('cancelled', true);
+    $this->postJson($route, $thirteenth)->assertOk();
+    expect(FocusV2MediaUpload::query()->whereIn('status', ['pending', 'ready'])->count())->toBe(12);
+});
+
+it('isolates Focus V2 uploads by supervisor and draft owner', function (): void {
+    Storage::fake('local');
+    [$supervisor, , $control, $draft] = focusV2MediaFixture();
+    $init = focusV2MediaStartPayload($control, $draft, focusV2SamplePng());
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+
+    $other = User::create(['name' => 'Other', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($other)
+        ->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
+        ->assertNotFound();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertNotFound();
+
+    $this->actingAs($supervisor);
+    $changed = $init;
+    $changed['room_index'] = 1;
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $changed)->assertStatus(422);
+    $changed = $init;
+    $changed['size']++;
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $changed)->assertStatus(409);
+});
+
+it('rejects corrupt chunks and cleans up cancelled Focus V2 uploads', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $binary = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $binary);
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], 'short')->assertStatus(422);
+    focusV2PutChunk($init['upload_id'], $binary)->assertOk();
+    focusV2PutChunk($init['upload_id'], str_repeat('X', strlen($binary)))->assertStatus(409);
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+
+    $path = FocusV2MediaUpload::query()->sole()->stored_path;
+    Storage::disk('local')->assertExists($path);
+    $this->deleteJson(route('page-checks.control.focus-v2.media.cancel', $init['upload_id']))
+        ->assertOk()->assertJsonPath('cancelled', true);
+    Storage::disk('local')->assertMissing($path);
+    expect(FocusV2MediaUpload::query()->sole()->status)->toBe('cancelled');
+});
+
+it('rejects too large media and refuses to attach a stale Focus V2 revision', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+    $huge = $init;
+    $huge['size'] = 101 * 1024 * 1024;
+    $huge['mime'] = 'video/mp4';
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $huge)->assertUnprocessable();
+
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], $file)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id, 'expected_revision' => 0,
+    ])->assertStatus(409);
+    expect(ControlResponseDraft::query()->sole()->revision)->toBe(1)
+        ->and(FocusV2MediaUpload::query()->sole()->status)->toBe('ready');
+});
+
+it('resumes a two-chunk Focus V2 transfer after the final part arrives first', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $binary = focusV2SamplePng().str_repeat(' ', 512 * 1024);
+    $init = focusV2MediaStartPayload($control, $draft, $binary);
+
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)
+        ->assertOk()->assertJsonPath('total_chunks', 2);
+
+    focusV2PutChunk($init['upload_id'], substr($binary, 512 * 1024), 1)->assertOk();
+    $this->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
+        ->assertOk()->assertJsonPath('received.0', 1);
+    focusV2PutChunk($init['upload_id'], substr($binary, 0, 512 * 1024), 0)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+
+    $upload = FocusV2MediaUpload::query()->sole();
+    expect(Storage::disk('local')->size($upload->stored_path))->toBe(strlen($binary));
+});
+
+it('prunes abandoned Focus V2 files but never removes attached evidence', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $binary = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $binary);
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], $binary)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))->assertOk();
+
+    $upload = FocusV2MediaUpload::query()->sole();
+    $path = $upload->stored_path;
+    $upload->forceFill(['updated_at' => now()->subDays(3)])->save();
+    $this->artisan('focus-v2:prune-media')->assertExitCode(0);
+
+    expect(FocusV2MediaUpload::query()->count())->toBe(0);
+    Storage::disk('local')->assertMissing($path);
+});
+
+it('preserves attached Focus V2 evidence when a completed draft is deleted', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], $file)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id,
+        'expected_revision' => $draft->revision,
+    ])->assertOk();
+
+    $upload = FocusV2MediaUpload::query()->sole();
+    $path = $upload->stored_path;
+    $draft->delete(); // The normal Focus submit removes the active draft.
+    $upload->forceFill(['updated_at' => now()->subDays(3)])->save();
+
+    $this->artisan('focus-v2:prune-media')->assertExitCode(0);
+
+    expect(FocusV2MediaUpload::query()->count())->toBe(0);
+    Storage::disk('local')->assertExists($path);
+});
+
+function focusV2FinalPayload(ControlResponseDraft $draft): array
+{
+    return [
+        'control_id' => $draft->control_id,
+        'run_id' => $draft->run_id,
+        'schema_version' => $draft->schema_version,
+        'draft_id' => $draft->id,
+        'expected_revision' => $draft->revision,
+    ];
+}
+
+it('finishes Focus V2 from the stored draft with canonical scores and one notification', function (): void {
+    Queue::fake();
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $cleaner->forceFill(['telegram_id' => 'focus-v2-test-chat'])->save();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+    $draft = ControlResponseDraft::query()->sole();
+    $final = focusV2FinalPayload($draft);
+    $route = route('page-checks.control.focus-v2.submit');
+
+    $this->postJson($route, $final)
+        ->assertOk()
+        ->assertJsonPath('submitted', true)
+        ->assertJsonPath('replayed', false)
+        ->assertJsonPath('score_percent', 100)
+        ->assertJsonPath('total_points', 1)
+        ->assertJsonPath('max_points', 1)
+        ->assertJsonPath('result_zone', 'green');
+
+    $result = ControlResponse::query()->sole();
+    expect($result->supervisor_id)->toBe($supervisor->id)
+        ->and($result->submission_token)->toBe($payload['run_id'])
+        ->and($result->schema_version)->toBe($payload['schema_version'])
+        ->and($result->responses)->toBe($draft->responses)
+        ->and(ControlResponseDraft::count())->toBe(0)
+        ->and(ControlCompletionNotification::count())->toBe(1)
+        ->and(DB::table('activity_log')->where('event', 'control_completed')->count())->toBe(1);
+
+    $this->postJson($route, $final)
+        ->assertOk()
+        ->assertJsonPath('submitted', true)
+        ->assertJsonPath('replayed', true)
+        ->assertJsonPath('response_id', $result->id)
+        ->assertJsonPath('result_url', route('page-profile.checks.result', $result));
+
+    expect(ControlResponse::count())->toBe(1)
+        ->and(ControlCompletionNotification::count())->toBe(1)
+        ->and(DB::table('activity_log')->where('event', 'control_completed')->count())->toBe(1);
+    Queue::assertPushed(SendControlCompletionNotification::class, 1);
+});
+
+it('refuses to finish incomplete Focus V2 controls without deleting the draft', function (): void {
+    [, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $payload['answers'][0][0]['selected'] = '';
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+    $draft = ControlResponseDraft::query()->sole();
+
+    $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('answers.0.0');
+    expect(ControlResponseDraft::count())->toBe(1)
+        ->and(ControlResponse::count())->toBe(0);
+});
+
+it('requires the latest revision and the draft owner to finalize Focus V2', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+    $draft = ControlResponseDraft::query()->sole();
+    $route = route('page-checks.control.focus-v2.submit');
+    $input = focusV2FinalPayload($draft);
+
+    $changed = $input;
+    $changed['expected_revision'] = 999;
+    $this->postJson($route, $changed)->assertStatus(409);
+
+    $changed = $input;
+    $changed['schema_version'] = str_repeat('0', 64);
+    $this->postJson($route, $changed)->assertStatus(409);
+
+    $other = User::create(['name' => 'Other supervisor', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($other)->postJson($route, $input)->assertStatus(409);
+    $this->actingAs($cleaner)->postJson($route, $input)->assertForbidden();
+    $this->actingAs($supervisor);
+
+    expect(ControlResponse::count())->toBe(0)
+        ->and(ControlResponseDraft::count())->toBe(1);
+});
+
+it('finishes Focus V2 with pending photos and lets them arrive afterwards', function (): void {
+    Queue::fake();
+    Storage::fake('local');
+    [$supervisor, , $control, $draft] = focusV2MediaFixture();
+    $route = route('page-checks.control.focus-v2.submit');
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+
+    $finished = $this->postJson($route, focusV2FinalPayload($draft))
+        ->assertOk()->assertJsonPath('submitted', true)
+        ->assertJsonPath('media.state', 'awaiting_media')
+        ->assertJsonPath('media.pending', 1);
+    $resultId = $finished->json('response_id');
+
+    expect(ControlResponseDraft::count())->toBe(0)
+        ->and(ControlResponse::count())->toBe(1)
+        ->and(FocusV2MediaUpload::query()->sole()->control_response_id)->toBe($resultId)
+        ->and(ControlCompletionNotification::count())->toBe(0);
+
+    $review = route('page-checks.control.focus-v2.result-media-status', $resultId);
+    $this->getJson($review)->assertOk()
+        ->assertJsonPath('media.state', 'awaiting_media')
+        ->assertJsonPath('media.uploads.0.upload_id', $init['upload_id']);
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)
+        ->assertOk()->assertJsonPath('status', 'pending');
+
+    focusV2PutChunk($init['upload_id'], $file)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id, 'expected_revision' => 0,
+    ])->assertOk()->assertJsonPath('media.state', 'complete');
+
+    $this->getJson($review)->assertOk()->assertJsonPath('media.state', 'complete')
+        ->assertJsonPath('media.attached', 1);
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id, 'expected_revision' => 0,
+    ])->assertOk()->assertJsonPath('media.state', 'complete');
+
+    $saved = ControlResponse::findOrFail($resultId);
+    expect($saved->responses[0][0]['media'])->toHaveCount(1)
+        ->and($saved->score_percent)->toBe(100)
+        ->and(ControlCompletionNotification::count())->toBe(1);
+});
+
+it('allows a pending video to remain after submission but flags cancellation for review', function (): void {
+    Queue::fake();
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $init = focusV2MediaStartPayload($control, $draft, focusV2SamplePng());
+    $init['original_name'] = 'proof.mp4';
+    $init['mime'] = 'video/mp4';
+    $init['size'] = 6 * 1024 * 1024;
+
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)
+        ->assertOk()->assertJsonPath('status', 'pending');
+    $final = $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))
+        ->assertOk()->assertJsonPath('media.state', 'awaiting_media');
+    $resultId = $final->json('response_id');
+
+    $this->deleteJson(route('page-checks.control.focus-v2.media.cancel', $init['upload_id']))
+        ->assertOk()->assertJsonPath('cancelled', true);
+    $this->getJson(route('page-checks.control.focus-v2.result-media-status', $resultId))
+        ->assertOk()->assertJsonPath('media.state', 'needs_review')
+        ->assertJsonPath('media.cancelled', 1);
+    expect(ControlCompletionNotification::count())->toBe(0);
+    $this->artisan('focus-v2:prune-media')->assertExitCode(0);
+    expect(FocusV2MediaUpload::count())->toBe(1);
+});
+
+it('keeps pending media private after Focus submission', function (): void {
+    Storage::fake('local');
+    [$supervisor, $cleaner, $control, $draft] = focusV2MediaFixture();
+    $init = focusV2MediaStartPayload($control, $draft, focusV2SamplePng());
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    $final = $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))->assertOk();
+    $resultId = $final->json('response_id');
+    $other = User::create(['name' => 'Other supervisor', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
+
+    $this->actingAs($other)
+        ->getJson(route('page-checks.control.focus-v2.result-media-status', $resultId))
+        ->assertForbidden();
+    $this->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
+        ->assertNotFound();
+    $this->actingAs($cleaner)
+        ->getJson(route('page-checks.control.focus-v2.result-media-status', $resultId))
+        ->assertForbidden();
+    $this->actingAs($supervisor)
+        ->getJson(route('page-checks.control.focus-v2.result-media-status', $resultId))
+        ->assertOk();
+});
+
+it('rejects missing files in Focus V2 without creating a completed result', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $responses = $draft->responses;
+    $responses[0][0]['media'] = [[
+        'disk' => 'local', 'path' => 'controls/'.$control->id.'/2026/11/missing.png',
+        'original_name' => 'missing.png', 'mime' => 'image/png', 'size' => 120,
+    ]];
+    $draft->forceFill(['responses' => $responses])->save();
+    $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))
+        ->assertUnprocessable()->assertJsonValidationErrors('answers.0.0');
+    expect(ControlResponse::count())->toBe(0)
+        ->and(ControlResponseDraft::count())->toBe(1);
+});
 
 it('queues one durable completion notification for each Classic and Focus result', function (): void {
     Queue::fake();
