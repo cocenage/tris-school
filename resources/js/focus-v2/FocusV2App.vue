@@ -293,20 +293,25 @@ async function registerRemainingEvidence() {
         if (!item.file || allowedFocusFile(item.file)) {
             throw new Error('Некоторые файлы нельзя зарегистрировать. Уберите неподдерживаемые вложения перед завершением.');
         }
-        if (item.info) continue;
-        const info = await focusMediaRequest(props.mediaStartUrl, 'POST', {
-            upload_id: item.id,
-            control_id: control.value.id,
-            draft_id: run.value.draft_id,
-            run_id: run.value.id,
-            schema_version: control.value.schema_version,
-            room_index: item.room,
-            question_index: item.question,
-            original_name: item.file.name,
-            mime: focusFileMime(item.file),
-            size: item.file.size,
-        }, csrf);
-        item.info = info;
+    }
+    // Do not create hundreds of simultaneous requests against shared PHP
+    // hosting. Each successful registration is idempotent on retry.
+    const missing = waiting.filter(item => !item.info);
+    for (let start = 0; start < missing.length; start += 4) {
+        await Promise.all(missing.slice(start, start + 4).map(async item => {
+            item.info = await focusMediaRequest(props.mediaStartUrl, 'POST', {
+                upload_id: item.id,
+                control_id: control.value.id,
+                draft_id: run.value.draft_id,
+                run_id: run.value.id,
+                schema_version: control.value.schema_version,
+                room_index: item.room,
+                question_index: item.question,
+                original_name: item.file.name,
+                mime: focusFileMime(item.file),
+                size: item.file.size,
+            }, csrf);
+        }));
     }
 }
 
