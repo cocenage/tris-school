@@ -109,12 +109,21 @@ final class FocusV2SubmitController extends Controller
                 $this->validateSetup($draft);
                 $this->validateMedia($draft, $rooms);
 
-                // Finalization seals the list of registered evidence. Pending
-                // photos and videos stay uploadable after the draft is deleted.
-                // New uploads cannot be registered after finalization.
-                $evidence = FocusV2MediaUpload::query()->where('draft_id', $draft->getKey());
-                $hasUnresolvedMedia = (clone $evidence)->whereIn('status', ['pending', 'ready'])->exists();
-                $hasCancelledMedia = (clone $evidence)->where('status', 'cancelled')->exists();
+                // Never publish scores or queue notifications before every
+                // selected upload has been attached to its draft. A crashed
+                // Telegram WebView must resume the same upload before sign-off.
+                $evidence = FocusV2MediaUpload::query()
+                    ->where('draft_id', $draft->getKey())
+                    ->where('run_id', $input['run_id']);
+                if ((clone $evidence)->whereIn('status', ['pending', 'ready'])->exists()) {
+                    throw ValidationException::withMessages([
+                        'media' => 'Завершите загрузку всех фото и видео. Если Telegram закрывался, восстановите файлы из черновика.',
+                    ]);
+                }
+
+                // A file explicitly cancelled by the supervisor is not
+                // part of the submitted evidence manifest or its statistics.
+                (clone $evidence)->where('status', 'cancelled')->delete();
 
                 $score = ControlResponse::calculateScores($rooms, $answers);
                 $response = $runs->submitOnce(
@@ -139,12 +148,9 @@ final class FocusV2SubmitController extends Controller
                         'status' => ControlResponse::STATUS_SENT,
                         'sent_at' => now(),
                     ],
-                    afterCreate: function (ControlResponse $response) use ($notifications, $user, $control, $draft, $score, $hasUnresolvedMedia, $hasCancelledMedia): void {
-                        // Never send a "fully completed" notification while
-                        // registered evidence is still outstanding or cancelled.
-                        if (! $hasUnresolvedMedia && ! $hasCancelledMedia) {
-                            $notifications->queueFor($response);
-                        }
+                    afterCreate: function (ControlResponse $response) use ($notifications, $user, $control, $draft, $score): void {
+                        // All media are already attached; notify exactly once.
+                        $notifications->queueFor($response);
 
                         activity()->causedBy($user)->performedOn($response)->event('control_completed')
                             ->withProperties([

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Apartment;
 use App\Models\Control;
 use App\Models\ControlResponseDraft;
+use App\Models\FocusV2MediaUpload;
 use App\Models\User;
 use App\Services\Controls\ControlSchema;
 use Illuminate\Http\JsonResponse;
@@ -113,7 +114,7 @@ final class FocusV2BootstrapController extends Controller
         unset($clientRoom);
 
         return response()->json([
-            'viewer' => ['id' => (int) $user->getKey()],
+            'viewer' => ['id' => (int) $user->getKey(), 'role' => $user->role],
             'control' => [
                 'id' => $control->id,
                 'name' => $control->name,
@@ -139,6 +140,32 @@ final class FocusV2BootstrapController extends Controller
             ],
             'answers' => $answers,
             'media' => $media,
+            // A WebView may have been closed during a previous upload.
+            // Return only the authenticated supervisor's unfinished uploads,
+            // never storage paths or binary contents.
+            'pending_uploads' => $draft && ! $conflict
+                ? FocusV2MediaUpload::query()
+                    ->where('draft_id', $draft->id)
+                    ->where('supervisor_id', $user->getKey())
+                    ->where('run_id', $draft->run_id)
+                    ->whereIn('status', ['pending', 'ready'])
+                    ->orderBy('created_at')
+                    ->get()
+                    ->map(static fn (FocusV2MediaUpload $upload): array => [
+                        'upload_id' => $upload->id,
+                        'status' => $upload->status,
+                        'status_url' => route('page-checks.control.focus-v2.media.status', $upload->id),
+                        'control_id' => $upload->control_id,
+                        'draft_id' => $upload->draft_id,
+                        'run_id' => $upload->run_id,
+                        'schema_version' => $upload->schema_version,
+                        'room_index' => $upload->room_index,
+                        'question_index' => $upload->question_index,
+                        'original_name' => $upload->original_name,
+                        'mime' => $upload->declared_mime,
+                        'size' => $upload->size_bytes,
+                    ])->all()
+                : [],
             'people' => User::query()->activeStaff()->whereIn('role', ['cleaner', 'supervisor'])
                 ->orderBy('name')->get(['id', 'name', 'telegram_avatar_path', 'telegram_photo_url'])
                 ->map(fn (User $person): array => [

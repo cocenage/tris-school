@@ -900,53 +900,45 @@ it('requires the latest revision and the draft owner to finalize Focus V2', func
         ->and(ControlResponseDraft::count())->toBe(1);
 });
 
-it('finishes Focus V2 with pending photos and lets them arrive afterwards', function (): void {
+it('refuses Focus V2 completion until photo chunks are assembled and attached', function (): void {
     Queue::fake();
     Storage::fake('local');
-    [$supervisor, , $control, $draft] = focusV2MediaFixture();
-    $route = route('page-checks.control.focus-v2.submit');
+    [, , $control, $draft] = focusV2MediaFixture();
     $file = focusV2SamplePng();
     $init = focusV2MediaStartPayload($control, $draft, $file);
     $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
 
-    $finished = $this->postJson($route, focusV2FinalPayload($draft))
-        ->assertOk()->assertJsonPath('submitted', true)
-        ->assertJsonPath('media.state', 'awaiting_media')
-        ->assertJsonPath('media.pending', 1);
-    $resultId = $finished->json('response_id');
-
-    expect(ControlResponseDraft::count())->toBe(0)
-        ->and(ControlResponse::count())->toBe(1)
-        ->and(FocusV2MediaUpload::query()->sole()->control_response_id)->toBe($resultId)
+    $submit = route('page-checks.control.focus-v2.submit');
+    $this->postJson($submit, focusV2FinalPayload($draft))
+        ->assertUnprocessable()->assertJsonValidationErrors('media');
+    expect(ControlResponse::count())->toBe(0)
+        ->and(ControlResponseDraft::count())->toBe(1)
         ->and(ControlCompletionNotification::count())->toBe(0);
-
-    $review = route('page-checks.control.focus-v2.result-media-status', $resultId);
-    $this->getJson($review)->assertOk()
-        ->assertJsonPath('media.state', 'awaiting_media')
-        ->assertJsonPath('media.uploads.0.upload_id', $init['upload_id']);
-    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)
-        ->assertOk()->assertJsonPath('status', 'pending');
 
     focusV2PutChunk($init['upload_id'], $file)->assertOk();
     $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
         ->assertOk()->assertJsonPath('status', 'ready');
-    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
-        'draft_id' => $draft->id, 'expected_revision' => 0,
-    ])->assertOk()->assertJsonPath('media.state', 'complete');
 
-    $this->getJson($review)->assertOk()->assertJsonPath('media.state', 'complete')
+    $this->postJson($submit, focusV2FinalPayload($draft))
+        ->assertUnprocessable()->assertJsonValidationErrors('media');
+
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id, 'expected_revision' => $draft->revision,
+    ])->assertOk();
+
+    $draft->refresh();
+    $this->postJson($submit, focusV2FinalPayload($draft))
+        ->assertOk()->assertJsonPath('submitted', true)
+        ->assertJsonPath('media.state', 'complete')
         ->assertJsonPath('media.attached', 1);
-    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
-        'draft_id' => $draft->id, 'expected_revision' => 0,
-    ])->assertOk()->assertJsonPath('media.state', 'complete');
 
-    $saved = ControlResponse::findOrFail($resultId);
-    expect($saved->responses[0][0]['media'])->toHaveCount(1)
-        ->and($saved->score_percent)->toBe(100)
-        ->and(ControlCompletionNotification::count())->toBe(1);
+    expect(ControlResponse::count())->toBe(1)
+        ->and(ControlResponseDraft::count())->toBe(0)
+        ->and(ControlCompletionNotification::count())->toBe(1)
+        ->and(FocusV2MediaUpload::query()->sole()->status)->toBe('attached');
 });
 
-it('allows a pending video to remain after submission but flags cancellation for review', function (): void {
+it('lets users cancel a failed draft video without leaving an incomplete final result', function (): void {
     Queue::fake();
     Storage::fake('local');
     [, , $control, $draft] = focusV2MediaFixture();
@@ -957,39 +949,40 @@ it('allows a pending video to remain after submission but flags cancellation for
 
     $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)
         ->assertOk()->assertJsonPath('status', 'pending');
-    $final = $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))
-        ->assertOk()->assertJsonPath('media.state', 'awaiting_media');
-    $resultId = $final->json('response_id');
-
     $this->deleteJson(route('page-checks.control.focus-v2.media.cancel', $init['upload_id']))
         ->assertOk()->assertJsonPath('cancelled', true);
-    $this->getJson(route('page-checks.control.focus-v2.result-media-status', $resultId))
-        ->assertOk()->assertJsonPath('media.state', 'needs_review')
-        ->assertJsonPath('media.cancelled', 1);
-    expect(ControlCompletionNotification::count())->toBe(0);
-    $this->artisan('focus-v2:prune-media')->assertExitCode(0);
-    expect(FocusV2MediaUpload::count())->toBe(1);
+
+    $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))
+        ->assertOk()->assertJsonPath('media.state', 'complete')
+        ->assertJsonPath('media.total', 0);
+
+    expect(FocusV2MediaUpload::count())->toBe(0)
+        ->and(ControlResponse::count())->toBe(1)
+        ->and(ControlCompletionNotification::count())->toBe(1);
 });
 
-it('keeps pending media private after Focus submission', function (): void {
+it('returns only the current supervisor pending-upload manifest for safe draft resume', function (): void {
     Storage::fake('local');
     [$supervisor, $cleaner, $control, $draft] = focusV2MediaFixture();
     $init = focusV2MediaStartPayload($control, $draft, focusV2SamplePng());
     $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
-    $final = $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))->assertOk();
-    $resultId = $final->json('response_id');
-    $other = User::create(['name' => 'Other supervisor', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
 
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('pending_uploads.0.upload_id', $init['upload_id'])
+        ->assertJsonPath('pending_uploads.0.status', 'pending')
+        ->assertJsonMissingPath('pending_uploads.0.stored_path');
+
+    $other = User::create(['name' => 'Other supervisor', 'role' => 'supervisor', 'status' => 'approved', 'is_active' => true]);
     $this->actingAs($other)
-        ->getJson(route('page-checks.control.focus-v2.result-media-status', $resultId))
-        ->assertForbidden();
-    $this->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
+        ->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
         ->assertNotFound();
+
     $this->actingAs($cleaner)
-        ->getJson(route('page-checks.control.focus-v2.result-media-status', $resultId))
+        ->getJson(route('page-checks.control.focus-v2.bootstrap'))
         ->assertForbidden();
     $this->actingAs($supervisor)
-        ->getJson(route('page-checks.control.focus-v2.result-media-status', $resultId))
+        ->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
         ->assertOk();
 });
 

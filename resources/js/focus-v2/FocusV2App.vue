@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import FocusSearchSelect from './FocusSearchSelect.vue';
 import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
 import { chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
@@ -31,6 +32,11 @@ const submitting = ref(false);
 const submitError = ref('');
 const finalResult = ref(null);
 const uploads = ref([]);
+const interruptedUploads = ref([]);
+const viewerRole = ref('');
+const testMode = ref(false);
+const pickerFor = ref(null);
+const mediaError = ref('');
 const recoveryRecord = ref(null);
 const recoveryMode = ref('');
 const recoveryBusy = ref(false);
@@ -51,6 +57,7 @@ function queueLocalWrite(operation) {
 }
 
 function saveLocalSnapshot() {
+    if (testMode.value) return;
     if (!recoveryKey || !run.value || !control.value || recoveryMode.value || state.value === 'conflict') return;
     void queueLocalWrite({
         type: 'write',
@@ -66,7 +73,7 @@ function saveLocalSnapshot() {
     });
 }
 function settleLocalSnapshot() {
-    if (!recoveryKey) return;
+    if (testMode.value || !recoveryKey) return;
     if (changeSerial === acknowledgedSerial) {
         void queueLocalWrite({ type: 'delete', scope: recoveryKey });
     } else {
@@ -110,7 +117,7 @@ let timer = null;
 let inFlight = null;
 let uncertainSnapshot = null;
 
-const statusLabel = computed(() => ({
+const statusLabel = computed(() => testMode.value ? 'Тестовый режим · без отправки' : ({
     idle: 'Готово',
     dirty: 'Не сохранено',
     saving: 'Сохраняем…',
@@ -128,6 +135,12 @@ const completedRequired = computed(() => rooms.value.reduce((sum, room, roomInde
 ), 0));
 const currentRoom = computed(() => rooms.value[activeRoom.value] ?? { title: '', items: [] });
 const canEdit = computed(() => Boolean(run.value && !run.value.schema_conflict && state.value !== 'conflict' && !recoveryMode.value));
+const peopleOptions = computed(() => viewerRole.value === 'admin'
+    ? [{ id: '__test__', name: 'Тестовый сотрудник · без сохранения', thumbnail: null }, ...people.value]
+    : people.value);
+const outstandingMedia = computed(() => interruptedUploads.value.length + uploads.value.filter(item =>
+    ['queued', 'uploading', 'attaching', 'error'].includes(item.status)).length);
+const canSubmitMedia = computed(() => testMode.value || outstandingMedia.value === 0);
 
 const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
 
@@ -156,6 +169,12 @@ async function fetchJson(url, options = {}) {
 async function initialize() {
     loading.value = true;
     loadError.value = '';
+    testMode.value = false;
+    interruptedUploads.value = [];
+    pickerFor.value = null;
+    mediaError.value = '';
+    cleanupPreviews();
+    uploads.value = [];
     try {
         if (props.reviewStatusUrl) {
             finalResult.value = await fetchJson(props.reviewStatusUrl);
@@ -164,6 +183,8 @@ async function initialize() {
             return;
         }
         const data = await fetchJson(props.bootstrapUrl);
+        viewerRole.value = data.viewer?.role ?? '';
+        interruptedUploads.value = data.pending_uploads ?? [];
         control.value = data.control;
         run.value = data.run;
         rooms.value = data.rooms ?? [];
@@ -211,6 +232,112 @@ async function initialize() {
     }
 }
 
+async function choosePerson(id) {
+    if (!canEdit.value) return;
+    if (id === '__test__') {
+        if (viewerRole.value !== 'admin') return;
+        if (testMode.value) return;
+        // Never discard unfinished real work when switching to a local-only
+        // sandbox. Existing server drafts remain completely untouched.
+        if (busyUploads.value) {
+            syncError.value = 'Подождите, пока активная загрузка завершится, прежде чем открывать тест.';
+            return;
+        }
+        if (!(await ensureSynced())) {
+            syncError.value = syncError.value || 'Сначала сохраните текущий черновик.';
+            return;
+        }
+        cleanupPreviews();
+        testMode.value = true;
+        uploads.value = [];
+        media.value = rooms.value.map(room => (room.items ?? []).map(() => []));
+        answers.value = rooms.value.map(room => (room.items ?? []).map(() =>
+            ({ selected: '', custom: '', corrective: { repeats: null, action: '', recheck: null } })));
+        setup.value = { ...setup.value, cleaner_id: '__test__', apartment_id: null,
+            previous_cleaner: '', is_assigned: false, comment: '' };
+        state.value = 'synced';
+        syncError.value = '';
+        stage.value = 'setup';
+        return;
+    }
+    if (testMode.value) return;
+    setup.value.cleaner_id = id;
+    touch();
+}
+function chooseApartment(id) {
+    if (!canEdit.value) return;
+    setup.value.apartment_id = id;
+    touch();
+}
+function exitTestMode() {
+    if (!testMode.value) return;
+    testMode.value = false;
+    finalResult.value = null;
+    void initialize(); // Restore the real server-owned draft, never test values.
+}
+function resumeDraftFiles(event) {
+    const selected = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    mediaError.value = '';
+    if (!canEdit.value || testMode.value) return;
+    let restored = 0;
+    for (const file of selected) {
+        const record = interruptedUploads.value.find(item =>
+            item.status === 'pending'
+            && item.original_name === file.name && Number(item.size) === file.size
+            && item.mime === focusFileMime(file)
+            && !uploads.value.some(upload => upload.id === item.upload_id &&
+                ['queued', 'uploading', 'attaching'].includes(upload.status)));
+        if (!record) continue;
+        const error = allowedFocusFile(file);
+        if (error) { mediaError.value = error; continue; }
+        const previous = uploads.value.find(upload => upload.id === record.upload_id);
+        const data = {
+            id: record.upload_id, file, record, room: record.room_index,
+            question: record.question_index, status: 'queued', progress: 0,
+            error: '', controller: null, info: null, preview_url: URL.createObjectURL(file),
+        };
+        if (previous) {
+            if (previous.preview_url) URL.revokeObjectURL(previous.preview_url);
+            Object.assign(previous, data);
+        } else uploads.value.push(data);
+        restored++;
+    }
+    if (restored) pumpTransfers();
+    if (restored !== selected.length) {
+        mediaError.value = 'Не все файлы совпали с прерванными загрузками. Выберите оригиналы с тем же названием, размером и форматом.';
+    }
+}
+async function attachReadyDraft(record) {
+    if (!canEdit.value || testMode.value || record.status !== 'ready') return;
+    if (activeTransfers || attachInFlight) {
+        mediaError.value = 'Подождите завершения текущих загрузок.';
+        return;
+    }
+    mediaError.value = '';
+    try {
+        if (!(await ensureSynced())) throw new Error('Не удалось сохранить ответы.');
+        attachInFlight = true;
+        const info = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
+        if (info.status !== 'ready' && info.status !== 'attached') {
+            throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
+        }
+        const attached = await focusMediaRequest(info.urls.attach, 'POST', {
+            draft_id: run.value.draft_id, expected_revision: run.value.revision,
+        }, csrf);
+        run.value = { ...run.value, ...attached.run };
+        const files = media.value[record.room_index][record.question_index];
+        if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
+            files.push(attached.media_item);
+        }
+        interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
+    } catch (error) {
+        mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
+    } finally {
+        attachInFlight = false;
+    }
+}
+
 function filled(room, question) {
     const answer = answers.value[room]?.[question];
     return Boolean(String(answer?.selected ?? '').trim() || String(answer?.custom ?? '').trim());
@@ -245,14 +372,17 @@ function changeAnswer(room, index, value) {
     const answer = answers.value[room][index];
     if (answer.selected === value) return;
     answer.selected = value;
-    if (!isNegative(rooms.value[room].items[index], value)) {
-        answer.corrective = { repeats: null, action: '', recheck: null };
-    }
+    // Corrective form is intentionally hidden in this release.
+    answer.corrective = { repeats: null, action: '', recheck: null };
     touch();
 }
 
 function touch() {
     if (!canEdit.value) return;
+    if (testMode.value) {
+        state.value = 'synced';
+        return; // Client-side test: never send any draft writes.
+    }
     changeSerial++;
     state.value = 'dirty';
     syncError.value = '';
@@ -278,6 +408,7 @@ function takeSnapshot() {
 }
 
 async function flush() {
+    if (testMode.value) return true;
     clearTimeout(timer);
     timer = null;
     if (!canEdit.value) return false;
@@ -319,6 +450,7 @@ async function flush() {
 }
 
 async function ensureSynced() {
+    if (testMode.value) return true;
     clearTimeout(timer);
     for (let attempt = 0; attempt < 5; attempt++) {
         const ok = await flush();
@@ -489,14 +621,28 @@ async function submitControl() {
     submitting.value = true;
     submitError.value = '';
     try {
+        if (testMode.value) {
+            const count = media.value.flat().reduce((sum, files) => sum + files.length, 0);
+            finalResult.value = {
+                test_mode: true, media: { state: 'complete', total: count, attached: count,
+                    pending: 0, ready_to_attach: 0, cancelled: 0, uploads: [] },
+            };
+            stage.value = 'done';
+            return;
+        }
+        if (!canSubmitMedia.value) {
+            throw new Error('Дождитесь загрузки всех фото и видео. Ошибочные файлы повторите или отмените. При восстановлении выберите исходные файлы.');
+        }
         if (!(await ensureSynced())) {
             throw new Error(syncError.value || 'Сначала сохраните ответы.');
         }
         if (!run.value?.draft_id) {
             throw new Error('Черновик ещё не сохранён.');
         }
-        await registerRemainingEvidence();
         await attachQueue;
+        if (!canSubmitMedia.value) {
+            throw new Error('Не все фото и видео подтверждены сервером.');
+        }
         if (!(await ensureSynced())) {
             throw new Error(syncError.value || 'Не удалось синхронизировать ответы.');
         }
@@ -517,7 +663,6 @@ async function submitControl() {
         stage.value = 'done';
         state.value = 'synced';
         if (recoveryKey) void queueLocalWrite({ type: 'delete', scope: recoveryKey });
-        pumpTransfers();
     } catch (error) {
         submitError.value = error.message || 'Не удалось завершить контроль. Повторите отправку.';
         if (error.status === 409 && error.code !== 'submission_in_progress') {
@@ -549,16 +694,25 @@ async function openClassic() {
 
 function pendingAt(room, question) {
     return uploads.value.filter(item => item.room === room && item.question === question
-        && ['queued', 'uploading', 'attaching'].includes(item.status));
+        && ['queued', 'uploading', 'attaching', 'error'].includes(item.status));
+}
+function mediaCountAt(room, question) {
+    return (media.value[room]?.[question] ?? []).length
+        + pendingAt(room, question).length
+        + interruptedUploads.value.filter(item => item.room_index === room && item.question_index === question
+            && !uploads.value.some(upload => upload.id === item.upload_id)).length;
 }
 
 function addFiles(event, room, question) {
     const selected = Array.from(event.target.files ?? []);
     event.target.value = '';
+    pickerFor.value = null;
+    mediaError.value = '';
     if (!canEdit.value) return;
 
     const current = media.value[room]?.[question]?.length ?? 0;
-    let reserved = pendingAt(room, question).length;
+    let reserved = pendingAt(room, question).length
+        + interruptedUploads.value.filter(item => item.room_index === room && item.question_index === question).length;
     for (const file of selected) {
         const error = allowedFocusFile(file);
         if (current + reserved >= 12) {
@@ -567,13 +721,21 @@ function addFiles(event, room, question) {
             continue;
         }
         const id = crypto.randomUUID();
-        uploads.value.push({
-            id, file, room, question, status: error ? 'error' : 'queued',
-            progress: 0, error, controller: null, info: null,
-        });
+        if (testMode.value && !error) {
+            const files = media.value[room][question] ?? (media.value[room][question] = []);
+            const url = URL.createObjectURL(file);
+            files.push({ upload_id: id, name: file.name, mime: focusFileMime(file),
+                size: file.size, url, thumbnail_url: url, local: true });
+        } else {
+            uploads.value.push({
+                id, file, room, question, status: error ? 'error' : 'queued',
+                progress: 0, error, controller: null, info: null,
+                preview_url: !error ? URL.createObjectURL(file) : null,
+            });
+        }
         if (!error) reserved++;
     }
-    pumpTransfers();
+    if (!testMode.value) pumpTransfers();
 }
 
 function pumpTransfers() {
@@ -657,6 +819,8 @@ async function sendOne(item) {
         });
         attachQueue = task.catch(() => {});
         await task;
+        interruptedUploads.value = interruptedUploads.value.filter(other => other.upload_id !== item.id);
+        if (item.preview_url) URL.revokeObjectURL(item.preview_url);
         uploads.value = uploads.value.filter(other => other.id !== item.id);
     } catch (error) {
         if (controller.signal.aborted) {
@@ -697,6 +861,10 @@ async function cancelFile(item) {
     }
     item.controller?.abort();
     item.status = 'cancelled';
+    if (item.preview_url) {
+        URL.revokeObjectURL(item.preview_url);
+        item.preview_url = null;
+    }
     if (item.info?.urls?.cancel) {
         try {
             await focusMediaRequest(item.info.urls.cancel, 'DELETE', undefined, csrf);
@@ -711,8 +879,27 @@ async function cancelFile(item) {
 
 function dismissFile(item) {
     if (['queued', 'uploading', 'attaching'].includes(item.status)) return;
+    if (item.preview_url) URL.revokeObjectURL(item.preview_url);
     uploads.value = uploads.value.filter(other => other.id !== item.id);
 }
+function cleanupPreviews() {
+    uploads.value.forEach(item => { if (item.preview_url) URL.revokeObjectURL(item.preview_url); });
+    media.value.flat().flat().forEach(file => {
+        if (file.local && file.url) URL.revokeObjectURL(file.url);
+    });
+}
+function removeTestMedia(room, question, file) {
+    if (!testMode.value) return;
+    if (file.local && file.url) URL.revokeObjectURL(file.url);
+    media.value[room][question] = media.value[room][question].filter(item => item !== file);
+}
+function pickerKey(room, question) { return room + '-' + question; }
+function togglePicker(room, question) {
+    const key = pickerKey(room, question);
+    pickerFor.value = pickerFor.value === key ? null : key;
+}
+function mediaIsVideo(file) { return String(file.mime || focusFileMime(file.file || {})).startsWith('video/'); }
+function mediaPreview(file) { return file.preview_url || file.thumbnail_url || file.url || ''; }
 
 function warnBeforeUnload(event) {
     if (submitting.value || busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {
@@ -726,6 +913,7 @@ onMounted(() => {
     void initialize();
 });
 onBeforeUnmount(() => {
+    cleanupPreviews();
     clearTimeout(timer);
     window.removeEventListener('beforeunload', warnBeforeUnload);
 });
@@ -736,10 +924,11 @@ onBeforeUnmount(() => {
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
-                    <p class="text-xs font-medium text-slate-500">TRIS Academy · Тестовая версия</p>
+                    <p class="text-xs font-medium text-slate-500">TRIS Academy · Focus Control</p>
                     <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
-                <a v-if="stage !== 'done'" :href="classicUrl" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700" @click.prevent="openClassic">Старый Focus</a>
+                <button v-if="testMode" type="button" class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900" @click="exitTestMode">Выйти из теста</button>
+                <a v-else-if="stage !== 'done'" :href="classicUrl" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700" @click.prevent="openClassic">Старый Focus</a>
                 <a v-else-if="finalResult?.result_url" :href="finalResult.result_url" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700">Результат</a>
             </header>
 
@@ -755,12 +944,16 @@ onBeforeUnmount(() => {
                         <span class="size-2.5 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
                         <strong>{{ statusLabel }}</strong>
                     </div>
-                    <button type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
+                    <button v-if="!testMode && stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
                         {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
                     </button>
                 </div>
 
-                <div v-if="!localStorageAvailable && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
+                    <strong>Тестовый сотрудник</strong>
+                    <p class="mt-1">Это демонстрационный контроль: ответы и выбранные файлы остаются только в этом окне. Никаких записей в базе, статистики, уведомлений или загрузок на сервер.</p>
+                </div>
+                <div v-if="!localStorageAvailable && !testMode && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
                     Локальное восстановление недоступно в этом браузере. Дождитесь статуса «Сохранено» перед закрытием Telegram.
                 </div>
                 <section v-if="recoveryMode && recoveryRecord" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
@@ -787,13 +980,26 @@ onBeforeUnmount(() => {
                             @click="keepServerVersion">Оставить серверную версию</button>
                     </div>
                 </section>
+                <section v-if="interruptedUploads.length && !testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+                    <h2 class="font-bold">Есть незавершённые загрузки · {{ interruptedUploads.length }}</h2>
+                    <p class="mt-2">Telegram закрылся до подтверждения файлов. Контроль нельзя отправить, пока материалы не будут восстановлены. Повторная загрузка пропускает уже принятые сервером части.</p>
+                    <label v-if="interruptedUploads.some(item => item.status === 'pending')" class="mt-3 inline-flex cursor-pointer rounded-xl bg-blue-700 px-4 py-3 font-semibold text-white">
+                        Выбрать исходные фото и видео
+                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" @change="resumeDraftFiles">
+                    </label>
+                    <div v-for="record in interruptedUploads" :key="record.upload_id" class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-white p-3">
+                        <span class="min-w-0 truncate text-xs font-semibold">{{ record.original_name }} · {{ record.status === 'ready' ? 'Получено сервером' : 'Нужно продолжить' }}</span>
+                        <button v-if="record.status === 'ready'" type="button" class="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800" @click="attachReadyDraft(record)">Прикрепить</button>
+                    </div>
+                </section>
+                <div v-if="mediaError" class="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</div>
                 <div v-if="uploads.length && stage !== 'done'" class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs" role="status" aria-live="polite">
                     <div class="min-w-0">
                         <strong class="text-slate-700">Фото и видео</strong>
                         <span class="ml-2 text-slate-500">В очереди: {{ uploads.filter(item => ['queued', 'uploading', 'attaching'].includes(item.status)).length }}</span>
                         <span v-if="uploads.some(item => item.status === 'error')" class="ml-2 font-semibold text-red-700">Ошибки: {{ uploads.filter(item => item.status === 'error').length }}</span>
                     </div>
-                    <span class="shrink-0 text-slate-500">Файлы загружаются отдельно</span>
+                    <span class="shrink-0 text-slate-500">Дождитесь подтверждения</span>
                 </div>
 
                 <div v-if="syncError" role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -808,19 +1014,15 @@ onBeforeUnmount(() => {
                             <p class="mt-1 text-sm text-slate-500">{{ control?.name }}</p>
                         </div>
 
-                        <label class="block text-sm font-semibold">
-                            Сотрудник
-                            <select v-model="setup.cleaner_id" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base" @change="touch">
-                                <option :value="null">Выбрать сотрудника</option>
-                                <option v-for="person in people" :key="person.id" :value="person.id">{{ person.name }}</option>
-                            </select>
-                        </label>
-                        <label class="block text-sm font-semibold">
-                            Квартира
-                            <select v-model="setup.apartment_id" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base" @change="touch">
-                                <option :value="null">Выбрать квартиру</option>
-                                <option v-for="apartment in apartments" :key="apartment.id" :value="apartment.id">{{ apartment.name }}</option>
-                            </select>
+                        <FocusSearchSelect id="focus-cleaner" :items="peopleOptions" :model-value="setup.cleaner_id"
+                            label="Сотрудник" placeholder="Найти сотрудника по имени" :disabled="!canEdit"
+                            @select="choosePerson" />
+                        <FocusSearchSelect id="focus-apartment" :items="apartments" :model-value="setup.apartment_id"
+                            label="Квартира" placeholder="Найти квартиру по названию" :disabled="!canEdit"
+                            @select="chooseApartment" />
+                        <label class="block text-sm font-semibold">Комментарий к проверке
+                            <textarea v-model="setup.comment" rows="3" maxlength="2000" placeholder="Напишите важные детали перед проверкой"
+                                :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch"></textarea>
                         </label>
 
                         <div class="grid grid-cols-2 gap-3">
@@ -838,9 +1040,7 @@ onBeforeUnmount(() => {
                         <label class="block text-sm font-semibold">Предыдущий сотрудник
                             <input v-model="setup.previous_cleaner" type="text" maxlength="255" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch">
                         </label>
-                        <label class="block text-sm font-semibold">Комментарий
-                            <textarea v-model="setup.comment" rows="2" maxlength="2000" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch"></textarea>
-                        </label>
+
                         <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="goRoom(0)">
                             К вопросам
                         </button>
@@ -892,49 +1092,84 @@ onBeforeUnmount(() => {
                                 <textarea v-model="answers[activeRoom][questionIndex].custom" :disabled="!canEdit" rows="2" maxlength="2000" class="mt-2 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch"></textarea>
                             </label>
 
-                            <section v-if="isNegative(question, answers[activeRoom][questionIndex].selected)" class="mt-4 space-y-3 rounded-xl bg-amber-50 p-3">
-                                <p class="text-sm font-bold text-amber-950">Уточнение по замечанию</p>
-                                <label class="block text-xs font-semibold text-amber-950">Повторяется?
-                                    <select v-model="answers[activeRoom][questionIndex].corrective.repeats" :disabled="!canEdit" class="mt-1 w-full rounded-lg border border-amber-200 bg-white p-2 text-sm" @change="touch">
-                                        <option :value="null">Не указано</option><option :value="true">Да</option><option :value="false">Нет</option>
-                                    </select>
-                                </label>
-                                <label class="block text-xs font-semibold text-amber-950">Что сделать
-                                    <textarea v-model="answers[activeRoom][questionIndex].corrective.action" :disabled="!canEdit" rows="2" maxlength="2000" class="mt-1 w-full rounded-lg border border-amber-200 bg-white p-2 text-sm" @input="touch"></textarea>
-                                </label>
-                                <label class="block text-xs font-semibold text-amber-950">Повторная проверка?
-                                    <select v-model="answers[activeRoom][questionIndex].corrective.recheck" :disabled="!canEdit" class="mt-1 w-full rounded-lg border border-amber-200 bg-white p-2 text-sm" @change="touch">
-                                        <option :value="null">Не указано</option><option :value="true">Да</option><option :value="false">Нет</option>
-                                    </select>
-                                </label>
-                            </section>
 
                             <div class="mt-4 border-t border-slate-100 pt-3">
                                 <div class="flex items-center justify-between gap-3">
-                                    <p class="text-xs font-bold text-slate-500">Фото и видео · {{ (media[activeRoom]?.[questionIndex] ?? []).length + pendingAt(activeRoom, questionIndex).length }}/12</p>
-                                    <label class="cursor-pointer rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" :class="!canEdit ? 'pointer-events-none opacity-50' : ''">
-                                        + Добавить
-                                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
-                                    </label>
-                                </div>
-                                <div v-if="(media[activeRoom]?.[questionIndex] ?? []).length" class="mt-2 flex flex-wrap gap-2">
-                                    <a v-for="file in media[activeRoom][questionIndex]" :key="file.upload_id || file.index" :href="file.url" target="_blank" rel="noopener noreferrer" class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-blue-700">{{ file.name || 'Вложение' }}</a>
-                                </div>
-                                <div v-for="item in uploads.filter(file => file.room === activeRoom && file.question === questionIndex)" :key="item.id" class="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
-                                    <div class="flex items-center justify-between gap-2">
-                                        <span class="min-w-0 truncate font-semibold">{{ item.file?.name }}</span>
-                                        <span class="shrink-0 text-slate-500">{{ item.status === 'queued' ? 'В очереди' : item.status === 'uploading' ? 'Загрузка' : item.status === 'attaching' ? 'Прикрепляем' : item.status === 'cancelled' ? 'Отменено' : 'Ошибка' }}</span>
+                                    <p class="text-xs font-bold text-slate-500">Фото и видео · {{ mediaCountAt(activeRoom, questionIndex) }}/12</p>
+                                    <div class="relative">
+                                        <button type="button" :disabled="!canEdit || mediaCountAt(activeRoom, questionIndex) >= 12"
+                                            class="rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white disabled:opacity-50"
+                                            :aria-expanded="pickerFor === pickerKey(activeRoom, questionIndex)"
+                                            @click="togglePicker(activeRoom, questionIndex)">+ Фото / видео</button>
+                                        <div v-if="pickerFor === pickerKey(activeRoom, questionIndex)"
+                                            class="absolute right-0 top-full z-20 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold hover:bg-blue-50">
+                                                <span aria-hidden="true">📷</span> Сделать фото
+                                                <input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" capture="environment" class="sr-only"
+                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
+                                            </label>
+                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold hover:bg-blue-50">
+                                                <span aria-hidden="true">🎥</span> Снять видео
+                                                <input type="file" accept="video/mp4,video/quicktime,video/webm" capture="environment" class="sr-only"
+                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
+                                            </label>
+                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-lg px-3 py-3 text-sm font-semibold hover:bg-blue-50">
+                                                <span aria-hidden="true">▦</span> Выбрать файлы
+                                                <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only"
+                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
+                                            </label>
+                                        </div>
                                     </div>
-                                    <div v-if="['uploading', 'attaching'].includes(item.status)" class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200">
-                                        <div class="h-full bg-blue-600" :style="{ width: item.progress + '%' }"></div>
-                                    </div>
-                                    <p v-if="item.error" role="alert" class="mt-2 text-red-700">{{ item.error }}</p>
-                                    <div class="mt-2 flex gap-2">
-                                        <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-blue-600 px-3 py-1.5 font-semibold text-white" @click="retryFile(item)">Повторить</button>
-                                        <button v-if="['queued', 'uploading', 'error'].includes(item.status)" type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="cancelFile(item)">Отменить</button>
-                                        <button v-else type="button" class="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-700" @click="dismissFile(item)">Скрыть</button>
+                                </div>
+                                <div v-if="(media[activeRoom]?.[questionIndex] ?? []).length" class="mt-3 grid grid-cols-3 gap-2">
+                                    <div v-for="file in media[activeRoom][questionIndex]" :key="file.upload_id || file.index"
+                                        class="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                                        <a v-if="!mediaIsVideo(file)" :href="file.url" target="_blank" rel="noopener noreferrer"
+                                            class="block aspect-square bg-slate-100">
+                                            <img :src="mediaPreview(file)" :alt="'Фото: ' + (file.name || 'Вложение')"
+                                                class="size-full object-cover" loading="lazy">
+                                        </a>
+                                        <video v-else :src="file.url" controls playsinline preload="metadata"
+                                            class="aspect-square w-full bg-slate-900 object-contain" :aria-label="'Видео: ' + (file.name || 'Вложение')"></video>
+                                        <div class="flex items-center gap-1 p-2">
+                                            <a :href="file.url" target="_blank" rel="noopener noreferrer" class="min-w-0 flex-1 truncate text-xs font-medium text-blue-700">{{ file.name || 'Открыть файл' }}</a>
+                                            <button v-if="testMode" type="button" class="shrink-0 p-1 text-xs font-semibold text-red-700" @click="removeTestMedia(activeRoom, questionIndex, file)">×</button>
+                                        </div>
                                     </div>
                                 </div>
+                                <div v-if="uploads.some(file => file.room === activeRoom && file.question === questionIndex)"
+                                    class="mt-3 grid grid-cols-2 gap-2">
+                                    <div v-for="item in uploads.filter(file => file.room === activeRoom && file.question === questionIndex)"
+                                        :key="item.id" class="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                                        <div class="relative aspect-video bg-slate-100">
+                                            <video v-if="item.preview_url && mediaIsVideo(item)" :src="item.preview_url" playsinline muted preload="metadata"
+                                                class="size-full object-contain"></video>
+                                            <img v-else-if="item.preview_url" :src="item.preview_url" alt="Предпросмотр" class="size-full object-cover">
+                                            <div v-else class="grid size-full place-items-center text-xs text-slate-500">Файл</div>
+                                            <span class="absolute bottom-1 right-1 rounded-md bg-slate-900/75 px-2 py-1 text-xs font-bold text-white">
+                                                {{ item.status === 'queued' ? 'В очереди' : item.status === 'uploading' ? item.progress + '%' : item.status === 'attaching' ? 'Сохраняем' : item.status === 'cancelled' ? 'Отменено' : 'Ошибка' }}
+                                            </span>
+                                        </div>
+                                        <div class="space-y-2 p-2 text-xs">
+                                            <p class="truncate font-semibold">{{ item.file?.name }}</p>
+                                            <div v-if="['uploading', 'attaching'].includes(item.status)" class="h-1.5 overflow-hidden rounded-full bg-slate-200">
+                                                <div class="h-full bg-blue-600" :style="{ width: item.progress + '%' }"></div>
+                                            </div>
+                                            <p v-if="item.error" role="alert" class="text-red-700">{{ item.error }}</p>
+                                            <div class="flex flex-wrap gap-1">
+                                                <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-blue-600 px-2 py-2 font-bold text-white"
+                                                    @click="retryFile(item)">Повторить</button>
+                                                <button v-if="['queued', 'uploading', 'error'].includes(item.status)" type="button"
+                                                    class="rounded-lg bg-white px-2 py-2 font-bold text-slate-700" @click="cancelFile(item)">Отменить</button>
+                                                <button v-else type="button" class="rounded-lg bg-white px-2 py-2 font-bold text-slate-700"
+                                                    @click="dismissFile(item)">Скрыть</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <p v-if="!testMode && outstandingMedia > 0" class="mt-3 text-xs text-amber-800">
+                                    Не закрывайте Telegram до окончания загрузки. Отправка откроется только после подтверждения всех материалов.
+                                </p>
                             </div>
                         </article>
                     </div>
@@ -956,14 +1191,17 @@ onBeforeUnmount(() => {
                             <span class="text-sm font-semibold">{{ room.title }}</span>
                             <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
                         </div>
-                        <div v-if="busyUploads" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="status">
-                            Фото и видео ещё загружаются. Вы можете завершить проверку сейчас: мы зарегистрируем оставшиеся файлы на сервере, а материалы догрузятся отдельно. Если Telegram закроется, понадобится снова выбрать исходные файлы.
+                        <div v-if="!testMode && !canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+                            Остались файлы без подтверждения · {{ outstandingMedia }}. Дождитесь завершения загрузки, повторите ошибочные файлы или восстановите их после закрытия Telegram. До этого отправка недоступна.
                         </div>
+                        <p v-else-if="testMode" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
+                            Тестовая проверка завершится только на этом экране — без записи в базу, статистику или Telegram.
+                        </p>
                         <div v-if="submitError" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
                             {{ submitError }}
                         </div>
-                        <button type="button" :disabled="!canEdit || submitting" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
-                            {{ submitting ? 'Отправляем контроль…' : 'Отправить контроль' }}
+                        <button type="button" :disabled="!canEdit || submitting || !canSubmitMedia" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
+                            {{ submitting ? 'Завершаем…' : testMode ? 'Завершить тест без отправки' : 'Отправить контроль' }}
                         </button>
                         <button type="button" :disabled="submitting || busyUploads" class="w-full rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-700 disabled:opacity-50" @click="openClassic">
                             Продолжить в старом Focus
@@ -974,9 +1212,13 @@ onBeforeUnmount(() => {
                 <template v-else-if="stage === 'done'">
                     <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5" aria-live="polite">
                         <div class="text-3xl" aria-hidden="true">✓</div>
-                        <h2 class="text-xl font-semibold text-emerald-800">Контроль завершён</h2>
-                        <p class="text-sm text-slate-600">Ответы и оценка сохранены. Готовность фото и видео отслеживается отдельно.</p>
-                        <div class="rounded-xl bg-slate-50 p-4">
+                        <h2 class="text-xl font-semibold text-emerald-800">{{ testMode ? 'Тест завершён' : 'Контроль завершён' }}</h2>
+                        <p v-if="testMode" class="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
+                            Тест выполнен. На сервер ничего не отправлено; статистика, оценки и уведомления не создавались.
+                        </p>
+                        <p v-else-if="finalResult?.media?.state === 'complete'" class="text-sm text-slate-600">Ответы и оценка сохранены. Фото и видео подтверждены сервером.</p>
+                        <p v-else class="text-sm text-amber-900">Это ранее завершённый контроль. Материалы требуют восстановления.</p>
+                        <div v-if="!testMode" class="rounded-xl bg-slate-50 p-4">
                             <p class="text-sm text-slate-600">Оценка уборки</p>
                             <p class="mt-1 text-2xl font-semibold">{{ finalResult?.total_points }} / {{ finalResult?.max_points }} · {{ finalResult?.score_percent }}%</p>
                             <p class="mt-2 text-sm font-bold" :class="finalResult?.result_zone === 'green' ? 'text-emerald-700' : finalResult?.result_zone === 'red' ? 'text-red-700' : 'text-amber-700'">
@@ -984,7 +1226,7 @@ onBeforeUnmount(() => {
                             </p>
                             <p v-if="finalResult?.result_zone_reason" class="mt-1 text-xs text-slate-500">{{ finalResult.result_zone_reason }}</p>
                         </div>
-                        <div class="rounded-xl border border-slate-200 p-4">
+                        <div v-if="!testMode" class="rounded-xl border border-slate-200 p-4">
                             <div class="flex items-center justify-between gap-3">
                                 <h3 class="text-base font-bold">Фото и видео</h3>
                                 <button type="button" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" @click="refreshMediaReview">Обновить</button>
@@ -1040,7 +1282,8 @@ onBeforeUnmount(() => {
                         </div>
                         <a v-if="finalResult?.media_review_url" :href="finalResult.media_review_url" class="block rounded-xl bg-blue-50 p-3 text-center text-sm font-bold text-blue-700">Открыть проверку материалов позже</a>
                         <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white">Открыть результат</a>
-                        <a href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
+                        <button v-if="testMode" type="button" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white" @click="exitTestMode">Вернуться к настоящим контролям</button>
+                        <a v-else href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
                     </section>
                 </template>
             </template>
