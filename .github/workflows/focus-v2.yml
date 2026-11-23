@@ -3,6 +3,7 @@ name: Focus Control V2 checks
 on:
   push:
     branches:
+      - main
       - 'codex/focus-control-v2-foundation'
     paths:
       - 'app/Http/Controllers/FocusV2*.php'
@@ -16,6 +17,7 @@ on:
       - 'resources/js/focus-v2/**'
       - 'resources/views/focus-v2.blade.php'
       - 'resources/views/components/profile/**'
+      - 'resources/views/components/⚡page-checks.blade.php'
       - 'routes/web.php'
       - 'package.json'
       - 'package-lock.json'
@@ -23,6 +25,7 @@ on:
       - 'vite.config.js'
       - 'tests/Feature/ControlWorkflowTest.php'
       - 'tests/Feature/FocusV2StagingCheckTest.php'
+      - 'docs/focus-v2-production-rollout.md'
       - '.github/workflows/focus-v2.yml'
   pull_request:
     paths:
@@ -37,6 +40,7 @@ on:
       - 'resources/js/focus-v2/**'
       - 'resources/views/focus-v2.blade.php'
       - 'resources/views/components/profile/**'
+      - 'resources/views/components/⚡page-checks.blade.php'
       - 'routes/web.php'
       - 'package.json'
       - 'package-lock.json'
@@ -44,6 +48,7 @@ on:
       - 'vite.config.js'
       - 'tests/Feature/ControlWorkflowTest.php'
       - 'tests/Feature/FocusV2StagingCheckTest.php'
+      - 'docs/focus-v2-production-rollout.md'
       - '.github/workflows/focus-v2.yml'
   workflow_dispatch:
 
@@ -94,10 +99,10 @@ jobs:
           php artisan key:generate --no-interaction
       - name: Focus control feature and media regression tests
         run: php artisan test tests/Feature/ControlWorkflowTest.php tests/Feature/FocusV2StagingCheckTest.php
-      - name: Package compiled assets for isolated staging
+      - name: Package compiled assets for deployment
         uses: actions/upload-artifact@v4
         with:
           name: focus-v2-vite-build
           path: public/build/
           if-no-files-found: error
-          retention-days: 5
+          retention-days: 7
