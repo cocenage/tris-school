@@ -176,20 +176,20 @@ Route::middleware(['auth', 'approved'])->group(function () {
     })->middleware(SafeguardRolePreviewData::class)->whereNumber('controlResponse')
         ->name('page-checks.control.focus-v2.review');
     Route::post('/checks/control/focus-v2/media', [FocusV2MediaController::class, 'start'])
-        ->middleware([SafeguardRolePreviewData::class, 'throttle:60,1'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:400,1'])
         ->name('page-checks.control.focus-v2.media.start');
     Route::get('/checks/control/focus-v2/media/{upload}', [FocusV2MediaController::class, 'status'])
         ->middleware(SafeguardRolePreviewData::class)
         ->name('page-checks.control.focus-v2.media.status');
     Route::put('/checks/control/focus-v2/media/{upload}/chunks/{index}', [FocusV2MediaController::class, 'chunk'])
-        ->middleware([SafeguardRolePreviewData::class, 'throttle:360,1'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:1500,1'])
         ->whereNumber('index')
         ->name('page-checks.control.focus-v2.media.chunk');
     Route::post('/checks/control/focus-v2/media/{upload}/complete', [FocusV2MediaController::class, 'complete'])
-        ->middleware([SafeguardRolePreviewData::class, 'throttle:30,1'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:300,1'])
         ->name('page-checks.control.focus-v2.media.complete');
     Route::post('/checks/control/focus-v2/media/{upload}/attach', [FocusV2MediaController::class, 'attach'])
-        ->middleware([SafeguardRolePreviewData::class, 'throttle:60,1'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:300,1'])
         ->name('page-checks.control.focus-v2.media.attach');
     Route::delete('/checks/control/focus-v2/media/{upload}', [FocusV2MediaController::class, 'cancel'])
         ->middleware(SafeguardRolePreviewData::class)
