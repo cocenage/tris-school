@@ -1106,6 +1106,39 @@ onBeforeUnmount(() => {
 
 <template>
     <div class="min-h-screen bg-slate-50 text-slate-900">
+        <div v-if="photoCapture" class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/85 p-3 sm:items-center"
+            role="dialog" aria-modal="true" aria-label="Подтвердить фотографию" @keydown.esc="closePhotoCapture">
+            <div class="w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl">
+                <div class="flex items-center justify-between p-4">
+                    <h2 class="text-lg font-semibold">Оставляем снимок?</h2>
+                    <button type="button" :disabled="photoCapture.saving" class="rounded-full p-2 text-slate-600"
+                        aria-label="Закрыть предпросмотр" @click="closePhotoCapture">✕</button>
+                </div>
+                <div class="flex max-h-[56vh] min-h-48 items-center justify-center bg-slate-950">
+                    <img :src="photoCapture.preview_url" alt="Новое фото перед отправкой"
+                        class="max-h-[56vh] w-full object-contain">
+                </div>
+                <div class="space-y-3 p-4">
+                    <p class="text-xs text-slate-600">Фото появится в вопросе сразу после подтверждения. Сохранение на сервер продолжится автоматически.</p>
+                    <p v-if="mediaError" class="rounded-xl bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</p>
+                    <div class="grid grid-cols-2 gap-3">
+                        <button type="button" :disabled="photoCapture.saving"
+                            class="min-h-12 rounded-2xl bg-slate-100 px-3 text-sm font-semibold text-slate-800 disabled:opacity-50"
+                            @click="retakePhoto">Переснять</button>
+                        <button type="button" :disabled="photoCapture.saving"
+                            class="min-h-12 rounded-2xl bg-blue-600 px-3 text-sm font-semibold text-white disabled:opacity-50"
+                            @click="confirmPhoto">{{ photoCapture.saving ? 'Сохраняем…' : 'Оставить фото' }}</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div v-if="lightbox" class="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3"
+            role="dialog" aria-modal="true" aria-label="Просмотр фотографии"
+            @click.self="closeLightbox" @keydown.esc="closeLightbox">
+            <button type="button" class="absolute right-3 top-3 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
+                aria-label="Закрыть просмотр" @click="closeLightbox">✕</button>
+            <img :src="lightbox.url" :alt="lightbox.name" class="max-h-[85vh] max-w-full object-contain">
+        </div>
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
@@ -1178,6 +1211,8 @@ onBeforeUnmount(() => {
                     </div>
                 </section>
                 <div v-if="mediaError" class="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</div>
+                <div v-if="cacheWarning && !testMode && outstandingMedia > 0"
+                    class="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" role="status">{{ cacheWarning }}</div>
                 <div v-if="uploads.length && stage !== 'done'" class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs" role="status" aria-live="polite">
                     <div class="min-w-0">
                         <strong class="text-slate-700">Фото и видео</strong>
