@@ -51,6 +51,14 @@ class FakeFocusBackend {
     }
 
     bootstrap(sandbox = false) {
+        if (sandbox && this.test.state === 'sandbox_complete') {
+            this.test = {
+                draftId: null, revision: 0,
+                runId: '00000000-0000-4000-8000-000000000003',
+                setup: { ...initialSetup(), cleaner_id: '__test__' },
+                answers: initialAnswers(), media: [[[]]], sessions: new Map(), state: 'sandbox',
+            };
+        }
         const state = sandbox ? this.test : this;
         const currentRunId = sandbox ? state.runId : runId;
         return {
@@ -335,6 +343,13 @@ async function main() {
             await page.getByRole('button', { name: 'Завершить тест без статистики' }).click();
             await page.getByRole('heading', { name: 'Тест завершён' }).waitFor();
             assert.equal(backend.test.state, 'sandbox_complete');
+            assert.equal(backend.realWrites, 0);
+            await page.getByRole('button', { name: 'Начать новый тест' }).click();
+            await page.getByRole('heading', { name: 'Данные проверки' }).waitFor();
+            await page.getByText('Тестовый сотрудник · серверная загрузка').waitFor();
+            assert.equal(backend.test.state, 'sandbox');
+            assert.equal(backend.test.draftId, null);
+            assert.equal(backend.test.media[0][0].length, 0);
             assert.equal(backend.realWrites, 0);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: real sandbox photo upload, gallery, delete and isolated submission');
