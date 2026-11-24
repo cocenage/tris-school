@@ -1188,6 +1188,14 @@ onBeforeUnmount(() => {
                 </div>
             </div>
         </div>
+        <div v-if="videoLightbox" class="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3"
+            role="dialog" aria-modal="true" aria-label="Просмотр видео" @click.self="closeVideoLightbox"
+            @keydown.esc="closeVideoLightbox">
+            <button type="button" class="absolute right-3 top-3 z-10 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
+                aria-label="Закрыть видео" @click="closeVideoLightbox">✕</button>
+            <video :src="videoLightbox.url" controls autoplay playsinline preload="metadata"
+                :aria-label="videoLightbox.name" class="max-h-[85vh] w-full max-w-2xl object-contain"></video>
+        </div>
         <div v-if="lightbox" class="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3"
             role="dialog" aria-modal="true" aria-label="Просмотр фотографии"
             @click.self="closeLightbox" @keydown.esc="closeLightbox">
@@ -1217,6 +1225,9 @@ onBeforeUnmount(() => {
                     <div class="flex items-center gap-2 text-sm" role="status" aria-live="polite">
                         <span class="size-2.5 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
                         <strong>{{ statusLabel }}</strong>
+                        <span v-if="!testMode && outstandingMedia > 0" class="text-xs font-medium text-amber-700">
+                            · {{ outstandingMedia }} {{ outstandingMedia === 1 ? 'файл' : 'файла' }} ещё не на сервере
+                        </span>
                     </div>
                     <button v-if="!testMode && stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
                         {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
@@ -1391,10 +1402,9 @@ onBeforeUnmount(() => {
                                                 class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl bg-blue-50 px-3 py-3 text-sm font-semibold text-blue-900">
                                                 <span aria-hidden="true">📷</span> Сделать фото
                                             </label>
-                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-slate-50">
+                                            <label :for="'focus-video-' + activeRoom + '-' + questionIndex"
+                                                class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-slate-50">
                                                 <span aria-hidden="true">🎬</span> Снять видео
-                                                <input type="file" accept="video/mp4,video/quicktime,video/webm" capture="environment" class="sr-only"
-                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
                                             </label>
                                             <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-slate-50">
                                                 <span aria-hidden="true">▦</span> Из галереи
@@ -1403,10 +1413,15 @@ onBeforeUnmount(() => {
                                             </label>
                                         </div>
                                     </div>
+                                    <!-- capture=environment is advisory in Telegram; gallery remains an accessible fallback. -->
                                     <input :id="'focus-camera-' + activeRoom + '-' + questionIndex" type="file"
                                         accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
                                         capture="environment" class="sr-only" :disabled="!canEdit"
                                         @change="takePhoto($event, activeRoom, questionIndex)">
+                                    <input :id="'focus-video-' + activeRoom + '-' + questionIndex" type="file"
+                                        accept="video/mp4,video/quicktime,video/webm"
+                                        capture="environment" class="sr-only" :disabled="!canEdit"
+                                        @change="takeVideo($event, activeRoom, questionIndex)">
                                 </div>
 
                                 <div v-if="visibleMediaAt(activeRoom, questionIndex).length"
@@ -1419,14 +1434,21 @@ onBeforeUnmount(() => {
                                             <img :src="item.url" :alt="item.name || 'Фото'" class="size-full object-cover" loading="lazy">
                                             <span v-if="item.kind === 'upload'"
                                                 class="absolute inset-x-0 bottom-0 bg-slate-950/75 p-1.5 text-center text-[11px] font-semibold text-white">
-                                                {{ item.status === 'error' ? 'Не загружено' : item.status === 'attaching' ? 'Проверяем…' : 'Сохраняем ' + item.progress + '%' }}
+                                                {{ item.status === 'error' ? 'Ошибка загрузки' : item.status === 'queued' ? (item.source.cached ? 'На устройстве' : 'В очереди') : item.status === 'attaching' ? 'Сохраняем на сервере' : 'Загружаем ' + item.progress + '%' }}
                                             </span>
                                             <span v-else class="absolute bottom-1 right-1 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold text-white">✓</span>
                                         </button>
-                                        <video v-else-if="item.url && mediaIsVideo(item)"
-                                            :src="item.url" controls playsinline preload="metadata"
-                                            :aria-label="'Видео ' + (item.name || '')"
-                                            class="aspect-square w-full bg-slate-900 object-contain"></video>
+                                        <button v-else-if="item.url && mediaIsVideo(item)"
+                                            type="button" class="relative flex aspect-square w-full items-center justify-center overflow-hidden bg-slate-900"
+                                            :aria-label="'Просмотреть видео ' + (item.name || '')"
+                                            @click="openVideoLightbox(item.source)">
+                                            <video :src="item.url" muted playsinline preload="metadata"
+                                                class="absolute inset-0 size-full object-cover" aria-hidden="true"></video>
+                                            <span class="relative z-10 grid size-12 place-items-center rounded-full bg-black/60 text-2xl text-white">▶</span>
+                                            <span v-if="item.kind === 'upload'" class="absolute bottom-1 inset-x-1 rounded-lg bg-slate-950/75 py-1 text-[11px] font-semibold text-white">
+                                                {{ item.status === 'error' ? 'Ошибка загрузки' : item.status === 'attaching' ? 'Сохраняем на сервере' : 'Загрузка ' + item.progress + '%' }}
+                                            </span>
+                                        </button>
                                         <div v-else class="grid aspect-square place-items-center bg-slate-200 p-2 text-center text-xs font-medium text-slate-600">
                                             {{ mediaIsVideo(item) ? 'Видео' : 'Фото' }} · требуется восстановление
                                         </div>
