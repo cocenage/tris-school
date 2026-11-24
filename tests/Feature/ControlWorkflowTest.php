@@ -741,6 +741,34 @@ it('blocks non-admins from injecting server sandbox saves or media into active p
         ->and(ControlResponse::count())->toBe(0);
 });
 
+it('halves new video chunk requests without breaking previously started 512 KiB sessions', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $input = focusV2MediaStartPayload($control, $draft, focusV2SamplePng());
+    $input['original_name'] = 'long-video.mp4';
+    $input['mime'] = 'video/mp4';
+    $input['size'] = 2 * 1024 * 1024 + 13;
+    $route = route('page-checks.control.focus-v2.media.start');
+
+    $this->postJson($route, $input)->assertOk()
+        ->assertJsonPath('chunk_bytes', 1024 * 1024)
+        ->assertJsonPath('total_chunks', 3);
+
+    // Simulate a partial transfer registered by the previous deployment.
+    // Replaying /start must keep its original chunk grid and upload UUID.
+    $old = FocusV2MediaUpload::query()->sole();
+    $old->chunk_bytes = 512 * 1024;
+    $old->total_chunks = 5;
+    $old->save();
+
+    $this->postJson($route, $input)->assertOk()
+        ->assertJsonPath('upload_id', $input['upload_id'])
+        ->assertJsonPath('chunk_bytes', 512 * 1024)
+        ->assertJsonPath('total_chunks', 5);
+
+    expect(FocusV2MediaUpload::count())->toBe(1);
+});
+
 it('uploads Focus V2 evidence in chunks, resumes and attaches it exactly once', function (): void {
     Storage::fake('local');
     [, , $control, $draft, $payload] = focusV2MediaFixture();
