@@ -41,7 +41,7 @@
             <p class="hint">{{ $question->type }}</p>
             <p>{{ $question->comment }}</p>
             @if ($question->attachments)
-                <small>Прикреплено файлов: {{ count($question->attachments) }}. Вложения доступны в исходном топике.</small>
+                <small>Прикреплено файлов: {{ count($question->attachments) }}. Вложения можно посмотреть в исходном топике или в Academy.</small>
             @endif
             @if ($question->status === 'in_progress')
                 <p class="hint">В работе · {{ $question->reviewer?->name ?: 'Ответственный руководитель' }}</p>

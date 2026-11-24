@@ -54,7 +54,7 @@ class SalaryQuestionDecisionService
 
     public function decide(SalaryQuestion $question, User $actor, string $status, string $comment, int $version, string $source): SalaryQuestionDecision
     {
-        abort_unless($this->canReview($actor), 403);
+        abort_unless($this->canReview($actor) && in_array($source, ['telegram', 'filament'], true), 403);
         app(RolePreviewContext::class)->assertWritable();
 
         $comment = trim($comment);

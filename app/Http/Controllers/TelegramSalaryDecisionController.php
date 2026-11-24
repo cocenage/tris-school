@@ -6,7 +6,7 @@ use App\Models\SalaryQuestion;
 use App\Services\Forms\SalaryQuestionDecisionService;
 use App\Services\Forms\TelegramSalaryQuestionService;
 use App\Services\RolePreviewContext;
-use Illuminate\Contracts\View\View;
+use Illuminate\Http\Response;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -33,7 +33,7 @@ class TelegramSalaryDecisionController extends Controller
         return $grant;
     }
 
-    public function show(Request $request, SalaryQuestion $salaryQuestion, string $action): View
+    public function show(Request $request, SalaryQuestion $salaryQuestion, string $action): Response
     {
         $grant = $this->grant($request, $salaryQuestion, $action);
         abort_unless($this->decisions->canOpenTelegram($salaryQuestion, $request->user())
@@ -42,7 +42,7 @@ class TelegramSalaryDecisionController extends Controller
         return $this->page($salaryQuestion, $action, (int) $grant['version']);
     }
 
-    public function store(Request $request, SalaryQuestion $salaryQuestion, string $action): View
+    public function store(Request $request, SalaryQuestion $salaryQuestion, string $action): Response
     {
         $grant = $this->grant($request, $salaryQuestion, $action);
         $validated = $request->validate(['comment' => ['required', 'string', 'max:1800'], 'version' => ['required', 'integer', 'min:0']]);
@@ -57,11 +57,11 @@ class TelegramSalaryDecisionController extends Controller
         return $this->page($salaryQuestion->fresh(), $action, (int) $grant['version'], $decision->comment);
     }
 
-    private function page(SalaryQuestion $question, string $action, int $version, ?string $savedComment = null): View
+    private function page(SalaryQuestion $question, string $action, int $version, ?string $savedComment = null): Response
     {
         $question->loadMissing('user');
 
-        return view('telegram.salary-decision', [
+        return response()->view('telegram.salary-decision', [
             'question' => $question,
             'employeeName' => $this->telegram->employeeName($question->user),
             'decisionAction' => $action,
@@ -76,6 +76,6 @@ class TelegramSalaryDecisionController extends Controller
             'button' => match ($action) {
                 'approve' => 'Одобрить заявку', 'reject' => 'Отказать', default => 'Принять в работу',
             },
-        ]);
+        ])->header('Cache-Control', 'private, no-store');
     }
 }

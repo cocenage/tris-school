@@ -14,6 +14,7 @@ class SalaryQuestionDecision extends Model
 
     protected $casts = [
         'version' => 'integer',
+        'card_sync_attempts' => 'integer',
         'telegram_message_id' => 'integer',
     ];
 

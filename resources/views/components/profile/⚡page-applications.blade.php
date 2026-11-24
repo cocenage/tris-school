@@ -121,11 +121,11 @@ new class extends Component
             ->values();
     }
 
-    public function statusLabel(?string $status): string
+    public function statusLabel(?string $status, ?string $requestType = null): string
     {
         return match ($status) {
             'approved' => 'одобрено',
-            'rejected' => 'отклонено',
+            'rejected' => $requestType === 'salary' ? 'отказано' : 'отклонено',
             'partially_approved' => 'частично',
             'issued' => 'выдано',
             'partially_issued' => 'частично',
@@ -415,7 +415,7 @@ new class extends Component
                             </div>
 
                             <span class="inline-flex shrink-0 rounded-full px-[10px] py-[5px] text-[12px] font-medium {{ $this->statusBadgeClasses($request->status) }}">
-                                {{ $this->statusLabel($request->status) }}
+                                {{ $this->statusLabel($request->status, $request->request_type) }}
                             </span>
                         </div>
 

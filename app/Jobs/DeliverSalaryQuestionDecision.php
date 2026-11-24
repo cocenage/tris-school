@@ -48,8 +48,11 @@ class DeliverSalaryQuestionDecision implements ShouldQueue, ShouldBeUnique
                 $this->release(15);
                 return;
             }
-            $telegram->deliverDecision($decision);
-            $telegram->syncSource($question);
+            try {
+                $telegram->deliverDecision($decision);
+            } finally {
+                $telegram->syncSource($question);
+            }
         });
     }
 
