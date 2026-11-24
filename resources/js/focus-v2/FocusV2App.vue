@@ -1,6 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
+import FocusMediaViewer from './FocusMediaViewer.vue';
+import FocusVideoThumb from './FocusVideoThumb.vue';
 import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
 import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
@@ -42,6 +44,7 @@ const mediaError = ref('');
 const photoCapture = ref(null);
 const videoLightbox = ref(null);
 const lightbox = ref(null);
+const galleryViewer = ref(null);
 const cacheWarning = ref('');
 const recoveringPhotos = ref(false);
 const recoveryRecord = ref(null);
@@ -223,6 +226,7 @@ async function initialize() {
     closePhotoCapture();
     closeLightbox();
     closeVideoLightbox();
+    galleryViewer.value = null;
     cleanupPreviews();
     uploads.value = [];
     try {
@@ -397,6 +401,25 @@ function openVideoLightbox(file) {
     if (url) videoLightbox.value = { url, name: file.name || file.original_name || 'Видео' };
 }
 function closeVideoLightbox() { videoLightbox.value = null; }
+function galleryEntries(room, question) {
+    return visibleMediaAt(room, question).filter(entry => Boolean(entry.url));
+}
+function openGallery(room, question, selected) {
+    const entries = galleryEntries(room, question);
+    const index = entries.findIndex(entry => entry.key === selected.key);
+    if (index < 0) return;
+    galleryViewer.value = { room, question, index };
+}
+const galleryItems = computed(() => galleryViewer.value
+    ? galleryEntries(galleryViewer.value.room, galleryViewer.value.question) : []);
+async function removeGalleryItem(item) {
+    if (!galleryViewer.value || !item) return;
+    const { room, question } = galleryViewer.value;
+    galleryViewer.value = null;
+    if (item.kind === 'saved') await removeSavedMedia(room, question, item.source);
+    else if (item.kind === 'upload') await cancelFile(item.source);
+}
+
 
 async function choosePerson(id) {
     if (!canEdit.value) return;
@@ -1303,6 +1326,7 @@ onBeforeUnmount(() => {
     closePhotoCapture();
     closeLightbox();
     closeVideoLightbox();
+    galleryViewer.value = null;
     cleanupPreviews();
     clearTimeout(timer);
     window.removeEventListener('beforeunload', warnBeforeUnload);
@@ -1341,26 +1365,9 @@ onBeforeUnmount(() => {
                 </div>
             </div>
         </div>
-        <div v-if="videoLightbox" class="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3"
-            role="dialog" aria-modal="true" aria-label="Просмотр видео" @click.self="closeVideoLightbox"
-            @keydown.esc="closeVideoLightbox">
-            <button type="button" class="absolute right-3 top-3 z-10 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
-                aria-label="Закрыть видео" @click="closeVideoLightbox">✕</button>
-            <video :src="videoLightbox.url" controls autoplay playsinline preload="metadata"
-                :aria-label="videoLightbox.name" class="max-h-[85vh] w-full max-w-2xl object-contain"></video>
-        </div>
-        <div v-if="lightbox" class="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3"
-            role="dialog" aria-modal="true" aria-label="Просмотр фотографии"
-            @click.self="closeLightbox" @keydown.esc="closeLightbox">
-            <button type="button" class="absolute right-3 top-3 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
-                aria-label="Закрыть просмотр" @click="closeLightbox">✕</button>
-            <img v-if="!lightbox.failed" :src="lightbox.url" :alt="lightbox.name"
-                class="max-h-[85vh] max-w-full object-contain" @error="lightboxImageFailed">
-            <div v-else class="max-w-sm rounded-2xl bg-white p-6 text-center text-sm text-slate-800">
-                <p class="font-bold">Не удалось показать оригинал фото</p>
-                <p class="mt-2 text-slate-600">Возможно, браузер Telegram не поддерживает этот формат. Файл от этого не теряется и продолжает загружаться.</p>
-            </div>
-        </div>
+        <FocusMediaViewer v-if="galleryViewer && galleryItems.length" :items="galleryItems"
+            :initial-index="galleryViewer.index" :can-remove="canEdit"
+            @close="galleryViewer = null" @remove="removeGalleryItem" />
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
@@ -1633,7 +1640,7 @@ onBeforeUnmount(() => {
                                         class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100">
                                         <button v-if="item.url && !mediaIsVideo(item)" type="button"
                                             class="relative block aspect-square w-full overflow-hidden bg-slate-200"
-                                            :aria-label="'Открыть фото ' + (item.name || '')" @click="openLightbox(item.source)">
+                                            :aria-label="'Открыть фото ' + (item.name || '')" @click="openGallery(activeRoom, questionIndex, item)">
                                             <img v-if="!item.source.previewFailed" :src="item.url" :alt="item.name || 'Фото'"
                                                 class="size-full object-cover" loading="lazy" @error="item.source.previewFailed = true">
                                             <span v-else class="grid size-full place-items-center p-2 text-center text-xs font-semibold text-slate-600">
@@ -1648,9 +1655,8 @@ onBeforeUnmount(() => {
                                         <button v-else-if="item.url && mediaIsVideo(item)"
                                             type="button" class="relative flex aspect-square w-full items-center justify-center overflow-hidden bg-slate-900"
                                             :aria-label="'Просмотреть видео ' + (item.name || '')"
-                                            @click="openVideoLightbox(item.source)">
-                                            <video :src="item.url" muted playsinline preload="metadata"
-                                                class="absolute inset-0 size-full object-cover" aria-hidden="true"></video>
+                                            @click="openGallery(activeRoom, questionIndex, item)">
+                                            <FocusVideoThumb :src="item.url" :name="item.name || 'Видео'" />
                                             <span class="relative z-10 grid size-12 place-items-center rounded-full bg-black/60 text-2xl text-white">▶</span>
                                             <span v-if="item.kind === 'upload'" class="absolute bottom-1 inset-x-1 rounded-lg bg-slate-950/75 py-1 text-[11px] font-semibold text-white">
                                                 {{ item.status === 'error' ? 'Ошибка загрузки' : item.status === 'attaching' ? 'Сохраняем на сервере' : 'Загрузка ' + item.progress + '%' }}
