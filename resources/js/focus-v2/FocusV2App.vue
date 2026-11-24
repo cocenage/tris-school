@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
 import FocusMediaViewer from './FocusMediaViewer.vue';
 import FocusVideoThumb from './FocusVideoThumb.vue';
-import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
+import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, isTransientFocusUploadError, transferFocusFile } from './media-upload';
 import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
@@ -54,6 +54,7 @@ const recoveryMode = ref('');
 const recoveryBusy = ref(false);
 const recoveryError = ref('');
 const localStorageAvailable = ref(true);
+const connectionOnline = ref(navigator.onLine !== false);
 let recoveryKey = null;
 const localWriter = createLocalRecoveryQueue(async operation => {
     if (operation.type === 'delete') {
@@ -196,15 +197,33 @@ const recoveryNeedingInput = computed(() => interruptedUploads.value.filter(reco
 const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
 
 async function fetchJson(url, options = {}) {
-    const response = await fetch(url, {
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: {
-            Accept: 'application/json',
-            ...(options.body ? { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf } : {}),
-        },
-        ...options,
-    });
+    // Draft requests may succeed even when Telegram loses their response.
+    // A bounded timeout lets the existing same-revision replay protocol
+    // recover rather than leaving the UI stuck on “Сохраняем…” forever.
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    options.signal?.addEventListener('abort', abort, { once: true });
+    let timeoutFired = false;
+    const timeout = setTimeout(() => { timeoutFired = true; controller.abort(); }, 25_000);
+    let response;
+    try {
+        response = await fetch(url, {
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: {
+                Accept: 'application/json',
+                ...(options.body ? { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf } : {}),
+            },
+            ...options,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (timeoutFired) throw new Error('Соединение зависло. При восстановлении повторим сохранение без потери ответов.');
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+        options.signal?.removeEventListener('abort', abort);
+    }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
         const firstError = Object.values(data.errors ?? {}).flat().find(message => typeof message === 'string');
@@ -721,6 +740,11 @@ function touch() {
 
 function queueSave(delay = 800) {
     clearTimeout(timer);
+    if (!connectionOnline.value) {
+        // Local recovery snapshots still continue to be queued in IndexedDB.
+        state.value = 'dirty';
+        return;
+    }
     timer = setTimeout(() => { void flush(); }, delay);
 }
 
@@ -741,6 +765,13 @@ async function flush() {
     clearTimeout(timer);
     timer = null;
     if (!canEdit.value) return false;
+    if (!connectionOnline.value) {
+        state.value = 'dirty';
+        syncError.value = localStorageAvailable.value
+            ? 'Нет интернета. Изменения остаются на этом устройстве, сервер ещё не подтвердил их.'
+            : 'Нет интернета и локальная копия недоступна. Не закрывайте Telegram до восстановления связи.';
+        return false;
+    }
     if (attachInFlight) { queueSave(450); return false; }
     if (inFlight) return inFlight;
     if (!uncertainSnapshot && changeSerial === acknowledgedSerial) return true;
@@ -1112,6 +1143,7 @@ async function queueSelectedFiles(selected, room, question) {
 }
 
 function pumpTransfers() {
+    if (!connectionOnline.value) return;
     while (activeTransfers < 2 && (canEdit.value || stage.value === 'done')) {
         const next = uploads.value.find(item => item.status === 'queued');
         if (!next) break;
@@ -1223,6 +1255,7 @@ async function sendOne(item) {
             return;
         }
         item.status = 'error';
+        item.retryable = isTransientFocusUploadError(error);
         item.error = error.message || 'Не удалось загрузить файл.';
         if (error.status === 409 && item.progress === 100) {
             syncError.value = 'Не удалось прикрепить файл из-за изменения черновика. Проверьте ответы перед повтором.';
@@ -1235,6 +1268,7 @@ function retryFile(item) {
     item.status = 'queued';
     item.error = '';
     item.retryHint = '';
+    item.retryable = false;
     pumpTransfers();
 }
 
@@ -1373,6 +1407,20 @@ function mediaPreview(file) {
     return file.preview_url || file.thumbnail_url || file.url || '';
 }
 
+function handleNetworkUpdate() {
+    const wasOnline = connectionOnline.value;
+    connectionOnline.value = navigator.onLine !== false;
+    if (!connectionOnline.value) return;
+    if (!wasOnline) {
+        if (['dirty', 'error'].includes(state.value)) queueSave(200);
+        // Retry only errors caused by temporary transport failures;
+        // permissions/invalid files must remain visible for manual action.
+        for (const item of uploads.value) {
+            if (item.status === 'error' && item.retryable) retryFile(item);
+        }
+        pumpTransfers();
+    }
+}
 function warnBeforeUnload(event) {
     if (submitting.value || busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {
         event.preventDefault();
@@ -1382,6 +1430,8 @@ function warnBeforeUnload(event) {
 
 onMounted(() => {
     window.addEventListener('beforeunload', warnBeforeUnload);
+    window.addEventListener('online', handleNetworkUpdate);
+    window.addEventListener('offline', handleNetworkUpdate);
     void initialize();
 });
 onBeforeUnmount(() => {
@@ -1393,6 +1443,8 @@ onBeforeUnmount(() => {
     cleanupPreviews();
     clearTimeout(timer);
     window.removeEventListener('beforeunload', warnBeforeUnload);
+    window.removeEventListener('online', handleNetworkUpdate);
+    window.removeEventListener('offline', handleNetworkUpdate);
 });
 </script>
 
@@ -1534,6 +1586,12 @@ onBeforeUnmount(() => {
                 <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
                     <strong>Тестовый сотрудник · серверная загрузка</strong>
                     <p class="mt-1">Фото, видео и ответы сохраняются в отдельном тестовом черновике. Рабочие контроли, рейтинги, баллы наград и сообщения Telegram не создаются. Тестовые материалы очищаются автоматически.</p>
+                </div>
+                <div v-if="!connectionOnline && stage !== 'done'"
+                    class="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+                    role="status" aria-live="polite">
+                    <strong>Нет интернета</strong>
+                    <p class="mt-1">Продолжайте отвечать. Локальная копия создаётся, если браузер разрешает хранение. Файлы и ответы считаются сохранёнными только после подтверждения сервера.</p>
                 </div>
                 <div v-if="!localStorageAvailable && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
                     Локальное восстановление недоступно в этом браузере. Дождитесь статуса «Сохранено» перед закрытием Telegram.
