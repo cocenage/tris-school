@@ -143,8 +143,11 @@ const canEdit = computed(() => Boolean(run.value && !run.value.schema_conflict &
 const peopleOptions = computed(() => viewerRole.value === 'admin'
     ? [{ id: '__test__', name: 'Тестовый сотрудник · без сохранения', thumbnail: null }, ...people.value]
     : people.value);
-const outstandingMedia = computed(() => interruptedUploads.value.length + uploads.value.filter(item =>
-    ['queued', 'uploading', 'attaching', 'error'].includes(item.status)).length);
+const outstandingMedia = computed(() => new Set([
+    ...interruptedUploads.value.map(item => item.upload_id),
+    ...uploads.value.filter(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status))
+        .map(item => item.id),
+]).size);
 const canSubmitMedia = computed(() => testMode.value || outstandingMedia.value === 0);
 
 const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
@@ -996,10 +999,6 @@ async function cancelFile(item) {
     }
     item.controller?.abort();
     item.status = 'cancelled';
-    if (item.preview_url) {
-        URL.revokeObjectURL(item.preview_url);
-        item.preview_url = null;
-    }
     if (item.info?.urls?.cancel) {
         try {
             await focusMediaRequest(item.info.urls.cancel, 'DELETE', undefined, csrf);
@@ -1008,8 +1007,15 @@ async function cancelFile(item) {
             item.error = error.status === 409
                 ? 'Статус файла изменился на сервере. Проверьте вложение и повторите действие.'
                 : 'Сервер не подтвердил отмену файла. Повторите «Отменить», когда соединение восстановится.';
+            return;
         }
     }
+    interruptedUploads.value = interruptedUploads.value.filter(record => record.upload_id !== item.id);
+    if (recoveryKey && item.cached) {
+        void forgetCachedFocusPhoto(recoveryKey, item.id).catch(() => {});
+    }
+    if (item.preview_url) URL.revokeObjectURL(item.preview_url);
+    uploads.value = uploads.value.filter(other => other.id !== item.id);
 }
 
 function dismissFile(item) {
@@ -1028,6 +1034,50 @@ function removeTestMedia(room, question, file) {
     if (file.local && file.url) URL.revokeObjectURL(file.url);
     media.value[room][question] = media.value[room][question].filter(item => item !== file);
 }
+async function removeSavedMedia(room, question, file) {
+    if (!canEdit.value || !file) return;
+    if (testMode.value) {
+        removeTestMedia(room, question, file);
+        return;
+    }
+    if (!file.upload_id || busyUploads.value || attachInFlight) return;
+    if (!window.confirm('Удалить это фото из черновика?')) return;
+    mediaError.value = '';
+    try {
+        if (!(await ensureSynced())) throw new Error(syncError.value || 'Черновик не сохранён.');
+        const data = await focusMediaRequest(props.mediaStartUrl + '/' + encodeURIComponent(file.upload_id) + '/attached',
+            'DELETE', { expected_revision: run.value.revision }, csrf);
+        run.value = { ...run.value, ...data.run };
+        media.value[room][question] = media.value[room][question].filter(item => item !== file);
+        if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, file.upload_id).catch(() => {});
+    } catch (error) {
+        mediaError.value = error.message || 'Не удалось удалить фото. Повторите попытку.';
+    }
+}
+
+function visibleMediaAt(room, question) {
+    const saved = (media.value[room]?.[question] ?? []).map(file => ({
+        kind: 'saved', key: file.upload_id || 'stored-' + file.index,
+        source: file, url: mediaPreview(file), name: file.name,
+        status: 'saved', mime: file.mime, progress: 100,
+    }));
+    const active = uploads.value.filter(item => item.room === room && item.question === question
+        && item.status !== 'cancelled').map(item => ({
+            kind: 'upload', key: item.id, source: item, url: mediaPreview(item),
+            name: item.file?.name, status: item.status,
+            mime: focusFileMime(item.file), progress: item.progress || 0,
+        }));
+    const interrupted = interruptedUploads.value.filter(item =>
+        item.room_index === room && item.question_index === question
+        && !uploads.value.some(current => current.id === item.upload_id))
+        .map(item => ({
+            kind: 'interrupted', key: item.upload_id, source: item,
+            url: '', name: item.original_name, status: item.status,
+            mime: item.mime, progress: 0,
+        }));
+    return [...saved, ...active, ...interrupted];
+}
+
 function pickerKey(room, question) { return room + '-' + question; }
 function togglePicker(room, question) {
     const key = pickerKey(room, question);
