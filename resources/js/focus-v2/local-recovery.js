@@ -150,7 +150,10 @@ export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, ques
         key: scope + ':' + uploadId, scope, upload_id: uploadId, run_id: runId,
         room, question, name: String(file.name || 'photo.jpg'),
         mime: file.type, size: file.size, saved_at: Date.now(),
-        blob: file,
+        // Safari/WebKit can reject structured-cloning File objects in
+        // IndexedDB even when a plain Blob is supported. Store a slice of
+        // the same bytes and preserve name/MIME separately for restoration.
+        blob: file.slice(0, file.size, file.type),
     };
     await transaction('readwrite', store => store.put(record), PHOTO_STORE);
     return record;
