@@ -92,6 +92,7 @@ async function keepServerVersion() {
         await queueLocalWrite({ type: 'delete', scope: recoveryKey });
         recoveryRecord.value = null;
         recoveryMode.value = '';
+        void restoreCachedPhotos();
     } catch (error) {
         recoveryError.value = 'Не удалось удалить локальную копию. Проверьте разрешения браузера.';
     } finally {
@@ -291,6 +292,7 @@ function takePhoto(event, room, question) {
     event.target.value = '';
     pickerFor.value = null;
     if (!file || !canEdit.value) return;
+    mediaError.value = '';
     const error = allowedFocusFile(file);
     if (error || !focusFileMime(file).startsWith('image/')) {
         mediaError.value = error || 'Нужна фотография.';
@@ -436,6 +438,7 @@ async function attachReadyDraft(record) {
             files.push(attached.media_item);
         }
         interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
+        if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
     } catch (error) {
         mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
     } finally {
@@ -1103,6 +1106,8 @@ onMounted(() => {
     void initialize();
 });
 onBeforeUnmount(() => {
+    closePhotoCapture();
+    closeLightbox();
     cleanupPreviews();
     clearTimeout(timer);
     window.removeEventListener('beforeunload', warnBeforeUnload);
