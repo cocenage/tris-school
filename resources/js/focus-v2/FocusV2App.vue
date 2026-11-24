@@ -276,6 +276,7 @@ async function initialize() {
         }
         stage.value = 'setup';
         if (recoveryKey && !recoveryMode.value && !data.run?.schema_conflict) {
+            await autoAttachReadyDraftFiles();
             await restoreCachedPhotos();
         }
     } catch (error) {
@@ -426,6 +427,7 @@ async function choosePerson(id) {
             syncError.value = data.run?.schema_conflict ? 'Тестовый шаблон изменился. Завершите старый тест отдельно.' : '';
             stage.value = 'setup';
             if (!data.run?.schema_conflict) {
+                await autoAttachReadyDraftFiles();
                 await restoreCachedPhotos();
                 if (!data.run?.draft_id) touch();
             }
@@ -487,6 +489,16 @@ function resumeDraftFiles(event) {
         mediaError.value = 'Не все файлы совпали с прерванными загрузками. Выберите оригиналы с тем же названием, размером и форматом.';
     }
 }
+async function autoAttachReadyDraftFiles() {
+    // A "ready" upload already exists in full on the server. Avoid forcing
+    // supervisors to search for an original file or press Attach by hand
+    // after reopening Telegram. Serialize attachment revision updates.
+    for (const record of [...interruptedUploads.value]) {
+        if (!canEdit.value) return;
+        if (record.status === 'ready') await attachReadyDraft(record);
+    }
+}
+
 async function attachReadyDraft(record) {
     if (!canEdit.value || record.status !== 'ready') return;
     if (activeTransfers || attachInFlight) {
