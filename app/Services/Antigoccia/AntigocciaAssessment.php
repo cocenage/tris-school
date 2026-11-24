@@ -15,6 +15,14 @@ class AntigocciaAssessment
         'shower_walls' => 'СТЕНЫ ВНУТРИ ДУШЕВОЙ КАБИНЫ',
     ];
 
+    // String keys prevent confusing the new choices with legacy numeric 0/1/2.
+    public const REMOVAL_OPTIONS = [
+        'easy' => ['icon' => '🟢', 'label' => 'Легко', 'description' => 'достаточно 1–2 движений.'],
+        'medium' => ['icon' => '🟡', 'label' => 'Средне', 'description' => 'требуется несколько повторных движений.'],
+        'hard' => ['icon' => '🔴', 'label' => 'Трудно', 'description' => 'загрязнения удаляются с усилием или остаются.'],
+        'no_dirt' => ['icon' => '⚪️', 'label' => 'Загрязнений не было', 'description' => 'Поверхность всё равно протёрта влажной салфеткой.'],
+    ];
+
     public static function blankAnswers(): array
     {
         return array_fill_keys(array_keys(self::SURFACES), [
@@ -23,8 +31,8 @@ class AntigocciaAssessment
     }
 
     /**
-     * All four surfaces are independently required. Photo is required per
-     * surface if contamination remains, including when removal was scored 2.
+     * All three answers are independent and always required. Only "remaining:
+     * yes" makes the photograph of that particular surface mandatory.
      */
     public function validate(array $answers, array $photos): array
     {
@@ -39,7 +47,7 @@ class AntigocciaAssessment
             ];
             $input['photos'][$key] = $photos[$key] ?? null;
             $rules["answers.$key.dirt"] = ['required', Rule::in([0, 1, 2])];
-            $rules["answers.$key.removal"] = ['nullable', Rule::in([0, 1, 2])];
+            $rules["answers.$key.removal"] = ['required', Rule::in(array_keys(self::REMOVAL_OPTIONS))];
             $rules["answers.$key.remaining"] = ['required', Rule::in(['yes', 'no'])];
             $rules["photos.$key"] = ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:10240'];
         }
@@ -47,19 +55,8 @@ class AntigocciaAssessment
         $validator = Validator::make($input, $rules);
         $validator->after(function ($validator) use ($input): void {
             foreach (self::SURFACES as $key => $label) {
-                $dirt = data_get($input, "answers.$key.dirt");
-                $removal = data_get($input, "answers.$key.removal");
-                $remaining = data_get($input, "answers.$key.remaining");
-                if (! in_array((string) $dirt, ['0', '1', '2'], true)) {
-                    continue;
-                }
-                if ((int) $dirt > 0 && ! in_array((string) $removal, ['0', '1', '2'], true)) {
-                    $validator->errors()->add("answers.$key.removal", "Укажите результат очистки: $label.");
-                }
-                if ((int) $dirt > 0 && (string) $removal === '2' && $remaining !== 'yes') {
-                    $validator->errors()->add("answers.$key.remaining", "Остались загрязнения — выберите «Да»: $label.");
-                }
-                if ($remaining === 'yes' && ! ($input['photos'][$key] ?? null)) {
+                if (data_get($input, "answers.$key.remaining") === 'yes'
+                    && ! ($input['photos'][$key] ?? null)) {
                     $validator->errors()->add("photos.$key", "Добавьте фото оставшихся загрязнений: $label.");
                 }
             }
@@ -71,14 +68,52 @@ class AntigocciaAssessment
 
         $normalized = [];
         foreach (self::SURFACES as $key => $label) {
-            $dirt = (int) $input['answers'][$key]['dirt'];
             $normalized[$key] = [
-                'dirt' => $dirt,
-                'removal' => $dirt === 0 ? null : (int) $input['answers'][$key]['removal'],
-                'remaining' => $input['answers'][$key]['remaining'],
+                'dirt' => (int) $input['answers'][$key]['dirt'],
+                'removal' => (string) $input['answers'][$key]['removal'],
+                'remaining' => (string) $input['answers'][$key]['remaining'],
             ];
         }
 
         return $normalized;
+    }
+
+    public static function removalLabel(mixed $value): string
+    {
+        if (is_string($value) && isset(self::REMOVAL_OPTIONS[$value])) {
+            $option = self::REMOVAL_OPTIONS[$value];
+
+            return $option['label'].' — '.$option['description'];
+        }
+
+        return match ($value) {
+            0, '0' => 'Легко (старая анкета)',
+            1, '1' => 'Трудно (старая анкета)',
+            2, '2' => 'Не удалились (старая анкета)',
+            default => '—',
+        };
+    }
+
+    public static function isDifficultRemoval(mixed $value): bool
+    {
+        return in_array($value, ['medium', 'hard', 1, '1', 2, '2'], true);
+    }
+
+    public static function isHardRemoval(mixed $value): bool
+    {
+        return in_array($value, ['hard', 2, '2'], true);
+    }
+
+    public static function removalIndicator(mixed $value): array
+    {
+        return match ($value) {
+            'easy', 0, '0' => ['label' => 'Л', 'color' => 'bg-green-100 text-green-800'],
+            'medium' => ['label' => 'С', 'color' => 'bg-amber-100 text-amber-800'],
+            'hard' => ['label' => 'Т', 'color' => 'bg-red-100 text-red-800'],
+            'no_dirt' => ['label' => '—', 'color' => 'bg-gray-100 text-gray-500 dark:bg-gray-800'],
+            1, '1' => ['label' => '1', 'color' => 'bg-amber-100 text-amber-800'],
+            2, '2' => ['label' => '2', 'color' => 'bg-red-100 text-red-800'],
+            default => ['label' => '—', 'color' => 'bg-gray-100 text-gray-500 dark:bg-gray-800'],
+        };
     }
 }

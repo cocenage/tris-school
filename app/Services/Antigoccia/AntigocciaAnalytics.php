@@ -24,8 +24,8 @@ class AntigocciaAnalytics
         $surfaces = [];
         foreach (AntigocciaAssessment::SURFACES as $key => $label) {
             $evaluated = $reports->filter(fn ($report) => data_get($report->answers, "$key.dirt") !== null)->values();
-            $difficult = $evaluated->filter(fn ($report) => in_array((string) data_get($report->answers, "$key.removal"), ['1', '2'], true));
-            $failed = $evaluated->filter(fn ($report) => (string) data_get($report->answers, "$key.removal") === '2');
+            $difficult = $evaluated->filter(fn ($report) => AntigocciaAssessment::isDifficultRemoval(data_get($report->answers, "$key.removal")));
+            $failed = $evaluated->filter(fn ($report) => AntigocciaAssessment::isHardRemoval(data_get($report->answers, "$key.removal")));
             $firstIssue = $difficult->first();
             $firstIssuePosition = $firstIssue === null ? null : $evaluated->search(fn ($report) => $report->id === $firstIssue->id) + 1;
             $surfaces[$key] = [

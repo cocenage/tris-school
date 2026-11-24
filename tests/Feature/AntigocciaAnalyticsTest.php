@@ -78,6 +78,35 @@ it('moves coating duration, registered cleaning count and all four surface score
         ->and($stats['surfaces']['mirrors']['first_issue_report_number'])->toBe(1);
 });
 
+it('counts new four-way removal choices without reinterpreting legacy history', function (): void {
+    $noDirt = collect(\App\Services\Antigoccia\AntigocciaAssessment::SURFACES)
+        ->mapWithKeys(fn ($label, $key) => [$key => ['dirt' => 0, 'removal' => 'no_dirt', 'remaining' => 'no']])->all();
+
+    $legacy = $noDirt;
+    $legacy['mirrors'] = ['dirt' => 1, 'removal' => 1, 'remaining' => 'no'];
+    $medium = $noDirt;
+    $medium['mirrors'] = ['dirt' => 2, 'removal' => 'medium', 'remaining' => 'no'];
+    $hard = $noDirt;
+    $hard['mirrors'] = ['dirt' => 0, 'removal' => 'hard', 'remaining' => 'no'];
+
+    DB::table('antigoccia_reports')->insert([
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-12', 'answers' => json_encode($legacy)],
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-15', 'answers' => json_encode($medium)],
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-17', 'answers' => json_encode($hard)],
+    ]);
+
+    $apartment = new Apartment();
+    $apartment->id = 10;
+    $stats = app(AntigocciaAnalytics::class)->forApartment($apartment);
+    $mirrors = $stats['surfaces']['mirrors'];
+
+    expect($mirrors['total'])->toBe(3)
+        ->and($mirrors['difficult'])->toBe(3)
+        ->and($mirrors['failed'])->toBe(1)
+        ->and($mirrors['remaining_count'])->toBe(0)
+        ->and(collect($mirrors['recent'])->pluck('score')->all())->toBe([1, 'medium', 'hard']);
+});
+
 it('has empty stats for a never treated apartment rather than inventing dates', function (): void {
     $apartment = new Apartment();
     $apartment->id = 10;
