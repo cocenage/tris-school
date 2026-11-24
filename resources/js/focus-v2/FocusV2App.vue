@@ -34,6 +34,7 @@ const finalResult = ref(null);
 const uploads = ref([]);
 const interruptedUploads = ref([]);
 const viewerRole = ref('');
+const viewerId = ref(null);
 const testMode = ref(false);
 const pickerFor = ref(null);
 const mediaError = ref('');
@@ -62,7 +63,6 @@ function queueLocalWrite(operation) {
 }
 
 function saveLocalSnapshot() {
-    if (testMode.value) return;
     if (!recoveryKey || !run.value || !control.value || recoveryMode.value || state.value === 'conflict') return;
     void queueLocalWrite({
         type: 'write',
@@ -78,7 +78,7 @@ function saveLocalSnapshot() {
     });
 }
 function settleLocalSnapshot() {
-    if (testMode.value || !recoveryKey) return;
+    if (!recoveryKey) return;
     if (changeSerial === acknowledgedSerial) {
         void queueLocalWrite({ type: 'delete', scope: recoveryKey });
     } else {
@@ -162,7 +162,7 @@ const outstandingMedia = computed(() => new Set([
     ...uploads.value.filter(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status))
         .map(item => item.id),
 ]).size);
-const canSubmitMedia = computed(() => testMode.value || outstandingMedia.value === 0);
+const canSubmitMedia = computed(() => outstandingMedia.value === 0);
 const recoveryNeedingInput = computed(() => interruptedUploads.value.filter(record =>
     !uploads.value.some(item => item.id === record.upload_id
         && ['queued', 'uploading', 'attaching'].includes(item.status))
@@ -215,6 +215,7 @@ async function initialize() {
         }
         const data = await fetchJson(props.bootstrapUrl);
         viewerRole.value = data.viewer?.role ?? '';
+        viewerId.value = data.viewer?.id ?? null;
         interruptedUploads.value = data.pending_uploads ?? [];
         control.value = data.control;
         run.value = data.run;
@@ -363,29 +364,53 @@ function closeVideoLightbox() { videoLightbox.value = null; }
 async function choosePerson(id) {
     if (!canEdit.value) return;
     if (id === '__test__') {
-        if (viewerRole.value !== 'admin') return;
-        if (testMode.value) return;
-        // Never discard unfinished real work when switching to a local-only
-        // sandbox. Existing server drafts remain completely untouched.
+        if (viewerRole.value !== 'admin' || testMode.value) return;
         if (busyUploads.value) {
-            syncError.value = 'Подождите, пока активная загрузка завершится, прежде чем открывать тест.';
+            syncError.value = 'Завершите или отмените реальные загрузки перед переходом в тест.';
             return;
         }
         if (!(await ensureSynced())) {
-            syncError.value = syncError.value || 'Сначала сохраните текущий черновик.';
+            syncError.value = syncError.value || 'Сначала сохраните рабочий черновик.';
             return;
         }
-        cleanupPreviews();
-        testMode.value = true;
-        uploads.value = [];
-        media.value = rooms.value.map(room => (room.items ?? []).map(() => []));
-        answers.value = rooms.value.map(room => (room.items ?? []).map(() =>
-            ({ selected: '', custom: '', corrective: { repeats: null, action: '', recheck: null } })));
-        setup.value = { ...setup.value, cleaner_id: '__test__', apartment_id: null,
-            previous_cleaner: '', is_assigned: false, comment: '' };
-        state.value = 'synced';
-        syncError.value = '';
-        stage.value = 'setup';
+        try {
+            // New or resumed test draft comes from the same authenticated
+            // backend, but lives in state=sandbox, never in real controls.
+            const data = await fetchJson(props.bootstrapUrl + '?test_mode=1');
+            if (!data.test_mode || data.viewer?.role !== 'admin') {
+                throw new Error('Сервер не подтвердил безопасный тестовый режим.');
+            }
+            cleanupPreviews();
+            testMode.value = true;
+            uploads.value = [];
+            pickerFor.value = null;
+            mediaError.value = '';
+            cacheWarning.value = '';
+            control.value = data.control;
+            rooms.value = data.rooms;
+            people.value = data.people ?? [];
+            apartments.value = data.apartments ?? [];
+            setup.value = data.setup;
+            answers.value = data.answers;
+            media.value = data.media;
+            interruptedUploads.value = data.pending_uploads ?? [];
+            run.value = data.run;
+            recoveryKey = recoveryScope(data.viewer.id, data.control.id, data.control.schema_version) + ':sandbox';
+            changeSerial = 0;
+            acknowledgedSerial = 0;
+            uncertainSnapshot = null;
+            clearTimeout(timer);
+            finalResult.value = null;
+            state.value = data.run?.schema_conflict ? 'conflict' : 'synced';
+            syncError.value = data.run?.schema_conflict ? 'Тестовый шаблон изменился. Завершите старый тест отдельно.' : '';
+            stage.value = 'setup';
+            if (!data.run?.schema_conflict) {
+                await restoreCachedPhotos();
+                if (!data.run?.draft_id) touch();
+            }
+        } catch (error) {
+            syncError.value = error.message || 'Не удалось открыть серверный тестовый режим.';
+        }
         return;
     }
     if (testMode.value) return;
@@ -513,10 +538,6 @@ function changeAnswer(room, index, value) {
 
 function touch() {
     if (!canEdit.value) return;
-    if (testMode.value) {
-        state.value = 'synced';
-        return; // Client-side test: never send any draft writes.
-    }
     changeSerial++;
     state.value = 'dirty';
     syncError.value = '';
@@ -538,11 +559,11 @@ function takeSnapshot() {
         expected_revision: run.value.revision,
         setup: JSON.parse(JSON.stringify(setup.value)),
         answers: JSON.parse(JSON.stringify(answers.value)),
+        test_mode: testMode.value,
     };
 }
 
 async function flush() {
-    if (testMode.value) return true;
     clearTimeout(timer);
     timer = null;
     if (!canEdit.value) return false;
@@ -584,7 +605,6 @@ async function flush() {
 }
 
 async function ensureSynced() {
-    if (testMode.value) return true;
     clearTimeout(timer);
     for (let attempt = 0; attempt < 5; attempt++) {
         const ok = await flush();
