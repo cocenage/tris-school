@@ -2,7 +2,7 @@
  * Small, resumable binary chunks. No Livewire state and no 100 MiB multipart POST.
  * The server verifies the entire file before accepting an attachment.
  */
-export const FOCUS_CHUNK_BYTES = 512 * 1024;
+export const FOCUS_CHUNK_BYTES = 1024 * 1024; // New sessions: 100 MiB => 100 requests, not 200.
 
 export function focusFileMime(file) {
     if (file?.type) return String(file.type).toLowerCase();
