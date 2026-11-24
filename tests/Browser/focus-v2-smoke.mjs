@@ -313,6 +313,7 @@ async function main() {
             assert.equal(backend.test.media[0][0].length, 1);
             assert.ok(backend.testWrites > 1, 'Sandbox did not make real upload requests.');
             assert.equal(backend.realWrites, 0, 'Sandbox unexpectedly wrote production data.');
+            page.once('dialog', dialog => dialog.accept());
             await page.getByRole('button', { name: 'Удалить' }).click();
             assert.equal(await page.getByRole('button', { name: 'Открыть фото photo.png' }).count(), 0);
             await page.getByRole('button', { name: 'К сводке' }).click();
