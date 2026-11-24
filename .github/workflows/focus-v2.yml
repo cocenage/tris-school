@@ -64,7 +64,8 @@ permissions:
 jobs:
   build-and-test:
     name: Vue build and isolated Laravel tests
-    runs-on: ubuntu-latest
+    # Playwright 1.56 targets 24.04; ubuntu-latest is already 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       APP_ENV: testing
