@@ -938,16 +938,18 @@ it('rejects too large media and refuses to attach a stale Focus V2 revision', fu
 it('resumes a two-chunk Focus V2 transfer after the final part arrives first', function (): void {
     Storage::fake('local');
     [, , $control, $draft] = focusV2MediaFixture();
-    $binary = focusV2SamplePng().str_repeat(' ', 512 * 1024);
+    $chunkBytes = 1024 * 1024;
+    $binary = focusV2SamplePng().str_repeat(' ', $chunkBytes);
     $init = focusV2MediaStartPayload($control, $draft, $binary);
 
     $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)
-        ->assertOk()->assertJsonPath('total_chunks', 2);
+        ->assertOk()->assertJsonPath('total_chunks', 2)
+        ->assertJsonPath('chunk_bytes', $chunkBytes);
 
-    focusV2PutChunk($init['upload_id'], substr($binary, 512 * 1024), 1)->assertOk();
+    focusV2PutChunk($init['upload_id'], substr($binary, $chunkBytes), 1)->assertOk();
     $this->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
         ->assertOk()->assertJsonPath('received.0', 1);
-    focusV2PutChunk($init['upload_id'], substr($binary, 0, 512 * 1024), 0)->assertOk();
+    focusV2PutChunk($init['upload_id'], substr($binary, 0, $chunkBytes), 0)->assertOk();
     $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
         ->assertOk()->assertJsonPath('status', 'ready');
 
