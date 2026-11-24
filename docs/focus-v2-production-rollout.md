@@ -73,10 +73,13 @@ PHP_BIN="${PHP84:-php}"
 2. Confirm `/checks/control/focus-v2/bootstrap` returns data for authorized
    accounts; invalid/unauthed requests remain protected.
 3. Choose staff/apartment, fill questions, refresh, confirm drafts restore.
-4. Upload photos and one large video on the test account, interrupt the network,
-   retry and confirm all media reach the correct result.
-5. Submit with unfinished registered uploads and check `awaiting_media`,
-   evidence recovery, notification delay and eventual `complete`.
+4. On the admin-only **Тестовый сотрудник**, upload real photos and a large
+   video, interrupt network access, retry, and verify no real result, statistics
+   or Telegram message is created. Check that real controls are unaffected.
+5. Attempt submission with a pending upload; it MUST be rejected until each
+   file is fully assembled and attached to the draft. After completing the
+   transfer, verify server confirmation and one final notification for a
+   **real** control only.
 6. Verify Classic Focus remains available and an existing saved Classic draft
    can still be opened.
 7. On any serious failure, disable with `FOCUS_V2_ENABLED=false`, clear
@@ -86,8 +89,11 @@ PHP_BIN="${PHP84:-php}"
 
 Only the authorized admin/supervisor cohort receives the new workflow.
 Up to 12 attachments per question, photos <=10 MiB and videos <=100 MiB;
-uploads use 512 KiB chunks. Telegram WebView may evict local IndexedDB
-snapshots or file objects, so after restart some files must be reselected.
+new uploads use 1 MiB chunks (100 rather than 200 requests for a 100 MiB
+video); in-progress 512 KiB sessions keep their old chunk grid after upgrade.
+Transient network errors trigger up to three bounded automatic attempts.
+Telegram WebView may evict local IndexedDB snapshots or file objects, so
+after restart some files must be reselected.
 CI is necessary but not sufficient for safe mobile acceptance.
 
 The experimental pruning command remains disabled on production for now;
@@ -140,25 +146,27 @@ a revision-checked server endpoint. File names and chunk details are no longer
 the focus of the question UI.
 
 **Before transfer**, the client creates a draft on the server and attempts to
-cache the confirmed **photo** (not video) as a Blob in the user's scoped
-IndexedDB. The original upload ID is reused when Telegram WebView restarts.
-On bootstrap, the server includes each attached photo's upload ID, so already
-saved photos are never transferred again. For pending uploads, the browser
-reuses any cached photo and the server's received-chunk list; if the cache was
-evicted, it requests the original image. A new browser, another account or a
+cache the confirmed **photo or short video (up to 15 MiB)** as a Blob in
+the user's scoped IndexedDB, where storage quota permits. The original upload ID is reused when Telegram WebView restarts.
+On bootstrap, the server includes each attached media upload ID, so already
+saved files are never transferred again. Fully uploaded but unattached server
+files are automatically attached without asking for the originals. For pending
+uploads, the browser reuses any cached photo/short video and the server's
+received-chunk list; if the cache was evicted, it requests the original file. A new browser, another account or a
 schema/run mismatch must never silently attach locally stored evidence.
 
 IMPORTANT: Telegram may terminate WebView while a photo is being stored, or
 evict its IndexedDB storage. This is a **best-effort** local backup, not a
 promise of guaranteed background transfer. The UI explicitly warns when local
 backup is unavailable, and backend submission still requires **all** media
-to be fully attached. Videos remain file-reselection based if Telegram WebView is terminated
-before completing the upload. Video capture now opens a native preview with
+to be fully attached. Videos above 15 MiB still need original file reselection
+after WebView termination. Video capture now opens a native preview with
 **Оставить видео / Переснять** and a fullscreen player. Photo/video status
 in the question is independently tracked from answer-draft save. Optional
 Imagick HEIC thumbnails are generated only when the host has HEIF support;
 otherwise the private-image fallback placeholder remains visible.
-The existing browser-only demo employee is **not** a backend test account.
+The server-backed **Тестовый сотрудник** is a genuine isolated upload
+sandbox for admins, not a real employee or a statistical result.
 
 Acceptance on real Telegram devices still required:
 1. Open a question, take a photo, retake it, then confirm one image.
@@ -190,3 +198,24 @@ Acceptance on real Telegram devices still required:
 - Run real Telegram Android and iOS device tests before rollout. Browser
   Chromium simulation cannot prove native camera capture or WebView quota
   behavior. When HEIC conversion libraries are absent, use the fallback.
+
+## November 24, 2026 performance / phone UX pass
+
+- New media uploads: 1 MiB parts, with persistent backwards compatibility
+  for 512 KiB sessions already registered. Each retry uses the existing
+  upload UUID and idempotent chunk URL. Transient transport/5xx/429 errors
+  retry twice; auth/validation errors do not auto-retry.
+- Upload progress is byte-weighted across pending files, visible in a sticky
+  status bar. The media selector is a mobile bottom sheet with camera, video
+  and multi-file gallery fallback, including WebView safe-area padding.
+- Photos and videos up to their respective local backup limits are shown
+  immediately while IndexedDB writes proceed. Even a backed-up file is
+  **not considered uploaded** until the server confirms its attachment.
+- Photos load a small thumbnail in the question grid but use their original
+  full-resolution media route in the fullscreen viewer. HEIC falls back to a
+  JPEG thumbnail if the browser cannot decode the original.
+- Fully transferred `ready` files automatically attach after a safe
+  authenticated bootstrap; their upload IDs are never replaced.
+- Verify Safari/iOS Telegram and Android Telegram manually with live
+  camera, large videos, offline/reopen and device storage quotas. Browser
+  simulation cannot guarantee native-camera behavior.
