@@ -295,8 +295,12 @@ async function main() {
             await page.getByRole('heading', { name: 'Данные проверки' }).waitFor();
             assert.equal(await comment.inputValue(), backend.setup.comment);
             assert.equal(await page.locator('#focus-previous-cleaner').inputValue(), 'Настоящий сотрудник');
+            await page.locator('#focus-previous-cleaner').fill('Не указан');
+            await page.getByRole('option', { name: 'Не указан' }).click();
+            await page.getByText('Сохранено', { exact: true }).first().waitFor();
+            assert.equal(backend.setup.previous_cleaner, '');
             assert.deepEqual(errors, []);
-            console.log('PASS mobile UI: first-screen comment and previous-cleaner search persist after reload');
+            console.log('PASS mobile UI: first-screen comment, previous-staff search and clear option persist');
             await context.close();
         }
 
@@ -366,6 +370,9 @@ async function main() {
             await page.getByRole('button', { name: 'Оставить видео' }).click();
             await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor({ state: 'hidden' });
             await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
+            await page.getByRole('button', { name: /Просмотреть видео/ }).click();
+            await page.getByRole('dialog', { name: 'Просмотр видео' }).waitFor();
+            await page.getByRole('button', { name: 'Закрыть видео' }).click();
             assert.equal(backend.media[0][0][0].mime, 'video/mp4');
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('button', { name: 'К вопросам' }).click();
