@@ -230,7 +230,12 @@ async function expectPhoto(page) {
 
 async function main() {
     const vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js',
-        '--host', '127.0.0.1', '--port', '4178', '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        '--host', '127.0.0.1', '--port', '4178', '--strictPort'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Laravel Vite deliberately rejects HMR in CI unless this isolated
+        // browser fixture explicitly opts in. Never set for deployment.
+        env: { ...process.env, LARAVEL_BYPASS_ENV_CHECK: '1' },
+    });
     let logs = '';
     vite.stderr.on('data', chunk => { logs += chunk.toString(); });
     vite.stdout.on('data', chunk => { logs += chunk.toString(); });
