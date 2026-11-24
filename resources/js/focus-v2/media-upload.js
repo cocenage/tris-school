@@ -5,8 +5,8 @@
 export const FOCUS_CHUNK_BYTES = 512 * 1024;
 
 export function focusFileMime(file) {
-    if (file.type) return file.type.toLowerCase();
-    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (file?.type) return String(file.type).toLowerCase();
+    const ext = String(file?.name ?? '').split('.').pop()?.toLowerCase();
     return ({
         heic: 'image/heic', heif: 'image/heif',
         jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',

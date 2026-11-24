@@ -805,10 +805,17 @@ function pendingAt(room, question) {
         && ['queued', 'uploading', 'attaching', 'error'].includes(item.status));
 }
 function mediaCountAt(room, question) {
-    return (media.value[room]?.[question] ?? []).length
-        + pendingAt(room, question).length
-        + interruptedUploads.value.filter(item => item.room_index === room && item.question_index === question
-            && !uploads.value.some(upload => upload.id === item.upload_id)).length;
+    // The server may confirm an upload before the asynchronous client queue
+    // removes its temporary tile. Count unique file IDs, never both states.
+    const ids = new Set();
+    for (const file of media.value[room]?.[question] ?? []) {
+        ids.add(file.upload_id || 'attached:' + file.index);
+    }
+    for (const item of pendingAt(room, question)) ids.add(item.id);
+    for (const item of interruptedUploads.value) {
+        if (item.room_index === room && item.question_index === question) ids.add(item.upload_id);
+    }
+    return ids.size;
 }
 
 async function addFiles(event, room, question) {
@@ -1064,19 +1071,22 @@ async function removeSavedMedia(room, question, file) {
 }
 
 function visibleMediaAt(room, question) {
+    const savedIds = new Set((media.value[room]?.[question] ?? [])
+        .map(file => file.upload_id).filter(Boolean));
     const saved = (media.value[room]?.[question] ?? []).map(file => ({
         kind: 'saved', key: file.upload_id || 'stored-' + file.index,
         source: file, url: mediaPreview(file), name: file.name,
         status: 'saved', mime: file.mime, progress: 100,
     }));
     const active = uploads.value.filter(item => item.room === room && item.question === question
-        && item.status !== 'cancelled').map(item => ({
+        && item.status !== 'cancelled' && !savedIds.has(item.id)).map(item => ({
             kind: 'upload', key: item.id, source: item, url: mediaPreview(item),
             name: item.file?.name, status: item.status,
             mime: focusFileMime(item.file), progress: item.progress || 0,
         }));
     const interrupted = interruptedUploads.value.filter(item =>
         item.room_index === room && item.question_index === question
+        && !savedIds.has(item.upload_id)
         && !uploads.value.some(current => current.id === item.upload_id))
         .map(item => ({
             kind: 'interrupted', key: item.upload_id, source: item,
@@ -1092,7 +1102,12 @@ function togglePicker(room, question) {
     pickerFor.value = pickerFor.value === key ? null : key;
 }
 function mediaIsVideo(file) { return String(file.mime || focusFileMime(file.file || {})).startsWith('video/'); }
-function mediaPreview(file) { return file.preview_url || file.thumbnail_url || file.url || ''; }
+function mediaPreview(file) {
+    // Video thumbnails are images (or a placeholder). Never use them as the
+    // <video src>, otherwise the player receives JPEG bytes and cannot play.
+    if (mediaIsVideo(file)) return file.preview_url || file.url || '';
+    return file.preview_url || file.thumbnail_url || file.url || '';
+}
 
 function warnBeforeUnload(event) {
     if (submitting.value || busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {

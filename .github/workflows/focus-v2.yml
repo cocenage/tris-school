@@ -26,6 +26,8 @@ on:
       - 'tests/Feature/ControlWorkflowTest.php'
       - 'tests/Feature/FocusV2StagingCheckTest.php'
       - 'tests/JavaScript/FocusV2*.test.mjs'
+      - 'tests/Browser/**'
+      - 'focus-v2-browser-smoke.html'
       - 'docs/focus-v2-production-rollout.md'
       - '.github/workflows/focus-v2.yml'
   pull_request:
@@ -50,6 +52,8 @@ on:
       - 'tests/Feature/ControlWorkflowTest.php'
       - 'tests/Feature/FocusV2StagingCheckTest.php'
       - 'tests/JavaScript/FocusV2*.test.mjs'
+      - 'tests/Browser/**'
+      - 'focus-v2-browser-smoke.html'
       - 'docs/focus-v2-production-rollout.md'
       - '.github/workflows/focus-v2.yml'
   workflow_dispatch:
@@ -60,7 +64,8 @@ permissions:
 jobs:
   build-and-test:
     name: Vue build and isolated Laravel tests
-    runs-on: ubuntu-latest
+    # Playwright 1.56 targets 24.04; ubuntu-latest is already 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       APP_ENV: testing
@@ -95,6 +100,11 @@ jobs:
         run: node --test tests/JavaScript/FocusV2MediaRetry.test.mjs tests/JavaScript/FocusV2LocalRecovery.test.mjs tests/JavaScript/FocusV2Transport.test.mjs tests/JavaScript/FocusV2PhotoCache.test.mjs
       - name: Build Vue and existing assets
         run: npm run build
+      - name: Browser smoke — real Vue component in mobile Chromium
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node tests/Browser/focus-v2-smoke.mjs
       - name: Prepare isolated test application
         run: |
           cp .env.example .env
