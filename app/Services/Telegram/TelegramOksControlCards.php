@@ -62,7 +62,7 @@ class TelegramOksControlCards
                 $sections[] = ['name' => $name, 'questions' => $actions];
             }
 
-            return app(TelegramOksRichCard::class)->render($delivery, OksControlSchedule::LABELS[$delivery->control_type], $rows, 'Открыть контроль', $sections);
+            return app(TelegramOksRichCard::class)->render($delivery, OksControlSchedule::headingFor($delivery), $rows, 'Открыть контроль', $sections);
         }
         $previous = $this->previousReasons($delivery);
         $lines = [];

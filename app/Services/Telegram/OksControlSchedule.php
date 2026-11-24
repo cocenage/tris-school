@@ -52,6 +52,28 @@ class OksControlSchedule
         );
     }
 
+    /**
+     * Rich Telegram cards must display the current question as their visible
+     * heading, not the historical control category. Keep legacy deliveries
+     * and multi-question controls unchanged.
+     */
+    public static function headingFor(TelegramScheduledMessageDelivery $delivery): string
+    {
+        $questions = self::questionsFor($delivery);
+        $context = $delivery->sequence_context ?? [];
+
+        if ((int) ($context[self::COPY_VERSION] ?? 1) >= self::CURRENT_COPY_VERSION
+            && count($questions) === 1) {
+            $question = reset($questions);
+
+            if (is_array($question) && filled($question['title'] ?? null)) {
+                return (string) $question['title'];
+            }
+        }
+
+        return self::LABELS[$delivery->control_type] ?? $delivery->control_type;
+    }
+
     public static function questions(string $type, bool $splitFirstFinish = false, int $copyVersion = self::CURRENT_COPY_VERSION): array
     {
         $updated = $copyVersion >= self::CURRENT_COPY_VERSION;
