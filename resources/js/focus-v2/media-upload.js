@@ -83,11 +83,38 @@ async function sendChunk(url, bytes, csrf, signal) {
 }
 
 /**
+ * Retry only transient transport failures. Every chunk has a stable URL and
+ * the backend verifies its bytes on replay; an acknowledgement lost in transit
+ * must not force the user to pick the video again.
+ *
+ * Authorization / validation / quota failures are never retried blindly.
+ */
+export function isTransientFocusUploadError(error) {
+    if (error?.name === 'AbortError') return false;
+    if ([408, 425, 429, 500, 502, 503, 504].includes(error?.status)) return true;
+    return !error?.status && (error instanceof TypeError || error?.name === 'TimeoutError');
+}
+
+async function retryFocusUpload(operation, signal, onRetry, label) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        if (signal?.aborted) throw new DOMException('Отменено', 'AbortError');
+        try {
+            return await operation();
+        } catch (error) {
+            if (signal?.aborted || attempt === 3 || !isTransientFocusUploadError(error)) throw error;
+            onRetry?.({ label, attempt, maxAttempts: 3 });
+            // 250ms and 750ms prevent repeated request storms on a shared host.
+            await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 250 : 750));
+        }
+    }
+}
+
+/**
  * init is safe to call repeatedly with the same upload ID. The returned
  * received indices allow retries to skip chunks that reached the server.
  */
-export async function transferFocusFile({ startUrl, file, uploadId, draft, room, question, csrf, signal, onProgress, onInit = () => {} }) {
-    const info = await focusMediaRequest(startUrl, 'POST', {
+export async function transferFocusFile({ startUrl, file, uploadId, draft, room, question, csrf, signal, onProgress, onInit = () => {}, onRetry }) {
+    const info = await retryFocusUpload(() => focusMediaRequest(startUrl, 'POST', {
         upload_id: uploadId,
         test_mode: Boolean(draft.test_mode),
         control_id: draft.control_id,
@@ -99,7 +126,7 @@ export async function transferFocusFile({ startUrl, file, uploadId, draft, room,
         original_name: file.name,
         mime: focusFileMime(file),
         size: file.size,
-    }, csrf, signal);
+    }, csrf, signal), signal, onRetry, 'Подключение');
 
     onInit(info);
     if (info.status === 'attached' || info.status === 'ready') {
@@ -118,13 +145,16 @@ export async function transferFocusFile({ startUrl, file, uploadId, draft, room,
         if (received.has(index)) continue;
         const offset = index * chunkBytes;
         const bytes = file.slice(offset, Math.min(file.size, offset + chunkBytes));
-        await sendChunk(info.urls.chunk_base + '/' + index, bytes, csrf, signal);
+        await retryFocusUpload(() => sendChunk(info.urls.chunk_base + '/' + index, bytes, csrf, signal),
+            signal, onRetry, 'Передача части ' + (index + 1));
         received.add(index);
         onProgress(Math.round(85 * received.size / info.total_chunks));
     }
 
     onProgress(90);
-    const result = await focusMediaRequest(info.urls.complete, 'POST', {}, csrf, signal);
+    const result = await retryFocusUpload(
+        () => focusMediaRequest(info.urls.complete, 'POST', {}, csrf, signal),
+        signal, onRetry, 'Завершение загрузки');
     if (result.status !== 'ready' && result.status !== 'attached') {
         throw new Error('Сервер не подтвердил готовность файла.');
     }
