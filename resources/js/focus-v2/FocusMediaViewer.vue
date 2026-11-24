@@ -16,8 +16,10 @@ const isVideo = computed(() => String(item.value?.mime || '').startsWith('video/
 const imageUrl = ref('');
 const fallback = ref('');
 const itemKey = computed(() => item.value?.key ?? '');
-const canDelete = computed(() => props.canRemove && ['upload', 'saved'].includes(item.value?.kind)
-    && (item.value?.kind === 'upload' || Boolean(item.value?.source?.upload_id)));
+const canDelete = computed(() => props.canRemove && (
+    (item.value?.kind === 'saved' && Boolean(item.value?.source?.upload_id))
+    || (item.value?.kind === 'upload' && ['queued', 'uploading', 'error'].includes(item.value?.status))
+));
 
 function setImage() {
     imageFailed.value = false;
