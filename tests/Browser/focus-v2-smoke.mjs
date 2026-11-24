@@ -411,6 +411,29 @@ async function main() {
             await context.close();
         }
 
+        // Replacement preserves the old server photo until the new one has
+        // been uploaded and attached. Then only the old upload ID is removed.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await addPhoto(page);
+            const replacement = page.locator('label').filter({ hasText: 'Заменить' }).locator('input[type=file]').first();
+            await replacement.waitFor({ timeout: 15000 });
+            await replacement.setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: image });
+            await page.getByRole('dialog', { name: 'Подтвердить фотографию' }).waitFor();
+            assert.equal(backend.media[0][0].length, 1, 'Old media vanished before replacement was uploaded.');
+            await page.getByRole('button', { name: 'Оставить фото' }).click();
+            for (let i = 0; backend.media[0][0][0]?.name !== 'replacement.png' && i < 80; i++) await delay(100);
+            assert.equal(backend.media[0][0].length, 1);
+            assert.equal(backend.media[0][0][0].name, 'replacement.png');
+            assert.equal(backend.sessions.size, 1);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: confirmed replacement preserves old photo until new attach');
+            await context.close();
+        }
+
         // Offline saves must not claim server acknowledgement; reconnect
         // should retry the same locally recoverable draft automatically.
         {
