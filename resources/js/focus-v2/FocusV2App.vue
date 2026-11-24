@@ -109,6 +109,7 @@ function restoreLocalVersion() {
     recoveryRecord.value = null;
     recoveryMode.value = '';
     touch();
+    void restoreCachedPhotos();
 }
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
@@ -241,6 +242,81 @@ async function initialize() {
         loading.value = false;
     }
 }
+
+async function restoreCachedPhotos() {
+    if (!recoveryKey || recoveryMode.value || testMode.value || !run.value || recoveringPhotos.value) return;
+    recoveringPhotos.value = true;
+    try {
+        const cached = await readCachedFocusPhotos(recoveryKey);
+        for (const saved of cached) {
+            // Never attach a cached file to a different draft/run.
+            if (saved.run_id !== run.value.id) {
+                cacheWarning.value = 'На устройстве остались фото от другого черновика. Они не будут загружены в эту проверку.';
+                continue;
+            }
+            if (!rooms.value[saved.room]?.items?.[saved.question]) continue;
+            if ((media.value[saved.room]?.[saved.question] ?? []).some(file => file.upload_id === saved.upload_id)) {
+                await forgetCachedFocusPhoto(recoveryKey, saved.upload_id);
+                continue;
+            }
+            if (uploads.value.some(item => item.id === saved.upload_id)) continue;
+            const record = interruptedUploads.value.find(item => item.upload_id === saved.upload_id);
+            const file = new File([saved.blob], saved.name, { type: saved.mime });
+            if (allowedFocusFile(file)) continue;
+            uploads.value.push({
+                id: saved.upload_id, file, room: saved.room, question: saved.question,
+                record: record || null, status: 'queued', progress: 0, error: '',
+                info: null, controller: null, preview_url: URL.createObjectURL(file),
+                cached: true,
+            });
+        }
+        pumpTransfers();
+    } catch (error) {
+        cacheWarning.value = 'Не удалось прочитать локальные фото. Выберите исходные файлы повторно.';
+    } finally {
+        recoveringPhotos.value = false;
+    }
+}
+
+function takePhoto(event, room, question) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    pickerFor.value = null;
+    if (!file || !canEdit.value) return;
+    const error = allowedFocusFile(file);
+    if (error || !focusFileMime(file).startsWith('image/')) {
+        mediaError.value = error || 'Нужна фотография.';
+        return;
+    }
+    closePhotoCapture();
+    photoCapture.value = {
+        file, room, question, preview_url: URL.createObjectURL(file), saving: false,
+    };
+}
+function closePhotoCapture() {
+    if (photoCapture.value?.preview_url) URL.revokeObjectURL(photoCapture.value.preview_url);
+    photoCapture.value = null;
+}
+function retakePhoto() {
+    const current = photoCapture.value;
+    if (!current || current.saving) return;
+    const input = document.getElementById('focus-camera-' + current.room + '-' + current.question);
+    closePhotoCapture();
+    input?.click();
+}
+async function confirmPhoto() {
+    const current = photoCapture.value;
+    if (!current || current.saving) return;
+    current.saving = true;
+    await queueSelectedFiles([current.file], current.room, current.question);
+    closePhotoCapture();
+}
+function openLightbox(file) {
+    if (mediaIsVideo(file)) return;
+    const url = mediaPreview(file);
+    if (url) lightbox.value = { url, name: file.name || file.original_name || 'Фотография' };
+}
+function closeLightbox() { lightbox.value = null; }
 
 async function choosePerson(id) {
     if (!canEdit.value) return;
