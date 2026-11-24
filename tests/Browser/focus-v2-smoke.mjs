@@ -584,6 +584,9 @@ async function main() {
                 name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'), video: true,
             });
             assert.ok(['local-backup', 'original-reselection'].includes(recoveryPath));
+            // The local preview appears before the resumed server transfer
+            // completes. Only server-acknowledged attachment counts as saved.
+            for (let i = 0; backend.media[0][0].length !== 1 && i < 100; i++) await delay(100);
             assert.equal(backend.sessions.size, 1, 'Video recovery created a second upload.');
             assert.equal([...backend.sessions.keys()][0], uploadId);
             assert.equal(backend.media[0][0].length, 1);
