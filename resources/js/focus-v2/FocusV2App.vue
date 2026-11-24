@@ -124,7 +124,7 @@ let timer = null;
 let inFlight = null;
 let uncertainSnapshot = null;
 
-const statusLabel = computed(() => testMode.value ? 'Тестовый режим · без отправки' : ({
+const statusLabel = computed(() => testMode.value && state.value === 'synced' ? 'Тестовый черновик сохранён' : ({
     idle: 'Готово',
     dirty: 'Не сохранено',
     saving: 'Сохраняем…',
@@ -143,7 +143,7 @@ const completedRequired = computed(() => rooms.value.reduce((sum, room, roomInde
 const currentRoom = computed(() => rooms.value[activeRoom.value] ?? { title: '', items: [] });
 const canEdit = computed(() => Boolean(run.value && !run.value.schema_conflict && state.value !== 'conflict' && !recoveryMode.value));
 const peopleOptions = computed(() => viewerRole.value === 'admin'
-    ? [{ id: '__test__', name: 'Тестовый сотрудник · без сохранения', thumbnail: null }, ...people.value]
+    ? [{ id: '__test__', name: 'Тестовый сотрудник · без статистики', thumbnail: null }, ...people.value]
     : people.value);
 // The previous cleaner is stored as a *name* in existing Control responses.
 // Never send a user ID in this legacy field. Preserve names from older
@@ -268,7 +268,7 @@ async function initialize() {
 }
 
 async function restoreCachedPhotos() {
-    if (!recoveryKey || recoveryMode.value || testMode.value || !run.value || recoveringPhotos.value) return;
+    if (!recoveryKey || recoveryMode.value || !run.value || recoveringPhotos.value) return;
     recoveringPhotos.value = true;
     try {
         const cached = await readCachedFocusPhotos(recoveryKey);
@@ -337,7 +337,7 @@ async function confirmPhoto() {
     current.saving = true;
     // First ensure this run has a server-owned draft. A freshly created
     // phone photo must not be cached with a run ID the server never saw.
-    if (!testMode.value && !run.value?.draft_id) {
+    if (!run.value?.draft_id) {
         touch();
         if (!(await ensureSynced()) || !run.value?.draft_id) {
             mediaError.value = 'Не удалось создать черновик. Проверьте соединение и повторите подтверждение фото.';
@@ -437,7 +437,7 @@ function resumeDraftFiles(event) {
     const selected = Array.from(event.target.files ?? []);
     event.target.value = '';
     mediaError.value = '';
-    if (!canEdit.value || testMode.value) return;
+    if (!canEdit.value) return;
     let restored = 0;
     for (const file of selected) {
         const record = interruptedUploads.value.find(item =>
@@ -467,7 +467,7 @@ function resumeDraftFiles(event) {
     }
 }
 async function attachReadyDraft(record) {
-    if (!canEdit.value || testMode.value || record.status !== 'ready') return;
+    if (!canEdit.value || record.status !== 'ready') return;
     if (activeTransfers || attachInFlight) {
         mediaError.value = 'Подождите завершения текущих загрузок.';
         return;
@@ -872,7 +872,7 @@ async function addFiles(event, room, question) {
 async function queueSelectedFiles(selected, room, question) {
     if (!canEdit.value) return false;
     mediaError.value = '';
-    if (selected.length && !testMode.value && !run.value?.draft_id) {
+    if (selected.length && !run.value?.draft_id) {
         touch();
         if (!(await ensureSynced()) || !run.value?.draft_id) {
             mediaError.value = 'Нет связи с сервером. Сначала сохраните черновик, затем добавьте файл.';
@@ -1240,20 +1240,20 @@ onBeforeUnmount(() => {
                     <div class="flex items-center gap-2 text-sm" role="status" aria-live="polite">
                         <span class="size-2.5 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
                         <strong>{{ statusLabel }}</strong>
-                        <span v-if="!testMode && outstandingMedia > 0" class="text-xs font-medium text-amber-700">
+                        <span v-if="outstandingMedia > 0" class="text-xs font-medium text-amber-700">
                             · {{ outstandingMedia }} {{ outstandingMedia === 1 ? 'файл' : 'файла' }} ещё не на сервере
                         </span>
                     </div>
-                    <button v-if="!testMode && stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
+                    <button v-if="stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
                         {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
                     </button>
                 </div>
 
                 <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
-                    <strong>Тестовый сотрудник</strong>
-                    <p class="mt-1">Это демонстрационный контроль: ответы и выбранные файлы остаются только в этом окне. Никаких записей в базе, статистики, уведомлений или загрузок на сервер.</p>
+                    <strong>Тестовый сотрудник · серверная загрузка</strong>
+                    <p class="mt-1">Фото, видео и ответы сохраняются в отдельном тестовом черновике. Рабочие контроли, рейтинги, баллы наград и сообщения Telegram не создаются. Тестовые материалы очищаются автоматически.</p>
                 </div>
-                <div v-if="!localStorageAvailable && !testMode && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                <div v-if="!localStorageAvailable && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
                     Локальное восстановление недоступно в этом браузере. Дождитесь статуса «Сохранено» перед закрытием Telegram.
                 </div>
                 <section v-if="recoveryMode && recoveryRecord" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
@@ -1280,7 +1280,7 @@ onBeforeUnmount(() => {
                             @click="keepServerVersion">Оставить серверную версию</button>
                     </div>
                 </section>
-                <section v-if="recoveryNeedingInput.length && !testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+                <section v-if="recoveryNeedingInput.length" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
                     <h2 class="font-bold">Восстановим материалы · {{ recoveryNeedingInput.length }}</h2>
                     <p class="mt-2">Снимки уже есть на сервере частично или полностью, но им нужно завершить сохранение. Выберите исходные файлы, если автоматическое восстановление не сработало.</p>
                     <label v-if="interruptedUploads.some(item => item.status === 'pending')" class="mt-3 inline-flex cursor-pointer rounded-xl bg-blue-700 px-4 py-3 font-semibold text-white">
@@ -1293,7 +1293,7 @@ onBeforeUnmount(() => {
                     </div>
                 </section>
                 <div v-if="mediaError" class="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</div>
-                <div v-if="cacheWarning && !testMode && outstandingMedia > 0"
+                <div v-if="cacheWarning && outstandingMedia > 0"
                     class="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" role="status">{{ cacheWarning }}</div>
 
                 <div v-if="syncError" role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -1514,17 +1514,17 @@ onBeforeUnmount(() => {
                             <span class="text-sm font-semibold">{{ room.title }}</span>
                             <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
                         </div>
-                        <div v-if="!testMode && !canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+                        <div v-if="!canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
                             Остались файлы без подтверждения · {{ outstandingMedia }}. Дождитесь завершения загрузки, повторите ошибочные файлы или восстановите их после закрытия Telegram. До этого отправка недоступна.
                         </div>
                         <p v-else-if="testMode" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
-                            Тестовая проверка завершится только на этом экране — без записи в базу, статистику или Telegram.
+                            Тест проходит настоящий серверный цикл, но не попадает в рабочие результаты, статистику, награды и Telegram.
                         </p>
                         <div v-if="submitError" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
                             {{ submitError }}
                         </div>
                         <button type="button" :disabled="!canEdit || submitting || !canSubmitMedia" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
-                            {{ submitting ? 'Завершаем…' : testMode ? 'Завершить тест без отправки' : 'Отправить контроль' }}
+                            {{ submitting ? 'Завершаем…' : testMode ? 'Завершить тест без статистики' : 'Отправить контроль' }}
                         </button>
                         <button type="button" :disabled="submitting || busyUploads" class="w-full rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-700 disabled:opacity-50" @click="openClassic">
                             Продолжить в старом Focus
@@ -1537,11 +1537,11 @@ onBeforeUnmount(() => {
                         <div class="text-3xl" aria-hidden="true">✓</div>
                         <h2 class="text-xl font-semibold text-emerald-800">{{ testMode ? 'Тест завершён' : 'Контроль завершён' }}</h2>
                         <p v-if="testMode" class="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
-                            Тест выполнен. На сервер ничего не отправлено; статистика, оценки и уведомления не создавались.
+                            Тест завершён на сервере. Фото и видео сохранены отдельно, без рабочего контроля, статистики, наград и уведомлений Telegram.
                         </p>
                         <p v-else-if="finalResult?.media?.state === 'complete'" class="text-sm text-slate-600">Ответы и оценка сохранены. Фото и видео подтверждены сервером.</p>
                         <p v-else class="text-sm text-amber-900">Это ранее завершённый контроль. Материалы требуют восстановления.</p>
-                        <div v-if="!testMode" class="rounded-xl bg-slate-50 p-4">
+                        <div class="rounded-xl bg-slate-50 p-4">
                             <p class="text-sm text-slate-600">Оценка уборки</p>
                             <p class="mt-1 text-2xl font-semibold">{{ finalResult?.total_points }} / {{ finalResult?.max_points }} · {{ finalResult?.score_percent }}%</p>
                             <p class="mt-2 text-sm font-bold" :class="finalResult?.result_zone === 'green' ? 'text-emerald-700' : finalResult?.result_zone === 'red' ? 'text-red-700' : 'text-amber-700'">
