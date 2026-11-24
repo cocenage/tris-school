@@ -97,7 +97,11 @@ final class FocusV2MediaController extends Controller
                     && $existing->original_name === $filename
                     && $existing->declared_mime === $mime
                     && $existing->size_bytes === (int) $data['size']
-                    && $existing->total_chunks === $totalChunks
+                    // Uploads registered on previous deployments retain
+                    // their original (512 KiB) chunk size on resume. Never
+                    // force an in-flight video into the new 1 MiB grid.
+                    && $existing->chunk_bytes > 0
+                    && $existing->total_chunks === (int) ceil($existing->size_bytes / $existing->chunk_bytes)
                     && $existing->status !== 'cancelled',
                     409,
                 );
