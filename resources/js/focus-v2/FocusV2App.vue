@@ -692,6 +692,7 @@ async function registerRemainingEvidence() {
                 original_name: item.file.name,
                 mime: focusFileMime(item.file),
                 size: item.file.size,
+                test_mode: testMode.value,
             }, csrf);
         }));
     }
@@ -775,16 +776,7 @@ async function submitControl() {
     submitting.value = true;
     submitError.value = '';
     try {
-        if (testMode.value) {
-            const count = media.value.flat().reduce((sum, files) => sum + files.length, 0);
-            finalResult.value = {
-                test_mode: true, media: { state: 'complete', total: count, attached: count,
-                    pending: 0, ready_to_attach: 0, cancelled: 0, uploads: [] },
-            };
-            stage.value = 'done';
-            return;
-        }
-        if (!canSubmitMedia.value) {
+         if (!canSubmitMedia.value) {
             throw new Error('Дождитесь загрузки всех фото и видео. Ошибочные файлы повторите или отмените. При восстановлении выберите исходные файлы.');
         }
         if (!(await ensureSynced())) {
@@ -808,9 +800,11 @@ async function submitControl() {
                 schema_version: control.value.schema_version,
                 draft_id: run.value.draft_id,
                 expected_revision: run.value.revision,
+                test_mode: testMode.value,
             }),
         });
-        if (!result.submitted || !result.result_url) {
+        if (!result.submitted || (!testMode.value && !result.result_url)
+            || (testMode.value && !result.test_mode)) {
             throw new Error('Сервер не подтвердил завершение проверки.');
         }
         finalResult.value = result;
@@ -829,6 +823,10 @@ async function submitControl() {
 
 async function openClassic() {
     if (submitting.value || stage.value === 'done') return;
+    if (testMode.value) {
+        exitTestMode();
+        return;
+    }
     if (recoveryMode.value) {
         syncError.value = 'Сначала выберите, какую версию черновика оставить.';
         return;
@@ -896,12 +894,7 @@ async function queueSelectedFiles(selected, room, question) {
             break;
         }
         const id = crypto.randomUUID();
-        if (testMode.value) {
-            const files = media.value[room][question] ?? (media.value[room][question] = []);
-            const url = URL.createObjectURL(file);
-            files.push({ upload_id: id, name: file.name, mime,
-                size: file.size, url, thumbnail_url: url, local: true });
-        } else {
+        {
             let cached = false;
             if (mime.startsWith('image/')) {
                 try {
@@ -925,7 +918,7 @@ async function queueSelectedFiles(selected, room, question) {
         reserved++;
         accepted++;
     }
-    if (!testMode.value) pumpTransfers();
+    pumpTransfers();
     return accepted > 0;
 }
 
@@ -959,12 +952,14 @@ async function sendOne(item) {
                 draft_id: item.record.draft_id,
                 run_id: item.record.run_id,
                 schema_version: item.record.schema_version,
+                test_mode: testMode.value,
             }
             : {
                 control_id: control.value.id,
                 draft_id: run.value.draft_id,
                 run_id: run.value.id,
                 schema_version: control.value.schema_version,
+                test_mode: testMode.value,
             };
 
         const result = await transferFocusFile({
@@ -1097,7 +1092,7 @@ function removeTestMedia(room, question, file) {
 }
 async function removeSavedMedia(room, question, file) {
     if (!canEdit.value || !file) return;
-    if (testMode.value) {
+    if (testMode.value && file.local) {
         removeTestMedia(room, question, file);
         return;
     }
