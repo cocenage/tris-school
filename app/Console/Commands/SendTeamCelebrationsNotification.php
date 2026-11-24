@@ -66,6 +66,12 @@ class SendTeamCelebrationsNotification extends Command
                 ->values();
             $events = $this->withoutAlreadyDeliveredLegacyEvents($summarySourceEvents);
             $digest = $celebrationService->formatDigest($previewDate, $events);
+            // The calendar topic receives an explicit daily status, even when
+            // tomorrow has no events. Do not claim "no events" when there were
+            // events already delivered through the legacy route.
+            if ($digest === null && $summarySourceEvents->isEmpty()) {
+                $digest = $this->emptyDayDigest($previewDate);
+            }
             $previews[] = [
                 'date' => $previewDate,
                 'birthday_date' => $birthdayDate,
@@ -280,6 +286,19 @@ class SendTeamCelebrationsNotification extends Command
         $this->info('Сводка событий отправлена в Telegram.');
 
         return self::SUCCESS;
+    }
+
+    /** @return array{text: string, photo_path: null, over_limit: false, character_count: int} */
+    private function emptyDayDigest(CarbonImmutable $date): array
+    {
+        $text = '📅 <b>События на '.$date->format('d.m.Y')."</b>\n\nℹ️ На завтра событий нет.";
+
+        return [
+            'text' => $text,
+            'photo_path' => null,
+            'over_limit' => false,
+            'character_count' => mb_strlen(strip_tags($text)),
+        ];
     }
 
     private function sendBirthdayEvent(

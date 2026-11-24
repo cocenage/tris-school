@@ -89,7 +89,7 @@ it('prints a dry-run preview without sending or reserving an operation', functio
     Http::assertNothingSent();
 });
 
-it('previews an empty day without preparing an empty Telegram post', function () {
+it('previews the explicit no-events message without sending anything', function () {
     teamCelebrationServiceReturning([], '2026-10-09');
     $bot = Mockery::mock(TelegramBotService::class);
     $bot->shouldNotReceive('sendMessage');
@@ -97,32 +97,40 @@ it('previews an empty day without preparing an empty Telegram post', function ()
     app()->instance(TelegramBotService::class, $bot);
 
     expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09', '--dry-run' => true]))->toBe(0)
-        ->and(Artisan::output())->toContain('Дней рождения нет.', 'Событий на эту дату нет.')
-        ->not->toContain('На завтра событий нет.')
+        ->and(Artisan::output())->toContain('Дней рождения нет.', '📅 <b>События на 09.10.2026</b>', 'ℹ️ На завтра событий нет.')
         ->and(TelegramOutboundOperation::query()->count())->toBe(0);
     Http::assertNothingSent();
 });
 
-it('previews arbitrary empty dates without a summary placeholder', function () {
+it('previews a dated no-events digest for an arbitrary date', function () {
     teamCelebrationServiceReturning([], '2026-10-10');
 
     expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-10', '--dry-run' => true]))->toBe(0)
-        ->and(Artisan::output())->toContain('10.10.2026', 'Дней рождения нет.', 'Событий на эту дату нет.')
-        ->not->toContain('На эту дату событий нет.')
+        ->and(Artisan::output())->toContain('10.10.2026', 'Дней рождения нет.', 'ℹ️ На завтра событий нет.')
         ->and(TelegramOutboundOperation::query()->count())->toBe(0);
 
     Http::assertNothingSent();
 });
 
-it('sends nothing and reserves nothing when both dates have no events', function () {
+it('sends one dated no-events notification in the dedicated topic and deduplicates reruns', function () {
     Carbon::setTestNow(Carbon::parse('2026-11-06 08:45:00', 'Europe/Rome'));
+    Http::fake(['https://api.telegram.org/*/sendMessage' => Http::response(['ok' => true, 'result' => ['message_id' => 71]], 200)]);
     teamCelebrationServiceReturning([], '2026-11-07', times: 2);
 
     expect(Artisan::call('calendar:notify-celebrations'))->toBe(0)
         ->and(Artisan::call('calendar:notify-celebrations'))->toBe(0);
 
-    Http::assertNothingSent();
-    expect(TelegramOutboundOperation::query()->count())->toBe(0);
+    Http::assertSentCount(1);
+    Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendMessage')
+        && $request->data()['chat_id'] === 'celebrations-test-chat'
+        && $request->data()['message_thread_id'] === 7
+        && $request->data()['text'] === "📅 <b>События на 07.11.2026</b>\n\nℹ️ На завтра событий нет.");
+    expect(TelegramOutboundOperation::query()->sole())
+        ->toMatchArray([
+            'status' => 'sent',
+            'source_type' => 'TeamCelebrationNonBirthdayDigest',
+            'telegram_message_id' => 71,
+        ]);
 });
 
 it('fails closed when the dedicated celebration destination is missing', function () {
@@ -221,7 +229,7 @@ it('sends today birthday separately from tomorrow events and reuses journal keys
     }
 });
 
-it('sends each same-day birthday with the monthly card as a separate message', function () {
+it('sends birthdays separately and still reports no events tomorrow', function () {
     $path = tempnam(sys_get_temp_dir(), 'tris-card-');
     file_put_contents($path, 'fixture-image-bytes');
     $messageId = 73;
@@ -240,9 +248,11 @@ it('sends each same-day birthday with the monthly card as a separate message', f
 
     try {
         expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09']))->toBe(0);
-        Http::assertSentCount(2);
+        Http::assertSentCount(3);
         Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendPhoto')
             && $request->hasFile('photo'));
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendMessage')
+            && str_contains($request->data()['text'], 'На завтра событий нет.'));
         expect(TelegramOutboundOperation::query()->where('source_type', 'User')->count())->toBe(2)
             ->and(TelegramOutboundOperation::query()->where('source_type', 'User')->pluck('message_thread_id')->unique()->all())->toBe(['7']);
     } finally {
@@ -260,9 +270,10 @@ it('does not resend an uncertain Telegram result on a repeated command', functio
         expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09']))->toBe(1)
             ->and(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09']))->toBe(0);
 
-        Http::assertSentCount(1);
+        Http::assertSentCount(2);
         Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendPhoto'));
-        expect(TelegramOutboundOperation::query()->sole()->status)->toBe('uncertain');
+        expect(TelegramOutboundOperation::query()->where('notification_type', 'team_celebration')->sole()->status)->toBe('uncertain')
+            ->and(TelegramOutboundOperation::query()->where('source_type', 'TeamCelebrationNonBirthdayDigest')->sole()->status)->toBe('uncertain');
     } finally {
         @unlink($path);
     }
@@ -284,11 +295,14 @@ it('suppresses a legacy personal event already handled before digest cutover', f
         'attempts' => 1,
     ]);
     teamCelebrationServiceReturning([teamCelebrationTestEvent()]);
+    Http::fake(['https://api.telegram.org/*/sendMessage' => Http::response(['ok' => true, 'result' => ['message_id' => 71]], 200)]);
 
     expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09']))->toBe(0)
-        ->and(Artisan::output())->toContain('Все события на выбранные даты уже учтены.')
-        ->and(TelegramOutboundOperation::query()->count())->toBe(1);
-    Http::assertNothingSent();
+        ->and(Artisan::output())->toContain('Сводка событий отправлена')
+        ->and(TelegramOutboundOperation::query()->count())->toBe(2);
+    Http::assertSentCount(1);
+    Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendMessage')
+        && str_contains($request->data()['text'], 'На завтра событий нет.'));
 })->with(['expected', 'pending', 'sent', 'edited', 'uncertain']);
 
 it('keeps definitively failed legacy birthday events eligible for a new message', function () {
@@ -306,12 +320,15 @@ it('keeps definitively failed legacy birthday events eligible for a new message'
     ]);
     $path = tempnam(sys_get_temp_dir(), 'tris-card-');
     file_put_contents($path, 'fixture-image-bytes');
-    Http::fake(['https://api.telegram.org/*/sendPhoto' => Http::response(['ok' => true, 'result' => ['message_id' => 73]], 200)]);
+    Http::fake([
+        'https://api.telegram.org/*/sendPhoto' => Http::response(['ok' => true, 'result' => ['message_id' => 73]], 200),
+        'https://api.telegram.org/*/sendMessage' => Http::response(['ok' => true, 'result' => ['message_id' => 74]], 200),
+    ]);
     teamCelebrationServiceReturning([teamCelebrationTestEvent(['photo_path' => $path])]);
 
     try {
         expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09']))->toBe(0);
-        Http::assertSentCount(1);
+        Http::assertSentCount(2);
         expect(TelegramOutboundOperation::query()->where('notification_type', 'team_celebration')->sole()->status)->toBe('sent');
     } finally {
         @unlink($path);
