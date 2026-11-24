@@ -387,6 +387,28 @@ async function main() {
             await context.close();
         }
 
+        // A server-ready video needs no original file after Telegram closes.
+        // It should be attached automatically during bootstrap.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            const uploadId = '00000000-0000-4000-8000-000000000091';
+            backend.sessions.set(uploadId, {
+                id: uploadId, room: 0, question: 0, name: 'ready-video.mp4',
+                size: 128, mime: 'video/mp4', status: 'ready', received: new Set(),
+            });
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /Просмотреть видео ready-video.mp4/ }).waitFor({ timeout: 15000 });
+            assert.equal(backend.media[0][0].length, 1, 'Server-ready file was not automatically attached.');
+            assert.equal(backend.sessions.get(uploadId).status, 'attached');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: automatically attaches server-ready video with no file reselection');
+            await context.close();
+        }
+
         // Interrupted upload: new WebView must recover the cached Blob and reuse its upload ID.
         {
             const backend = new FakeFocusBackend();
