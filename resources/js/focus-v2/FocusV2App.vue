@@ -144,6 +144,18 @@ const canEdit = computed(() => Boolean(run.value && !run.value.schema_conflict &
 const peopleOptions = computed(() => viewerRole.value === 'admin'
     ? [{ id: '__test__', name: 'Тестовый сотрудник · без сохранения', thumbnail: null }, ...people.value]
     : people.value);
+// The previous cleaner is stored as a *name* in existing Control responses.
+// Never send a user ID in this legacy field. Preserve names from older
+// drafts even if the staff member is no longer active.
+const previousPeopleOptions = computed(() => {
+    const options = [{ id: '', name: 'Не указан', thumbnail: null },
+        ...people.value.map(person => ({ ...person, id: person.name }))];
+    const oldName = String(setup.value.previous_cleaner || '').trim();
+    if (oldName && !options.some(person => person.id === oldName)) {
+        options.push({ id: oldName, name: oldName + ' · из сохранённого контроля', thumbnail: null });
+    }
+    return options;
+});
 const outstandingMedia = computed(() => new Set([
     ...interruptedUploads.value.map(item => item.upload_id),
     ...uploads.value.filter(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status))
@@ -374,6 +386,11 @@ async function choosePerson(id) {
 function chooseApartment(id) {
     if (!canEdit.value) return;
     setup.value.apartment_id = id;
+    touch();
+}
+function choosePreviousCleaner(name) {
+    if (!canEdit.value) return;
+    setup.value.previous_cleaner = String(name ?? '');
     touch();
 }
 function exitTestMode() {
@@ -1250,6 +1267,14 @@ onBeforeUnmount(() => {
                             <h2 class="text-xl font-bold">Данные проверки</h2>
                             <p class="mt-1 text-sm text-slate-500">{{ control?.name }}</p>
                         </div>
+                        <label for="focus-inspection-comment" class="block rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm font-semibold text-slate-900">
+                            Комментарий к проверке
+                            <span class="mt-1 block text-xs font-normal text-slate-600">Общие замечания по всей проверке — сохраняются в черновике и итоговом результате.</span>
+                            <textarea id="focus-inspection-comment" v-model="setup.comment" rows="3" maxlength="2000"
+                                placeholder="Например: квартира передана позже, уборка не закончена…"
+                                :disabled="!canEdit" class="mt-2 w-full rounded-xl border border-blue-200 bg-white p-3 text-base font-normal disabled:opacity-50"
+                                @input="touch"></textarea>
+                        </label>
 
                         <FocusSearchSelect id="focus-cleaner" :items="peopleOptions" :model-value="setup.cleaner_id"
                             label="Сотрудник" placeholder="Найти сотрудника по имени" :disabled="!canEdit"
@@ -1257,10 +1282,7 @@ onBeforeUnmount(() => {
                         <FocusSearchSelect id="focus-apartment" :items="apartments" :model-value="setup.apartment_id"
                             label="Квартира" placeholder="Найти квартиру по названию" :disabled="!canEdit"
                             @select="chooseApartment" />
-                        <label class="block text-sm font-semibold">Комментарий к проверке
-                            <textarea v-model="setup.comment" rows="3" maxlength="2000" placeholder="Напишите важные детали перед проверкой"
-                                :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch"></textarea>
-                        </label>
+ 
 
                         <div class="grid grid-cols-2 gap-3">
                             <label class="text-sm font-semibold">Дата уборки
@@ -1274,9 +1296,10 @@ onBeforeUnmount(() => {
                             <input v-model="setup.is_assigned" type="checkbox" :disabled="!canEdit" @change="touch">
                             Назначенная уборка
                         </label>
-                        <label class="block text-sm font-semibold">Предыдущий сотрудник
-                            <input v-model="setup.previous_cleaner" type="text" maxlength="255" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-base" @input="touch">
-                        </label>
+                        <FocusSearchSelect id="focus-previous-cleaner" :items="previousPeopleOptions"
+                            :model-value="setup.previous_cleaner" label="Предыдущий сотрудник"
+                            placeholder="Найти по имени или оставить пустым"
+                            :disabled="!canEdit" @select="choosePreviousCleaner" />
 
                         <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="goRoom(0)">
                             К вопросам
