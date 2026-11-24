@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { File } from 'node:buffer';
 import {
-    FOCUS_RECOVERY_MAX_AGE_MS, cacheFocusPhoto, forgetCachedFocusPhoto,
+    FOCUS_RECOVERY_MAX_AGE_MS, VIDEO_RECOVERY_MAX_BYTES, cacheFocusPhoto, forgetCachedFocusPhoto,
     readCachedFocusPhotos, recoveryScope,
 } from '../../resources/js/focus-v2/local-recovery.js';
 
@@ -81,11 +81,27 @@ test('backs up one selected photo by user/control/run without leaking another su
     assert.equal((await readCachedFocusPhotos(scopeB)).length, 1);
 });
 
-test('expires old photos and refuses to cache video bytes', async () => {
+test('backs up short videos but never keeps 100 MiB movies in IndexedDB', async () => {
+    const shortVideo = new File(['bytes'], 'clip.mp4', { type: 'video/mp4' });
+    await cacheFocusPhoto({
+        scope: scopeA, uploadId: uploadA, runId: 'run-a',
+        file: shortVideo, room: 0, question: 0,
+    });
+    const [saved] = await readCachedFocusPhotos(scopeA);
+    assert.equal(saved.mime, 'video/mp4');
+    assert.equal(saved.blob.size, shortVideo.size);
+    assert.equal(saved.name, 'clip.mp4');
+    await forgetCachedFocusPhoto(scopeA, uploadA);
+
+    // Rejected on size before attempting to structured-clone a huge blob.
     await assert.rejects(cacheFocusPhoto({
         scope: scopeA, uploadId: uploadA, runId: 'run-a',
-        file: new File(['bytes'], 'clip.mp4', { type: 'video/mp4' }), room: 0, question: 0,
+        file: { size: VIDEO_RECOVERY_MAX_BYTES + 1, type: 'video/mp4', name: 'large.mp4' },
+        room: 0, question: 0,
     }));
+});
+
+test('expires stale photo backups after the configured retention', async () => {
     await cacheFocusPhoto({ scope: scopeA, uploadId: uploadA, runId: 'run-a',
         file, room: 0, question: 0 });
     const [saved] = await readCachedFocusPhotos(scopeA);
