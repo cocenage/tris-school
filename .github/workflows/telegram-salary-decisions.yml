@@ -1,0 +1,67 @@
+name: Telegram salary decision checks
+
+on:
+  pull_request:
+    paths:
+      - 'app/Services/Forms/**'
+      - 'app/Jobs/DeliverSalaryQuestionDecision.php'
+      - 'app/Models/SalaryQuestion*.php'
+      - 'app/Http/Controllers/TelegramSalaryDecisionController.php'
+      - 'app/Http/Controllers/TelegramAuthController.php'
+      - 'app/Filament/Resources/SalaryQuestions/**'
+      - 'resources/views/telegram/salary-decision.blade.php'
+      - 'routes/web.php'
+      - 'routes/console.php'
+      - 'config/services.php'
+      - 'database/migrations/*salary_question*'
+      - 'tests/Feature/TelegramSalaryDecisionTest.php'
+      - '.github/workflows/telegram-salary-decisions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_ENV: testing
+      TELEGRAM_BOT_TOKEN: test-work-token
+      TELEGRAM_SCHEDULED_BOT_TOKEN: test-scheduled-token
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      DB_URL: ''
+      DB_ANALYTICS_DATABASE: ':memory:'
+      DB_OLD_DATABASE: ':memory:'
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, dom, fileinfo, pdo_sqlite, sqlite3, gd, intl, zip
+          coverage: none
+          tools: composer:v2
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build frontend assets
+        run: npm run build
+      - name: Prepare application
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+      - name: Verify salary Mini App and decision delivery
+        run: php artisan test tests/Feature/TelegramSalaryDecisionTest.php
+      - name: Verify existing request source messages
+        run: php artisan test tests/Feature/TelegramRequestSourceMessagesTest.php tests/Feature/RequestFormGuidesTest.php
+      - name: Verify OKS and Work bot callbacks
+        run: php artisan test tests/Feature/OksControlCopyTest.php tests/Feature/TelegramWorkWebhookTest.php
