@@ -77,4 +77,13 @@ Schedule::command('focus-v2:prune-media')
     ->when(fn (): bool => config('focus-v2.enabled', false) && ! app()->environment('production'))
     ->withoutOverlapping();
 
+// Unlike the legacy preview-only media pruner, the new sandbox cleanup
+// is safe in production because it selects *only* sandbox draft states and
+// private paths under focus-v2-sandbox/.
+Schedule::command('focus-v2:prune-sandbox')
+    ->dailyAt('03:40')
+    ->timezone('Europe/Rome')
+    ->when(fn (): bool => config('focus-v2.enabled', false))
+    ->withoutOverlapping();
+
 app(EmergencyScheduleRegistrar::class)->register(app(Illuminate\Console\Scheduling\Schedule::class));
