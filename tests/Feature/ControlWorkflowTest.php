@@ -615,6 +615,132 @@ function focusV2PutChunk(string $uploadId, string $body, int $index = 0): \Illum
     );
 }
 
+it('stores inspection comment and searchable previous staff name in a real draft and result', function (): void {
+    Queue::fake();
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $payload['setup']['comment'] = 'Общий комментарий к проверке: ключи были у консьержа.';
+    $payload['setup']['previous_cleaner'] = 'Cleaner';
+
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)
+        ->assertOk()->assertJsonPath('run.revision', 1);
+    $draft = ControlResponseDraft::query()->sole();
+    expect($draft->comment)->toBe($payload['setup']['comment'])
+        ->and($draft->previous_cleaner)->toBe('Cleaner');
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('setup.comment', $payload['setup']['comment'])
+        ->assertJsonPath('setup.previous_cleaner', 'Cleaner');
+
+    $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft))
+        ->assertOk()->assertJsonPath('submitted', true);
+    expect(ControlResponse::query()->sole()->comment)->toBe($payload['setup']['comment'])
+        ->and(ControlResponse::query()->sole()->previous_cleaner)->toBe('Cleaner');
+});
+
+it('runs a genuine admin sandbox upload without creating responses, activity, rewards or Telegram notifications', function (): void {
+    Queue::fake();
+    Storage::fake('local');
+    [$admin, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $admin->forceFill(['role' => 'admin'])->save();
+    $this->actingAs($admin);
+
+    $input = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $input['test_mode'] = true;
+    $input['setup']['cleaner_id'] = '__test__';
+    $input['setup']['previous_cleaner'] = 'Cleaner';
+    $input['setup']['comment'] = 'Без статистики';
+
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap').'?test_mode=1')
+        ->assertOk()->assertJsonPath('test_mode', true)
+        ->assertJsonPath('setup.cleaner_id', '__test__')
+        ->assertJsonPath('run.draft_id', null);
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $input)
+        ->assertOk()->assertJsonPath('run.revision', 1);
+
+    $sandbox = ControlResponseDraft::query()->sole();
+    expect($sandbox->state)->toBe('sandbox')
+        ->and($sandbox->cleaner_id)->toBeNull()
+        ->and($sandbox->comment)->toBe('Без статистики');
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()->assertJsonPath('run.draft_id', null);
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap').'?test_mode=1')
+        ->assertOk()->assertJsonPath('run.draft_id', $sandbox->id)
+        ->assertJsonPath('setup.comment', 'Без статистики')
+        ->assertJsonPath('setup.previous_cleaner', 'Cleaner');
+
+    $binary = focusV2SamplePng();
+    $upload = focusV2MediaStartPayload($control, $sandbox, $binary);
+    $upload['test_mode'] = true;
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $upload)
+        ->assertOk()->assertJsonPath('status', 'pending');
+
+    $final = focusV2FinalPayload($sandbox);
+    $final['test_mode'] = true;
+    $this->postJson(route('page-checks.control.focus-v2.submit'), $final)
+        ->assertUnprocessable()->assertJsonValidationErrors('media');
+
+    focusV2PutChunk($upload['upload_id'], $binary)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $upload['upload_id']))
+        ->assertOk()->assertJsonPath('status', 'ready');
+    expect(FocusV2MediaUpload::query()->sole()->stored_path)
+        ->toStartWith('focus-v2-sandbox/'.$admin->id.'/'.$sandbox->run_id.'/');
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $upload['upload_id']), [
+        'draft_id' => $sandbox->id, 'expected_revision' => $sandbox->revision,
+    ])->assertOk()->assertJsonPath('run.revision', 2);
+    $sandbox->refresh();
+
+    $fileUrl = route('page-checks.control.draft-media', [
+        $control, 0, 0, 0, 'draft_id' => $sandbox->id, 'test_mode' => 1,
+    ]);
+    $this->get($fileUrl)->assertOk();
+    $this->get(route('page-checks.control.draft-media', [
+        $control, 0, 0, 0, 'draft_id' => $sandbox->id,
+    ]))->assertNotFound();
+
+    $final['expected_revision'] = $sandbox->revision;
+    $this->postJson(route('page-checks.control.focus-v2.submit'), $final)
+        ->assertOk()->assertJsonPath('submitted', true)
+        ->assertJsonPath('test_mode', true)
+        ->assertJsonPath('media.attached', 1)
+        ->assertJsonPath('score_percent', 100)
+        ->assertJsonMissingPath('response_id')
+        ->assertJsonMissingPath('result_url');
+    $this->postJson(route('page-checks.control.focus-v2.submit'), $final)
+        ->assertOk()->assertJsonPath('replayed', true);
+    expect($sandbox->fresh()->state)->toBe('sandbox_complete')
+        ->and(ControlResponse::count())->toBe(0)
+        ->and(ControlCompletionNotification::count())->toBe(0)
+        ->and(DB::table('activity_log')->count())->toBe(0);
+    Queue::assertNotPushed(SendControlCompletionNotification::class);
+
+    $originalPath = FocusV2MediaUpload::query()->sole()->stored_path;
+    DB::table('control_response_drafts')->where('id', $sandbox->id)
+        ->update(['updated_at' => now()->subDays(8)]);
+    $this->artisan('focus-v2:prune-sandbox --days=7')->assertExitCode(0);
+    expect(ControlResponseDraft::count())->toBe(0)
+        ->and(FocusV2MediaUpload::count())->toBe(0)
+        ->and(ControlResponse::count())->toBe(0);
+    Storage::disk('local')->assertMissing($originalPath);
+});
+
+it('blocks non-admins from injecting server sandbox saves or media into active production', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $input = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $input['test_mode'] = true;
+    $input['setup']['cleaner_id'] = '__test__';
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap').'?test_mode=1')->assertForbidden();
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $input)->assertForbidden();
+    $this->postJson(route('page-checks.control.focus-v2.submit'), [
+        'test_mode' => true, ...focusV2FinalPayload(new ControlResponseDraft([
+            'control_id' => $control->id, 'run_id' => $input['run_id'],
+            'schema_version' => $input['schema_version'], 'revision' => 1,
+        ])), 'draft_id' => 1,
+    ])->assertForbidden();
+    expect(ControlResponseDraft::count())->toBe(0)
+        ->and(ControlResponse::count())->toBe(0);
+});
+
 it('uploads Focus V2 evidence in chunks, resumes and attaches it exactly once', function (): void {
     Storage::fake('local');
     [, , $control, $draft, $payload] = focusV2MediaFixture();

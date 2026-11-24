@@ -34,6 +34,10 @@ final class PruneFocusV2MediaUploads extends Command
             // failed or cancelled uploads, until an explicit retention policy
             // and review workflow can safely account for every file.
             ->whereNull('control_response_id')
+            // Sandbox sessions use a seven-day retention policy and are
+            // exclusively cleaned by focus-v2:prune-sandbox.
+            ->whereNotIn('draft_id', ControlResponseDraft::query()
+                ->whereIn('state', ['sandbox', 'sandbox_complete'])->select('id'))
             ->where(function ($query): void {
                 $query->whereIn('status', ['pending', 'ready', 'cancelled'])
                     ->orWhere(function ($nested): void {

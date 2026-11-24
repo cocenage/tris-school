@@ -34,8 +34,13 @@ final class FocusV2SubmitController extends Controller
         $preview->assertWritable();
         $user = $request->user();
         abort_unless($user?->is_active && in_array($user->role, ['admin', 'supervisor'], true), 403);
+        $sandbox = $request->boolean('test_mode');
+        if ($sandbox) {
+            abort_unless($user->role === 'admin', 403);
+        }
 
         $input = $request->validate([
+            'test_mode' => ['sometimes', 'boolean'],
             'control_id' => ['required', 'integer', 'min:1'],
             'run_id' => ['required', 'uuid'],
             'schema_version' => ['required', 'string', 'regex:/\A[a-f0-9]{64}\z/i'],
@@ -45,9 +50,21 @@ final class FocusV2SubmitController extends Controller
 
         // A response might have committed while the connection to the user's
         // phone failed. Return the same result; never create a second one.
-        $existing = ControlResponse::query()->where('submission_token', $input['run_id'])->first();
-        if ($existing) {
-            return $this->submittedResponse($existing, $input, (int) $user->getKey(), true);
+        if ($sandbox) {
+            $completed = ControlResponseDraft::query()->whereKey($input['draft_id'])
+                ->where('supervisor_id', $user->getKey())
+                ->where('control_id', $input['control_id'])
+                ->where('run_id', $input['run_id'])
+                ->where('schema_version', $input['schema_version'])
+                ->where('state', 'sandbox_complete')->first();
+            if ($completed) {
+                return $this->sandboxResponse($completed, true);
+            }
+        } else {
+            $existing = ControlResponse::query()->where('submission_token', $input['run_id'])->first();
+            if ($existing) {
+                return $this->submittedResponse($existing, $input, (int) $user->getKey(), true);
+            }
         }
 
         $lock = Cache::lock('control-submit:'.$input['run_id'], 30);
@@ -59,10 +76,12 @@ final class FocusV2SubmitController extends Controller
         }
 
         try {
-            return DB::transaction(function () use ($input, $user, $runs, $notifications): JsonResponse {
-                $existing = ControlResponse::query()->where('submission_token', $input['run_id'])->first();
-                if ($existing) {
-                    return $this->submittedResponse($existing, $input, (int) $user->getKey(), true);
+            return DB::transaction(function () use ($input, $user, $runs, $notifications, $sandbox): JsonResponse {
+                if (! $sandbox) {
+                    $existing = ControlResponse::query()->where('submission_token', $input['run_id'])->first();
+                    if ($existing) {
+                        return $this->submittedResponse($existing, $input, (int) $user->getKey(), true);
+                    }
                 }
 
                 $control = Control::query()->where('is_active', true)->latest()->firstOrFail();
@@ -77,7 +96,7 @@ final class FocusV2SubmitController extends Controller
                     ->where('control_id', $control->getKey())
                     ->where('supervisor_id', $user->getKey())
                     ->where('run_id', $input['run_id'])
-                    ->where('state', 'active')
+                    ->where('state', $sandbox ? 'sandbox' : 'active')
                     ->lockForUpdate()
                     ->first();
                 abort_unless($draft, 409, 'Черновик не найден. Возможно, контроль уже завершён.');
@@ -106,8 +125,8 @@ final class FocusV2SubmitController extends Controller
                 }
                 $answers = $schema->attachQuestionIds($answers);
 
-                $this->validateSetup($draft);
-                $this->validateMedia($draft, $rooms);
+                $this->validateSetup($draft, $sandbox);
+                $this->validateMedia($draft, $rooms, $sandbox);
 
                 // Never publish scores or queue notifications before every
                 // selected upload has been attached to its draft. A crashed
@@ -126,6 +145,17 @@ final class FocusV2SubmitController extends Controller
                 (clone $evidence)->where('status', 'cancelled')->delete();
 
                 $score = ControlResponse::calculateScores($rooms, $answers);
+                if ($sandbox) {
+                    // Critical isolation boundary: do NOT create any
+                    // ControlResponse, reward event, activity log or Telegram
+                    // notification. Sandbox evidence stays in its private
+                    // namespace and is pruned after seven days.
+                    $draft->responses = $answers;
+                    $draft->state = 'sandbox_complete';
+                    $draft->save();
+
+                    return $this->sandboxResponse($draft, false);
+                }
                 $response = $runs->submitOnce(
                     controlId: (int) $control->getKey(),
                     supervisorId: (int) $user->getKey(),
@@ -184,7 +214,7 @@ final class FocusV2SubmitController extends Controller
         }
     }
 
-    private function validateSetup(ControlResponseDraft $draft): void
+    private function validateSetup(ControlResponseDraft $draft, bool $sandbox = false): void
     {
         Validator::make([
             'cleaner_id' => $draft->cleaner_id,
@@ -194,8 +224,10 @@ final class FocusV2SubmitController extends Controller
             'previous_cleaner' => $draft->previous_cleaner,
             'comment' => $draft->comment,
         ], [
-            'cleaner_id' => ['required', 'integer', Rule::exists('users', 'id')
-                ->where('is_active', true)->where('status', 'approved')->whereIn('role', ['cleaner', 'supervisor'])],
+            'cleaner_id' => $sandbox
+                ? ['nullable']
+                : ['required', 'integer', Rule::exists('users', 'id')
+                    ->where('is_active', true)->where('status', 'approved')->whereIn('role', ['cleaner', 'supervisor'])],
             'apartment_id' => ['required', 'integer', Rule::exists('apartments', 'id')->where('is_active', true)],
             'cleaning_date' => ['required', 'date_format:Y-m-d'],
             'inspection_date' => ['required', 'date_format:Y-m-d', 'after_or_equal:cleaning_date'],
@@ -204,7 +236,7 @@ final class FocusV2SubmitController extends Controller
         ])->validate();
     }
 
-    private function validateMedia(ControlResponseDraft $draft, array $rooms): void
+    private function validateMedia(ControlResponseDraft $draft, array $rooms, bool $sandbox = false): void
     {
         $errors = [];
 
@@ -220,7 +252,9 @@ final class FocusV2SubmitController extends Controller
                     $disk = is_array($file) ? ($file['disk'] ?? null) : null;
                     $path = is_array($file) ? (string) ($file['path'] ?? '') : '';
                     if (! in_array($disk, ['local', 'public'], true)
-                        || ! str_starts_with($path, 'controls/'.$draft->control_id.'/')
+                        || ! str_starts_with($path, $sandbox
+                            ? 'focus-v2-sandbox/'.$draft->supervisor_id.'/'.$draft->run_id.'/'
+                            : 'controls/'.$draft->control_id.'/')
                         || str_contains($path, '..') || str_contains($path, '\\')
                         || ! Storage::disk($disk)->exists($path)) {
                         $errors["answers.$roomIndex.$questionIndex"] = 'Не найден прикреплённый файл. Проверьте медиа.';
@@ -233,6 +267,30 @@ final class FocusV2SubmitController extends Controller
         if ($errors !== []) {
             throw ValidationException::withMessages($errors);
         }
+    }
+
+    private function sandboxResponse(ControlResponseDraft $draft, bool $replayed): JsonResponse
+    {
+        abort_unless($draft->state === 'sandbox_complete', 409);
+        $rooms = is_array($draft->schema_snapshot) ? $draft->schema_snapshot : [];
+        $responses = is_array($draft->responses) ? $draft->responses : [];
+        $score = ControlResponse::calculateScores($rooms, $responses);
+        $attached = 0;
+        foreach ($responses as $room) {
+            foreach ((array) $room as $question) {
+                $attached += count((array) ($question['media'] ?? []));
+            }
+        }
+
+        return response()->json([
+            'submitted' => true, 'test_mode' => true, 'replayed' => $replayed,
+            'media' => [
+                'state' => 'complete', 'total' => $attached,
+                'attached' => $attached, 'pending' => 0,
+                'ready_to_attach' => 0, 'cancelled' => 0, 'uploads' => [],
+            ],
+            ...$score,
+        ])->header('Cache-Control', 'private, no-store');
     }
 
     private function submittedResponse(ControlResponse $response, array $input, int $userId, bool $replayed): JsonResponse

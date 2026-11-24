@@ -20,7 +20,13 @@ final class ControlRunManager
         ?int $draftId,
         string $schemaVersion,
         array $attributes,
+        string $state = 'active',
     ): ControlResponseDraft {
+        // Sandbox drafts share no completed-result path with production:
+        // only this explicitly whitelisted state can be created here.
+        if (! in_array($state, ['active', 'sandbox'], true)) {
+            throw ValidationException::withMessages(['draft' => 'Недопустимый режим черновика.']);
+        }
         $this->assertRunIdentity($runId, $schemaVersion);
 
         try {
@@ -32,6 +38,7 @@ final class ControlRunManager
                 $draftId,
                 $schemaVersion,
                 $attributes,
+                $state,
             ): ControlResponseDraft {
                 // Let the unique run_id index arbitrate concurrent first saves.
                 $draft = $draftId === null
@@ -45,7 +52,7 @@ final class ControlRunManager
 
                 if ($draft) {
                     if (
-                        $draft->state !== 'active'
+                        $draft->state !== $state
                         || ($draft->run_id !== null && $draft->run_id !== $runId)
                         || ($draft->schema_version !== null && ! hash_equals($schemaVersion, $draft->schema_version))
                         || (int) $draft->revision !== $expectedRevision
@@ -64,7 +71,7 @@ final class ControlRunManager
                     $draft->run_id = $runId;
                     $draft->schema_version = $schemaVersion;
                     $draft->revision = $expectedRevision + 1;
-                    $draft->state = 'active';
+                    $draft->state = $state;
                     $draft->save();
 
                     return $draft->refresh();
@@ -83,7 +90,7 @@ final class ControlRunManager
                     'run_id' => $runId,
                     'schema_version' => $schemaVersion,
                     'revision' => 1,
-                    'state' => 'active',
+                    'state' => $state,
                 ]);
             });
         } catch (QueryException $exception) {

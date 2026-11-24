@@ -14,12 +14,23 @@ class ControlMediaController
 {
     public function draft(Request $request, Control $control, int $room, int $question, int $media): BinaryFileResponse
     {
-        abort_unless(in_array($request->user()?->role, ['admin', 'supervisor'], true), 403);
+        abort_unless($request->user()?->is_active
+            && in_array($request->user()->role, ['admin', 'supervisor'], true), 403);
+        $sandbox = $request->boolean('test_mode');
+        if ($sandbox) {
+            abort_unless($request->user()->role === 'admin', 403);
+        }
 
         $draftQuery = ControlResponseDraft::query()
             ->where('control_id', $control->id)
-            ->where('supervisor_id', $request->user()->id)
-            ->where('state', 'active');
+            ->where('supervisor_id', $request->user()->id);
+        if ($sandbox) {
+            // Keep test evidence viewable in the private test result for the
+            // retention window, but only by the same active administrator.
+            $draftQuery->whereIn('state', ['sandbox', 'sandbox_complete']);
+        } else {
+            $draftQuery->where('state', 'active');
+        }
 
         if ($request->filled('draft_id')) {
             $draftQuery->whereKey($request->integer('draft_id'));
@@ -31,7 +42,8 @@ class ControlMediaController
 
         $file = $draft->responses[$room][$question]['media'][$media] ?? null;
 
-        return $this->serve($file, $control->id, $request->user()->id, $request->boolean('download'), $request->boolean('thumbnail'));
+        return $this->serve($file, $control->id, $request->user()->id, $request->boolean('download'), $request->boolean('thumbnail'),
+            $sandbox ? $draft->run_id : null);
     }
 
     public function result(Request $request, ControlResponse $controlResponse, int $room, int $question, int $media): BinaryFileResponse
@@ -45,7 +57,7 @@ class ControlMediaController
         return $this->serve($file, $controlResponse->control_id, null, $request->boolean('download'), $request->boolean('thumbnail'));
     }
 
-    private function serve(mixed $file, int $controlId, ?int $supervisorId = null, bool $download = false, bool $thumbnail = false): BinaryFileResponse
+    private function serve(mixed $file, int $controlId, ?int $supervisorId = null, bool $download = false, bool $thumbnail = false, ?string $sandboxRunId = null): BinaryFileResponse
     {
         abort_unless(is_array($file), 404);
 
@@ -54,7 +66,9 @@ class ControlMediaController
         $allowed = (in_array($diskName, ['local', 'public'], true)
                 && str_starts_with($path, 'controls/'.$controlId.'/'))
             || ($supervisorId !== null && $diskName === 'local'
-                && str_starts_with($path, 'control-drafts/'.$controlId.'/'.$supervisorId.'/'));
+                && str_starts_with($path, 'control-drafts/'.$controlId.'/'.$supervisorId.'/'))
+            || ($supervisorId !== null && $sandboxRunId !== null && $diskName === 'local'
+                && str_starts_with($path, 'focus-v2-sandbox/'.$supervisorId.'/'.$sandboxRunId.'/'));
         $allowed = $allowed && ! str_contains($path, '..') && ! str_contains($path, '\\');
         abort_unless($allowed, 404);
 

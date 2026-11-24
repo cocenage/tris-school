@@ -100,17 +100,17 @@ jobs:
         run: node --test tests/JavaScript/FocusV2MediaRetry.test.mjs tests/JavaScript/FocusV2LocalRecovery.test.mjs tests/JavaScript/FocusV2Transport.test.mjs tests/JavaScript/FocusV2PhotoCache.test.mjs
       - name: Build Vue and existing assets
         run: npm run build
-      - name: Browser smoke — real Vue component in mobile Chromium
-        run: |
-          npm install --no-save --package-lock=false playwright@1.56.1
-          npx playwright install --with-deps chromium
-          node tests/Browser/focus-v2-smoke.mjs
       - name: Prepare isolated test application
         run: |
           cp .env.example .env
           php artisan key:generate --no-interaction
       - name: Focus control feature and media regression tests
         run: php artisan test tests/Feature/ControlWorkflowTest.php tests/Feature/FocusV2StagingCheckTest.php
+      - name: Browser smoke — real Vue component in mobile Chromium
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node tests/Browser/focus-v2-smoke.mjs
       - name: Package compiled assets for deployment
         uses: actions/upload-artifact@v4
         with:

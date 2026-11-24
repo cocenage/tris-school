@@ -42,24 +42,33 @@ class FakeFocusBackend {
         this.chunkRequests = 0;
         this.failOneChunk = false;
         this.realWrites = 0;
+        this.testWrites = 0;
+        this.test = {
+            draftId: null, revision: 0, runId: '00000000-0000-4000-8000-000000000002',
+            setup: { ...initialSetup(), cleaner_id: '__test__' },
+            answers: initialAnswers(), media: [[[]]], sessions: new Map(), state: 'sandbox',
+        };
     }
 
-    bootstrap() {
+    bootstrap(sandbox = false) {
+        const state = sandbox ? this.test : this;
+        const currentRunId = sandbox ? state.runId : runId;
         return {
             viewer: { id: 100, role: 'admin' },
+            test_mode: sandbox,
             control: { id: 1, name: 'Smoke Focus', schema_version: schemaVersion },
             rooms,
             run: {
-                id: runId, draft_id: this.draftId, revision: this.revision,
+                id: currentRunId, draft_id: state.draftId, revision: state.revision,
                 schema_conflict: false,
             },
-            setup: this.setup,
-            answers: this.answers,
-            media: this.media,
-            pending_uploads: [...this.sessions.values()].filter(session => ['pending', 'ready'].includes(session.status))
+            setup: state.setup,
+            answers: state.answers,
+            media: state.media,
+            pending_uploads: [...state.sessions.values()].filter(session => ['pending', 'ready'].includes(session.status))
                 .map(session => ({
                     upload_id: session.id, status: session.status, status_url: '/focus-api/media/' + session.id,
-                    control_id: 1, draft_id: this.draftId, run_id: runId,
+                    control_id: 1, draft_id: state.draftId, run_id: currentRunId,
                     schema_version: schemaVersion, room_index: session.room,
                     question_index: session.question, original_name: session.name,
                     size: session.size, mime: session.mime,
@@ -93,46 +102,67 @@ class FakeFocusBackend {
                 status, contentType: 'application/json', body: JSON.stringify(data),
             });
             try {
-                if (path === '/focus-api/bootstrap') return reply(this.bootstrap());
+                if (path === '/focus-api/bootstrap') {
+                    const sandbox = new URL(req.url()).searchParams.get('test_mode') === '1';
+                    return reply(this.bootstrap(sandbox));
+                }
                 if (path === '/focus-api/draft') {
                     const snapshot = json();
-                    if (this.draftId !== null && snapshot.expected_revision !== this.revision) {
+                    const sandbox = snapshot.test_mode === true;
+                    const state = sandbox ? this.test : this;
+                    if (state.draftId !== null && snapshot.expected_revision !== state.revision) {
                         return reply({ message: 'Conflict', error: 'revision_conflict' }, 409);
                     }
-                    this.draftId ??= 51;
-                    this.revision += 1;
-                    this.realWrites += 1;
-                    this.setup = snapshot.setup;
-                    this.answers = snapshot.answers;
-                    return reply({ run: { id: runId, draft_id: this.draftId, revision: this.revision } });
+                    state.draftId ??= sandbox ? 91 : 51;
+                    state.revision += 1;
+                    if (sandbox) this.testWrites += 1;
+                    else this.realWrites += 1;
+                    state.setup = snapshot.setup;
+                    state.answers = snapshot.answers;
+                    return reply({ run: {
+                        id: sandbox ? state.runId : runId,
+                        draft_id: state.draftId, revision: state.revision,
+                    } });
                 }
                 if (path === '/focus-api/submit') {
-                    if ([...this.sessions.values()].some(s => s.status !== 'attached' && s.status !== 'cancelled')) {
-                        return reply({ message: 'Incomplete photo upload' }, 422);
+                    const sandbox = json().test_mode === true;
+                    const state = sandbox ? this.test : this;
+                    if ([...state.sessions.values()].some(s => s.status !== 'attached' && s.status !== 'cancelled')) {
+                        return reply({ message: 'Incomplete upload' }, 422);
                     }
-                    this.realWrites += 1;
-                    return reply({ submitted: true, result_url: '/result',
-                        media: { state: 'complete', uploads: [], attached: this.media[0][0].length } });
+                    if (sandbox) { this.testWrites += 1; state.state = 'sandbox_complete'; }
+                    else this.realWrites += 1;
+                    return reply({
+                        submitted: true, test_mode: sandbox,
+                        ...(!sandbox ? { result_url: '/result' } : {}),
+                        score_percent: 0, total_points: 0, max_points: 1, result_zone: 'yellow',
+                        media: { state: 'complete', uploads: [], attached: state.media[0][0].length },
+                    });
                 }
                 if (path === '/focus-api/media' && req.method() === 'POST') {
                     const payload = json();
+                    const sandbox = payload.test_mode === true;
+                    const state = sandbox ? this.test : this;
                     this.startRequests += 1;
-                    let session = this.sessions.get(payload.upload_id);
+                    let session = state.sessions.get(payload.upload_id);
                     if (!session) {
                         session = {
                             id: payload.upload_id, room: payload.room_index,
                             question: payload.question_index,
                             name: payload.original_name, size: payload.size,
                             mime: payload.mime, received: new Set(), status: 'pending',
+                            sandbox,
                         };
-                        this.sessions.set(session.id, session);
+                        state.sessions.set(session.id, session);
                     }
-                    this.realWrites += 1;
+                    if (sandbox) this.testWrites += 1;
+                    else this.realWrites += 1;
                     return reply(this.describe(session));
                 }
                 if (segments[0] === 'focus-api' && segments[1] === 'media' && segments[2]) {
-                    const session = this.sessions.get(segments[2]);
+                    const session = this.sessions.get(segments[2]) ?? this.test.sessions.get(segments[2]);
                     if (!session) return reply({ message: 'Missing upload' }, 404);
+                    const state = session.sandbox ? this.test : this;
                     if (segments[3] === 'chunks' && req.method() === 'PUT') {
                         this.chunkRequests += 1;
                         if (this.failOneChunk) {
@@ -151,28 +181,28 @@ class FakeFocusBackend {
                             return reply({ message: 'Incomplete upload' }, 409);
                         }
                         if (session.status !== 'attached') {
-                            this.media[session.room][session.question].push({
-                                upload_id: session.id, index: this.media[session.room][session.question].length,
+                            state.media[session.room][session.question].push({
+                                upload_id: session.id, index: state.media[session.room][session.question].length,
                                 name: session.name, mime: session.mime, size: session.size,
                                 url: session.mime.startsWith('video/') ? videoDataUrl : dataUrl,
                                 thumbnail_url: dataUrl,
                             });
                             session.status = 'attached';
-                            this.revision++;
+                            state.revision++;
                         }
                         return reply({
-                            run: { draft_id: this.draftId, revision: this.revision },
+                            run: { draft_id: state.draftId, revision: state.revision },
                             room_index: session.room, question_index: session.question,
-                            media_item: this.media[session.room][session.question].find(f => f.upload_id === session.id),
+                            media_item: state.media[session.room][session.question].find(f => f.upload_id === session.id),
                         });
                     }
                     if (segments[3] === 'attached' && req.method() === 'DELETE') {
-                        if (json().expected_revision !== this.revision) return reply({ message: 'Conflict' }, 409);
-                        this.media[session.room][session.question] = this.media[session.room][session.question]
+                        if (json().expected_revision !== state.revision) return reply({ message: 'Conflict' }, 409);
+                        state.media[session.room][session.question] = state.media[session.room][session.question]
                             .filter(f => f.upload_id !== session.id);
-                        this.sessions.delete(session.id);
-                        this.revision++;
-                        return reply({ deleted: true, run: { draft_id: this.draftId, revision: this.revision } });
+                        state.sessions.delete(session.id);
+                        state.revision++;
+                        return reply({ deleted: true, run: { draft_id: state.draftId, revision: state.revision } });
                     }
                     if (req.method() === 'GET') return reply(this.describe(session));
                     if (req.method() === 'DELETE') {
@@ -211,6 +241,7 @@ async function pageFor(context, backend) {
 async function selectTestStaff(page) {
     await page.locator('#focus-cleaner').fill('Тестовый');
     await page.getByRole('option', { name: /Тестовый сотрудник/ }).click();
+    await page.getByText('Тестовый сотрудник · серверная загрузка').waitFor({ timeout: 15000 });
     await page.getByRole('button', { name: 'К вопросам' }).click();
 }
 async function addPhoto(page) {
@@ -246,7 +277,37 @@ async function main() {
         await waitForVite(vite);
         browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 
-        // Real Vue component + real browser: local-only employee must never hit write APIs.
+        // A real form must expose its comment and persist previous-cleaner
+        // selection as a legacy name rather than an internal staff ID.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            const comment = page.locator('#focus-inspection-comment');
+            assert.equal(await comment.isVisible(), true);
+            await comment.fill('Замечание: ключи получены у администратора');
+            await page.locator('#focus-previous-cleaner').fill('Настоящий');
+            await page.getByRole('option', { name: 'Настоящий сотрудник' }).click();
+            await page.getByText('Сохранено', { exact: true }).first().waitFor();
+            assert.equal(backend.setup.comment, 'Замечание: ключи получены у администратора');
+            assert.equal(backend.setup.previous_cleaner, 'Настоящий сотрудник');
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.getByRole('heading', { name: 'Данные проверки' }).waitFor();
+            assert.equal(await comment.inputValue(), backend.setup.comment);
+            assert.equal(await page.locator('#focus-previous-cleaner').inputValue(), 'Настоящий сотрудник');
+            await page.locator('#focus-previous-cleaner').fill('Не указан');
+            await page.getByRole('option', { name: 'Не указан' }).click();
+            await page.waitForFunction(() => document.querySelector('#focus-previous-cleaner')?.value === 'Не указан');
+            for (let attempt = 0; backend.setup.previous_cleaner !== '' && attempt < 40; attempt++) {
+                await delay(100);
+            }
+            assert.equal(backend.setup.previous_cleaner, '');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: first-screen comment, previous-staff search and clear option persist');
+            await context.close();
+        }
+
+        // Real server-isolated sandbox should run the full upload pipeline.
         {
             const backend = new FakeFocusBackend();
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -255,11 +316,20 @@ async function main() {
             await page.getByRole('button', { name: 'Нет' }).click();
             await addPhoto(page);
             await expectPhoto(page);
-            assert.equal(backend.realWrites, 0, 'Local test staff unexpectedly wrote server data.');
+            await page.getByRole('button', { name: 'Удалить' }).waitFor({ timeout: 15000 });
+            assert.equal(backend.test.media[0][0].length, 1);
+            assert.ok(backend.testWrites > 1, 'Sandbox did not make real upload requests.');
+            assert.equal(backend.realWrites, 0, 'Sandbox unexpectedly wrote production data.');
+            page.once('dialog', dialog => dialog.accept());
             await page.getByRole('button', { name: 'Удалить' }).click();
-            assert.equal(await page.getByRole('button', { name: 'Открыть фото photo.png' }).count(), 0);
+            await page.getByRole('button', { name: 'Открыть фото photo.png' }).waitFor({ state: 'hidden', timeout: 15000 });
+            await page.getByRole('button', { name: 'К сводке' }).click();
+            await page.getByRole('button', { name: 'Завершить тест без статистики' }).click();
+            await page.getByRole('heading', { name: 'Тест завершён' }).waitFor();
+            assert.equal(backend.test.state, 'sandbox_complete');
+            assert.equal(backend.realWrites, 0);
             assert.deepEqual(errors, []);
-            console.log('PASS mobile UI: local demo camera preview/gallery/delete (no backend writes)');
+            console.log('PASS mobile UI: real sandbox photo upload, gallery, delete and isolated submission');
             await context.close();
         }
 
@@ -296,10 +366,16 @@ async function main() {
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
             await page.getByRole('button', { name: 'Добавить' }).click();
-            await page.locator('input[type=file][accept^="video/mp4"]').setInputFiles({
+            await page.locator('#focus-video-0-0').setInputFiles({
                 name: 'inspection.mp4', mimeType: 'video/mp4', buffer: Buffer.from('video-fixture'),
             });
+            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor();
+            await page.getByRole('button', { name: 'Оставить видео' }).click();
+            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor({ state: 'hidden' });
             await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
+            await page.getByRole('button', { name: /Просмотреть видео/ }).click();
+            await page.getByRole('dialog', { name: 'Просмотр видео' }).waitFor();
+            await page.getByRole('button', { name: 'Закрыть видео' }).click();
             assert.equal(backend.media[0][0][0].mime, 'video/mp4');
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('button', { name: 'К вопросам' }).click();
