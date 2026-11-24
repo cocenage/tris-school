@@ -7,6 +7,7 @@ const base = 'http://127.0.0.1:4178';
 const fixture = base + '/focus-v2-browser-smoke.html';
 const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR5kAAAAASUVORK5CYII=', 'base64');
 const dataUrl = 'data:image/png;base64,' + image.toString('base64');
+const videoDataUrl = 'data:video/mp4;base64,' + Buffer.from('smoke-video-placeholder').toString('base64');
 const runId = '00000000-0000-4000-8000-000000000001';
 const schemaVersion = 'a'.repeat(64);
 const rooms = [{
@@ -153,7 +154,8 @@ class FakeFocusBackend {
                             this.media[session.room][session.question].push({
                                 upload_id: session.id, index: this.media[session.room][session.question].length,
                                 name: session.name, mime: session.mime, size: session.size,
-                                url: dataUrl, thumbnail_url: dataUrl,
+                                url: session.mime.startsWith('video/') ? videoDataUrl : dataUrl,
+                                thumbnail_url: dataUrl,
                             });
                             session.status = 'attached';
                             this.revision++;
@@ -283,6 +285,28 @@ async function main() {
             assert.equal(backend.media[0][0].length, 0);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: full simulated upload, persisted refresh, no duplicate, owner delete');
+            await context.close();
+        }
+
+        // A saved video must point the actual player at the video URL,
+        // never at an image thumbnail (which would render a broken player).
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Добавить' }).click();
+            await page.locator('input[type=file][accept^="video/mp4"]').setInputFiles({
+                name: 'inspection.mp4', mimeType: 'video/mp4', buffer: Buffer.from('video-fixture'),
+            });
+            await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
+            assert.equal(backend.media[0][0][0].mime, 'video/mp4');
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
+            assert.equal(backend.startRequests, 1);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: saved video uses original media URL before/after reload');
             await context.close();
         }
 
