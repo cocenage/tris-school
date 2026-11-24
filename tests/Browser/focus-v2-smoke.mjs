@@ -42,24 +42,33 @@ class FakeFocusBackend {
         this.chunkRequests = 0;
         this.failOneChunk = false;
         this.realWrites = 0;
+        this.testWrites = 0;
+        this.test = {
+            draftId: null, revision: 0, runId: '00000000-0000-4000-8000-000000000002',
+            setup: { ...initialSetup(), cleaner_id: '__test__' },
+            answers: initialAnswers(), media: [[[]]], sessions: new Map(), state: 'sandbox',
+        };
     }
 
-    bootstrap() {
+    bootstrap(sandbox = false) {
+        const state = sandbox ? this.test : this;
+        const currentRunId = sandbox ? state.runId : runId;
         return {
             viewer: { id: 100, role: 'admin' },
+            test_mode: sandbox,
             control: { id: 1, name: 'Smoke Focus', schema_version: schemaVersion },
             rooms,
             run: {
-                id: runId, draft_id: this.draftId, revision: this.revision,
+                id: currentRunId, draft_id: state.draftId, revision: state.revision,
                 schema_conflict: false,
             },
-            setup: this.setup,
-            answers: this.answers,
-            media: this.media,
-            pending_uploads: [...this.sessions.values()].filter(session => ['pending', 'ready'].includes(session.status))
+            setup: state.setup,
+            answers: state.answers,
+            media: state.media,
+            pending_uploads: [...state.sessions.values()].filter(session => ['pending', 'ready'].includes(session.status))
                 .map(session => ({
                     upload_id: session.id, status: session.status, status_url: '/focus-api/media/' + session.id,
-                    control_id: 1, draft_id: this.draftId, run_id: runId,
+                    control_id: 1, draft_id: state.draftId, run_id: currentRunId,
                     schema_version: schemaVersion, room_index: session.room,
                     question_index: session.question, original_name: session.name,
                     size: session.size, mime: session.mime,
@@ -93,26 +102,42 @@ class FakeFocusBackend {
                 status, contentType: 'application/json', body: JSON.stringify(data),
             });
             try {
-                if (path === '/focus-api/bootstrap') return reply(this.bootstrap());
+                if (path === '/focus-api/bootstrap') {
+                    const sandbox = new URL(req.url()).searchParams.get('test_mode') === '1';
+                    return reply(this.bootstrap(sandbox));
+                }
                 if (path === '/focus-api/draft') {
                     const snapshot = json();
-                    if (this.draftId !== null && snapshot.expected_revision !== this.revision) {
+                    const sandbox = snapshot.test_mode === true;
+                    const state = sandbox ? this.test : this;
+                    if (state.draftId !== null && snapshot.expected_revision !== state.revision) {
                         return reply({ message: 'Conflict', error: 'revision_conflict' }, 409);
                     }
-                    this.draftId ??= 51;
-                    this.revision += 1;
-                    this.realWrites += 1;
-                    this.setup = snapshot.setup;
-                    this.answers = snapshot.answers;
-                    return reply({ run: { id: runId, draft_id: this.draftId, revision: this.revision } });
+                    state.draftId ??= sandbox ? 91 : 51;
+                    state.revision += 1;
+                    if (sandbox) this.testWrites += 1;
+                    else this.realWrites += 1;
+                    state.setup = snapshot.setup;
+                    state.answers = snapshot.answers;
+                    return reply({ run: {
+                        id: sandbox ? state.runId : runId,
+                        draft_id: state.draftId, revision: state.revision,
+                    } });
                 }
                 if (path === '/focus-api/submit') {
-                    if ([...this.sessions.values()].some(s => s.status !== 'attached' && s.status !== 'cancelled')) {
-                        return reply({ message: 'Incomplete photo upload' }, 422);
+                    const sandbox = json().test_mode === true;
+                    const state = sandbox ? this.test : this;
+                    if ([...state.sessions.values()].some(s => s.status !== 'attached' && s.status !== 'cancelled')) {
+                        return reply({ message: 'Incomplete upload' }, 422);
                     }
-                    this.realWrites += 1;
-                    return reply({ submitted: true, result_url: '/result',
-                        media: { state: 'complete', uploads: [], attached: this.media[0][0].length } });
+                    if (sandbox) { this.testWrites += 1; state.state = 'sandbox_complete'; }
+                    else this.realWrites += 1;
+                    return reply({
+                        submitted: true, test_mode: sandbox,
+                        ...(!sandbox ? { result_url: '/result' } : {}),
+                        score_percent: 0, total_points: 0, max_points: 1, result_zone: 'yellow',
+                        media: { state: 'complete', uploads: [], attached: state.media[0][0].length },
+                    });
                 }
                 if (path === '/focus-api/media' && req.method() === 'POST') {
                     const payload = json();
