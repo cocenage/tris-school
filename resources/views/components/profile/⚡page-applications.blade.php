@@ -130,6 +130,7 @@ new class extends Component
             'issued' => 'выдано',
             'partially_issued' => 'частично',
             'cancelled' => 'отменено',
+            'in_progress' => 'в работе',
             'reviewed' => 'рассмотрено',
             'closed' => 'закрыто',
             default => 'на рассмотрении',

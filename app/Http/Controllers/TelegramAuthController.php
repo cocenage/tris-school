@@ -3,6 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\ControlResponse;
+use App\Models\SalaryQuestion;
+use App\Services\Forms\SalaryQuestionDecisionService;
+use App\Services\RolePreviewContext;
 use App\Models\TelegramScheduledMessageDelivery;
 use App\Models\User;
 use App\Services\Telegram\TelegramOksControlCards;
@@ -28,7 +31,24 @@ class TelegramAuthController extends Controller
         $telegramUser = $miniAppService->validate($validated['init_data']);
 
         $startParam = (string) ($telegramUser['start_param'] ?? '');
-        if (preg_match('/^oks_card_([1-9][0-9]*)$/D', $startParam, $match)) {
+        if (str_starts_with($startParam, 'salary_')) {
+            abort_unless(preg_match('/^salary_([1-9][0-9]*)_(approve|reject|work)$/D', $startParam, $match), 403);
+            $question = SalaryQuestion::query()->find((int) $match[1]);
+            $user = User::query()->activeStaff()->where('telegram_id', $telegramUser['telegram_id'])->first();
+            abort_unless($question && $user && app(SalaryQuestionDecisionService::class)->canOpenTelegram($question, $user), 403,
+                'Заявка уже обработана или у вас нет доступа.');
+            Auth::login($user);
+            $request->session()->regenerate();
+            app(RolePreviewContext::class)->assertWritable();
+            $request->session()->put('salary_review_grant', [
+                'question_id' => $question->id,
+                'actor_id' => $user->id,
+                'action' => $match[2],
+                'version' => (int) $question->decision_version,
+                'expires_at' => now()->addMinutes(20)->timestamp,
+            ]);
+            $redirect = route('salary.decision.show', [$question, $match[2]]);
+        } elseif (preg_match('/^oks_card_([1-9][0-9]*)$/D', $startParam, $match)) {
             $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->find($match[1]);
             $user = User::query()->activeStaff()->where('telegram_id', $telegramUser['telegram_id'])->first();
             abort_unless($delivery && $user && TelegramOksRichCard::enabled($delivery)

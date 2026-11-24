@@ -87,7 +87,7 @@ class StaffFormTelegramService
             return 'Неизвестный сотрудник';
         }
 
-        $name = e(app(TelegramSalaryQuestionService::class)->employeeName($user));
+        $name = e($user->name ?? 'Сотрудник');
 
         if (filled($user->telegram_username)) {
             $username = ltrim($user->telegram_username, '@');

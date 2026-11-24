@@ -40,8 +40,12 @@ class SalaryQuestionDecisionService
 
     public function canOpenTelegram(SalaryQuestion $question, ?User $user): bool
     {
-        return $this->enabled() && $this->canDecide($question, $user)
-            && filled($question->telegram_source_message_id)
+        return $this->enabled() && $this->canDecide($question, $user) && $this->hasTelegramSource($question);
+    }
+
+    public function hasTelegramSource(SalaryQuestion $question): bool
+    {
+        return filled($question->telegram_source_message_id)
             && filled($question->telegram_source_chat_id)
             && filled($question->telegram_source_thread_id)
             && (string) $question->telegram_source_chat_id === (string) config('services.staff_forms.chat_id')

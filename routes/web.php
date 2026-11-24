@@ -18,6 +18,7 @@ use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
 use App\Http\Controllers\TelegramOksCardController;
 use App\Http\Controllers\TelegramOksResponseController;
+use App\Http\Controllers\TelegramSalaryDecisionController;
 use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
 use App\Http\Middleware\SafeguardRolePreviewData;
@@ -33,7 +34,7 @@ Route::get('/', function () {
         : [];
 
     $telegramStart = request()->query('tgWebAppStartParam');
-    if (! auth()->check() || (is_string($telegramStart) && (str_starts_with($telegramStart, 'oks_') || $telegramStart === 'antigoccia'))) {
+    if (! auth()->check() || (is_string($telegramStart) && (str_starts_with($telegramStart, 'oks_') || str_starts_with($telegramStart, 'salary_') || $telegramStart === 'antigoccia'))) {
         return redirect()->route('landing.page', $previewParameters);
     }
 
@@ -97,6 +98,10 @@ Route::match(['GET', 'HEAD'], '/admin/education/{path?}', function (?string $pat
 })->where('path', '.*')->name('education.legacy-redirect');
 
 Route::middleware(['auth', 'approved'])->group(function () {
+    Route::get('/requests/salary/{salaryQuestion}/{action}', [TelegramSalaryDecisionController::class, 'show'])
+        ->whereNumber('salaryQuestion')->where('action', 'approve|reject|work')->name('salary.decision.show');
+    Route::post('/requests/salary/{salaryQuestion}/{action}', [TelegramSalaryDecisionController::class, 'store'])
+        ->whereNumber('salaryQuestion')->where('action', 'approve|reject|work')->middleware('throttle:20,1')->name('salary.decision.store');
     Route::get('/oks/control/{delivery}/{district?}', [TelegramOksCardController::class, 'show'])->whereNumber('delivery')->name('oks.card.show');
     Route::post('/oks/control/{delivery}/{district}', [TelegramOksCardController::class, 'store'])->whereNumber('delivery')->name('oks.card.save');
     Route::get('/oks/respond/{delivery}/{question}/{district}', [TelegramOksResponseController::class, 'show'])->name('oks.response.show');

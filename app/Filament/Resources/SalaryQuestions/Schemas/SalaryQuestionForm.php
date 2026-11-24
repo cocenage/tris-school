@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\SalaryQuestions\Schemas;
 
+use App\Models\SalaryQuestion;
+use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -26,13 +28,22 @@ class SalaryQuestionForm
 
                     Select::make('status')
                         ->label('Статус')
-                        ->options([
-                            'pending' => 'На рассмотрении',
-                            'reviewed' => 'Рассмотрено',
-                            'closed' => 'Закрыто',
-                        ])
+                        ->options(function (?SalaryQuestion $record): array {
+                            if (! $record?->usesDecisionWorkflow()) {
+                                return ['pending' => 'На рассмотрении', 'reviewed' => 'Рассмотрено', 'closed' => 'Закрыто'];
+                            }
+                            if (! in_array($record->status, ['pending', 'in_progress'], true)) {
+                                return [$record->status => SalaryQuestion::STATUS_LABELS[$record->status] ?? $record->status];
+                            }
+                            return array_intersect_key(SalaryQuestion::STATUS_LABELS, array_flip(
+                                $record->status === 'pending' ? ['pending', ...SalaryQuestion::DECISION_STATUSES] : SalaryQuestion::DECISION_STATUSES
+                            ));
+                        })
+                        ->live()
                         ->required()
                         ->native(false),
+
+                    Hidden::make('decision_version')->dehydrated(fn (?SalaryQuestion $record): bool => $record?->usesDecisionWorkflow() ?? false),
 
                     Placeholder::make('created_at')
                         ->label('Создано')
@@ -52,7 +63,9 @@ class SalaryQuestionForm
                         ->columnSpanFull(),
 
                     Textarea::make('admin_comment')
-                        ->label('Комментарий администратора')
+                        ->label('Комментарий руководителя')
+                        ->required(fn (?SalaryQuestion $record, $get): bool => ($record?->usesDecisionWorkflow() ?? false) && in_array($get('status'), SalaryQuestion::DECISION_STATUSES, true))
+                        ->maxLength(1800)
                         ->rows(4)
                         ->placeholder('Например: вопрос проверен, ответ передан сотруднику')
                         ->columnSpanFull(),
