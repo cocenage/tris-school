@@ -373,8 +373,19 @@ async function confirmPhoto() {
 }
 function openLightbox(file) {
     if (mediaIsVideo(file)) return;
-    const url = mediaPreview(file);
-    if (url) lightbox.value = { url, name: file.name || file.original_name || 'Фотография' };
+    // Gallery tiles load inexpensive 360px thumbnails; fullscreen must open
+    // the original file. HEIC may not be supported by the browser, in which
+    // case the generated JPEG thumbnail is a safe fallback.
+    const url = file.preview_url || file.url || file.thumbnail_url || '';
+    if (url) lightbox.value = {
+        url, fallback_url: file.thumbnail_url || '',
+        name: file.name || file.original_name || 'Фотография',
+    };
+}
+function lightboxImageFailed() {
+    if (!lightbox.value || !lightbox.value.fallback_url
+        || lightbox.value.url === lightbox.value.fallback_url) return;
+    lightbox.value = { ...lightbox.value, url: lightbox.value.fallback_url };
 }
 function closeLightbox() { lightbox.value = null; }
 function openVideoLightbox(file) {
@@ -1293,7 +1304,8 @@ onBeforeUnmount(() => {
             @click.self="closeLightbox" @keydown.esc="closeLightbox">
             <button type="button" class="absolute right-3 top-3 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
                 aria-label="Закрыть просмотр" @click="closeLightbox">✕</button>
-            <img :src="lightbox.url" :alt="lightbox.name" class="max-h-[85vh] max-w-full object-contain">
+            <img :src="lightbox.url" :alt="lightbox.name" class="max-h-[85vh] max-w-full object-contain"
+                @error="lightboxImageFailed">
         </div>
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
