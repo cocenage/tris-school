@@ -24,16 +24,24 @@ final class FocusV2DraftController extends Controller
         $preview->assertWritable();
         $user = $request->user();
         abort_unless($user?->is_active && in_array($user->role, ['admin', 'supervisor'], true), 403);
+        $isSandbox = $request->boolean('test_mode');
+        if ($isSandbox) {
+            abort_unless($user->role === 'admin', 403);
+        }
+        $draftState = $isSandbox ? 'sandbox' : 'active';
 
         $input = $request->validate([
+            'test_mode' => ['sometimes', 'boolean'],
             'control_id' => ['required', 'integer', 'min:1'],
             'run_id' => ['required', 'uuid'],
             'schema_version' => ['required', 'string', 'regex:/\A[a-f0-9]{64}\z/i'],
             'draft_id' => ['present', 'nullable', 'integer', 'min:1'],
             'expected_revision' => ['required', 'integer', 'min:0'],
             'setup' => ['required', 'array'],
-            'setup.cleaner_id' => ['present', 'nullable', 'integer', Rule::exists('users', 'id')
-                ->where('is_active', true)->where('status', 'approved')->whereIn('role', ['cleaner', 'supervisor'])],
+            'setup.cleaner_id' => $isSandbox
+                ? ['required', 'string', Rule::in(['__test__'])]
+                : ['present', 'nullable', 'integer', Rule::exists('users', 'id')
+                    ->where('is_active', true)->where('status', 'approved')->whereIn('role', ['cleaner', 'supervisor'])],
             'setup.apartment_id' => ['present', 'nullable', 'integer', Rule::exists('apartments', 'id')->where('is_active', true)],
             'setup.is_assigned' => ['required', 'boolean'],
             'setup.previous_cleaner' => ['present', 'nullable', 'string', 'max:255'],
@@ -59,14 +67,14 @@ final class FocusV2DraftController extends Controller
         }
 
         $runId = (string) $input['run_id'];
-        if (ControlResponse::query()->where('submission_token', $runId)->exists()) {
+        if (! $isSandbox && ControlResponse::query()->where('submission_token', $runId)->exists()) {
             return $this->conflict('already_submitted', 'Этот контроль уже завершён.');
         }
 
         $owned = ControlResponseDraft::query()
             ->where('control_id', $control->id)
             ->where('supervisor_id', $user->getKey())
-            ->where('state', 'active');
+            ->where('state', $draftState);
         $draftId = $input['draft_id'] ?? null;
         $draft = $draftId !== null
             ? (clone $owned)->whereKey($draftId)->first()
@@ -97,7 +105,7 @@ final class FocusV2DraftController extends Controller
         }
 
         $attributes = [
-            'cleaner_id' => $setup['cleaner_id'] ?? null,
+            'cleaner_id' => $isSandbox ? null : ($setup['cleaner_id'] ?? null),
             'apartment_id' => $setup['apartment_id'] ?? null,
             'is_assigned' => (bool) $setup['is_assigned'],
             'previous_cleaner' => (string) ($setup['previous_cleaner'] ?? ''),
@@ -132,6 +140,7 @@ final class FocusV2DraftController extends Controller
                 draftId: $draft?->id,
                 schemaVersion: $schemaVersion,
                 attributes: $attributes,
+                state: $draftState,
             );
         } catch (ValidationException) {
             // Includes a concurrent request that won the optimistic revision lock.
