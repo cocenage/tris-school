@@ -26,6 +26,7 @@ final class FocusV2MediaController extends Controller
     {
         $data = $request->validate([
             'upload_id' => ['required', 'uuid'],
+            'test_mode' => ['sometimes', 'boolean'],
             'control_id' => ['required', 'integer', 'min:1'],
             'draft_id' => ['required', 'integer', 'min:1'],
             'run_id' => ['required', 'uuid'],
@@ -78,7 +79,8 @@ final class FocusV2MediaController extends Controller
             // Serialize reservations for this draft so concurrent start requests
             // cannot bypass the 12-file limit before files get attached.
             $lockedDraft = ControlResponseDraft::query()->whereKey($draft->id)->lockForUpdate()->firstOrFail();
-            abort_unless($lockedDraft->state === 'active' && $lockedDraft->run_id === $data['run_id'], 409);
+            abort_unless($lockedDraft->state === (! empty($data['test_mode']) ? 'sandbox' : 'active')
+                && $lockedDraft->run_id === $data['run_id'], 409);
             $existing = FocusV2MediaUpload::query()->whereKey($uploadId)->lockForUpdate()->first();
             if ($existing) {
                 abort_unless(
@@ -216,7 +218,11 @@ final class FocusV2MediaController extends Controller
                 throw ValidationException::withMessages(['file' => 'Файл не прошёл проверку формата и размера.']);
             }
 
-            $finalPath = 'controls/'.$upload->control_id.'/'.now()->format('Y/m').'/'.$upload->id;
+            $draftState = ControlResponseDraft::query()->whereKey($upload->draft_id)->value('state');
+            abort_unless(in_array($draftState, ['active', 'sandbox'], true), 409);
+            $finalPath = $draftState === 'sandbox'
+                ? 'focus-v2-sandbox/'.$upload->supervisor_id.'/'.$upload->run_id.'/'.$upload->id
+                : 'controls/'.$upload->control_id.'/'.now()->format('Y/m').'/'.$upload->id;
             $disk->makeDirectory(dirname($finalPath));
             abort_unless($disk->move($assembledPath, $finalPath), 500, 'Не удалось сохранить файл.');
             $upload->forceFill([
@@ -245,10 +251,12 @@ final class FocusV2MediaController extends Controller
             return $this->attachToResult($record);
         }
 
-        return DB::transaction(function () use ($record, $input): JsonResponse {
+        return DB::transaction(function () use ($record, $input, $request): JsonResponse {
             $draft = ControlResponseDraft::query()->whereKey($record->draft_id)->lockForUpdate()->firstOrFail();
             $locked = FocusV2MediaUpload::query()->whereKey($record->id)->lockForUpdate()->firstOrFail();
-            abort_unless($draft->state === 'active' && $draft->run_id === $locked->run_id
+            abort_unless(in_array($draft->state, ['active', 'sandbox'], true)
+                && ($draft->state !== 'sandbox' || $request->user()->role === 'admin')
+                && $draft->run_id === $locked->run_id
                 && $draft->schema_version === $locked->schema_version, 409);
             abort_unless(in_array($locked->status, ['ready', 'attached'], true), 409);
 
@@ -286,6 +294,9 @@ final class FocusV2MediaController extends Controller
             }
 
             $parameters = [$locked->control_id, $room, $question, $existingIndex, 'draft_id' => $draft->id];
+            if ($draft->state === 'sandbox') {
+                $parameters['test_mode'] = 1;
+            }
 
             return response()->json([
                 'run' => ['draft_id' => $draft->id, 'revision' => (int) $draft->revision],
@@ -314,7 +325,7 @@ final class FocusV2MediaController extends Controller
 
         $data = DB::transaction(function () use ($record, $input): array {
             $draft = ControlResponseDraft::query()
-                ->whereKey($record->draft_id)->where('state', 'active')
+                ->whereKey($record->draft_id)->whereIn('state', ['active', 'sandbox'])
                 ->lockForUpdate()->firstOrFail();
             $locked = FocusV2MediaUpload::query()->whereKey($record->id)->lockForUpdate()->firstOrFail();
             abort_unless($locked->status === 'attached' && $locked->control_response_id === null
@@ -335,7 +346,10 @@ final class FocusV2MediaController extends Controller
             $draft->save();
 
             $path = (string) $locked->stored_path;
-            $safeToDelete = str_starts_with($path, 'controls/'.$locked->control_id.'/')
+            $safePrefix = $draft->state === 'sandbox'
+                ? 'focus-v2-sandbox/'.$locked->supervisor_id.'/'.$locked->run_id.'/'
+                : 'controls/'.$locked->control_id.'/';
+            $safeToDelete = str_starts_with($path, $safePrefix)
                 && ! str_contains($path, '..') && ! str_contains($path, '\\');
             $locked->delete();
 
@@ -453,13 +467,17 @@ final class FocusV2MediaController extends Controller
         $schemaVersion = (new ControlSchema((int) $control->id, $rooms))->version();
         abort_unless((int) $data['control_id'] === (int) $control->id
             && hash_equals($schemaVersion, (string) $data['schema_version']), 409, 'Шаблон контроля изменился.');
+        $sandbox = (bool) ($data['test_mode'] ?? false);
+        if ($sandbox) {
+            abort_unless($user->role === 'admin', 403);
+        }
         $draft = ControlResponseDraft::query()
             ->whereKey((int) $data['draft_id'])
             ->where('control_id', $control->id)
             ->where('supervisor_id', $user->getKey())
             ->where('run_id', (string) $data['run_id'])
             ->where('schema_version', $schemaVersion)
-            ->where('state', 'active')
+            ->where('state', $sandbox ? 'sandbox' : 'active')
             ->firstOrFail();
 
         return [$control, $draft, $rooms];
@@ -480,9 +498,11 @@ final class FocusV2MediaController extends Controller
                 && $response->submission_token === $upload->run_id
                 && $response->schema_version === $upload->schema_version, 403);
         } else {
+            $sandbox = ControlResponseDraft::query()->whereKey($upload->draft_id)->value('state') === 'sandbox';
             $this->context($request, $preview, [
                 'control_id' => $upload->control_id, 'draft_id' => $upload->draft_id,
                 'run_id' => $upload->run_id, 'schema_version' => $upload->schema_version,
+                'test_mode' => $sandbox,
             ]);
         }
 
