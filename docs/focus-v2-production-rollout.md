@@ -219,3 +219,85 @@ Acceptance on real Telegram devices still required:
 - Verify Safari/iOS Telegram and Android Telegram manually with live
   camera, large videos, offline/reopen and device storage quotas. Browser
   simulation cannot guarantee native-camera behavior.
+
+## Messenger-style media and failure recovery — 24 November 2026
+
+The first page keeps its prominent **Комментарий к проверке** and searchable
+**Предыдущий сотрудник**. Question-by-question navigation is intentionally
+**unchanged**, per supervisor request.
+
+- Choosing multiple photos/videos first opens a confirmation preview. No file
+  starts uploading before **Добавить N**; remove any selection before sending.
+  A single camera capture still uses its capture-confirm-retake screen.
+- All attached/uploading evidence is visible in one fullscreen gallery, with
+  next/previous buttons, photo swipes, file status and deletion. Video cards
+  lazily request metadata and show the first frame where supported, including
+  duration. Real video poster support depends on the browser's decoding and
+  HTTP Range implementation; a play placeholder remains safe when unavailable.
+- The review screen shows apartment, cleaner, previous cleaner (if supplied),
+  dates, general comment, mandatory progress, count of negative scored answers,
+  image/video counts and a pending-upload warning. Each finding links back
+  to that question in its existing room; question navigation was **not** rebuilt.
+- Offline edits queue scoped IndexedDB backup and do not falsely report that
+  the server received them. On reconnect the draft is retried at the same
+  revision and transport failures are eligible for auto-resume. It is never
+  safe to promise local persistence if Telegram evicts storage or the tab
+  closes before IndexedDB finishes.
+- The test sandbox refuses to switch into real data while a test upload or
+  draft-save is still running. After a completed test admins can press
+  **Начать новый тест** for another clean, isolated server-backed run.
+
+### Measure actual shared-host performance
+
+New upload chunks remain **1 MiB**, with legacy **512 KiB** sessions safely
+resumable. The chunk replay endpoint now hashes stored files as a stream.
+The media assembly loop avoids duplicate filesystem metadata lookups and
+checks for enough free disk space before assembling a large video.
+
+For a safe synthetic comparison **without production user data or DB changes**:
+
+```bash
+php artisan focus-v2:benchmark-media --mb=16 --chunk-kb=512
+php artisan focus-v2:benchmark-media --mb=16 --chunk-kb=1024
+```
+
+This measures only the host's local disk/PHP assembly; it does not measure
+Telegram upload throughput or time to final notification. The command writes
+only under `focus-v2-bench/` and removes its temporary files.
+
+For opt-in production measurements, set
+`FOCUS_V2_MEDIA_PERFORMANCE_LOGS=true` and run
+`php artisan optimize:clear`. Log records contain only byte count, chunk count,
+elapsed milliseconds and PHP peak memory; **no apartment names, employee
+identity, file names, media content or private paths**. Disable the flag
+after collecting a representative sample.
+
+### Device acceptance that browser CI cannot replace
+
+Run real **Android Telegram** and **iOS Telegram** sessions on the deployed
+matching PHP/Vite revision, in the isolated admin test sandbox:
+
+1. Fill the first-page comment, choose previous cleaner using search; reload
+   and verify both are restored.
+2. Take a photo, retake it, then confirm. Add several gallery images/videos,
+   remove one before confirmation, swipe the fullscreen gallery and delete a
+   server-attached item from the draft.
+3. Record an iPhone HEIC image and test preview fallback; try a MOV video and
+   a large (>15 MiB) MP4; check actual video playback, duration and cover.
+4. Enable airplane mode after an answer and during a chunk upload. Ensure the
+   UI never says “Сохранено” before server acknowledgement. Restore network;
+   verify draft revision, upload ID and already-received chunks were not
+   duplicated.
+5. Close/reopen Telegram while a video upload is pending. A short cached clip
+   may auto-resume; a large clip must ask for its original file unless fully
+   attached on the server. Test full-storage/evicted IndexedDB behavior.
+6. Inspect review count, finding-to-question jump, and media-blocked submit;
+   finish the test and confirm **no production ControlResponse, notifications,
+   statistics or rewards**. Start a new test and verify the blank form.
+7. Only after the sandbox passes, submit one intentionally authorized real
+   control, verify expected result and Telegram delivery. Keep a DB/uploads
+   backup and `FOCUS_V2_ENABLED=false` rollback ready.
+
+Chromium and WebKit Playwright runs validate browser behavior on simulated
+mobile viewports, **not native camera permissions, real physical devices,
+Telegram WebView lifecycle, or actual shared-host performance**.
