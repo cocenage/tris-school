@@ -1055,14 +1055,33 @@ async function cancelFile(item) {
     }
     item.controller?.abort();
     item.status = 'cancelled';
-    if (item.info?.urls?.cancel) {
+    if (!testMode.value || !item.file?.local) {
         try {
+            // An abort can race a POST /media/start. If the client has not
+            // received its reservation response, replay the same start ID
+            // before cancel. This makes cancellation server-confirmed rather
+            // than leaving a ghost pending upload blocking final submission.
+            if (!item.info) {
+                const context = item.record || {
+                    control_id: control.value.id, draft_id: run.value.draft_id,
+                    run_id: run.value.id, schema_version: control.value.schema_version,
+                };
+                item.info = await focusMediaRequest(props.mediaStartUrl, 'POST', {
+                    upload_id: item.id, test_mode: testMode.value,
+                    control_id: context.control_id, draft_id: context.draft_id,
+                    run_id: context.run_id, schema_version: context.schema_version,
+                    room_index: item.room, question_index: item.question,
+                    original_name: item.file.name, mime: focusFileMime(item.file),
+                    size: item.file.size,
+                }, csrf);
+            }
+            if (item.info.status === 'attached') {
+                throw new Error('Фото уже сохранено в черновике. Удалите его из галереи.');
+            }
             await focusMediaRequest(item.info.urls.cancel, 'DELETE', undefined, csrf);
         } catch (error) {
             item.status = 'error';
-            item.error = error.status === 409
-                ? 'Статус файла изменился на сервере. Проверьте вложение и повторите действие.'
-                : 'Сервер не подтвердил отмену файла. Повторите «Отменить», когда соединение восстановится.';
+            item.error = error.message || 'Не удалось отменить файл на сервере. Повторите отмену после восстановления связи.';
             return;
         }
     }
