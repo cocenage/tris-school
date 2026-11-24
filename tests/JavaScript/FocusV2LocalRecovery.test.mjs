@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    FOCUS_RECOVERY_MAX_AGE_MS, chooseLocalRecovery,
+    FOCUS_RECOVERY_MAX_AGE_MS, VIDEO_RECOVERY_MAX_BYTES, canCacheFocusMedia, chooseLocalRecovery,
     createLocalRecoveryQueue, recoveryScope,
 } from '../../resources/js/focus-v2/local-recovery.js';
 
@@ -19,6 +19,16 @@ const local = {
     scope, saved_at: savedAt, run_id: 'run-1',
     draft_id: 51, base_revision: 8, setup, answers: changedAnswers,
 };
+
+test('caches photos and short videos but never promises to recover a 100 MiB movie', () => {
+    assert.equal(canCacheFocusMedia({ type: 'image/heic', size: 8 * 1024 * 1024 }), true);
+    assert.equal(canCacheFocusMedia({ type: 'image/jpeg', size: 11 * 1024 * 1024 }), false);
+    assert.equal(canCacheFocusMedia({ type: 'video/mp4', size: VIDEO_RECOVERY_MAX_BYTES }), true);
+    assert.equal(canCacheFocusMedia({ type: 'video/quicktime', size: VIDEO_RECOVERY_MAX_BYTES + 1 }), false);
+    assert.equal(canCacheFocusMedia({ type: 'video/mp4', size: 100 * 1024 * 1024 }), false);
+    assert.equal(canCacheFocusMedia({ type: 'text/html', size: 123 }), false);
+    assert.equal(canCacheFocusMedia(null), false);
+});
 
 test('scopes local recovery to a supervisor, control and canonical schema', () => {
     assert.equal(scope, ['focus-v2', '14', '29', version].join(':'));
