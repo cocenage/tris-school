@@ -23,8 +23,14 @@ class ControlMediaController
 
         $draftQuery = ControlResponseDraft::query()
             ->where('control_id', $control->id)
-            ->where('supervisor_id', $request->user()->id)
-            ->where('state', $sandbox ? 'sandbox' : 'active');
+            ->where('supervisor_id', $request->user()->id);
+        if ($sandbox) {
+            // Keep test evidence viewable in the private test result for the
+            // retention window, but only by the same active administrator.
+            $draftQuery->whereIn('state', ['sandbox', 'sandbox_complete']);
+        } else {
+            $draftQuery->where('state', 'active');
+        }
 
         if ($request->filled('draft_id')) {
             $draftQuery->whereKey($request->integer('draft_id'));
