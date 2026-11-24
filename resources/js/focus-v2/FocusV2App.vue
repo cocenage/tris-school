@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
 import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
-import { cacheFocusPhoto, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
+import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
@@ -275,7 +275,7 @@ async function restoreCachedPhotos() {
         for (const saved of cached) {
             // Never attach a cached file to a different draft/run.
             if (saved.run_id !== run.value.id) {
-                cacheWarning.value = 'На устройстве остались фото от другого черновика. Они не будут загружены в эту проверку.';
+                cacheWarning.value = 'На устройстве остались материалы другой проверки. Они не будут загружены в этот контроль.';
                 continue;
             }
             if (!rooms.value[saved.room]?.items?.[saved.question]) continue;
@@ -296,7 +296,7 @@ async function restoreCachedPhotos() {
         }
         pumpTransfers();
     } catch (error) {
-        cacheWarning.value = 'Не удалось прочитать локальные фото. Выберите исходные файлы повторно.';
+        cacheWarning.value = 'Не удалось прочитать локальные фото или видео. Выберите исходные файлы повторно.';
     } finally {
         recoveringPhotos.value = false;
     }
@@ -904,26 +904,29 @@ async function queueSelectedFiles(selected, room, question) {
             break;
         }
         const id = crypto.randomUUID();
-        {
-            let cached = false;
-            if (mime.startsWith('image/')) {
-                try {
-                    await cacheFocusPhoto({
-                        scope: recoveryKey, uploadId: id, runId: run.value.id,
-                        file, room, question,
-                    });
-                    cached = true;
-                } catch (storageError) {
-                    cacheWarning.value = 'Telegram не позволил сохранить копию фото на устройстве. Не закрывайте окно, пока снимок не будет получен сервером.';
-                }
-            } else {
-                cacheWarning.value = 'Видео передаётся только пока Telegram открыт. Дождитесь статуса «Сохранено».';
-            }
-            uploads.value.push({
-                id, file, room, question, status: 'queued',
-                progress: 0, error: '', controller: null, info: null,
-                preview_url: URL.createObjectURL(file), cached,
+        // Show the thumbnail immediately. IndexedDB can take hundreds of
+        // milliseconds for a multi-megabyte file; don't block the entire
+        // gallery while the browser writes an emergency on-device backup.
+        uploads.value.push({
+            id, file, room, question, status: 'queued',
+            progress: 0, error: '', retryHint: '', controller: null, info: null,
+            preview_url: URL.createObjectURL(file), cached: false, cachePending: false,
+        });
+        const queued = uploads.value[uploads.value.length - 1];
+        if (canCacheFocusMedia(file)) {
+            queued.cachePending = true;
+            queued.cachePromise = cacheFocusPhoto({
+                scope: recoveryKey, uploadId: id, runId: run.value.id,
+                file, room, question,
+            }).then(() => {
+                queued.cached = true;
+            }).catch(() => {
+                cacheWarning.value = 'Не удалось сохранить резервную копию на устройстве. Не закрывайте Telegram до подтверждения загрузки.';
+            }).finally(() => {
+                queued.cachePending = false;
             });
+        } else if (mime.startsWith('video/')) {
+            cacheWarning.value = 'Большое видео нельзя безопасно хранить в памяти Telegram. Дождитесь сохранения на сервере или сохраните исходник для восстановления.';
         }
         reserved++;
         accepted++;
@@ -949,7 +952,12 @@ async function sendOne(item) {
     const controller = new AbortController();
     item.controller = controller;
     item.error = '';
+    item.retryHint = '';
     try {
+        // A WebView that closes mid-upload must be able to resume this file.
+        // Let emergency on-device caching finish before network transfer.
+        if (item.cachePromise) await item.cachePromise;
+        if (controller.signal.aborted) return;
         // Before completion, the draft must be saved. Afterwards, transfers
         // resume against their original registered upload ID and result.
         if (!finalResult.value) {
@@ -981,8 +989,14 @@ async function sendOne(item) {
             question: item.question,
             csrf,
             signal: controller.signal,
-            onProgress: progress => { item.progress = progress; },
+            onProgress: progress => {
+                item.progress = progress;
+                item.retryHint = '';
+            },
             onInit: info => { item.info = info; },
+            onRetry: notice => {
+                item.retryHint = notice.label + ': восстанавливаем соединение (' + notice.attempt + '/2)';
+            },
         });
         if (controller.signal.aborted) return;
         item.status = 'attaching';
@@ -1044,6 +1058,7 @@ function retryFile(item) {
     if (!canRetryFocusFile(item, canEdit.value, finalResult.value?.response_id)) return;
     item.status = 'queued';
     item.error = '';
+    item.retryHint = '';
     pumpTransfers();
 }
 
@@ -1096,6 +1111,9 @@ async function cancelFile(item) {
         }
     }
     interruptedUploads.value = interruptedUploads.value.filter(record => record.upload_id !== item.id);
+    // Cancellation may happen while IndexedDB is still writing a backup.
+    // Waiting avoids leaving a stale video/photo blob after server cancellation.
+    if (item.cachePromise) await item.cachePromise;
     if (recoveryKey && item.cached) {
         void forgetCachedFocusPhoto(recoveryKey, item.id).catch(() => {});
     }
