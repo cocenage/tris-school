@@ -141,23 +141,28 @@ class FakeFocusBackend {
                 }
                 if (path === '/focus-api/media' && req.method() === 'POST') {
                     const payload = json();
+                    const sandbox = payload.test_mode === true;
+                    const state = sandbox ? this.test : this;
                     this.startRequests += 1;
-                    let session = this.sessions.get(payload.upload_id);
+                    let session = state.sessions.get(payload.upload_id);
                     if (!session) {
                         session = {
                             id: payload.upload_id, room: payload.room_index,
                             question: payload.question_index,
                             name: payload.original_name, size: payload.size,
                             mime: payload.mime, received: new Set(), status: 'pending',
+                            sandbox,
                         };
-                        this.sessions.set(session.id, session);
+                        state.sessions.set(session.id, session);
                     }
-                    this.realWrites += 1;
+                    if (sandbox) this.testWrites += 1;
+                    else this.realWrites += 1;
                     return reply(this.describe(session));
                 }
                 if (segments[0] === 'focus-api' && segments[1] === 'media' && segments[2]) {
-                    const session = this.sessions.get(segments[2]);
+                    const session = this.sessions.get(segments[2]) ?? this.test.sessions.get(segments[2]);
                     if (!session) return reply({ message: 'Missing upload' }, 404);
+                    const state = session.sandbox ? this.test : this;
                     if (segments[3] === 'chunks' && req.method() === 'PUT') {
                         this.chunkRequests += 1;
                         if (this.failOneChunk) {
@@ -176,28 +181,28 @@ class FakeFocusBackend {
                             return reply({ message: 'Incomplete upload' }, 409);
                         }
                         if (session.status !== 'attached') {
-                            this.media[session.room][session.question].push({
-                                upload_id: session.id, index: this.media[session.room][session.question].length,
+                            state.media[session.room][session.question].push({
+                                upload_id: session.id, index: state.media[session.room][session.question].length,
                                 name: session.name, mime: session.mime, size: session.size,
                                 url: session.mime.startsWith('video/') ? videoDataUrl : dataUrl,
                                 thumbnail_url: dataUrl,
                             });
                             session.status = 'attached';
-                            this.revision++;
+                            state.revision++;
                         }
                         return reply({
-                            run: { draft_id: this.draftId, revision: this.revision },
+                            run: { draft_id: state.draftId, revision: state.revision },
                             room_index: session.room, question_index: session.question,
-                            media_item: this.media[session.room][session.question].find(f => f.upload_id === session.id),
+                            media_item: state.media[session.room][session.question].find(f => f.upload_id === session.id),
                         });
                     }
                     if (segments[3] === 'attached' && req.method() === 'DELETE') {
-                        if (json().expected_revision !== this.revision) return reply({ message: 'Conflict' }, 409);
-                        this.media[session.room][session.question] = this.media[session.room][session.question]
+                        if (json().expected_revision !== state.revision) return reply({ message: 'Conflict' }, 409);
+                        state.media[session.room][session.question] = state.media[session.room][session.question]
                             .filter(f => f.upload_id !== session.id);
-                        this.sessions.delete(session.id);
-                        this.revision++;
-                        return reply({ deleted: true, run: { draft_id: this.draftId, revision: this.revision } });
+                        state.sessions.delete(session.id);
+                        state.revision++;
+                        return reply({ deleted: true, run: { draft_id: state.draftId, revision: state.revision } });
                     }
                     if (req.method() === 'GET') return reply(this.describe(session));
                     if (req.method() === 'DELETE') {
