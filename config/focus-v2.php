@@ -11,4 +11,8 @@ return [
      * point back to Classic Focus. Never bypass per-user authorization.
      */
     'enabled' => (bool) env('FOCUS_V2_ENABLED', true),
+
+    // Disabled by default: opt in to anonymous timing/size telemetry while
+    // profiling slow shared hosting. Never log file names or file contents.
+    'media_performance_logs' => (bool) env('FOCUS_V2_MEDIA_PERFORMANCE_LOGS', false),
 ];
