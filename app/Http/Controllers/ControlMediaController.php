@@ -14,12 +14,17 @@ class ControlMediaController
 {
     public function draft(Request $request, Control $control, int $room, int $question, int $media): BinaryFileResponse
     {
-        abort_unless(in_array($request->user()?->role, ['admin', 'supervisor'], true), 403);
+        abort_unless($request->user()?->is_active
+            && in_array($request->user()->role, ['admin', 'supervisor'], true), 403);
+        $sandbox = $request->boolean('test_mode');
+        if ($sandbox) {
+            abort_unless($request->user()->role === 'admin', 403);
+        }
 
         $draftQuery = ControlResponseDraft::query()
             ->where('control_id', $control->id)
             ->where('supervisor_id', $request->user()->id)
-            ->where('state', 'active');
+            ->where('state', $sandbox ? 'sandbox' : 'active');
 
         if ($request->filled('draft_id')) {
             $draftQuery->whereKey($request->integer('draft_id'));
