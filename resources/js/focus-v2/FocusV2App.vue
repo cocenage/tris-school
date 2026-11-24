@@ -404,7 +404,8 @@ async function confirmPhoto() {
             return;
         }
     }
-    const queued = await queueSelectedFiles([current.file], current.room, current.question);
+    const queued = await queueSelectedFiles([current.file], current.room, current.question,
+        { replaceUploadId: current.replaceUploadId });
     if (queued) closePhotoCapture();
     else current.saving = false;
 }
@@ -461,6 +462,23 @@ async function confirmBatch() {
         mediaError.value = error.message || 'Не удалось добавить выбранные файлы.';
         preview.saving = false;
     }
+}
+
+function beginSavedReplacement(event, room, question, previous) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!canEdit.value || !file || !previous?.upload_id) return;
+    if (mediaCountAt(room, question) >= 12) {
+        mediaError.value = 'Лимит 12 вложений. Сначала удалите один файл, затем загрузите замену.';
+        return;
+    }
+    if (busyUploads.value || attachInFlight) {
+        mediaError.value = 'Дождитесь завершения текущих загрузок перед заменой.';
+        return;
+    }
+    const mime = focusFileMime(file);
+    beginCapture(file, room, question, mime.startsWith('video/') ? 'video' : 'image');
+    if (photoCapture.value) photoCapture.value.replaceUploadId = previous.upload_id;
 }
 
 function openLightbox(file) {
@@ -1111,7 +1129,7 @@ async function addFiles(event, room, question) {
     await queueSelectedFiles(selected, room, question);
 }
 
-async function queueSelectedFiles(selected, room, question) {
+async function queueSelectedFiles(selected, room, question, options = {}) {
     if (!canEdit.value) return false;
     mediaError.value = '';
     if (selected.length && !run.value?.draft_id) {
@@ -1142,6 +1160,7 @@ async function queueSelectedFiles(selected, room, question) {
         uploads.value.push({
             id, file, room, question, status: 'queued',
             progress: 0, error: '', retryHint: '', controller: null, info: null,
+            replaceUploadId: options.replaceUploadId || null,
             preview_url: URL.createObjectURL(file), cached: false, cachePending: false,
         });
         const queued = uploads.value[uploads.value.length - 1];
@@ -1253,6 +1272,26 @@ async function sendOne(item) {
                     const files = arr[item.question] ?? (arr[item.question] = []);
                     if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
                         files.push(attached.media_item);
+                    }
+                    if (item.replaceUploadId) {
+                        // Preserve the original evidence until the replacement
+                        // was fully received and attached. Only then remove
+                        // it using the same server revision lock.
+                        const previous = files.find(file => file.upload_id === item.replaceUploadId);
+                        if (previous) {
+                            try {
+                                const removed = await focusMediaRequest(
+                                    props.mediaStartUrl + '/' + encodeURIComponent(previous.upload_id) + '/attached',
+                                    'DELETE', { expected_revision: run.value.revision }, csrf, controller.signal);
+                                run.value = { ...run.value, ...removed.run };
+                                media.value[item.room][item.question] = files.filter(file => file.upload_id !== previous.upload_id);
+                            } catch (replaceError) {
+                                // Never discard either file when the final
+                                // delete acknowledgement is lost.
+                                mediaError.value = 'Новый файл сохранён, но старый не удалён. Удалите его вручную: '
+                                    + (replaceError.message || 'сервер не подтвердил замену');
+                            }
+                        }
                     }
                 }
             } finally {
@@ -1490,6 +1529,9 @@ onBeforeUnmount(() => {
                         class="max-h-[56vh] w-full object-contain">
                 </div>
                 <div class="space-y-3 p-4">
+                    <p v-if="photoCapture.replaceUploadId" class="rounded-lg bg-blue-50 p-2 text-xs font-semibold text-blue-800">
+                        Старый файл останется в контроле, пока новый не будет полностью сохранён на сервере.
+                    </p>
                     <p class="text-xs text-slate-600">{{ photoCapture.kind === 'video'
                         ? 'Проверьте ролик. После подтверждения он появится в вопросе, а загрузка продолжится, пока Telegram открыт.'
                         : 'Фото появится в вопросе сразу после подтверждения. Сохранение на сервер продолжится автоматически.' }}</p>
@@ -1868,7 +1910,14 @@ onBeforeUnmount(() => {
                                                 class="ml-1 rounded-lg px-2 py-1.5 font-semibold text-slate-700"
                                                 @click="cancelFile(item.source)">Убрать</button>
                                         </div>
-                                        <div v-else-if="item.kind === 'saved'" class="p-1.5 text-center">
+                                        <div v-else-if="item.kind === 'saved'" class="flex flex-wrap items-center justify-center gap-1 p-1.5 text-center">
+                                            <label v-if="item.source.upload_id && canEdit && mediaCountAt(activeRoom, questionIndex) < 12"
+                                                class="cursor-pointer rounded-lg bg-blue-50 px-2 py-1.5 text-[11px] font-semibold text-blue-700">
+                                                Заменить
+                                                <input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm"
+                                                    class="sr-only" :disabled="!canEdit"
+                                                    @change="beginSavedReplacement($event, activeRoom, questionIndex, item.source)">
+                                            </label>
                                             <button v-if="testMode || item.source.upload_id" type="button"
                                                 class="rounded-lg px-2 py-1.5 text-[11px] font-semibold text-slate-600"
                                                 @click="removeSavedMedia(activeRoom, questionIndex, item.source)">Удалить</button>
