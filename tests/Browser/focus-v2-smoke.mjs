@@ -241,6 +241,7 @@ async function pageFor(context, backend) {
 async function selectTestStaff(page) {
     await page.locator('#focus-cleaner').fill('Тестовый');
     await page.getByRole('option', { name: /Тестовый сотрудник/ }).click();
+    await page.getByText('Тестовый сотрудник · серверная загрузка').waitFor({ timeout: 15000 });
     await page.getByRole('button', { name: 'К вопросам' }).click();
 }
 async function addPhoto(page) {
@@ -276,7 +277,30 @@ async function main() {
         await waitForVite(vite);
         browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 
-        // Real Vue component + real browser: local-only employee must never hit write APIs.
+        // A real form must expose its comment and persist previous-cleaner
+        // selection as a legacy name rather than an internal staff ID.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            const comment = page.locator('#focus-inspection-comment');
+            assert.equal(await comment.isVisible(), true);
+            await comment.fill('Замечание: ключи получены у администратора');
+            await page.locator('#focus-previous-cleaner').fill('Настоящий');
+            await page.getByRole('option', { name: 'Настоящий сотрудник' }).click();
+            await page.getByText('Сохранено', { exact: true }).first().waitFor();
+            assert.equal(backend.setup.comment, 'Замечание: ключи получены у администратора');
+            assert.equal(backend.setup.previous_cleaner, 'Настоящий сотрудник');
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.getByRole('heading', { name: 'Данные проверки' }).waitFor();
+            assert.equal(await comment.inputValue(), backend.setup.comment);
+            assert.equal(await page.locator('#focus-previous-cleaner').inputValue(), 'Настоящий сотрудник');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: first-screen comment and previous-cleaner search persist after reload');
+            await context.close();
+        }
+
+        // Real server-isolated sandbox should run the full upload pipeline.
         {
             const backend = new FakeFocusBackend();
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -285,11 +309,19 @@ async function main() {
             await page.getByRole('button', { name: 'Нет' }).click();
             await addPhoto(page);
             await expectPhoto(page);
-            assert.equal(backend.realWrites, 0, 'Local test staff unexpectedly wrote server data.');
+            await page.getByRole('button', { name: 'Удалить' }).waitFor({ timeout: 15000 });
+            assert.equal(backend.test.media[0][0].length, 1);
+            assert.ok(backend.testWrites > 1, 'Sandbox did not make real upload requests.');
+            assert.equal(backend.realWrites, 0, 'Sandbox unexpectedly wrote production data.');
             await page.getByRole('button', { name: 'Удалить' }).click();
             assert.equal(await page.getByRole('button', { name: 'Открыть фото photo.png' }).count(), 0);
+            await page.getByRole('button', { name: 'К сводке' }).click();
+            await page.getByRole('button', { name: 'Завершить тест без статистики' }).click();
+            await page.getByRole('heading', { name: 'Тест завершён' }).waitFor();
+            assert.equal(backend.test.state, 'sandbox_complete');
+            assert.equal(backend.realWrites, 0);
             assert.deepEqual(errors, []);
-            console.log('PASS mobile UI: local demo camera preview/gallery/delete (no backend writes)');
+            console.log('PASS mobile UI: real sandbox photo upload, gallery, delete and isolated submission');
             await context.close();
         }
 
@@ -326,9 +358,12 @@ async function main() {
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
             await page.getByRole('button', { name: 'Добавить' }).click();
-            await page.locator('input[type=file][accept^="video/mp4"]').setInputFiles({
+            await page.locator('#focus-video-0-0').setInputFiles({
                 name: 'inspection.mp4', mimeType: 'video/mp4', buffer: Buffer.from('video-fixture'),
             });
+            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor();
+            await page.getByRole('button', { name: 'Оставить видео' }).click();
+            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor({ state: 'hidden' });
             await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
             assert.equal(backend.media[0][0][0].mime, 'video/mp4');
             await page.reload({ waitUntil: 'domcontentloaded' });
