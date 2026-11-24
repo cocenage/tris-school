@@ -789,39 +789,62 @@ function mediaCountAt(room, question) {
             && !uploads.value.some(upload => upload.id === item.upload_id)).length;
 }
 
-function addFiles(event, room, question) {
+async function addFiles(event, room, question) {
     const selected = Array.from(event.target.files ?? []);
     event.target.value = '';
     pickerFor.value = null;
-    mediaError.value = '';
-    if (!canEdit.value) return;
+    await queueSelectedFiles(selected, room, question);
+}
 
-    const current = media.value[room]?.[question]?.length ?? 0;
-    let reserved = pendingAt(room, question).length
-        + interruptedUploads.value.filter(item => item.room_index === room && item.question_index === question).length;
-    for (const file of selected) {
+async function queueSelectedFiles(selected, room, question) {
+    if (!canEdit.value) return false;
+    mediaError.value = '';
+    let accepted = 0;
+    let reserved = mediaCountAt(room, question);
+    for (const original of selected) {
+        const mime = focusFileMime(original);
+        const file = original.type ? original : new File([original], original.name, { type: mime });
         const error = allowedFocusFile(file);
-        if (current + reserved >= 12) {
-            uploads.value.push({ id: crypto.randomUUID(), file, room, question, status: 'error',
-                progress: 0, error: 'Не больше 12 вложений на один вопрос.' });
+        if (error) {
+            mediaError.value = error;
             continue;
         }
+        if (reserved >= 12) {
+            mediaError.value = 'На один вопрос можно добавить не больше 12 вложений.';
+            break;
+        }
         const id = crypto.randomUUID();
-        if (testMode.value && !error) {
+        if (testMode.value) {
             const files = media.value[room][question] ?? (media.value[room][question] = []);
             const url = URL.createObjectURL(file);
-            files.push({ upload_id: id, name: file.name, mime: focusFileMime(file),
+            files.push({ upload_id: id, name: file.name, mime,
                 size: file.size, url, thumbnail_url: url, local: true });
         } else {
+            let cached = false;
+            if (mime.startsWith('image/')) {
+                try {
+                    await cacheFocusPhoto({
+                        scope: recoveryKey, uploadId: id, runId: run.value.id,
+                        file, room, question,
+                    });
+                    cached = true;
+                } catch (storageError) {
+                    cacheWarning.value = 'Telegram не позволил сохранить копию фото на устройстве. Не закрывайте окно, пока снимок не будет получен сервером.';
+                }
+            } else {
+                cacheWarning.value = 'Видео передаётся только пока Telegram открыт. Дождитесь статуса «Сохранено».';
+            }
             uploads.value.push({
-                id, file, room, question, status: error ? 'error' : 'queued',
-                progress: 0, error, controller: null, info: null,
-                preview_url: !error ? URL.createObjectURL(file) : null,
+                id, file, room, question, status: 'queued',
+                progress: 0, error: '', controller: null, info: null,
+                preview_url: URL.createObjectURL(file), cached,
             });
         }
-        if (!error) reserved++;
+        reserved++;
+        accepted++;
     }
     if (!testMode.value) pumpTransfers();
+    return accepted > 0;
 }
 
 function pumpTransfers() {
@@ -906,6 +929,14 @@ async function sendOne(item) {
         attachQueue = task.catch(() => {});
         await task;
         interruptedUploads.value = interruptedUploads.value.filter(other => other.upload_id !== item.id);
+        if (item.cached && recoveryKey) {
+            try {
+                await forgetCachedFocusPhoto(recoveryKey, item.id);
+            } catch (_) {
+                // The next bootstrap detects the already-attached upload ID
+                // and clears its stale local copy without sending it again.
+            }
+        }
         if (item.preview_url) URL.revokeObjectURL(item.preview_url);
         uploads.value = uploads.value.filter(other => other.id !== item.id);
     } catch (error) {
