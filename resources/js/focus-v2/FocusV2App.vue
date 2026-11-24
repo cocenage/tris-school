@@ -1,7 +1,9 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
-import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
+import FocusMediaViewer from './FocusMediaViewer.vue';
+import FocusVideoThumb from './FocusVideoThumb.vue';
+import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, isTransientFocusUploadError, transferFocusFile } from './media-upload';
 import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
@@ -28,6 +30,7 @@ const media = ref([]);
 const stage = ref('setup');
 const activeRoom = ref(0);
 const blockedQuestion = ref(null);
+const highlightedReviewQuestion = ref(null);
 const submitting = ref(false);
 const submitError = ref('');
 const finalResult = ref(null);
@@ -39,8 +42,11 @@ const testMode = ref(false);
 const pickerFor = ref(null);
 const mediaError = ref('');
 const photoCapture = ref(null);
+const batchPreview = ref(null);
+const batchPreviewActive = computed(() => batchPreview.value?.items?.[batchPreview.value.index] ?? null);
 const videoLightbox = ref(null);
 const lightbox = ref(null);
+const galleryViewer = ref(null);
 const cacheWarning = ref('');
 const recoveringPhotos = ref(false);
 const recoveryRecord = ref(null);
@@ -48,6 +54,7 @@ const recoveryMode = ref('');
 const recoveryBusy = ref(false);
 const recoveryError = ref('');
 const localStorageAvailable = ref(true);
+const connectionOnline = ref(navigator.onLine !== false);
 let recoveryKey = null;
 const localWriter = createLocalRecoveryQueue(async operation => {
     if (operation.type === 'delete') {
@@ -190,15 +197,33 @@ const recoveryNeedingInput = computed(() => interruptedUploads.value.filter(reco
 const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
 
 async function fetchJson(url, options = {}) {
-    const response = await fetch(url, {
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: {
-            Accept: 'application/json',
-            ...(options.body ? { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf } : {}),
-        },
-        ...options,
-    });
+    // Draft requests may succeed even when Telegram loses their response.
+    // A bounded timeout lets the existing same-revision replay protocol
+    // recover rather than leaving the UI stuck on “Сохраняем…” forever.
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    options.signal?.addEventListener('abort', abort, { once: true });
+    let timeoutFired = false;
+    const timeout = setTimeout(() => { timeoutFired = true; controller.abort(); }, 25_000);
+    let response;
+    try {
+        response = await fetch(url, {
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: {
+                Accept: 'application/json',
+                ...(options.body ? { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf } : {}),
+            },
+            ...options,
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (timeoutFired) throw new Error('Соединение зависло. При восстановлении повторим сохранение без потери ответов.');
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+        options.signal?.removeEventListener('abort', abort);
+    }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
         const firstError = Object.values(data.errors ?? {}).flat().find(message => typeof message === 'string');
@@ -212,6 +237,16 @@ async function fetchJson(url, options = {}) {
 }
 
 async function initialize() {
+    // The same component can switch between real and test runs.
+    // Never retain draft revisions, recovery prompts or old-run timers.
+    clearTimeout(timer);
+    timer = null;
+    changeSerial = 0;
+    acknowledgedSerial = 0;
+    uncertainSnapshot = null;
+    recoveryRecord.value = null;
+    recoveryMode.value = '';
+    recoveryKey = null;
     loading.value = true;
     loadError.value = '';
     testMode.value = false;
@@ -220,8 +255,10 @@ async function initialize() {
     mediaError.value = '';
     cacheWarning.value = '';
     closePhotoCapture();
+    closeBatchPreview();
     closeLightbox();
     closeVideoLightbox();
+    galleryViewer.value = null;
     cleanupPreviews();
     uploads.value = [];
     try {
@@ -367,10 +404,83 @@ async function confirmPhoto() {
             return;
         }
     }
-    const queued = await queueSelectedFiles([current.file], current.room, current.question);
+    const queued = await queueSelectedFiles([current.file], current.room, current.question,
+        { replaceUploadId: current.replaceUploadId });
     if (queued) closePhotoCapture();
     else current.saving = false;
 }
+function beginBatchPreview(selected, room, question) {
+    if (!canEdit.value) return;
+    const available = Math.max(0, 12 - mediaCountAt(room, question));
+    const accepted = [];
+    let rejected = 0;
+    for (const original of selected) {
+        if (accepted.length >= available) { rejected++; continue; }
+        const mime = focusFileMime(original);
+        const file = original.type ? original : new File([original], original.name, { type: mime });
+        const validationError = allowedFocusFile(file);
+        if (validationError) { mediaError.value = validationError; rejected++; continue; }
+        accepted.push({
+            id: crypto.randomUUID(), file, mime, url: URL.createObjectURL(file),
+        });
+    }
+    if (!accepted.length) {
+        if (!mediaError.value) mediaError.value = 'Нет места для новых файлов: не больше 12 вложений на вопрос.';
+        return;
+    }
+    closeBatchPreview();
+    batchPreview.value = { room, question, items: accepted, index: 0, saving: false };
+    if (rejected) mediaError.value = 'Выбраны только подходящие файлы в пределах лимита 12 вложений.';
+}
+function closeBatchPreview() {
+    if (batchPreview.value?.saving) return;
+    for (const item of batchPreview.value?.items ?? []) URL.revokeObjectURL(item.url);
+    batchPreview.value = null;
+}
+function dropBatchFile(id) {
+    const preview = batchPreview.value;
+    if (!preview || preview.saving) return;
+    const file = preview.items.find(item => item.id === id);
+    if (file) URL.revokeObjectURL(file.url);
+    preview.items = preview.items.filter(item => item.id !== id);
+    preview.index = Math.max(0, Math.min(preview.index, preview.items.length - 1));
+    if (!preview.items.length) closeBatchPreview();
+}
+async function confirmBatch() {
+    const preview = batchPreview.value;
+    if (!preview || preview.saving || !preview.items.length) return;
+    preview.saving = true;
+    try {
+        const queued = await queueSelectedFiles(preview.items.map(item => item.file), preview.room, preview.question);
+        if (queued) {
+            preview.saving = false;
+            closeBatchPreview();
+        } else {
+            preview.saving = false;
+        }
+    } catch (error) {
+        mediaError.value = error.message || 'Не удалось добавить выбранные файлы.';
+        preview.saving = false;
+    }
+}
+
+function beginSavedReplacement(event, room, question, previous) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!canEdit.value || !file || !previous?.upload_id) return;
+    if (mediaCountAt(room, question) >= 12) {
+        mediaError.value = 'Лимит 12 вложений. Сначала удалите один файл, затем загрузите замену.';
+        return;
+    }
+    if (busyUploads.value || attachInFlight) {
+        mediaError.value = 'Дождитесь завершения текущих загрузок перед заменой.';
+        return;
+    }
+    const mime = focusFileMime(file);
+    beginCapture(file, room, question, mime.startsWith('video/') ? 'video' : 'image');
+    if (photoCapture.value) photoCapture.value.replaceUploadId = previous.upload_id;
+}
+
 function openLightbox(file) {
     if (mediaIsVideo(file)) return;
     // Gallery tiles load inexpensive 360px thumbnails; fullscreen must open
@@ -396,6 +506,25 @@ function openVideoLightbox(file) {
     if (url) videoLightbox.value = { url, name: file.name || file.original_name || 'Видео' };
 }
 function closeVideoLightbox() { videoLightbox.value = null; }
+function galleryEntries(room, question) {
+    return visibleMediaAt(room, question).filter(entry => Boolean(entry.url));
+}
+function openGallery(room, question, selected) {
+    const entries = galleryEntries(room, question);
+    const index = entries.findIndex(entry => entry.key === selected.key);
+    if (index < 0) return;
+    galleryViewer.value = { room, question, index };
+}
+const galleryItems = computed(() => galleryViewer.value
+    ? galleryEntries(galleryViewer.value.room, galleryViewer.value.question) : []);
+async function removeGalleryItem(item) {
+    if (!galleryViewer.value || !item) return;
+    const { room, question } = galleryViewer.value;
+    galleryViewer.value = null;
+    if (item.kind === 'saved') await removeSavedMedia(room, question, item.source);
+    else if (item.kind === 'upload') await cancelFile(item.source);
+}
+
 
 async function choosePerson(id) {
     if (!canEdit.value) return;
@@ -464,11 +593,26 @@ function choosePreviousCleaner(name) {
     setup.value.previous_cleaner = String(name ?? '');
     touch();
 }
-function exitTestMode() {
+async function exitTestMode() {
     if (!testMode.value) return;
-    testMode.value = false;
+    // Never switch the active Vue run while a test upload/save callback is
+    // in flight: that could otherwise write to the newly bootstrapped real run.
+    if (busyUploads.value || attachInFlight || inFlight || submitting.value) {
+        syncError.value = 'Сначала завершите или отмените тестовые загрузки и дождитесь сохранения ответов.';
+        return;
+    }
+    if (!finalResult.value && !(await ensureSynced())) {
+        syncError.value = syncError.value || 'Сначала сохраните тестовый черновик.';
+        return;
+    }
     finalResult.value = null;
-    void initialize(); // Restore the real server-owned draft, never test values.
+    await initialize(); // Restore the real server-owned draft, never test values.
+}
+async function startNewSandboxTest() {
+    if (!testMode.value || stage.value !== 'done' || submitting.value || busyUploads.value) return;
+    finalResult.value = null;
+    await initialize();
+    if (!loadError.value) await choosePerson('__test__');
 }
 function resumeDraftFiles(event) {
     const selected = Array.from(event.target.files ?? []);
@@ -570,6 +714,51 @@ function isNegative(question, selected) {
     return maximum > 0 && points < maximum;
 }
 
+const reviewCleanerName = computed(() => testMode.value || setup.value.cleaner_id === '__test__'
+    ? 'Тестовый сотрудник'
+    : people.value.find(person => String(person.id) === String(setup.value.cleaner_id))?.name || 'Не выбран');
+const reviewApartmentName = computed(() => apartments.value
+    .find(apartment => String(apartment.id) === String(setup.value.apartment_id))?.name || 'Не выбрана');
+const reviewFindings = computed(() => {
+    const findings = [];
+    rooms.value.forEach((room, roomIndex) => {
+        (room.items ?? []).forEach((question, questionIndex) => {
+            const answer = answers.value[roomIndex]?.[questionIndex];
+            if (!isNegative(question, answer?.selected)) return;
+            const options = question.answer_options_scored ?? [];
+            const selectedOption = options.find((option, i) => optionValue(option, i) === String(answer.selected)
+                || String(option.label) === String(answer.selected));
+            findings.push({
+                key: roomIndex + ':' + questionIndex, roomIndex, questionIndex,
+                roomTitle: room.title || 'Комната ' + (roomIndex + 1),
+                title: question.question || 'Вопрос ' + (questionIndex + 1),
+                answer: selectedOption?.label || answer?.selected || 'Замечание',
+                mediaCount: mediaCountAt(roomIndex, questionIndex),
+            });
+        });
+    });
+    return findings;
+});
+const reviewMediaStats = computed(() => {
+    let photos = 0, videos = 0;
+    rooms.value.forEach((room, roomIndex) => {
+        (room.items ?? []).forEach((_, questionIndex) => {
+            for (const item of visibleMediaAt(roomIndex, questionIndex)) {
+                if (mediaIsVideo(item)) videos++;
+                else photos++;
+            }
+        });
+    });
+    return { photos, videos, total: photos + videos, waiting: outstandingMedia.value };
+});
+async function openReviewFinding(finding) {
+    goRoom(finding.roomIndex);
+    highlightedReviewQuestion.value = finding.questionIndex;
+    await nextTick();
+    document.getElementById('focus-question-' + finding.roomIndex + '-' + finding.questionIndex)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 function optionValue(option, index) {
     return String(option.value ?? option.label ?? 'option_' + index);
 }
@@ -594,6 +783,11 @@ function touch() {
 
 function queueSave(delay = 800) {
     clearTimeout(timer);
+    if (!connectionOnline.value) {
+        // Local recovery snapshots still continue to be queued in IndexedDB.
+        state.value = 'dirty';
+        return;
+    }
     timer = setTimeout(() => { void flush(); }, delay);
 }
 
@@ -614,6 +808,13 @@ async function flush() {
     clearTimeout(timer);
     timer = null;
     if (!canEdit.value) return false;
+    if (!connectionOnline.value) {
+        state.value = 'dirty';
+        syncError.value = localStorageAvailable.value
+            ? 'Нет интернета. Изменения остаются на этом устройстве, сервер ещё не подтвердил их.'
+            : 'Нет интернета и локальная копия недоступна. Не закрывайте Telegram до восстановления связи.';
+        return false;
+    }
     if (attachInFlight) { queueSave(450); return false; }
     if (inFlight) return inFlight;
     if (!uncertainSnapshot && changeSerial === acknowledgedSerial) return true;
@@ -677,6 +878,7 @@ function goRoom(index) {
     if (index >= 0 && index < rooms.value.length) {
         activeRoom.value = index;
         blockedQuestion.value = null;
+        highlightedReviewQuestion.value = null;
         stage.value = 'questions';
         window.scrollTo({ top: 0, behavior: 'instant' });
     }
@@ -920,10 +1122,14 @@ async function addFiles(event, room, question) {
             return;
         }
     }
+    if (selected.length > 1) {
+        beginBatchPreview(selected, room, question);
+        return;
+    }
     await queueSelectedFiles(selected, room, question);
 }
 
-async function queueSelectedFiles(selected, room, question) {
+async function queueSelectedFiles(selected, room, question, options = {}) {
     if (!canEdit.value) return false;
     mediaError.value = '';
     if (selected.length && !run.value?.draft_id) {
@@ -954,6 +1160,7 @@ async function queueSelectedFiles(selected, room, question) {
         uploads.value.push({
             id, file, room, question, status: 'queued',
             progress: 0, error: '', retryHint: '', controller: null, info: null,
+            replaceUploadId: options.replaceUploadId || null,
             preview_url: URL.createObjectURL(file), cached: false, cachePending: false,
         });
         const queued = uploads.value[uploads.value.length - 1];
@@ -980,6 +1187,7 @@ async function queueSelectedFiles(selected, room, question) {
 }
 
 function pumpTransfers() {
+    if (!connectionOnline.value) return;
     while (activeTransfers < 2 && (canEdit.value || stage.value === 'done')) {
         const next = uploads.value.find(item => item.status === 'queued');
         if (!next) break;
@@ -1065,6 +1273,26 @@ async function sendOne(item) {
                     if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
                         files.push(attached.media_item);
                     }
+                    if (item.replaceUploadId) {
+                        // Preserve the original evidence until the replacement
+                        // was fully received and attached. Only then remove
+                        // it using the same server revision lock.
+                        const previous = files.find(file => file.upload_id === item.replaceUploadId);
+                        if (previous) {
+                            try {
+                                const removed = await focusMediaRequest(
+                                    props.mediaStartUrl + '/' + encodeURIComponent(previous.upload_id) + '/attached',
+                                    'DELETE', { expected_revision: run.value.revision }, csrf, controller.signal);
+                                run.value = { ...run.value, ...removed.run };
+                                media.value[item.room][item.question] = files.filter(file => file.upload_id !== previous.upload_id);
+                            } catch (replaceError) {
+                                // Never discard either file when the final
+                                // delete acknowledgement is lost.
+                                mediaError.value = 'Новый файл сохранён, но старый не удалён. Удалите его вручную: '
+                                    + (replaceError.message || 'сервер не подтвердил замену');
+                            }
+                        }
+                    }
                 }
             } finally {
                 attachInFlight = false;
@@ -1091,6 +1319,7 @@ async function sendOne(item) {
             return;
         }
         item.status = 'error';
+        item.retryable = isTransientFocusUploadError(error);
         item.error = error.message || 'Не удалось загрузить файл.';
         if (error.status === 409 && item.progress === 100) {
             syncError.value = 'Не удалось прикрепить файл из-за изменения черновика. Проверьте ответы перед повтором.';
@@ -1103,6 +1332,7 @@ function retryFile(item) {
     item.status = 'queued';
     item.error = '';
     item.retryHint = '';
+    item.retryable = false;
     pumpTransfers();
 }
 
@@ -1241,6 +1471,20 @@ function mediaPreview(file) {
     return file.preview_url || file.thumbnail_url || file.url || '';
 }
 
+function handleNetworkUpdate() {
+    const wasOnline = connectionOnline.value;
+    connectionOnline.value = navigator.onLine !== false;
+    if (!connectionOnline.value) return;
+    if (!wasOnline) {
+        if (['dirty', 'error'].includes(state.value)) queueSave(200);
+        // Retry only errors caused by temporary transport failures;
+        // permissions/invalid files must remain visible for manual action.
+        for (const item of uploads.value) {
+            if (item.status === 'error' && item.retryable) retryFile(item);
+        }
+        pumpTransfers();
+    }
+}
 function warnBeforeUnload(event) {
     if (submitting.value || busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {
         event.preventDefault();
@@ -1250,15 +1494,21 @@ function warnBeforeUnload(event) {
 
 onMounted(() => {
     window.addEventListener('beforeunload', warnBeforeUnload);
+    window.addEventListener('online', handleNetworkUpdate);
+    window.addEventListener('offline', handleNetworkUpdate);
     void initialize();
 });
 onBeforeUnmount(() => {
     closePhotoCapture();
+    closeBatchPreview();
     closeLightbox();
     closeVideoLightbox();
+    galleryViewer.value = null;
     cleanupPreviews();
     clearTimeout(timer);
     window.removeEventListener('beforeunload', warnBeforeUnload);
+    window.removeEventListener('online', handleNetworkUpdate);
+    window.removeEventListener('offline', handleNetworkUpdate);
 });
 </script>
 
@@ -1279,6 +1529,9 @@ onBeforeUnmount(() => {
                         class="max-h-[56vh] w-full object-contain">
                 </div>
                 <div class="space-y-3 p-4">
+                    <p v-if="photoCapture.replaceUploadId" class="rounded-lg bg-blue-50 p-2 text-xs font-semibold text-blue-800">
+                        Старый файл останется в контроле, пока новый не будет полностью сохранён на сервере.
+                    </p>
                     <p class="text-xs text-slate-600">{{ photoCapture.kind === 'video'
                         ? 'Проверьте ролик. После подтверждения он появится в вопросе, а загрузка продолжится, пока Telegram открыт.'
                         : 'Фото появится в вопросе сразу после подтверждения. Сохранение на сервер продолжится автоматически.' }}</p>
@@ -1294,33 +1547,61 @@ onBeforeUnmount(() => {
                 </div>
             </div>
         </div>
-        <div v-if="videoLightbox" class="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3"
-            role="dialog" aria-modal="true" aria-label="Просмотр видео" @click.self="closeVideoLightbox"
-            @keydown.esc="closeVideoLightbox">
-            <button type="button" class="absolute right-3 top-3 z-10 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
-                aria-label="Закрыть видео" @click="closeVideoLightbox">✕</button>
-            <video :src="videoLightbox.url" controls autoplay playsinline preload="metadata"
-                :aria-label="videoLightbox.name" class="max-h-[85vh] w-full max-w-2xl object-contain"></video>
-        </div>
-        <div v-if="lightbox" class="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3"
-            role="dialog" aria-modal="true" aria-label="Просмотр фотографии"
-            @click.self="closeLightbox" @keydown.esc="closeLightbox">
-            <button type="button" class="absolute right-3 top-3 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
-                aria-label="Закрыть просмотр" @click="closeLightbox">✕</button>
-            <img v-if="!lightbox.failed" :src="lightbox.url" :alt="lightbox.name"
-                class="max-h-[85vh] max-w-full object-contain" @error="lightboxImageFailed">
-            <div v-else class="max-w-sm rounded-2xl bg-white p-6 text-center text-sm text-slate-800">
-                <p class="font-bold">Не удалось показать оригинал фото</p>
-                <p class="mt-2 text-slate-600">Возможно, браузер Telegram не поддерживает этот формат. Файл от этого не теряется и продолжает загружаться.</p>
+        <div v-if="batchPreview" class="fixed inset-0 z-50 flex items-end justify-center bg-black/85 p-2 sm:items-center"
+            role="dialog" aria-modal="true" aria-label="Предпросмотр выбранных файлов">
+            <div class="flex w-full max-w-lg flex-col overflow-hidden rounded-3xl bg-white text-slate-900 shadow-2xl"
+                style="max-height: 92dvh">
+                <header class="flex items-center justify-between gap-3 p-4">
+                    <div>
+                        <h2 class="text-lg font-bold">Выбранные фото и видео</h2>
+                        <p class="text-xs text-slate-500">{{ batchPreview.items.length }} файлов · сначала проверьте их</p>
+                    </div>
+                    <button type="button" class="grid size-11 place-items-center rounded-full bg-slate-100"
+                        :disabled="batchPreview.saving" aria-label="Закрыть предпросмотр файлов"
+                        @click="closeBatchPreview">✕</button>
+                </header>
+                <div v-if="batchPreviewActive" class="relative flex min-h-40 flex-1 items-center justify-center overflow-hidden bg-slate-950"
+                    style="max-height: 42dvh">
+                    <video v-if="batchPreviewActive.mime.startsWith('video/')" :key="batchPreviewActive.id"
+                        :src="batchPreviewActive.url" controls playsinline preload="metadata"
+                        class="max-h-full w-full object-contain" aria-label="Просмотр выбранного видео"></video>
+                    <img v-else :src="batchPreviewActive.url" alt="Просмотр выбранной фотографии"
+                        class="max-h-full w-full object-contain">
+                </div>
+                <div class="flex gap-2 overflow-x-auto px-4 py-3">
+                    <button v-for="(item, i) in batchPreview.items" :key="item.id" type="button"
+                        class="relative size-16 shrink-0 overflow-hidden rounded-xl border-2"
+                        :class="batchPreview.index === i ? 'border-blue-600' : 'border-slate-200'"
+                        :aria-label="'Посмотреть выбранный файл ' + (i + 1)" @click="batchPreview.index = i">
+                        <img v-if="item.mime.startsWith('image/')" :src="item.url" alt="" class="size-full object-cover">
+                        <span v-else class="grid size-full place-items-center bg-slate-900 text-2xl text-white">▶</span>
+                    </button>
+                </div>
+                <div class="space-y-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+                    <p class="text-xs text-slate-600">Файлы начнут загружаться только после подтверждения. Можно убрать лишние.</p>
+                    <p v-if="mediaError" class="rounded-xl bg-red-50 p-2 text-xs text-red-700" role="alert">{{ mediaError }}</p>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button type="button" :disabled="batchPreview.saving" class="min-h-12 rounded-xl bg-slate-100 px-2 text-sm font-semibold"
+                            @click="dropBatchFile(batchPreviewActive?.id)">Убрать файл</button>
+                        <button type="button" :disabled="batchPreview.saving || !batchPreview.items.length"
+                            class="min-h-12 rounded-xl bg-blue-600 px-2 text-sm font-semibold text-white disabled:opacity-50"
+                            @click="confirmBatch">{{ batchPreview.saving ? 'Сохраняем…' : 'Добавить ' + batchPreview.items.length }}</button>
+                    </div>
+                </div>
             </div>
         </div>
+        <FocusMediaViewer v-if="galleryViewer && galleryItems.length" :items="galleryItems"
+            :initial-index="galleryViewer.index" :can-remove="canEdit"
+            @close="galleryViewer = null" @remove="removeGalleryItem" />
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
                     <p class="text-xs font-medium text-slate-500">TRIS Academy · Focus Control</p>
                     <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
-                <button v-if="testMode" type="button" class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900" @click="exitTestMode">Выйти из теста</button>
+                <button v-if="testMode" type="button" :disabled="busyUploads || submitting || state === 'saving'"
+                    class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 disabled:opacity-50"
+                    @click="exitTestMode">Выйти из теста</button>
                 <a v-else-if="stage !== 'done'" :href="classicUrl" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700" @click.prevent="openClassic">Старый Focus</a>
                 <a v-else-if="finalResult?.result_url" :href="finalResult.result_url" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700">Результат</a>
             </header>
@@ -1374,6 +1655,12 @@ onBeforeUnmount(() => {
                 <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
                     <strong>Тестовый сотрудник · серверная загрузка</strong>
                     <p class="mt-1">Фото, видео и ответы сохраняются в отдельном тестовом черновике. Рабочие контроли, рейтинги, баллы наград и сообщения Telegram не создаются. Тестовые материалы очищаются автоматически.</p>
+                </div>
+                <div v-if="!connectionOnline && stage !== 'done'"
+                    class="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+                    role="status" aria-live="polite">
+                    <strong>Нет интернета</strong>
+                    <p class="mt-1">Продолжайте отвечать. Локальная копия создаётся, если браузер разрешает хранение. Файлы и ответы считаются сохранёнными только после подтверждения сервера.</p>
                 </div>
                 <div v-if="!localStorageAvailable && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
                     Локальное восстановление недоступно в этом браузере. Дождитесь статуса «Сохранено» перед закрытием Telegram.
@@ -1491,7 +1778,9 @@ onBeforeUnmount(() => {
                     </div>
 
                     <div class="space-y-3">
-                        <article v-for="(question, questionIndex) in currentRoom.items" :key="activeRoom + '-' + questionIndex" class="rounded-xl border bg-white p-4" :class="blockedQuestion === questionIndex ? 'border-red-400' : 'border-slate-200'">
+                        <article v-for="(question, questionIndex) in currentRoom.items" :id="'focus-question-' + activeRoom + '-' + questionIndex"
+                            :key="activeRoom + '-' + questionIndex" class="scroll-mt-32 rounded-xl border bg-white p-4"
+                            :class="blockedQuestion === questionIndex ? 'border-red-400' : highlightedReviewQuestion === questionIndex ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'">
                             <div class="flex justify-between gap-3">
                                 <h3 class="text-base font-bold leading-snug">{{ question.question || 'Вопрос' }}</h3>
                                 <span v-if="currentRoom.is_optional || question.is_optional" class="shrink-0 text-xs text-slate-500">Необязательно</span>
@@ -1584,7 +1873,7 @@ onBeforeUnmount(() => {
                                         class="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100">
                                         <button v-if="item.url && !mediaIsVideo(item)" type="button"
                                             class="relative block aspect-square w-full overflow-hidden bg-slate-200"
-                                            :aria-label="'Открыть фото ' + (item.name || '')" @click="openLightbox(item.source)">
+                                            :aria-label="'Открыть фото ' + (item.name || '')" @click="openGallery(activeRoom, questionIndex, item)">
                                             <img v-if="!item.source.previewFailed" :src="item.url" :alt="item.name || 'Фото'"
                                                 class="size-full object-cover" loading="lazy" @error="item.source.previewFailed = true">
                                             <span v-else class="grid size-full place-items-center p-2 text-center text-xs font-semibold text-slate-600">
@@ -1599,9 +1888,8 @@ onBeforeUnmount(() => {
                                         <button v-else-if="item.url && mediaIsVideo(item)"
                                             type="button" class="relative flex aspect-square w-full items-center justify-center overflow-hidden bg-slate-900"
                                             :aria-label="'Просмотреть видео ' + (item.name || '')"
-                                            @click="openVideoLightbox(item.source)">
-                                            <video :src="item.url" muted playsinline preload="metadata"
-                                                class="absolute inset-0 size-full object-cover" aria-hidden="true"></video>
+                                            @click="openGallery(activeRoom, questionIndex, item)">
+                                            <FocusVideoThumb :src="item.url" :name="item.name || 'Видео'" />
                                             <span class="relative z-10 grid size-12 place-items-center rounded-full bg-black/60 text-2xl text-white">▶</span>
                                             <span v-if="item.kind === 'upload'" class="absolute bottom-1 inset-x-1 rounded-lg bg-slate-950/75 py-1 text-[11px] font-semibold text-white">
                                                 {{ item.status === 'error' ? 'Ошибка загрузки' : item.status === 'attaching' ? 'Сохраняем на сервере' : 'Загрузка ' + item.progress + '%' }}
@@ -1622,7 +1910,14 @@ onBeforeUnmount(() => {
                                                 class="ml-1 rounded-lg px-2 py-1.5 font-semibold text-slate-700"
                                                 @click="cancelFile(item.source)">Убрать</button>
                                         </div>
-                                        <div v-else-if="item.kind === 'saved'" class="p-1.5 text-center">
+                                        <div v-else-if="item.kind === 'saved'" class="flex flex-wrap items-center justify-center gap-1 p-1.5 text-center">
+                                            <label v-if="item.source.upload_id && canEdit && mediaCountAt(activeRoom, questionIndex) < 12"
+                                                class="cursor-pointer rounded-lg bg-blue-50 px-2 py-1.5 text-[11px] font-semibold text-blue-700">
+                                                Заменить
+                                                <input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm"
+                                                    class="sr-only" :disabled="!canEdit"
+                                                    @change="beginSavedReplacement($event, activeRoom, questionIndex, item.source)">
+                                            </label>
                                             <button v-if="testMode || item.source.upload_id" type="button"
                                                 class="rounded-lg px-2 py-1.5 text-[11px] font-semibold text-slate-600"
                                                 @click="removeSavedMedia(activeRoom, questionIndex, item.source)">Удалить</button>
@@ -1651,13 +1946,62 @@ onBeforeUnmount(() => {
 
                 <template v-else-if="stage === 'review'">
                     <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
-                        <p class="text-xs font-bold uppercase tracking-wider text-slate-500">Проверка ответов</p>
-                        <h2 class="text-xl font-semibold">Все вопросы заполнены</h2>
-                        <p class="text-sm text-slate-600">{{ completedRequired }} из {{ totalRequired }} обязательных вопросов. Сохраните ответы перед завершением.</p>
-                        <div v-for="(room, index) in rooms" :key="index" class="flex items-center justify-between border-b border-slate-100 py-2">
-                            <span class="text-sm font-semibold">{{ room.title }}</span>
-                            <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
+                        <p class="text-xs font-bold uppercase tracking-wider text-slate-500">Перед отправкой</p>
+                        <h2 class="text-xl font-semibold">Проверьте данные контроля</h2>
+                        <div class="space-y-2 rounded-2xl bg-slate-50 p-4 text-sm">
+                            <div class="flex items-start justify-between gap-3">
+                                <span class="text-slate-500">Квартира</span><strong class="max-w-[65%] text-right">{{ reviewApartmentName }}</strong>
+                            </div>
+                            <div class="flex items-start justify-between gap-3">
+                                <span class="text-slate-500">Сотрудник</span><strong class="max-w-[65%] text-right">{{ reviewCleanerName }}</strong>
+                            </div>
+                            <div v-if="setup.previous_cleaner" class="flex items-start justify-between gap-3">
+                                <span class="text-slate-500">Предыдущий сотрудник</span><strong class="max-w-[65%] text-right">{{ setup.previous_cleaner }}</strong>
+                            </div>
+                            <div class="flex items-start justify-between gap-3">
+                                <span class="text-slate-500">Уборка / проверка</span>
+                                <strong class="text-right">{{ setup.cleaning_date || '—' }} / {{ setup.inspection_date || '—' }}</strong>
+                            </div>
                         </div>
+                        <div class="rounded-2xl border border-slate-200 p-4">
+                            <div class="mb-2 flex items-center justify-between">
+                                <h3 class="text-sm font-bold">Комментарий к проверке</h3>
+                                <button type="button" class="rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" @click="stage = 'setup'">Изменить</button>
+                            </div>
+                            <p class="whitespace-pre-wrap break-words text-sm text-slate-700">{{ setup.comment?.trim() || 'Комментарий не указан' }}</p>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 text-center text-xs">
+                            <div class="rounded-xl bg-blue-50 p-3"><strong class="block text-lg text-blue-800">{{ completedRequired }}/{{ totalRequired }}</strong>Ответы</div>
+                            <div class="rounded-xl bg-amber-50 p-3"><strong class="block text-lg text-amber-800">{{ reviewFindings.length }}</strong>Замечания</div>
+                            <div class="rounded-xl bg-slate-100 p-3"><strong class="block text-lg text-slate-800">{{ reviewMediaStats.total }}</strong>Медиа</div>
+                        </div>
+                        <p class="text-xs text-slate-500">
+                            Фото: {{ reviewMediaStats.photos }} · Видео: {{ reviewMediaStats.videos }} ·
+                            {{ canSubmitMedia ? 'Все вложения подтверждены сервером' : 'Ожидается сохранение: ' + reviewMediaStats.waiting }}
+                        </p>
+                        <div v-if="reviewFindings.length" class="space-y-2">
+                            <h3 class="text-sm font-bold">Замечания — проверьте перед отправкой</h3>
+                            <button v-for="finding in reviewFindings" :key="finding.key" type="button"
+                                class="flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left"
+                                :aria-label="'Открыть замечание ' + finding.title"
+                                @click="openReviewFinding(finding)">
+                                <span class="min-w-0">
+                                    <span class="block text-xs text-amber-800">{{ finding.roomTitle }} · {{ finding.answer }}</span>
+                                    <strong class="mt-1 block text-sm text-slate-900">{{ finding.title }}</strong>
+                                    <span class="text-xs text-slate-600">Вложений: {{ finding.mediaCount }}</span>
+                                </span>
+                                <span class="shrink-0 text-lg text-blue-700" aria-hidden="true">›</span>
+                            </button>
+                        </div>
+                        <p v-else class="text-sm text-emerald-700">По выбранным ответам замечаний нет.</p>
+                        <details class="rounded-2xl border border-slate-200 p-3">
+                            <summary class="cursor-pointer text-sm font-bold">Все комнаты · {{ rooms.length }}</summary>
+                            <div v-for="(room, index) in rooms" :key="index"
+                                class="flex items-center justify-between border-b border-slate-100 py-3 last:border-b-0">
+                                <span class="text-sm font-semibold">{{ room.title }}</span>
+                                <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
+                            </div>
+                        </details>
                         <div v-if="!canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
                             Остались файлы без подтверждения · {{ outstandingMedia }}. Дождитесь завершения загрузки, повторите ошибочные файлы или восстановите их после закрытия Telegram. До этого отправка недоступна.
                         </div>
@@ -1749,7 +2093,8 @@ onBeforeUnmount(() => {
                         </div>
                         <a v-if="finalResult?.media_review_url" :href="finalResult.media_review_url" class="block rounded-xl bg-blue-50 p-3 text-center text-sm font-bold text-blue-700">Открыть проверку материалов позже</a>
                         <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white">Открыть результат</a>
-                        <button v-if="testMode" type="button" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white" @click="exitTestMode">Вернуться к настоящим контролям</button>
+                        <button v-if="testMode" type="button" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white" @click="startNewSandboxTest">Начать новый тест</button>
+                        <button v-if="testMode" type="button" class="block w-full rounded-xl bg-slate-100 p-4 text-center text-sm font-bold text-slate-800" @click="exitTestMode">Вернуться к настоящим контролям</button>
                         <a v-else href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
                     </section>
                 </template>

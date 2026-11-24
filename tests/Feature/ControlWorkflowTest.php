@@ -741,6 +741,15 @@ it('blocks non-admins from injecting server sandbox saves or media into active p
         ->and(ControlResponse::count())->toBe(0);
 });
 
+it('benchmarks synthetic Focus media I/O without changing controls, uploads or files', function (): void {
+    Storage::fake('local');
+    $this->artisan('focus-v2:benchmark-media --mb=1 --chunk-kb=1024')->assertExitCode(0);
+    $this->artisan('focus-v2:benchmark-media --mb=1 --chunk-kb=512')->assertExitCode(0);
+    expect(Storage::disk('local')->allFiles('focus-v2-bench'))->toBe([])
+        ->and(ControlResponse::count())->toBe(0)
+        ->and(FocusV2MediaUpload::count())->toBe(0);
+});
+
 it('halves new video chunk requests without breaking previously started 512 KiB sessions', function (): void {
     Storage::fake('local');
     [, , $control, $draft] = focusV2MediaFixture();

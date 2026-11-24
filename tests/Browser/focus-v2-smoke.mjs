@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright';
 
 const base = 'http://127.0.0.1:4178';
 const fixture = base + '/focus-v2-browser-smoke.html';
@@ -51,6 +51,14 @@ class FakeFocusBackend {
     }
 
     bootstrap(sandbox = false) {
+        if (sandbox && this.test.state === 'sandbox_complete') {
+            this.test = {
+                draftId: null, revision: 0,
+                runId: '00000000-0000-4000-8000-000000000003',
+                setup: { ...initialSetup(), cleaner_id: '__test__' },
+                answers: initialAnswers(), media: [[[]]], sessions: new Map(), state: 'sandbox',
+            };
+        }
         const state = sandbox ? this.test : this;
         const currentRunId = sandbox ? state.runId : runId;
         return {
@@ -257,8 +265,25 @@ async function expectPhoto(page) {
     const tile = page.getByRole('button', { name: 'Открыть фото photo.png' });
     await tile.waitFor({ timeout: 15000 });
     await tile.click();
-    await page.getByRole('dialog', { name: 'Просмотр фотографии' }).waitFor();
-    await page.getByRole('button', { name: 'Закрыть просмотр' }).click();
+    await page.getByRole('dialog', { name: 'Галерея фото и видео' }).waitFor();
+    await page.getByRole('button', { name: 'Закрыть галерею' }).click();
+}
+
+async function restoreInterruptedOriginalIfNeeded(page, { name, mimeType, buffer, video = false }) {
+    const button = page.getByRole('button', { name: video ? 'Просмотреть видео ' + name : 'Открыть фото ' + name });
+    try {
+        await button.waitFor({ timeout: 3500 });
+        return 'local-backup';
+    } catch (_) {
+        // WebKit and Telegram may reject or evict IndexedDB blobs. The app
+        // must give a reliable server-session fallback using the same ID.
+        const section = page.locator('section').filter({ has: page.getByRole('heading', { name: /Восстановим материалы/ }) });
+        const reselect = section.locator('input[type=file][multiple]');
+        await reselect.waitFor({ timeout: 15000 });
+        await reselect.setInputFiles({ name, mimeType, buffer });
+        await button.waitFor({ timeout: 15000 });
+        return 'original-reselection';
+    }
 }
 
 async function main() {
@@ -275,7 +300,9 @@ async function main() {
     let browser;
     try {
         await waitForVite(vite);
-        browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+        browser = await (process.env.FOCUS_BROWSER === 'webkit' ? webkit : chromium).launch({
+            headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox'] }),
+        });
 
         // A real form must expose its comment and persist previous-cleaner
         // selection as a legacy name rather than an internal staff ID.
@@ -324,12 +351,109 @@ async function main() {
             await page.getByRole('button', { name: 'Удалить' }).click();
             await page.getByRole('button', { name: 'Открыть фото photo.png' }).waitFor({ state: 'hidden', timeout: 15000 });
             await page.getByRole('button', { name: 'К сводке' }).click();
+            await page.getByRole('heading', { name: 'Проверьте данные контроля' }).waitFor();
+            assert.equal(await page.getByText('Замечания — проверьте перед отправкой').isVisible(), true);
+            assert.equal(await page.getByRole('button', { name: /Открыть замечание Раковина чистая/ }).count(), 1);
+            await page.getByRole('button', { name: /Открыть замечание Раковина чистая/ }).click();
+            await page.locator('#focus-question-0-0').waitFor();
+            await page.getByRole('button', { name: 'К сводке' }).click();
             await page.getByRole('button', { name: 'Завершить тест без статистики' }).click();
             await page.getByRole('heading', { name: 'Тест завершён' }).waitFor();
             assert.equal(backend.test.state, 'sandbox_complete');
             assert.equal(backend.realWrites, 0);
+            await page.getByRole('button', { name: 'Начать новый тест' }).click();
+            await page.getByRole('heading', { name: 'Данные проверки' }).waitFor();
+            await page.getByText('Тестовый сотрудник · серверная загрузка').waitFor();
+            assert.equal(backend.test.state, 'sandbox');
+            assert.equal(backend.test.draftId, null);
+            assert.equal(backend.test.media[0][0].length, 0);
+            assert.equal(backend.realWrites, 0);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: real sandbox photo upload, gallery, delete and isolated submission');
+            await context.close();
+        }
+
+        // Multi-file gallery: preview and removing one photo must happen
+        // before any server reservation, then fullscreen swipe/arrows work.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Добавить' }).click();
+            const galleryInput = page.locator('input[type=file][multiple]').last();
+            await galleryInput.setInputFiles([
+                { name: 'first.png', mimeType: 'image/png', buffer: image },
+                { name: 'second.png', mimeType: 'image/png', buffer: image },
+            ]);
+            await page.getByRole('dialog', { name: 'Предпросмотр выбранных файлов' }).waitFor();
+            assert.equal(backend.startRequests, 0, 'Media upload started before batch confirmation');
+            await page.getByRole('button', { name: 'Посмотреть выбранный файл 2' }).click();
+            await page.getByRole('button', { name: 'Убрать файл' }).click();
+            assert.equal(await page.getByRole('button', { name: 'Посмотреть выбранный файл 2' }).count(), 0);
+            await page.getByRole('button', { name: 'Добавить 1' }).click();
+            await page.getByRole('dialog', { name: 'Предпросмотр выбранных файлов' }).waitFor({ state: 'hidden' });
+            await page.getByRole('button', { name: 'Открыть фото first.png' }).waitFor();
+            for (let i = 0; backend.media[0][0].length !== 1 && i < 80; i++) await delay(100);
+            assert.equal(backend.media[0][0].length, 1);
+            await addPhoto(page);
+            for (let i = 0; backend.media[0][0].length !== 2 && i < 80; i++) await delay(100);
+            assert.equal(backend.media[0][0].length, 2);
+            await page.getByRole('button', { name: 'Открыть фото first.png' }).click();
+            await page.getByRole('dialog', { name: 'Галерея фото и видео' }).waitFor();
+            await page.getByRole('button', { name: 'Следующее вложение' }).click();
+            await page.getByText('2 из 2').waitFor();
+            await page.getByRole('button', { name: 'Предыдущее вложение' }).click();
+            await page.getByText('1 из 2').waitFor();
+            await page.getByRole('button', { name: 'Закрыть галерею' }).click();
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: confirm/remove gallery batch, video/photo carousel navigation');
+            await context.close();
+        }
+
+        // Replacement preserves the old server photo until the new one has
+        // been uploaded and attached. Then only the old upload ID is removed.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await addPhoto(page);
+            const replacement = page.locator('label').filter({ hasText: 'Заменить' }).locator('input[type=file]').first();
+            await replacement.waitFor({ timeout: 15000 });
+            await replacement.setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: image });
+            await page.getByRole('dialog', { name: 'Подтвердить фотографию' }).waitFor();
+            assert.equal(backend.media[0][0].length, 1, 'Old media vanished before replacement was uploaded.');
+            await page.getByRole('button', { name: 'Оставить фото' }).click();
+            for (let i = 0; backend.media[0][0][0]?.name !== 'replacement.png' && i < 80; i++) await delay(100);
+            assert.equal(backend.media[0][0].length, 1);
+            assert.equal(backend.media[0][0][0].name, 'replacement.png');
+            assert.equal(backend.sessions.size, 1);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: confirmed replacement preserves old photo until new attach');
+            await context.close();
+        }
+
+        // Offline saves must not claim server acknowledgement; reconnect
+        // should retry the same locally recoverable draft automatically.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await context.setOffline(true);
+            await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+            await page.getByText('Нет интернета', { exact: true }).waitFor();
+            await page.locator('#focus-inspection-comment').fill('Сеть отключена — комментарий должен пережить сбой');
+            assert.equal(backend.realWrites, 0, 'Offline edit unexpectedly wrote server draft');
+            assert.equal(await page.getByText('Сохранено', { exact: true }).count(), 0);
+            await context.setOffline(false);
+            await page.evaluate(() => window.dispatchEvent(new Event('online')));
+            for (let i = 0; backend.setup.comment !== 'Сеть отключена — комментарий должен пережить сбой' && i < 80; i++) {
+                await delay(100);
+            }
+            assert.equal(backend.setup.comment, 'Сеть отключена — комментарий должен пережить сбой');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: offline draft edit is not claimed saved and syncs on reconnect');
             await context.close();
         }
 
@@ -373,14 +497,17 @@ async function main() {
             await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor();
             await page.getByRole('button', { name: 'Оставить видео' }).click();
             await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor({ state: 'hidden' });
-            await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
-            await page.getByRole('button', { name: /Просмотреть видео/ }).click();
-            await page.getByRole('dialog', { name: 'Просмотр видео' }).waitFor();
-            await page.getByRole('button', { name: 'Закрыть видео' }).click();
+            await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).waitFor({ timeout: 15000 });
+            await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).click();
+            const videoDialog = page.getByRole('dialog', { name: 'Галерея фото и видео' });
+            await videoDialog.waitFor();
+            assert.equal(await videoDialog.locator('video').getAttribute('src'), videoDataUrl,
+                'The player must receive original video bytes, not the JPEG thumbnail');
+            await page.getByRole('button', { name: 'Закрыть галерею' }).click();
             assert.equal(backend.media[0][0][0].mime, 'video/mp4');
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('button', { name: 'К вопросам' }).click();
-            await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
+            await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).waitFor({ timeout: 15000 });
             assert.equal(backend.startRequests, 1);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: saved video uses original media URL before/after reload');
@@ -423,7 +550,11 @@ async function main() {
             assert.ok(uploadId, 'No server-side reservation before a chunk failure.');
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('button', { name: 'К вопросам' }).click();
+            const recoveryPath = await restoreInterruptedOriginalIfNeeded(page, {
+                name: 'photo.png', mimeType: 'image/png', buffer: image,
+            });
             await expectPhoto(page);
+            assert.ok(['local-backup', 'original-reselection'].includes(recoveryPath));
             assert.equal(backend.sessions.size, 1, 'Recovered photo incorrectly created another upload.');
             assert.equal([...backend.sessions.keys()][0], uploadId);
             assert.equal(backend.media[0][0].length, 1);
@@ -449,7 +580,13 @@ async function main() {
             assert.ok(uploadId);
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('button', { name: 'К вопросам' }).click();
-            await page.getByRole('button', { name: /Просмотреть видео cached-clip.mp4/ }).waitFor({ timeout: 20000 });
+            const recoveryPath = await restoreInterruptedOriginalIfNeeded(page, {
+                name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'), video: true,
+            });
+            assert.ok(['local-backup', 'original-reselection'].includes(recoveryPath));
+            // The local preview appears before the resumed server transfer
+            // completes. Only server-acknowledged attachment counts as saved.
+            for (let i = 0; backend.media[0][0].length !== 1 && i < 100; i++) await delay(100);
             assert.equal(backend.sessions.size, 1, 'Video recovery created a second upload.');
             assert.equal([...backend.sessions.keys()][0], uploadId);
             assert.equal(backend.media[0][0].length, 1);

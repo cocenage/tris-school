@@ -106,11 +106,12 @@ jobs:
           php artisan key:generate --no-interaction
       - name: Focus control feature and media regression tests
         run: php artisan test tests/Feature/ControlWorkflowTest.php tests/Feature/FocusV2StagingCheckTest.php
-      - name: Browser smoke — real Vue component in mobile Chromium
+      - name: Browser smoke — real Vue in Android-like Chromium and iOS-like WebKit
         run: |
           npm install --no-save --package-lock=false playwright@1.56.1
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium webkit
           timeout --signal=SIGTERM --kill-after=5s 120s node tests/Browser/focus-v2-smoke.mjs
+          FOCUS_BROWSER=webkit timeout --signal=SIGTERM --kill-after=5s 120s node tests/Browser/focus-v2-smoke.mjs
       - name: Package compiled assets for deployment
         uses: actions/upload-artifact@v4
         with:
