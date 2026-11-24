@@ -237,6 +237,16 @@ async function fetchJson(url, options = {}) {
 }
 
 async function initialize() {
+    // The same component can switch between real and test runs.
+    // Never retain draft revisions, recovery prompts or old-run timers.
+    clearTimeout(timer);
+    timer = null;
+    changeSerial = 0;
+    acknowledgedSerial = 0;
+    uncertainSnapshot = null;
+    recoveryRecord.value = null;
+    recoveryMode.value = '';
+    recoveryKey = null;
     loading.value = true;
     loadError.value = '';
     testMode.value = false;
@@ -565,11 +575,26 @@ function choosePreviousCleaner(name) {
     setup.value.previous_cleaner = String(name ?? '');
     touch();
 }
-function exitTestMode() {
+async function exitTestMode() {
     if (!testMode.value) return;
-    testMode.value = false;
+    // Never switch the active Vue run while a test upload/save callback is
+    // in flight: that could otherwise write to the newly bootstrapped real run.
+    if (busyUploads.value || attachInFlight || inFlight || submitting.value) {
+        syncError.value = 'Сначала завершите или отмените тестовые загрузки и дождитесь сохранения ответов.';
+        return;
+    }
+    if (!finalResult.value && !(await ensureSynced())) {
+        syncError.value = syncError.value || 'Сначала сохраните тестовый черновик.';
+        return;
+    }
     finalResult.value = null;
-    void initialize(); // Restore the real server-owned draft, never test values.
+    await initialize(); // Restore the real server-owned draft, never test values.
+}
+async function startNewSandboxTest() {
+    if (!testMode.value || stage.value !== 'done' || submitting.value || busyUploads.value) return;
+    finalResult.value = null;
+    await initialize();
+    if (!loadError.value) await choosePerson('__test__');
 }
 function resumeDraftFiles(event) {
     const selected = Array.from(event.target.files ?? []);
@@ -1532,7 +1557,9 @@ onBeforeUnmount(() => {
                     <p class="text-xs font-medium text-slate-500">TRIS Academy · Focus Control</p>
                     <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
-                <button v-if="testMode" type="button" class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900" @click="exitTestMode">Выйти из теста</button>
+                <button v-if="testMode" type="button" :disabled="busyUploads || submitting || state === 'saving'"
+                    class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 disabled:opacity-50"
+                    @click="exitTestMode">Выйти из теста</button>
                 <a v-else-if="stage !== 'done'" :href="classicUrl" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700" @click.prevent="openClassic">Старый Focus</a>
                 <a v-else-if="finalResult?.result_url" :href="finalResult.result_url" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700">Результат</a>
             </header>
@@ -2017,7 +2044,8 @@ onBeforeUnmount(() => {
                         </div>
                         <a v-if="finalResult?.media_review_url" :href="finalResult.media_review_url" class="block rounded-xl bg-blue-50 p-3 text-center text-sm font-bold text-blue-700">Открыть проверку материалов позже</a>
                         <a v-if="finalResult?.result_url" :href="finalResult.result_url" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white">Открыть результат</a>
-                        <button v-if="testMode" type="button" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white" @click="exitTestMode">Вернуться к настоящим контролям</button>
+                        <button v-if="testMode" type="button" class="block w-full rounded-xl bg-blue-600 p-4 text-center text-sm font-bold text-white" @click="startNewSandboxTest">Начать новый тест</button>
+                        <button v-if="testMode" type="button" class="block w-full rounded-xl bg-slate-100 p-4 text-center text-sm font-bold text-slate-800" @click="exitTestMode">Вернуться к настоящим контролям</button>
                         <a v-else href="/checks" class="block w-full rounded-xl bg-slate-100 p-3 text-center text-sm font-bold text-slate-700">Все контроли</a>
                     </section>
                 </template>
