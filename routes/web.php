@@ -197,6 +197,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::delete('/checks/control/focus-v2/media/{upload}', [FocusV2MediaController::class, 'cancel'])
         ->middleware(SafeguardRolePreviewData::class)
         ->name('page-checks.control.focus-v2.media.cancel');
+    Route::delete('/checks/control/focus-v2/media/{upload}/attached', [FocusV2MediaController::class, 'removeAttached'])
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:120,1'])
+        ->name('page-checks.control.focus-v2.media.remove-attached');
     });
 
     Route::livewire('/applications', 'page-applications')->name('page-applications');

@@ -657,6 +657,41 @@ it('uploads Focus V2 evidence in chunks, resumes and attaches it exactly once', 
     expect(ControlResponseDraft::query()->sole()->responses[0][0]['media'])->toHaveCount(1);
 });
 
+it('restores attached photo IDs after restart and lets only the owner delete unsubmitted media', function (): void {
+    Storage::fake('local');
+    [$supervisor, , $control, $draft] = focusV2MediaFixture();
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], $file)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id, 'expected_revision' => $draft->revision,
+    ])->assertOk()->assertJsonPath('run.revision', 2);
+
+    $saved = FocusV2MediaUpload::query()->sole();
+    $path = $saved->stored_path;
+    Storage::disk('local')->assertExists($path);
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()
+        ->assertJsonPath('media.0.0.0.upload_id', $init['upload_id'])
+        ->assertJsonCount(0, 'pending_uploads');
+
+    $delete = route('page-checks.control.focus-v2.media.remove-attached', $init['upload_id']);
+    $this->deleteJson($delete, ['expected_revision' => 1])->assertStatus(409);
+    $other = User::create(['name' => 'Other supervisor', 'role' => 'supervisor',
+        'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($other)->deleteJson($delete, ['expected_revision' => 2])->assertNotFound();
+    $this->actingAs($supervisor);
+
+    $this->deleteJson($delete, ['expected_revision' => 2])
+        ->assertOk()->assertJsonPath('deleted', true)->assertJsonPath('run.revision', 3);
+    expect(ControlResponseDraft::query()->sole()->responses[0][0]['media'])->toBe([])
+        ->and(FocusV2MediaUpload::count())->toBe(0)
+        ->and(ControlResponse::count())->toBe(0);
+    Storage::disk('local')->assertMissing($path);
+});
+
 it('enforces the 12 media limit for in-flight uploads and permits exact start replay', function (): void {
     Storage::fake('local');
     [, , $control, $draft] = focusV2MediaFixture();

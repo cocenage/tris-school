@@ -86,6 +86,7 @@ final class FocusV2BootstrapController extends Controller
                     $params = [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draft->id];
                     $media[$roomIndex][$questionIndex][] = [
                         'index' => $mediaIndex,
+                        'upload_id' => (string) ($file['upload_id'] ?? ''),
                         'name' => (string) ($file['original_name'] ?? ''),
                         'mime' => (string) ($file['mime'] ?? ''),
                         'size' => (int) ($file['size'] ?? 0),

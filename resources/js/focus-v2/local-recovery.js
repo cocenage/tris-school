@@ -1,6 +1,7 @@
 /**
  * Best-effort on-device recovery for unsynced form answers only.
- * Never persist file blobs, media paths, staff lists, or authorization data.
+ * Answer snapshots contain no file blobs. Photo backups are stored separately,
+ * scoped by authenticated user/control/run, and removed on server confirmation.
  * The Laravel draft remains authoritative and its revision lock still applies.
  */
 export const FOCUS_RECOVERY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -39,16 +40,22 @@ export function chooseLocalRecovery(record, server, now = Date.now()) {
 
 const DB_NAME = 'tris-focus-v2-recovery';
 const STORE = 'drafts';
+const PHOTO_STORE = 'photos';
+const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 let opening = null;
 
 function openDatabase() {
     if (!globalThis.indexedDB) return Promise.reject(new Error('IndexedDB unavailable'));
     if (opening) return opening;
     opening = new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, 1);
+        const request = indexedDB.open(DB_NAME, 2);
         request.onupgradeneeded = () => {
             if (!request.result.objectStoreNames.contains(STORE)) {
                 request.result.createObjectStore(STORE, { keyPath: 'scope' });
+            }
+            if (!request.result.objectStoreNames.contains(PHOTO_STORE)) {
+                const photos = request.result.createObjectStore(PHOTO_STORE, { keyPath: 'key' });
+                photos.createIndex('by_scope', 'scope', { unique: false });
             }
         };
         request.onsuccess = () => {
@@ -68,11 +75,11 @@ function openDatabase() {
     return opening;
 }
 
-async function transaction(mode, operation) {
+async function transaction(mode, operation, storeName = STORE) {
     const db = await openDatabase();
     return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, mode);
-        const request = operation(tx.objectStore(STORE));
+        const tx = db.transaction(storeName, mode);
+        const request = operation(tx.objectStore(storeName));
         let value;
         request.onsuccess = () => { value = request.result; };
         tx.oncomplete = () => resolve(value);
@@ -113,4 +120,53 @@ export function createLocalRecoveryQueue(writer) {
         })().finally(() => { active = null; });
         return active;
     };
+}
+
+
+/**
+ * Cache only an explicitly confirmed photo, never videos. A File/Blob is
+ * structured-cloned into IndexedDB, not converted to base64/localStorage.
+ *
+ * Telegram WebView may evict its origin storage; callers MUST treat errors
+ * here as a warning, not as proof that an unsent photo is safe.
+ */
+export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, question }) {
+    if (!scope || !/^[0-9a-f-]{36}$/i.test(uploadId) || !runId
+        || !file || !String(file.type).startsWith('image/')
+        || file.size < 1 || file.size > PHOTO_MAX_BYTES
+        || !Number.isInteger(room) || room < 0
+        || !Number.isInteger(question) || question < 0) {
+        throw new Error('Некорректные параметры локального фото.');
+    }
+    const record = {
+        key: scope + ':' + uploadId, scope, upload_id: uploadId, run_id: runId,
+        room, question, name: String(file.name || 'photo.jpg'),
+        mime: file.type, size: file.size, saved_at: Date.now(),
+        blob: file,
+    };
+    await transaction('readwrite', store => store.put(record), PHOTO_STORE);
+    return record;
+}
+
+export async function readCachedFocusPhotos(scope, now = Date.now()) {
+    if (!scope) return [];
+    const records = await transaction('readonly', store =>
+        store.index('by_scope').getAll(scope), PHOTO_STORE);
+    const valid = [];
+    for (const record of records ?? []) {
+        if (!record || !record.blob || record.blob.size !== record.size
+            || !Number.isFinite(record.saved_at)
+            || record.saved_at > now + 60000
+            || now - record.saved_at > FOCUS_RECOVERY_MAX_AGE_MS) {
+            if (record?.upload_id) await forgetCachedFocusPhoto(scope, record.upload_id);
+        } else {
+            valid.push(record);
+        }
+    }
+    return valid;
+}
+
+export async function forgetCachedFocusPhoto(scope, uploadId) {
+    if (!scope || !uploadId) return;
+    await transaction('readwrite', store => store.delete(scope + ':' + uploadId), PHOTO_STORE);
 }

@@ -119,3 +119,41 @@ before enabling automatic cleanup of completed media.
   the final manifest. This prevents falsely completed evidence.
 - Stage and device testing still required: iOS/Android camera capture,
   retries, large video, interrupted transfers, and authenticated thumbnails.
+
+## Photo-first acceptance: November 24, 2026
+
+The primary media action for a question opens the phone camera or library.
+After taking a photo, the supervisor sees a **large preview** and explicitly
+chooses **Оставить фото** or **Переснять**. Confirmed photos appear in the
+same question gallery immediately. Tapping a photo opens full-screen preview;
+uploaded draft photos can be removed by their owner before submission, using
+a revision-checked server endpoint. File names and chunk details are no longer
+the focus of the question UI.
+
+**Before transfer**, the client creates a draft on the server and attempts to
+cache the confirmed **photo** (not video) as a Blob in the user's scoped
+IndexedDB. The original upload ID is reused when Telegram WebView restarts.
+On bootstrap, the server includes each attached photo's upload ID, so already
+saved photos are never transferred again. For pending uploads, the browser
+reuses any cached photo and the server's received-chunk list; if the cache was
+evicted, it requests the original image. A new browser, another account or a
+schema/run mismatch must never silently attach locally stored evidence.
+
+IMPORTANT: Telegram may terminate WebView while a photo is being stored, or
+evict its IndexedDB storage. This is a **best-effort** local backup, not a
+promise of guaranteed background transfer. The UI explicitly warns when local
+backup is unavailable, and backend submission still requires **all** media
+to be fully attached. Videos remain file-reselection based, and a separate
+video-first UX and server-isolated test mode are still to be implemented.
+The existing browser-only demo employee is **not** a backend test account.
+
+Acceptance on real Telegram devices still required:
+1. Open a question, take a photo, retake it, then confirm one image.
+2. Confirm the photo appears immediately and can open full-screen. Move to a
+   different room while it uploads. Verify the server-backed saved state.
+3. Close and reopen Telegram mid-upload; check whether photo recovers from the
+   on-device Blob or prompts to reselect it, without duplicating evidence.
+4. Delete an already attached photo; verify it disappears after reopening and
+   cannot be accessed by a different supervisor.
+5. Deny browser storage / exhaust quota: the UI must warn and keep submission
+   blocked until upload is confirmed by the server.

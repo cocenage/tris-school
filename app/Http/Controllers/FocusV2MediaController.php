@@ -302,6 +302,56 @@ final class FocusV2MediaController extends Controller
         });
     }
 
+    /**
+     * User-confirmed deletion of an already attached draft photo/video.
+     * Submitted result evidence is immutable and cannot be removed here.
+     */
+    public function removeAttached(Request $request, RolePreviewContext $preview, string $upload): JsonResponse
+    {
+        $input = $request->validate(['expected_revision' => ['required', 'integer', 'min:1']]);
+        $record = $this->ownedUpload($request, $preview, $upload);
+        abort_unless($record->control_response_id === null, 409, 'Завершённый контроль нельзя изменить.');
+
+        $data = DB::transaction(function () use ($record, $input): array {
+            $draft = ControlResponseDraft::query()
+                ->whereKey($record->draft_id)->where('state', 'active')
+                ->lockForUpdate()->firstOrFail();
+            $locked = FocusV2MediaUpload::query()->whereKey($record->id)->lockForUpdate()->firstOrFail();
+            abort_unless($locked->status === 'attached' && $locked->control_response_id === null
+                && $locked->run_id === $draft->run_id
+                && (int) $locked->supervisor_id === (int) $draft->supervisor_id, 409);
+            abort_unless((int) $draft->revision === (int) $input['expected_revision'],
+                409, 'Черновик изменился. Обновите страницу.');
+
+            $responses = is_array($draft->responses) ? $draft->responses : [];
+            $files = array_values((array) ($responses[$locked->room_index][$locked->question_index]['media'] ?? []));
+            $kept = array_values(array_filter($files,
+                static fn ($file): bool => ! is_array($file) || ($file['upload_id'] ?? null) !== $locked->id));
+            abort_unless(count($kept) === count($files) - 1, 409, 'Файл отсутствует в черновике.');
+
+            $responses[$locked->room_index][$locked->question_index]['media'] = $kept;
+            $draft->responses = $responses;
+            $draft->revision = (int) $draft->revision + 1;
+            $draft->save();
+
+            $path = (string) $locked->stored_path;
+            $safeToDelete = str_starts_with($path, 'controls/'.$locked->control_id.'/')
+                && ! str_contains($path, '..') && ! str_contains($path, '\\');
+            $locked->delete();
+
+            return ['revision' => $draft->revision, 'path' => $safeToDelete ? $path : null];
+        });
+        // Database commit takes precedence; a failed unlink can be cleaned
+        // separately without leaving the response pointing to a missing file.
+        if ($data['path'] !== null) {
+            Storage::disk('local')->delete($data['path']);
+        }
+
+        return response()->json(['deleted' => true, 'run' => [
+            'draft_id' => $record->draft_id, 'revision' => $data['revision'],
+        ]])->header('Cache-Control', 'private, no-store');
+    }
+
     public function cancel(Request $request, RolePreviewContext $preview, string $upload): JsonResponse
     {
         $record = $this->ownedUpload($request, $preview, $upload);
