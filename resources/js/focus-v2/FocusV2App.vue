@@ -1102,7 +1102,12 @@ function togglePicker(room, question) {
     pickerFor.value = pickerFor.value === key ? null : key;
 }
 function mediaIsVideo(file) { return String(file.mime || focusFileMime(file.file || {})).startsWith('video/'); }
-function mediaPreview(file) { return file.preview_url || file.thumbnail_url || file.url || ''; }
+function mediaPreview(file) {
+    // Video thumbnails are images (or a placeholder). Never use them as the
+    // <video src>, otherwise the player receives JPEG bytes and cannot play.
+    if (mediaIsVideo(file)) return file.preview_url || file.url || '';
+    return file.preview_url || file.thumbnail_url || file.url || '';
+}
 
 function warnBeforeUnload(event) {
     if (submitting.value || busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {
