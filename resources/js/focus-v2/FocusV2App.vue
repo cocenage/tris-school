@@ -163,6 +163,24 @@ const outstandingMedia = computed(() => new Set([
         .map(item => item.id),
 ]).size);
 const canSubmitMedia = computed(() => outstandingMedia.value === 0);
+const currentMediaTransfers = computed(() => uploads.value.filter(item =>
+    ['queued', 'uploading', 'attaching'].includes(item.status)));
+const failedMediaTransfers = computed(() => uploads.value.filter(item => item.status === 'error'));
+const mediaTransferProgress = computed(() => {
+    const pending = currentMediaTransfers.value;
+    const totalBytes = pending.reduce((sum, item) => sum + (item.file?.size || 0), 0);
+    if (totalBytes === 0) return 0;
+    return Math.min(100, Math.round(pending.reduce((sum, item) =>
+        sum + (item.file?.size || 0) * (item.progress || 0) / 100, 0) * 100 / totalBytes));
+});
+function fileCountLabel(n) {
+    const rem100 = n % 100, rem10 = n % 10;
+    return rem100 >= 11 && rem100 <= 14 ? 'файлов'
+        : rem10 === 1 ? 'файл' : rem10 >= 2 && rem10 <= 4 ? 'файла' : 'файлов';
+}
+function retryFailedFiles() {
+    for (const item of failedMediaTransfers.value) retryFile(item);
+}
 const recoveryNeedingInput = computed(() => interruptedUploads.value.filter(record =>
     !uploads.value.some(item => item.id === record.upload_id
         && ['queued', 'uploading', 'attaching'].includes(item.status))
@@ -1283,17 +1301,43 @@ onBeforeUnmount(() => {
             </div>
 
             <template v-else>
-                <div class="mb-3 flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3">
-                    <div class="flex items-center gap-2 text-sm" role="status" aria-live="polite">
-                        <span class="size-2.5 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
-                        <strong>{{ statusLabel }}</strong>
-                        <span v-if="outstandingMedia > 0" class="text-xs font-medium text-amber-700">
-                            · {{ outstandingMedia }} {{ outstandingMedia === 1 ? 'файл' : 'файла' }} ещё не на сервере
-                        </span>
+                <div class="sticky top-0 z-20 mb-3 space-y-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                    <div class="flex items-center justify-between gap-3">
+                        <div class="flex min-w-0 items-center gap-2 text-sm" role="status" aria-live="polite">
+                            <span class="size-2.5 shrink-0 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
+                            <strong class="truncate">{{ statusLabel }}</strong>
+                        </div>
+                        <button v-if="stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="shrink-0 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
+                            {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
+                        </button>
                     </div>
-                    <button v-if="stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
-                        {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
-                    </button>
+                    <div v-if="outstandingMedia > 0" class="space-y-2" role="status" aria-live="polite">
+                        <div class="flex items-start justify-between gap-2 text-xs">
+                            <span class="font-semibold" :class="failedMediaTransfers.length ? 'text-red-800' : 'text-blue-800'">
+                                {{ failedMediaTransfers.length
+                                    ? 'Ошибка: ' + failedMediaTransfers.length + ' ' + fileCountLabel(failedMediaTransfers.length)
+                                    : currentMediaTransfers.length
+                                        ? 'Сохраняем фото и видео · ' + currentMediaTransfers.length + ' ' + fileCountLabel(currentMediaTransfers.length)
+                                        : 'Требуется восстановить материалы' }}
+                            </span>
+                            <span v-if="currentMediaTransfers.length" class="shrink-0 tabular-nums font-bold text-blue-800">{{ mediaTransferProgress }}%</span>
+                        </div>
+                        <div v-if="currentMediaTransfers.length" class="h-1.5 overflow-hidden rounded-full bg-blue-100"
+                            role="progressbar" aria-label="Передача фото и видео" :aria-valuenow="mediaTransferProgress" aria-valuemin="0" aria-valuemax="100">
+                            <div class="h-full rounded-full bg-blue-600 transition-[width] duration-200" :style="{ width: mediaTransferProgress + '%' }"></div>
+                        </div>
+                        <div class="flex items-center justify-between gap-2">
+                            <p class="text-[11px] leading-tight text-slate-600">
+                                {{ failedMediaTransfers.length
+                                    ? 'Повторите ошибочные файлы или удалите их из очереди. Ответы сохранены отдельно.'
+                                    : currentMediaTransfers.length
+                                        ? 'Можете отвечать дальше. Не закрывайте Telegram до подтверждения загрузки.'
+                                        : 'Откройте восстановление файлов ниже. Отправка пока недоступна.' }}
+                            </p>
+                            <button v-if="failedMediaTransfers.length" type="button" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
+                                @click="retryFailedFiles">Повторить</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
@@ -1518,6 +1562,7 @@ onBeforeUnmount(() => {
                                             <div v-if="item.status === 'uploading'" class="mb-1.5 h-1 overflow-hidden rounded-full bg-slate-300">
                                                 <div class="h-full bg-blue-600" :style="{ width: item.progress + '%' }"></div>
                                             </div>
+                                            <p v-if="item.source.retryHint" class="mb-1 break-words text-amber-800" role="status">{{ item.source.retryHint }}</p>
                                             <p v-if="item.source.error" class="break-words text-red-700" role="alert">{{ item.source.error }}</p>
                                             <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-blue-600 px-2 py-1.5 font-semibold text-white"
                                                 @click="retryFile(item.source)">Повторить</button>
