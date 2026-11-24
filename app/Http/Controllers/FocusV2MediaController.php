@@ -194,6 +194,14 @@ final class FocusV2MediaController extends Controller
             $directory = $this->tempDirectory($upload);
             $assembledPath = $directory.'/assembled.part';
             $disk->makeDirectory($directory);
+            // Assembling a 100 MiB video needs an additional on-disk copy
+            // before its chunks can be released. Fail early rather than
+            // exhausting storage and damaging unrelated live uploads.
+            $freeBytes = @disk_free_space($disk->path($directory));
+            if ($freeBytes !== false) {
+                abort_unless($freeBytes >= $upload->size_bytes + 8 * 1024 * 1024,
+                    507, 'На сервере недостаточно места для сборки видео. Исходные части сохранены для повторной попытки.');
+            }
             $destination = fopen($disk->path($assembledPath), 'wb');
             abort_unless($destination, 500, 'Не удалось создать временный файл.');
 
