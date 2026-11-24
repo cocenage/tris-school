@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
 import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
-import { cacheFocusPhoto, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
+import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
@@ -163,6 +163,24 @@ const outstandingMedia = computed(() => new Set([
         .map(item => item.id),
 ]).size);
 const canSubmitMedia = computed(() => outstandingMedia.value === 0);
+const currentMediaTransfers = computed(() => uploads.value.filter(item =>
+    ['queued', 'uploading', 'attaching'].includes(item.status)));
+const failedMediaTransfers = computed(() => uploads.value.filter(item => item.status === 'error'));
+const mediaTransferProgress = computed(() => {
+    const pending = currentMediaTransfers.value;
+    const totalBytes = pending.reduce((sum, item) => sum + (item.file?.size || 0), 0);
+    if (totalBytes === 0) return 0;
+    return Math.min(100, Math.round(pending.reduce((sum, item) =>
+        sum + (item.file?.size || 0) * (item.progress || 0) / 100, 0) * 100 / totalBytes));
+});
+function fileCountLabel(n) {
+    const rem100 = n % 100, rem10 = n % 10;
+    return rem100 >= 11 && rem100 <= 14 ? 'файлов'
+        : rem10 === 1 ? 'файл' : rem10 >= 2 && rem10 <= 4 ? 'файла' : 'файлов';
+}
+function retryFailedFiles() {
+    for (const item of failedMediaTransfers.value) retryFile(item);
+}
 const recoveryNeedingInput = computed(() => interruptedUploads.value.filter(record =>
     !uploads.value.some(item => item.id === record.upload_id
         && ['queued', 'uploading', 'attaching'].includes(item.status))
@@ -258,6 +276,7 @@ async function initialize() {
         }
         stage.value = 'setup';
         if (recoveryKey && !recoveryMode.value && !data.run?.schema_conflict) {
+            await autoAttachReadyDraftFiles();
             await restoreCachedPhotos();
         }
     } catch (error) {
@@ -275,7 +294,7 @@ async function restoreCachedPhotos() {
         for (const saved of cached) {
             // Never attach a cached file to a different draft/run.
             if (saved.run_id !== run.value.id) {
-                cacheWarning.value = 'На устройстве остались фото от другого черновика. Они не будут загружены в эту проверку.';
+                cacheWarning.value = 'На устройстве остались материалы другой проверки. Они не будут загружены в этот контроль.';
                 continue;
             }
             if (!rooms.value[saved.room]?.items?.[saved.question]) continue;
@@ -296,7 +315,7 @@ async function restoreCachedPhotos() {
         }
         pumpTransfers();
     } catch (error) {
-        cacheWarning.value = 'Не удалось прочитать локальные фото. Выберите исходные файлы повторно.';
+        cacheWarning.value = 'Не удалось прочитать локальные фото или видео. Выберите исходные файлы повторно.';
     } finally {
         recoveringPhotos.value = false;
     }
@@ -354,8 +373,22 @@ async function confirmPhoto() {
 }
 function openLightbox(file) {
     if (mediaIsVideo(file)) return;
-    const url = mediaPreview(file);
-    if (url) lightbox.value = { url, name: file.name || file.original_name || 'Фотография' };
+    // Gallery tiles load inexpensive 360px thumbnails; fullscreen must open
+    // the original file. HEIC may not be supported by the browser, in which
+    // case the generated JPEG thumbnail is a safe fallback.
+    const url = file.preview_url || file.url || file.thumbnail_url || '';
+    if (url) lightbox.value = {
+        url, fallback_url: file.thumbnail_url || '', failed: false,
+        name: file.name || file.original_name || 'Фотография',
+    };
+}
+function lightboxImageFailed() {
+    if (!lightbox.value) return;
+    if (lightbox.value.fallback_url && lightbox.value.url !== lightbox.value.fallback_url) {
+        lightbox.value = { ...lightbox.value, url: lightbox.value.fallback_url };
+    } else {
+        lightbox.value = { ...lightbox.value, failed: true };
+    }
 }
 function closeLightbox() { lightbox.value = null; }
 function openVideoLightbox(file) {
@@ -408,6 +441,7 @@ async function choosePerson(id) {
             syncError.value = data.run?.schema_conflict ? 'Тестовый шаблон изменился. Завершите старый тест отдельно.' : '';
             stage.value = 'setup';
             if (!data.run?.schema_conflict) {
+                await autoAttachReadyDraftFiles();
                 await restoreCachedPhotos();
                 if (!data.run?.draft_id) touch();
             }
@@ -469,6 +503,16 @@ function resumeDraftFiles(event) {
         mediaError.value = 'Не все файлы совпали с прерванными загрузками. Выберите оригиналы с тем же названием, размером и форматом.';
     }
 }
+async function autoAttachReadyDraftFiles() {
+    // A "ready" upload already exists in full on the server. Avoid forcing
+    // supervisors to search for an original file or press Attach by hand
+    // after reopening Telegram. Serialize attachment revision updates.
+    for (const record of [...interruptedUploads.value]) {
+        if (!canEdit.value) return;
+        if (record.status === 'ready') await attachReadyDraft(record);
+    }
+}
+
 async function attachReadyDraft(record) {
     if (!canEdit.value || record.status !== 'ready') return;
     if (activeTransfers || attachInFlight) {
@@ -904,26 +948,29 @@ async function queueSelectedFiles(selected, room, question) {
             break;
         }
         const id = crypto.randomUUID();
-        {
-            let cached = false;
-            if (mime.startsWith('image/')) {
-                try {
-                    await cacheFocusPhoto({
-                        scope: recoveryKey, uploadId: id, runId: run.value.id,
-                        file, room, question,
-                    });
-                    cached = true;
-                } catch (storageError) {
-                    cacheWarning.value = 'Telegram не позволил сохранить копию фото на устройстве. Не закрывайте окно, пока снимок не будет получен сервером.';
-                }
-            } else {
-                cacheWarning.value = 'Видео передаётся только пока Telegram открыт. Дождитесь статуса «Сохранено».';
-            }
-            uploads.value.push({
-                id, file, room, question, status: 'queued',
-                progress: 0, error: '', controller: null, info: null,
-                preview_url: URL.createObjectURL(file), cached,
+        // Show the thumbnail immediately. IndexedDB can take hundreds of
+        // milliseconds for a multi-megabyte file; don't block the entire
+        // gallery while the browser writes an emergency on-device backup.
+        uploads.value.push({
+            id, file, room, question, status: 'queued',
+            progress: 0, error: '', retryHint: '', controller: null, info: null,
+            preview_url: URL.createObjectURL(file), cached: false, cachePending: false,
+        });
+        const queued = uploads.value[uploads.value.length - 1];
+        if (canCacheFocusMedia(file)) {
+            queued.cachePending = true;
+            queued.cachePromise = cacheFocusPhoto({
+                scope: recoveryKey, uploadId: id, runId: run.value.id,
+                file, room, question,
+            }).then(() => {
+                queued.cached = true;
+            }).catch(() => {
+                cacheWarning.value = 'Не удалось сохранить резервную копию на устройстве. Не закрывайте Telegram до подтверждения загрузки.';
+            }).finally(() => {
+                queued.cachePending = false;
             });
+        } else if (mime.startsWith('video/')) {
+            cacheWarning.value = 'Большое видео нельзя безопасно хранить в памяти Telegram. Дождитесь сохранения на сервере или сохраните исходник для восстановления.';
         }
         reserved++;
         accepted++;
@@ -949,7 +996,12 @@ async function sendOne(item) {
     const controller = new AbortController();
     item.controller = controller;
     item.error = '';
+    item.retryHint = '';
     try {
+        // A WebView that closes mid-upload must be able to resume this file.
+        // Let emergency on-device caching finish before network transfer.
+        if (item.cachePromise) await item.cachePromise;
+        if (controller.signal.aborted) return;
         // Before completion, the draft must be saved. Afterwards, transfers
         // resume against their original registered upload ID and result.
         if (!finalResult.value) {
@@ -981,8 +1033,14 @@ async function sendOne(item) {
             question: item.question,
             csrf,
             signal: controller.signal,
-            onProgress: progress => { item.progress = progress; },
+            onProgress: progress => {
+                item.progress = progress;
+                item.retryHint = '';
+            },
             onInit: info => { item.info = info; },
+            onRetry: notice => {
+                item.retryHint = notice.label + ': восстанавливаем соединение (' + notice.attempt + '/2)';
+            },
         });
         if (controller.signal.aborted) return;
         item.status = 'attaching';
@@ -1044,6 +1102,7 @@ function retryFile(item) {
     if (!canRetryFocusFile(item, canEdit.value, finalResult.value?.response_id)) return;
     item.status = 'queued';
     item.error = '';
+    item.retryHint = '';
     pumpTransfers();
 }
 
@@ -1096,6 +1155,9 @@ async function cancelFile(item) {
         }
     }
     interruptedUploads.value = interruptedUploads.value.filter(record => record.upload_id !== item.id);
+    // Cancellation may happen while IndexedDB is still writing a backup.
+    // Waiting avoids leaving a stale video/photo blob after server cancellation.
+    if (item.cachePromise) await item.cachePromise;
     if (recoveryKey && item.cached) {
         void forgetCachedFocusPhoto(recoveryKey, item.id).catch(() => {});
     }
@@ -1245,7 +1307,12 @@ onBeforeUnmount(() => {
             @click.self="closeLightbox" @keydown.esc="closeLightbox">
             <button type="button" class="absolute right-3 top-3 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
                 aria-label="Закрыть просмотр" @click="closeLightbox">✕</button>
-            <img :src="lightbox.url" :alt="lightbox.name" class="max-h-[85vh] max-w-full object-contain">
+            <img v-if="!lightbox.failed" :src="lightbox.url" :alt="lightbox.name"
+                class="max-h-[85vh] max-w-full object-contain" @error="lightboxImageFailed">
+            <div v-else class="max-w-sm rounded-2xl bg-white p-6 text-center text-sm text-slate-800">
+                <p class="font-bold">Не удалось показать оригинал фото</p>
+                <p class="mt-2 text-slate-600">Возможно, браузер Telegram не поддерживает этот формат. Файл от этого не теряется и продолжает загружаться.</p>
+            </div>
         </div>
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
@@ -1265,17 +1332,43 @@ onBeforeUnmount(() => {
             </div>
 
             <template v-else>
-                <div class="mb-3 flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3">
-                    <div class="flex items-center gap-2 text-sm" role="status" aria-live="polite">
-                        <span class="size-2.5 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
-                        <strong>{{ statusLabel }}</strong>
-                        <span v-if="outstandingMedia > 0" class="text-xs font-medium text-amber-700">
-                            · {{ outstandingMedia }} {{ outstandingMedia === 1 ? 'файл' : 'файла' }} ещё не на сервере
-                        </span>
+                <div class="sticky top-0 z-20 mb-3 space-y-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                    <div class="flex items-center justify-between gap-3">
+                        <div class="flex min-w-0 items-center gap-2 text-sm" role="status" aria-live="polite">
+                            <span class="size-2.5 shrink-0 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
+                            <strong class="truncate">{{ statusLabel }}</strong>
+                        </div>
+                        <button v-if="stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="shrink-0 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
+                            {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
+                        </button>
                     </div>
-                    <button v-if="stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
-                        {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
-                    </button>
+                    <div v-if="outstandingMedia > 0" class="space-y-2" role="status" aria-live="polite">
+                        <div class="flex items-start justify-between gap-2 text-xs">
+                            <span class="font-semibold" :class="failedMediaTransfers.length ? 'text-red-800' : 'text-blue-800'">
+                                {{ failedMediaTransfers.length
+                                    ? 'Ошибка: ' + failedMediaTransfers.length + ' ' + fileCountLabel(failedMediaTransfers.length)
+                                    : currentMediaTransfers.length
+                                        ? 'Сохраняем фото и видео · ' + currentMediaTransfers.length + ' ' + fileCountLabel(currentMediaTransfers.length)
+                                        : 'Требуется восстановить материалы' }}
+                            </span>
+                            <span v-if="currentMediaTransfers.length" class="shrink-0 tabular-nums font-bold text-blue-800">{{ mediaTransferProgress }}%</span>
+                        </div>
+                        <div v-if="currentMediaTransfers.length" class="h-1.5 overflow-hidden rounded-full bg-blue-100"
+                            role="progressbar" aria-label="Передача фото и видео" :aria-valuenow="mediaTransferProgress" aria-valuemin="0" aria-valuemax="100">
+                            <div class="h-full rounded-full bg-blue-600 transition-[width] duration-200" :style="{ width: mediaTransferProgress + '%' }"></div>
+                        </div>
+                        <div class="flex items-center justify-between gap-2">
+                            <p class="text-[11px] leading-tight text-slate-600">
+                                {{ failedMediaTransfers.length
+                                    ? 'Повторите ошибочные файлы или удалите их из очереди. Ответы сохранены отдельно.'
+                                    : currentMediaTransfers.length
+                                        ? 'Можете отвечать дальше. Не закрывайте Telegram до подтверждения загрузки.'
+                                        : 'Откройте восстановление файлов ниже. Отправка пока недоступна.' }}
+                            </p>
+                            <button v-if="failedMediaTransfers.length" type="button" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
+                                @click="retryFailedFiles">Повторить</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
@@ -1440,21 +1533,38 @@ onBeforeUnmount(() => {
                                             </svg>
                                             Добавить
                                         </button>
+                                        <!-- A bottom sheet stays reachable on a short Telegram WebView,
+                                             even when the last question is near the screen edge. -->
                                         <div v-if="pickerFor === pickerKey(activeRoom, questionIndex)"
-                                            class="absolute right-0 top-full z-30 mt-2 w-60 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
-                                            <label :for="'focus-camera-' + activeRoom + '-' + questionIndex"
-                                                class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl bg-blue-50 px-3 py-3 text-sm font-semibold text-blue-900">
-                                                <span aria-hidden="true">📷</span> Сделать фото
-                                            </label>
-                                            <label :for="'focus-video-' + activeRoom + '-' + questionIndex"
-                                                class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-slate-50">
-                                                <span aria-hidden="true">🎬</span> Снять видео
-                                            </label>
-                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-slate-50">
-                                                <span aria-hidden="true">▦</span> Из галереи
-                                                <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only"
-                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
-                                            </label>
+                                            class="fixed inset-0 z-40 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4"
+                                            role="dialog" aria-modal="true" aria-label="Добавить фото или видео"
+                                            @click.self="pickerFor = null" @keydown.esc="pickerFor = null">
+                                            <div class="w-full max-w-lg space-y-2 rounded-t-3xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-3xl">
+                                                <div class="mb-3 flex items-center justify-between gap-3">
+                                                    <div>
+                                                        <h4 class="text-base font-bold">Добавить фото или видео</h4>
+                                                        <p class="mt-1 text-xs text-slate-500">Сначала проверим файл, затем сохраним на сервере</p>
+                                                    </div>
+                                                    <button type="button" class="grid size-11 shrink-0 place-items-center rounded-full bg-slate-100 text-lg text-slate-600"
+                                                        aria-label="Закрыть выбор медиа" @click="pickerFor = null">✕</button>
+                                                </div>
+                                                <label :for="'focus-camera-' + activeRoom + '-' + questionIndex"
+                                                    class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-blue-50 px-4 py-3 font-semibold text-blue-900">
+                                                    <span aria-hidden="true">📷</span> Сделать фото
+                                                </label>
+                                                <label :for="'focus-video-' + activeRoom + '-' + questionIndex"
+                                                    class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 font-semibold text-slate-900">
+                                                    <span aria-hidden="true">🎬</span> Снять видео
+                                                </label>
+                                                <label class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 font-semibold text-slate-900">
+                                                    <span aria-hidden="true">▦</span> Выбрать из галереи
+                                                    <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only"
+                                                        :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
+                                                </label>
+                                                <p class="px-1 pt-2 text-xs text-slate-500">
+                                                    Если Telegram не открывает камеру, используйте галерею. Можно добавить несколько файлов за раз.
+                                                </p>
+                                            </div>
                                         </div>
                                     </div>
                                     <!-- capture=environment is advisory in Telegram; gallery remains an accessible fallback. -->
@@ -1475,7 +1585,11 @@ onBeforeUnmount(() => {
                                         <button v-if="item.url && !mediaIsVideo(item)" type="button"
                                             class="relative block aspect-square w-full overflow-hidden bg-slate-200"
                                             :aria-label="'Открыть фото ' + (item.name || '')" @click="openLightbox(item.source)">
-                                            <img :src="item.url" :alt="item.name || 'Фото'" class="size-full object-cover" loading="lazy">
+                                            <img v-if="!item.source.previewFailed" :src="item.url" :alt="item.name || 'Фото'"
+                                                class="size-full object-cover" loading="lazy" @error="item.source.previewFailed = true">
+                                            <span v-else class="grid size-full place-items-center p-2 text-center text-xs font-semibold text-slate-600">
+                                                {{ ['image/heic','image/heif'].includes(item.mime) ? 'Фото HEIC' : 'Предпросмотр недоступен' }}
+                                            </span>
                                             <span v-if="item.kind === 'upload'"
                                                 class="absolute inset-x-0 bottom-0 bg-slate-950/75 p-1.5 text-center text-[11px] font-semibold text-white">
                                                 {{ item.status === 'error' ? 'Ошибка загрузки' : item.status === 'queued' ? (item.source.cached ? 'На устройстве' : 'В очереди') : item.status === 'attaching' ? 'Сохраняем на сервере' : 'Загружаем ' + item.progress + '%' }}
@@ -1500,6 +1614,7 @@ onBeforeUnmount(() => {
                                             <div v-if="item.status === 'uploading'" class="mb-1.5 h-1 overflow-hidden rounded-full bg-slate-300">
                                                 <div class="h-full bg-blue-600" :style="{ width: item.progress + '%' }"></div>
                                             </div>
+                                            <p v-if="item.source.retryHint" class="mb-1 break-words text-amber-800" role="status">{{ item.source.retryHint }}</p>
                                             <p v-if="item.source.error" class="break-words text-red-700" role="alert">{{ item.source.error }}</p>
                                             <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-blue-600 px-2 py-1.5 font-semibold text-white"
                                                 @click="retryFile(item.source)">Повторить</button>

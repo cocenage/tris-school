@@ -40,7 +40,7 @@ class FakeFocusBackend {
         this.sessions = new Map();
         this.startRequests = 0;
         this.chunkRequests = 0;
-        this.failOneChunk = false;
+        this.failChunksRemaining = 0;
         this.realWrites = 0;
         this.testWrites = 0;
         this.test = {
@@ -82,7 +82,7 @@ class FakeFocusBackend {
         const basePath = '/focus-api/media/' + session.id;
         return {
             upload_id: session.id, status: session.status,
-            chunk_bytes: 524288, total_chunks: Math.ceil(session.size / 524288),
+            chunk_bytes: 1048576, total_chunks: Math.ceil(session.size / 1048576),
             received: [...session.received],
             urls: {
                 status: basePath, chunk_base: basePath + '/chunks',
@@ -165,8 +165,8 @@ class FakeFocusBackend {
                     const state = session.sandbox ? this.test : this;
                     if (segments[3] === 'chunks' && req.method() === 'PUT') {
                         this.chunkRequests += 1;
-                        if (this.failOneChunk) {
-                            this.failOneChunk = false;
+                        if (this.failChunksRemaining > 0) {
+                            this.failChunksRemaining--;
                             return reply({ message: 'Temporary network error' }, 503);
                         }
                         session.received.add(Number(segments[4]));
@@ -366,6 +366,7 @@ async function main() {
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
             await page.getByRole('button', { name: 'Добавить' }).click();
+            await page.getByRole('dialog', { name: 'Добавить фото или видео' }).waitFor();
             await page.locator('#focus-video-0-0').setInputFiles({
                 name: 'inspection.mp4', mimeType: 'video/mp4', buffer: Buffer.from('video-fixture'),
             });
@@ -386,10 +387,33 @@ async function main() {
             await context.close();
         }
 
+        // A server-ready video needs no original file after Telegram closes.
+        // It should be attached automatically during bootstrap.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            const uploadId = '00000000-0000-4000-8000-000000000091';
+            backend.sessions.set(uploadId, {
+                id: uploadId, room: 0, question: 0, name: 'ready-video.mp4',
+                size: 128, mime: 'video/mp4', status: 'ready', received: new Set(),
+            });
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /Просмотреть видео ready-video.mp4/ }).waitFor({ timeout: 15000 });
+            assert.equal(backend.media[0][0].length, 1, 'Server-ready file was not automatically attached.');
+            assert.equal(backend.sessions.get(uploadId).status, 'attached');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: automatically attaches server-ready video with no file reselection');
+            await context.close();
+        }
+
         // Interrupted upload: new WebView must recover the cached Blob and reuse its upload ID.
         {
             const backend = new FakeFocusBackend();
-            backend.failOneChunk = true;
+            // Exhaust automatic retry attempts; verify recovery on WebView reopen.
+            backend.failChunksRemaining = 3;
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
@@ -405,6 +429,32 @@ async function main() {
             assert.equal(backend.media[0][0].length, 1);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: failed network upload resumes cached photo with identical server ID');
+            await context.close();
+        }
+        // Small videos use the same best-effort IndexedDB recovery as photos.
+        // Do not claim the same guarantee for videos larger than the backup limit.
+        {
+            const backend = new FakeFocusBackend();
+            backend.failChunksRemaining = 3;
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.locator('#focus-video-0-0').setInputFiles({
+                name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'),
+            });
+            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor();
+            await page.getByRole('button', { name: 'Оставить видео' }).click();
+            await page.getByText('Temporary network error').waitFor({ timeout: 15000 });
+            const uploadId = [...backend.sessions.keys()][0];
+            assert.ok(uploadId);
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /Просмотреть видео cached-clip.mp4/ }).waitFor({ timeout: 20000 });
+            assert.equal(backend.sessions.size, 1, 'Video recovery created a second upload.');
+            assert.equal([...backend.sessions.keys()][0], uploadId);
+            assert.equal(backend.media[0][0].length, 1);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: short video recovers from interrupted upload after WebView reload');
             await context.close();
         }
     } catch (error) {

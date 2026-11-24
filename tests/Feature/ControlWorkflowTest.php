@@ -741,6 +741,34 @@ it('blocks non-admins from injecting server sandbox saves or media into active p
         ->and(ControlResponse::count())->toBe(0);
 });
 
+it('halves new video chunk requests without breaking previously started 512 KiB sessions', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $input = focusV2MediaStartPayload($control, $draft, focusV2SamplePng());
+    $input['original_name'] = 'long-video.mp4';
+    $input['mime'] = 'video/mp4';
+    $input['size'] = 2 * 1024 * 1024 + 13;
+    $route = route('page-checks.control.focus-v2.media.start');
+
+    $this->postJson($route, $input)->assertOk()
+        ->assertJsonPath('chunk_bytes', 1024 * 1024)
+        ->assertJsonPath('total_chunks', 3);
+
+    // Simulate a partial transfer registered by the previous deployment.
+    // Replaying /start must keep its original chunk grid and upload UUID.
+    $old = FocusV2MediaUpload::query()->sole();
+    $old->chunk_bytes = 512 * 1024;
+    $old->total_chunks = 5;
+    $old->save();
+
+    $this->postJson($route, $input)->assertOk()
+        ->assertJsonPath('upload_id', $input['upload_id'])
+        ->assertJsonPath('chunk_bytes', 512 * 1024)
+        ->assertJsonPath('total_chunks', 5);
+
+    expect(FocusV2MediaUpload::count())->toBe(1);
+});
+
 it('uploads Focus V2 evidence in chunks, resumes and attaches it exactly once', function (): void {
     Storage::fake('local');
     [, , $control, $draft, $payload] = focusV2MediaFixture();
@@ -910,16 +938,18 @@ it('rejects too large media and refuses to attach a stale Focus V2 revision', fu
 it('resumes a two-chunk Focus V2 transfer after the final part arrives first', function (): void {
     Storage::fake('local');
     [, , $control, $draft] = focusV2MediaFixture();
-    $binary = focusV2SamplePng().str_repeat(' ', 512 * 1024);
+    $chunkBytes = 1024 * 1024;
+    $binary = focusV2SamplePng().str_repeat(' ', $chunkBytes);
     $init = focusV2MediaStartPayload($control, $draft, $binary);
 
     $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)
-        ->assertOk()->assertJsonPath('total_chunks', 2);
+        ->assertOk()->assertJsonPath('total_chunks', 2)
+        ->assertJsonPath('chunk_bytes', $chunkBytes);
 
-    focusV2PutChunk($init['upload_id'], substr($binary, 512 * 1024), 1)->assertOk();
+    focusV2PutChunk($init['upload_id'], substr($binary, $chunkBytes), 1)->assertOk();
     $this->getJson(route('page-checks.control.focus-v2.media.status', $init['upload_id']))
         ->assertOk()->assertJsonPath('received.0', 1);
-    focusV2PutChunk($init['upload_id'], substr($binary, 0, 512 * 1024), 0)->assertOk();
+    focusV2PutChunk($init['upload_id'], substr($binary, 0, $chunkBytes), 0)->assertOk();
     $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))
         ->assertOk()->assertJsonPath('status', 'ready');
 

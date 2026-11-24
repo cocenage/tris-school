@@ -110,7 +110,7 @@ jobs:
         run: |
           npm install --no-save --package-lock=false playwright@1.56.1
           npx playwright install --with-deps chromium
-          node tests/Browser/focus-v2-smoke.mjs
+          timeout --signal=SIGTERM --kill-after=5s 120s node tests/Browser/focus-v2-smoke.mjs
       - name: Package compiled assets for deployment
         uses: actions/upload-artifact@v4
         with:

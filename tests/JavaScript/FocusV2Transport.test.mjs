@@ -39,7 +39,7 @@ test('resume skips chunks acknowledged by server following an interrupted transf
     const file = fileOfSize(FOCUS_CHUNK_BYTES * 6 + 13);
     const received = new Set();
     const sent = [];
-    let disconnect = true;
+    let failedChunkAttempts = 0;
     globalThis.fetch = async (url, options) => {
         const path = String(url);
         assert.equal(options.credentials, 'same-origin');
@@ -56,8 +56,8 @@ test('resume skips chunks acknowledged by server following an interrupted transf
             assert.equal(options.method, 'PUT');
             assert.equal(options.body.size, Math.min(FOCUS_CHUNK_BYTES, file.size - index * FOCUS_CHUNK_BYTES));
             sent.push(index);
-            if (index === 3 && disconnect) {
-                disconnect = false;
+            if (index === 3 && failedChunkAttempts < 3) {
+                failedChunkAttempts++;
                 throw new TypeError('Network disconnected');
             }
             received.add(index);
@@ -75,14 +75,14 @@ test('resume skips chunks acknowledged by server following an interrupted transf
         assert.deepEqual([...received], [0, 1, 2]);
         const result = await transfer(file, { onProgress: p => progress.push(p) });
         assert.equal(result.status, 'ready');
-        assert.deepEqual(sent, [0, 1, 2, 3, 3, 4, 5, 6]);
+        assert.deepEqual(sent, [0, 1, 2, 3, 3, 3, 3, 4, 5, 6]);
         assert.equal(progress.at(-1), 100);
     } finally {
         globalThis.fetch = original;
     }
 });
 
-test('supports a 100 MiB video in 512 KiB requests without sending a 100 MiB POST', async () => {
+test('supports a 100 MiB video in 1 MiB requests without sending a 100 MiB POST', async () => {
     const original = globalThis.fetch;
     const file = fileOfSize(100 * 1024 * 1024);
     let parts = 0;
@@ -92,7 +92,7 @@ test('supports a 100 MiB video in 512 KiB requests without sending a 100 MiB POS
             assert.equal(options.method, 'POST');
             assert.equal(JSON.parse(options.body).size, file.size);
             return reply({ status: 'pending', received: [], chunk_bytes: FOCUS_CHUNK_BYTES,
-                total_chunks: 200, urls });
+                total_chunks: 100, urls });
         }
         if (String(url).startsWith('/upload/chunks/')) {
             parts++;
@@ -105,9 +105,56 @@ test('supports a 100 MiB video in 512 KiB requests without sending a 100 MiB POS
     try {
         assert.equal(allowedFocusFile(file), '');
         assert.equal((await transfer(file)).status, 'ready');
-        assert.equal(parts, 200);
-        assert.equal(maxBody, 512 * 1024);
+        assert.equal(parts, 100);
+        assert.equal(maxBody, 1024 * 1024);
         assert.match(allowedFocusFile(fileOfSize(file.size + 1)), /100 МБ/);
+    } finally {
+        globalThis.fetch = original;
+    }
+});
+
+test('automatically retries a single transient chunk error without asking for file reselection', async () => {
+    const original = globalThis.fetch;
+    const file = fileOfSize(FOCUS_CHUNK_BYTES + 7);
+    let attempts = 0;
+    const notices = [];
+    globalThis.fetch = async url => {
+        if (url === '/upload/start') return reply({
+            status: 'pending', received: [], chunk_bytes: FOCUS_CHUNK_BYTES,
+            total_chunks: 2, urls,
+        });
+        if (String(url).endsWith('/chunks/0')) {
+            attempts++;
+            return reply(attempts === 1 ? { message: 'Temporary gateway failure' } : {}, attempts === 1 ? 503 : 200);
+        }
+        if (String(url).endsWith('/chunks/1')) return reply({});
+        if (url === '/upload/complete') return reply({ status: 'ready', urls });
+        throw new Error('Unexpected request: ' + url);
+    };
+    try {
+        const result = await transfer(file, { onRetry: notice => notices.push(notice) });
+        assert.equal(result.status, 'ready');
+        assert.equal(attempts, 2);
+        assert.equal(notices.length, 1);
+        assert.match(notices[0].label, /части/);
+    } finally {
+        globalThis.fetch = original;
+    }
+});
+
+test('does not retry permission errors or permanently invalid media chunks', async () => {
+    const original = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = async url => {
+        if (url === '/upload/start') {
+            requests++;
+            return reply({ message: 'Access denied' }, 403);
+        }
+        throw new Error('Unexpected request');
+    };
+    try {
+        await assert.rejects(transfer(fileOfSize(FOCUS_CHUNK_BYTES)), /Access denied/);
+        assert.equal(requests, 1);
     } finally {
         globalThis.fetch = original;
     }

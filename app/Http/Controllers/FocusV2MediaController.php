@@ -18,7 +18,10 @@ use Illuminate\Validation\ValidationException;
 final class FocusV2MediaController extends Controller
 {
     // Small requests avoid the shared host's typical multipart/PHP body limits.
-    private const CHUNK_BYTES = 512 * 1024;
+    // 1 MiB halves requests for large videos while staying within typical
+    // shared-host request-body limits. Existing sessions keep their own stored
+    // chunk_bytes and remain resumable without migration.
+    private const CHUNK_BYTES = 1024 * 1024;
 
     private const MAX_MEDIA_PER_QUESTION = 12;
 
@@ -94,7 +97,11 @@ final class FocusV2MediaController extends Controller
                     && $existing->original_name === $filename
                     && $existing->declared_mime === $mime
                     && $existing->size_bytes === (int) $data['size']
-                    && $existing->total_chunks === $totalChunks
+                    // Uploads registered on previous deployments retain
+                    // their original (512 KiB) chunk size on resume. Never
+                    // force an in-flight video into the new 1 MiB grid.
+                    && $existing->chunk_bytes > 0
+                    && $existing->total_chunks === (int) ceil($existing->size_bytes / $existing->chunk_bytes)
                     && $existing->status !== 'cancelled',
                     409,
                 );

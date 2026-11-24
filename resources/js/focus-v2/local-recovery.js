@@ -40,8 +40,16 @@ export function chooseLocalRecovery(record, server, now = Date.now()) {
 
 const DB_NAME = 'tris-focus-v2-recovery';
 const STORE = 'drafts';
+// Existing IndexedDB v2 store name remains unchanged for backwards compatibility.
 const PHOTO_STORE = 'photos';
 const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+export const VIDEO_RECOVERY_MAX_BYTES = 15 * 1024 * 1024;
+export function canCacheFocusMedia(file) {
+    const type = String(file?.type ?? '').toLowerCase();
+    const limit = type.startsWith('image/') ? PHOTO_MAX_BYTES
+        : type.startsWith('video/') ? VIDEO_RECOVERY_MAX_BYTES : 0;
+    return limit > 0 && Number.isFinite(file?.size) && file.size > 0 && file.size <= limit;
+}
 let opening = null;
 
 function openDatabase() {
@@ -124,19 +132,19 @@ export function createLocalRecoveryQueue(writer) {
 
 
 /**
- * Cache only an explicitly confirmed photo, never videos. A File/Blob is
- * structured-cloned into IndexedDB, not converted to base64/localStorage.
+ * Best-effort caching for confirmed photos and short videos (up to 15 MiB).
+ * Large videos are *never* cached, avoiding quotas and stalled WebViews.
+ * A File/Blob is structured-cloned into IndexedDB, not base64/localStorage.
  *
  * Telegram WebView may evict its origin storage; callers MUST treat errors
  * here as a warning, not as proof that an unsent photo is safe.
  */
 export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, question }) {
     if (!scope || !/^[0-9a-f-]{36}$/i.test(uploadId) || !runId
-        || !file || !String(file.type).startsWith('image/')
-        || file.size < 1 || file.size > PHOTO_MAX_BYTES
+        || !canCacheFocusMedia(file)
         || !Number.isInteger(room) || room < 0
         || !Number.isInteger(question) || question < 0) {
-        throw new Error('Некорректные параметры локального фото.');
+        throw new Error('Невозможно сохранить локальную копию этого медиафайла.');
     }
     const record = {
         key: scope + ':' + uploadId, scope, upload_id: uploadId, run_id: runId,
