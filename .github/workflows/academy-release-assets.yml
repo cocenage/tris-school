@@ -1,0 +1,55 @@
+name: Academy release assets
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - '.github/workflows/academy-release-assets.yml'
+      - 'scripts/release/academy-preflight.sh'
+      - 'docs/releases/academy-production-update.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: academy-release-assets-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build matching Vite assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate deployment preflight script
+        run: bash -n scripts/release/academy-preflight.sh
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build frontend assets
+        run: npm run build
+      - name: Check build output
+        run: |
+          test -s public/build/manifest.json
+          test -d public/build/assets
+      - name: Package release files
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p release
+          tar -C public -czf release/academy-vite.tar.gz build
+          printf '%s\n' "$GITHUB_SHA" > release/release-commit.txt
+          (cd release && sha256sum academy-vite.tar.gz > SHA256SUMS)
+      - name: Upload commit-matched release bundle
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: academy-release-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
