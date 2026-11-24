@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
 import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
-import { chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
+import { cacheFocusPhoto, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
@@ -37,6 +37,10 @@ const viewerRole = ref('');
 const testMode = ref(false);
 const pickerFor = ref(null);
 const mediaError = ref('');
+const photoCapture = ref(null);
+const lightbox = ref(null);
+const cacheWarning = ref('');
+const recoveringPhotos = ref(false);
 const recoveryRecord = ref(null);
 const recoveryMode = ref('');
 const recoveryBusy = ref(false);
@@ -173,6 +177,9 @@ async function initialize() {
     interruptedUploads.value = [];
     pickerFor.value = null;
     mediaError.value = '';
+    cacheWarning.value = '';
+    closePhotoCapture();
+    closeLightbox();
     cleanupPreviews();
     uploads.value = [];
     try {
@@ -225,6 +232,9 @@ async function initialize() {
             }
         }
         stage.value = 'setup';
+        if (recoveryKey && !recoveryMode.value && !data.run?.schema_conflict) {
+            await restoreCachedPhotos();
+        }
     } catch (error) {
         loadError.value = error.message || 'Не удалось загрузить контроль.';
     } finally {
