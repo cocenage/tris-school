@@ -86,24 +86,18 @@ new class extends Component {
         if (! array_key_exists($surface, AntigocciaAssessment::SURFACES) || ! in_array($score, [0, 1, 2], true)) {
             return;
         }
-        $previous = $this->answers[$surface]['dirt'] ?? null;
+
         $this->answers[$surface]['dirt'] = $score;
-        if ($previous !== $score || $score === 0) {
-            $this->answers[$surface]['removal'] = null;
-        }
     }
 
-    public function setRemoval(string $surface, int $score): void
+    public function setRemoval(string $surface, string $value): void
     {
         if (! array_key_exists($surface, AntigocciaAssessment::SURFACES)
-            || ! in_array($score, [0, 1, 2], true)
-            || ! in_array((string) ($this->answers[$surface]['dirt'] ?? ''), ['1', '2'], true)) {
+            || ! array_key_exists($value, AntigocciaAssessment::REMOVAL_OPTIONS)) {
             return;
         }
-        $this->answers[$surface]['removal'] = $score;
-        if ($score === 2) {
-            $this->answers[$surface]['remaining'] = 'yes';
-        }
+
+        $this->answers[$surface]['removal'] = $value;
     }
 
     public function getApartmentProperty()
@@ -212,7 +206,7 @@ new class extends Component {
 
         try {
             foreach (AntigocciaAssessment::SURFACES as $surface => $label) {
-                if (($answers[$surface]['remaining'] ?? null) === 'yes' && ($this->photos[$surface] ?? null)) {
+                if ($this->photos[$surface] ?? null) {
                     $path = $this->photos[$surface]->store(
                         'antigoccia/'.$apartment->id.'/'.$this->submissionUuid.'/'.$uploadAttempt,
                         'local',
@@ -350,13 +344,12 @@ new class extends Component {
                         $dirt = $answers[$surface]['dirt'] ?? null;
                         $removal = $answers[$surface]['removal'] ?? null;
                         $remaining = $answers[$surface]['remaining'] ?? '';
-                        $canRemove = in_array((string) $dirt, ['1', '2'], true);
                     @endphp
                     <section wire:key="antigoccia-{{ $surface }}" class="rounded-[28px] bg-[#F6F6F6] p-[17px]">
                         <h2 class="mb-4 text-[18px] font-semibold">{{ $loop->iteration }}. {{ $label }}</h2>
-                        <p class="mb-2 text-[13px] font-medium">Степень загрязнения</p>
+                        <p class="mb-2 text-[13px] font-medium">Оцените степень загрязнения поверхности ДО уборки:</p>
                         <div class="grid grid-cols-3 gap-[7px]">
-                            @foreach([0 => '🟢 0 — Нет загрязнений', 1 => '🟡 1 — Лёгкие', 2 => '🔴 2 — Сильные'] as $score => $text)
+                            @foreach([0 => '🟢 0 — Загрязнений не видно.', 1 => '🟡 1 — Лёгкие загрязнения.', 2 => '🔴 2 — Сильные загрязнения.'] as $score => $text)
                                 <button type="button" wire:click="setDirt('{{ $surface }}', {{ $score }})"
                                     aria-pressed="{{ (string) $dirt === (string) $score ? 'true' : 'false' }}"
                                     class="min-h-[54px] rounded-[16px] px-2 py-2 text-[12px] font-medium {{ (string) $dirt === (string) $score ? 'bg-[#213259] text-white' : 'bg-white text-black/75' }}">{{ $text }}</button>
@@ -364,13 +357,15 @@ new class extends Component {
                         </div>
                         @error('answers.'.$surface.'.dirt') <p role="alert" class="mt-2 text-[12px] text-red-600">{{ $message }}</p> @enderror
 
-                        <p class="mb-2 mt-4 text-[13px] font-medium">Удаление загрязнений чистой влажной жёлтой салфеткой, смоченной водой</p>
-                        <div class="grid grid-cols-3 gap-[7px]">
-                            @foreach([0 => '🟢 0 — Легко', 1 => '🟡 1 — Трудно', 2 => '🔴 2 — Не удалились'] as $score => $text)
-                                <button type="button" wire:click="setRemoval('{{ $surface }}', {{ $score }})"
-                                    @disabled(!$canRemove)
-                                    aria-pressed="{{ (string) $removal === (string) $score && $canRemove ? 'true' : 'false' }}"
-                                    class="min-h-[54px] rounded-[16px] px-2 py-2 text-[12px] font-medium disabled:opacity-40 {{ (string) $removal === (string) $score && $canRemove ? 'bg-[#213259] text-white' : 'bg-white text-black/75' }}">{{ $text }}</button>
+                        <p class="mb-2 mt-4 text-[13px] font-medium">Насколько легко удаляются загрязнения влажной чистой салфеткой?</p>
+                        <div class="grid grid-cols-2 gap-[7px]">
+                            @foreach(\App\Services\Antigoccia\AntigocciaAssessment::REMOVAL_OPTIONS as $value => $option)
+                                <button type="button" wire:click="setRemoval('{{ $surface }}', '{{ $value }}')"
+                                    aria-pressed="{{ $removal === $value ? 'true' : 'false' }}"
+                                    class="min-h-[92px] rounded-[16px] px-3 py-3 text-left text-[12px] {{ $removal === $value ? 'bg-[#213259] text-white' : 'bg-white text-black/75' }}">
+                                    <span class="block font-semibold">{{ $option['icon'] }} {{ $option['label'] }}</span>
+                                    <span class="mt-1 block text-[11px] leading-[1.45] {{ $removal === $value ? 'text-white/80' : 'text-black/55' }}">{{ $option['description'] }}</span>
+                                </button>
                             @endforeach
                         </div>
                         @error('answers.'.$surface.'.removal') <p role="alert" class="mt-2 text-[12px] text-red-600">{{ $message }}</p> @enderror
@@ -386,13 +381,11 @@ new class extends Component {
                                 </label>
                             </div>
                             @error('answers.'.$surface.'.remaining') <p role="alert" class="mt-2 text-[12px] text-red-600">{{ $message }}</p> @enderror
-                            @if($remaining === 'yes')
-                                <label class="mt-3 block text-[13px] font-semibold" for="photo-{{ $surface }}">Фото загрязнений (обязательно)</label>
-                                <input id="photo-{{ $surface }}" type="file" accept="image/jpeg,image/png,image/webp" wire:model="photos.{{ $surface }}" class="mt-2 w-full text-[13px]">
-                                <p wire:loading wire:target="photos.{{ $surface }}" class="mt-2 text-[12px] text-blue-700">Загрузка…</p>
-                                @if(isset($photos[$surface])) <p class="mt-2 text-[12px] text-green-700">Фото загружено</p> @endif
-                                @error('photos.'.$surface) <p role="alert" class="mt-2 text-[12px] text-red-600">{{ $message }}</p> @enderror
-                            @endif
+                            <label class="mt-3 block text-[13px] font-semibold" for="photo-{{ $surface }}">Фото поверхности {{ $remaining === 'yes' ? '(обязательно)' : '(необязательно)' }}</label>
+                            <input id="photo-{{ $surface }}" type="file" accept="image/jpeg,image/png,image/webp" wire:model="photos.{{ $surface }}" class="mt-2 w-full text-[13px]">
+                            <p wire:loading wire:target="photos.{{ $surface }}" class="mt-2 text-[12px] text-blue-700">Загрузка…</p>
+                            @if(isset($photos[$surface])) <p class="mt-2 text-[12px] text-green-700">Фото загружено</p> @endif
+                            @error('photos.'.$surface) <p role="alert" class="mt-2 text-[12px] text-red-600">{{ $message }}</p> @enderror
                         </div>
                     </section>
                 @endforeach

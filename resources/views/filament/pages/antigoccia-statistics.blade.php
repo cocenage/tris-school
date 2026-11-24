@@ -55,16 +55,17 @@
                     @foreach($stats['surfaces'] as $surface)
                         <div class="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
                             <h3 class="font-semibold">{{ $surface['label'] }}</h3>
-                            <p class="mt-2 text-sm">Всего: {{ $surface['total'] }} · Трудно: {{ $surface['difficult'] }} · Не удалились: {{ $surface['failed'] }} · Остались: {{ $surface['remaining_count'] }}</p>
+                            <p class="mt-2 text-sm">Всего: {{ $surface['total'] }} · Не легко: {{ $surface['difficult'] }} · Трудно / не удалились (старые): {{ $surface['failed'] }} · Остались: {{ $surface['remaining_count'] }}</p>
                             @if($surface['first_issue_date'])
                                 <p class="mt-1 text-xs text-gray-500">Первое затруднение: {{ $surface['first_issue_date'] }}, контроль № {{ $surface['first_issue_report_number'] }}</p>
                             @endif
                             @if(count($surface['recent']) > 0)
                                 <div class="mt-3 flex flex-wrap gap-1" aria-label="Последние результаты удаляемости">
                                     @foreach($surface['recent'] as $point)
-                                        <span title="{{ $point['date'] }}"
-                                            class="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-semibold {{ $point['score'] === null ? 'bg-gray-100 text-gray-500 dark:bg-gray-800' : ($point['score'] === 0 ? 'bg-green-100 text-green-800' : ($point['score'] === 1 ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800')) }}">
-                                            {{ $point['score'] ?? '—' }}
+                                        @php($indicator = \App\Services\Antigoccia\AntigocciaAssessment::removalIndicator($point['score']))
+                                        <span title="{{ $point['date'] }} · {{ \App\Services\Antigoccia\AntigocciaAssessment::removalLabel($point['score']) }}"
+                                            class="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-semibold {{ $indicator['color'] }}">
+                                            {{ $indicator['label'] }}
                                         </span>
                                     @endforeach
                                 </div>
@@ -85,7 +86,7 @@
                                 @php($answer = $report->answers[$key] ?? [])
                                 <div class="mt-2 border-t border-gray-100 pt-2 text-sm dark:border-gray-800">
                                     <p class="font-medium">{{ $label }}</p>
-                                    <p>Загрязнение: {{ $answer['dirt'] ?? '—' }} · Удаление: {{ ($answer['removal'] ?? null) === null ? '—' : $answer['removal'] }} · Остались: {{ ($answer['remaining'] ?? null) === null ? '—' : ($answer['remaining'] === 'yes' ? 'Да' : 'Нет') }}</p>
+                                    <p>Загрязнение: {{ $answer['dirt'] ?? '—' }} · Удаление: {{ \App\Services\Antigoccia\AntigocciaAssessment::removalLabel($answer['removal'] ?? null) }} · Остались: {{ ($answer['remaining'] ?? null) === null ? '—' : ($answer['remaining'] === 'yes' ? 'Да' : 'Нет') }}</p>
                                     @if(!empty($report->photos[$key]))
                                         <a href="{{ route('antigoccia.photo', [$report, $key]) }}" target="_blank" rel="noopener" class="text-primary-600 underline">Фото</a>
                                     @endif
