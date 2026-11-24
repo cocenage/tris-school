@@ -269,6 +269,23 @@ async function expectPhoto(page) {
     await page.getByRole('button', { name: 'Закрыть галерею' }).click();
 }
 
+async function restoreInterruptedOriginalIfNeeded(page, { name, mimeType, buffer, video = false }) {
+    const button = page.getByRole('button', { name: video ? 'Просмотреть видео ' + name : 'Открыть фото ' + name });
+    try {
+        await button.waitFor({ timeout: 3500 });
+        return 'local-backup';
+    } catch (_) {
+        // WebKit and Telegram may reject or evict IndexedDB blobs. The app
+        // must give a reliable server-session fallback using the same ID.
+        const section = page.locator('section').filter({ has: page.getByRole('heading', { name: /Восстановим материалы/ }) });
+        const reselect = section.locator('input[type=file][multiple]');
+        await reselect.waitFor({ timeout: 15000 });
+        await reselect.setInputFiles({ name, mimeType, buffer });
+        await button.waitFor({ timeout: 15000 });
+        return 'original-reselection';
+    }
+}
+
 async function main() {
     const vite = spawn(process.execPath, ['node_modules/vite/bin/vite.js',
         '--host', '127.0.0.1', '--port', '4178', '--strictPort'], {
@@ -510,7 +527,11 @@ async function main() {
             assert.ok(uploadId, 'No server-side reservation before a chunk failure.');
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('button', { name: 'К вопросам' }).click();
+            const recoveryPath = await restoreInterruptedOriginalIfNeeded(page, {
+                name: 'photo.png', mimeType: 'image/png', buffer: image,
+            });
             await expectPhoto(page);
+            assert.ok(['local-backup', 'original-reselection'].includes(recoveryPath));
             assert.equal(backend.sessions.size, 1, 'Recovered photo incorrectly created another upload.');
             assert.equal([...backend.sessions.keys()][0], uploadId);
             assert.equal(backend.media[0][0].length, 1);
@@ -536,7 +557,10 @@ async function main() {
             assert.ok(uploadId);
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('button', { name: 'К вопросам' }).click();
-            await page.getByRole('button', { name: /Просмотреть видео cached-clip.mp4/ }).waitFor({ timeout: 20000 });
+            const recoveryPath = await restoreInterruptedOriginalIfNeeded(page, {
+                name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'), video: true,
+            });
+            assert.ok(['local-backup', 'original-reselection'].includes(recoveryPath));
             assert.equal(backend.sessions.size, 1, 'Video recovery created a second upload.');
             assert.equal([...backend.sessions.keys()][0], uploadId);
             assert.equal(backend.media[0][0].length, 1);
