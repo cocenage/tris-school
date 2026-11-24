@@ -89,6 +89,7 @@ async function sendChunk(url, bytes, csrf, signal) {
 export async function transferFocusFile({ startUrl, file, uploadId, draft, room, question, csrf, signal, onProgress, onInit = () => {} }) {
     const info = await focusMediaRequest(startUrl, 'POST', {
         upload_id: uploadId,
+        test_mode: Boolean(draft.test_mode),
         control_id: draft.control_id,
         draft_id: draft.draft_id,
         run_id: draft.run_id,
