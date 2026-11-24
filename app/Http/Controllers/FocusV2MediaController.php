@@ -12,6 +12,7 @@ use App\Services\RolePreviewContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 
@@ -160,7 +161,10 @@ final class FocusV2MediaController extends Controller
             $disk = Storage::disk('local');
             $path = $this->chunkPath($locked, $index);
             if ($disk->exists($path)) {
-                abort_unless(hash_equals(hash('sha256', $disk->get($path)), hash('sha256', $content)), 409, 'Часть файла отличается.');
+                // Hash the file as a stream rather than loading a second
+                // full 1 MiB copy into PHP memory on repeated chunks.
+                $digest = hash_file('sha256', $disk->path($path));
+                abort_unless(is_string($digest) && hash_equals($digest, hash('sha256', $content)), 409, 'Часть файла отличается.');
                 return response()->json(['index' => $index, 'replayed' => true]);
             }
             $temporary = $path.'.part';
@@ -176,6 +180,7 @@ final class FocusV2MediaController extends Controller
 
     public function complete(Request $request, RolePreviewContext $preview, string $upload): JsonResponse
     {
+        $started = hrtime(true);
         $record = $this->ownedUpload($request, $preview, $upload);
 
         $response = DB::transaction(function () use ($record): JsonResponse {
@@ -195,11 +200,12 @@ final class FocusV2MediaController extends Controller
             $bytes = 0;
             try {
                 for ($i = 0; $i < $upload->total_chunks; $i++) {
-                    $path = $this->chunkPath($upload, $i);
-                    abort_unless($disk->exists($path), 409, 'Не все части загружены.');
+                    $path = $disk->path($this->chunkPath($upload, $i));
                     $expected = min($upload->chunk_bytes, $upload->size_bytes - $i * $upload->chunk_bytes);
-                    abort_unless($disk->size($path) === $expected, 409, 'Повреждённая часть файла.');
-                    $source = fopen($disk->path($path), 'rb');
+                    // One filesystem lookup/check per chunk avoids two
+                    // repeated Flysystem calls during 100 MiB assembly.
+                    abort_unless(is_file($path) && filesize($path) === $expected, 409, 'Не все части файла получены или часть повреждена.');
+                    $source = fopen($path, 'rb');
                     abort_unless($source, 500);
                     try {
                         $copied = stream_copy_to_stream($source, $destination);
@@ -241,6 +247,16 @@ final class FocusV2MediaController extends Controller
         // Clean chunks only after the database confirms the ready file. If a
         // transaction fails, the parts remain available for safe retry.
         Storage::disk('local')->deleteDirectory($this->tempDirectory($record));
+
+        if (config('focus-v2.media_performance_logs', false)) {
+            // No personal data, file names, original paths or images in logs.
+            Log::info('focus_v2_media_completed', [
+                'bytes' => (int) $record->size_bytes,
+                'chunks' => (int) $record->total_chunks,
+                'elapsed_ms' => round((hrtime(true) - $started) / 1_000_000, 1),
+                'peak_php_memory_mb' => round(memory_get_peak_usage(true) / 1_048_576, 1),
+            ]);
+        }
 
         return $response;
     }
