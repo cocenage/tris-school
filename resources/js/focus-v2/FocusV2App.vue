@@ -307,6 +307,9 @@ function takeVideo(event, room, question) { takeCapture(event, room, question, '
 function takeCapture(event, room, question, kind) {
     const file = event.target.files?.[0];
     event.target.value = '';
+    beginCapture(file, room, question, kind);
+}
+function beginCapture(file, room, question, kind) {
     pickerFor.value = null;
     if (!file || !canEdit.value) return;
     mediaError.value = '';
@@ -866,6 +869,13 @@ async function addFiles(event, room, question) {
     const selected = Array.from(event.target.files ?? []);
     event.target.value = '';
     pickerFor.value = null;
+    if (selected.length === 1) {
+        const mime = focusFileMime(selected[0]);
+        if (mime.startsWith('image/') || mime.startsWith('video/')) {
+            beginCapture(selected[0], room, question, mime.startsWith('image/') ? 'image' : 'video');
+            return;
+        }
+    }
     await queueSelectedFiles(selected, room, question);
 }
 
