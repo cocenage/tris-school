@@ -126,7 +126,8 @@ it('greets birthdays of active approved non-admin users without exposing birth d
         ->and($byId->get((string) $withUsername)['text'])->toContain('https://t.me/maria_team')
         ->and($events->pluck('text')->implode(' '))->not->toContain('1992', '1990', '34 лет', '36 лет')
         ->and($events->pluck('operation_key')->unique())->toHaveCount(2)
-        ->and($events->pluck('photo_path')->filter())->toBeEmpty();
+        ->and($events->pluck('photo_path')->filter())->toHaveCount(2)
+        ->and($events->pluck('photo_path')->every(fn ($path): bool => is_string($path) && is_file($path)))->toBeTrue();
 });
 
 it('announces only full work years and maps February twenty ninth to February twenty eighth', function () {
