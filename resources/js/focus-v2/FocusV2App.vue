@@ -308,8 +308,19 @@ async function confirmPhoto() {
     const current = photoCapture.value;
     if (!current || current.saving) return;
     current.saving = true;
-    await queueSelectedFiles([current.file], current.room, current.question);
-    closePhotoCapture();
+    // First ensure this run has a server-owned draft. A freshly created
+    // phone photo must not be cached with a run ID the server never saw.
+    if (!testMode.value && !run.value?.draft_id) {
+        touch();
+        if (!(await ensureSynced()) || !run.value?.draft_id) {
+            mediaError.value = 'Не удалось создать черновик. Проверьте соединение и повторите подтверждение фото.';
+            current.saving = false;
+            return;
+        }
+    }
+    const queued = await queueSelectedFiles([current.file], current.room, current.question);
+    if (queued) closePhotoCapture();
+    else current.saving = false;
 }
 function openLightbox(file) {
     if (mediaIsVideo(file)) return;
@@ -799,6 +810,13 @@ async function addFiles(event, room, question) {
 async function queueSelectedFiles(selected, room, question) {
     if (!canEdit.value) return false;
     mediaError.value = '';
+    if (selected.length && !testMode.value && !run.value?.draft_id) {
+        touch();
+        if (!(await ensureSynced()) || !run.value?.draft_id) {
+            mediaError.value = 'Нет связи с сервером. Сначала сохраните черновик, затем добавьте файл.';
+            return false;
+        }
+    }
     let accepted = 0;
     let reserved = mediaCountAt(room, question);
     for (const original of selected) {
