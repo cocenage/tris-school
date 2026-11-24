@@ -366,6 +366,7 @@ async function main() {
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
             await page.getByRole('button', { name: 'Добавить' }).click();
+            await page.getByRole('dialog', { name: 'Добавить фото или видео' }).waitFor();
             await page.locator('#focus-video-0-0').setInputFiles({
                 name: 'inspection.mp4', mimeType: 'video/mp4', buffer: Buffer.from('video-fixture'),
             });
@@ -406,6 +407,32 @@ async function main() {
             assert.equal(backend.media[0][0].length, 1);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: failed network upload resumes cached photo with identical server ID');
+            await context.close();
+        }
+        // Small videos use the same best-effort IndexedDB recovery as photos.
+        // Do not claim the same guarantee for videos larger than the backup limit.
+        {
+            const backend = new FakeFocusBackend();
+            backend.failChunksRemaining = 3;
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.locator('#focus-video-0-0').setInputFiles({
+                name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'),
+            });
+            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor();
+            await page.getByRole('button', { name: 'Оставить видео' }).click();
+            await page.getByText('Temporary network error').waitFor({ timeout: 15000 });
+            const uploadId = [...backend.sessions.keys()][0];
+            assert.ok(uploadId);
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /Просмотреть видео cached-clip.mp4/ }).waitFor({ timeout: 20000 });
+            assert.equal(backend.sessions.size, 1, 'Video recovery created a second upload.');
+            assert.equal([...backend.sessions.keys()][0], uploadId);
+            assert.equal(backend.media[0][0].length, 1);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: short video recovers from interrupted upload after WebView reload');
             await context.close();
         }
     } catch (error) {
