@@ -62,23 +62,46 @@ export async function focusMediaRequest(url, method, body, csrf, signal) {
 }
 
 async function sendChunk(url, bytes, csrf, signal) {
-    const response = await fetch(url, {
-        method: 'PUT',
-        body: bytes,
-        signal,
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/octet-stream',
-            'X-CSRF-TOKEN': csrf,
-        },
-    });
-    if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        const error = new Error(data.message || 'Часть файла не загрузилась.');
-        error.status = response.status;
+    // A frozen Telegram network socket should not pin the transfer forever.
+    // 45 seconds for 1 MiB still allows weak mobile connections to finish.
+    const local = new AbortController();
+    const abortFromUser = () => local.abort();
+    if (signal?.aborted) throw new DOMException('Отменено', 'AbortError');
+    signal?.addEventListener('abort', abortFromUser, { once: true });
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        local.abort();
+    }, 45_000);
+    try {
+        const response = await fetch(url, {
+            method: 'PUT',
+            body: bytes,
+            signal: local.signal,
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/octet-stream',
+                'X-CSRF-TOKEN': csrf,
+            },
+        });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            const error = new Error(data.message || 'Часть файла не загрузилась.');
+            error.status = response.status;
+            throw error;
+        }
+    } catch (error) {
+        if (timedOut && !signal?.aborted) {
+            const timeoutError = new Error('Соединение зависло. Пробуем передать часть снова.');
+            timeoutError.name = 'TimeoutError';
+            throw timeoutError;
+        }
         throw error;
+    } finally {
+        clearTimeout(timeout);
+        signal?.removeEventListener('abort', abortFromUser);
     }
 }
 
