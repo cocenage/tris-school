@@ -315,7 +315,7 @@ async function main() {
             assert.equal(backend.realWrites, 0, 'Sandbox unexpectedly wrote production data.');
             page.once('dialog', dialog => dialog.accept());
             await page.getByRole('button', { name: 'Удалить' }).click();
-            assert.equal(await page.getByRole('button', { name: 'Открыть фото photo.png' }).count(), 0);
+            await page.getByRole('button', { name: 'Открыть фото photo.png' }).waitFor({ state: 'hidden', timeout: 15000 });
             await page.getByRole('button', { name: 'К сводке' }).click();
             await page.getByRole('button', { name: 'Завершить тест без статистики' }).click();
             await page.getByRole('heading', { name: 'Тест завершён' }).waitFor();
