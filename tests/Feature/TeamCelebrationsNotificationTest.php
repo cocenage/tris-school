@@ -147,17 +147,16 @@ it('fails closed when the dedicated celebration destination is missing', functio
     Http::assertNothingSent();
 });
 
-it('fails closed when a birthday card for the month is missing', function () {
+it('reports a missing birthday card but still sends the independent no-events digest', function () {
     teamCelebrationServiceReturning([teamCelebrationTestEvent()]);
-    $bot = Mockery::mock(TelegramBotService::class);
-    $bot->shouldNotReceive('sendMessage');
-    $bot->shouldNotReceive('sendPhoto');
-    app()->instance(TelegramBotService::class, $bot);
+    Http::fake(['https://api.telegram.org/*/sendMessage' => Http::response(['ok' => true, 'result' => ['message_id' => 71]], 200)]);
 
     expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09']))->toBe(1)
         ->and(Artisan::output())->toContain('Нет читаемой открытки', 'поздравления не отправлены')
-        ->and(TelegramOutboundOperation::query()->count())->toBe(0);
-    Http::assertNothingSent();
+        ->and(TelegramOutboundOperation::query()->count())->toBe(1);
+    Http::assertSentCount(1);
+    Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendMessage')
+        && str_contains($request->data()['text'], 'На завтра событий нет.'));
 });
 
 it('requires a positive forum topic id instead of falling back to the forum root', function () {
@@ -432,8 +431,11 @@ it('refuses an oversized non-birthday digest before reserving or sending it', fu
     Http::assertNothingSent();
 });
 
-it('sends a local card as one sendPhoto operation without a text fallback', function () {
-    Http::fake(['https://api.telegram.org/*/sendPhoto' => Http::response(['ok' => true, 'result' => ['message_id' => 72]], 200)]);
+it('sends a birthday photo and a separate no-events digest, never a photo fallback', function () {
+    Http::fake([
+        'https://api.telegram.org/*/sendPhoto' => Http::response(['ok' => true, 'result' => ['message_id' => 72]], 200),
+        'https://api.telegram.org/*/sendMessage' => Http::response(['ok' => true, 'result' => ['message_id' => 73]], 200),
+    ]);
     $path = tempnam(sys_get_temp_dir(), 'tris-card-');
     file_put_contents($path, 'fixture-image-bytes');
     teamCelebrationServiceReturning([teamCelebrationTestEvent(['photo_path' => $path])]);
@@ -444,10 +446,12 @@ it('sends a local card as one sendPhoto operation without a text fallback', func
 
     expect($result)->toBe(0, $output.' '.$journalState);
 
-    Http::assertSentCount(1);
+    Http::assertSentCount(2);
     Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendPhoto')
         && $request->hasFile('photo'));
-    expect(TelegramOutboundOperation::query()->sole())
+    Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendMessage')
+        && str_contains($request->data()['text'], 'На завтра событий нет.'));
+    expect(TelegramOutboundOperation::query()->where('source_type', 'User')->sole())
         ->toMatchArray([
             'method' => 'sendPhoto',
             'status' => 'sent',
@@ -458,7 +462,7 @@ it('sends a local card as one sendPhoto operation without a text fallback', func
     unlink($path);
 });
 
-it('does not send a text fallback after a photo attempt has an uncertain result', function () {
+it('does not retry an uncertain birthday photo and records a separate empty digest attempt', function () {
     Http::fake(fn (Request $request) => Http::failedConnection());
     $path = tempnam(sys_get_temp_dir(), 'tris-card-');
     file_put_contents($path, 'fixture-image-bytes');
@@ -466,9 +470,11 @@ it('does not send a text fallback after a photo attempt has an uncertain result'
 
     expect(Artisan::call('calendar:notify-celebrations', ['--date' => '2026-10-09']))->toBe(1);
 
-    Http::assertSentCount(1);
+    Http::assertSentCount(2);
     Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendPhoto'));
-    expect(TelegramOutboundOperation::query()->sole())
+    Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/sendMessage')
+        && str_contains($request->data()['text'], 'На завтра событий нет.'));
+    expect(TelegramOutboundOperation::query()->where('source_type', 'User')->sole())
         ->toMatchArray(['method' => 'sendPhoto', 'status' => 'uncertain']);
 
     unlink($path);
