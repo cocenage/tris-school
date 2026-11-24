@@ -378,14 +378,17 @@ function openLightbox(file) {
     // case the generated JPEG thumbnail is a safe fallback.
     const url = file.preview_url || file.url || file.thumbnail_url || '';
     if (url) lightbox.value = {
-        url, fallback_url: file.thumbnail_url || '',
+        url, fallback_url: file.thumbnail_url || '', failed: false,
         name: file.name || file.original_name || 'Фотография',
     };
 }
 function lightboxImageFailed() {
-    if (!lightbox.value || !lightbox.value.fallback_url
-        || lightbox.value.url === lightbox.value.fallback_url) return;
-    lightbox.value = { ...lightbox.value, url: lightbox.value.fallback_url };
+    if (!lightbox.value) return;
+    if (lightbox.value.fallback_url && lightbox.value.url !== lightbox.value.fallback_url) {
+        lightbox.value = { ...lightbox.value, url: lightbox.value.fallback_url };
+    } else {
+        lightbox.value = { ...lightbox.value, failed: true };
+    }
 }
 function closeLightbox() { lightbox.value = null; }
 function openVideoLightbox(file) {
@@ -1304,8 +1307,12 @@ onBeforeUnmount(() => {
             @click.self="closeLightbox" @keydown.esc="closeLightbox">
             <button type="button" class="absolute right-3 top-3 rounded-full bg-white/20 px-4 py-3 font-bold text-white"
                 aria-label="Закрыть просмотр" @click="closeLightbox">✕</button>
-            <img :src="lightbox.url" :alt="lightbox.name" class="max-h-[85vh] max-w-full object-contain"
-                @error="lightboxImageFailed">
+            <img v-if="!lightbox.failed" :src="lightbox.url" :alt="lightbox.name"
+                class="max-h-[85vh] max-w-full object-contain" @error="lightboxImageFailed">
+            <div v-else class="max-w-sm rounded-2xl bg-white p-6 text-center text-sm text-slate-800">
+                <p class="font-bold">Не удалось показать оригинал фото</p>
+                <p class="mt-2 text-slate-600">Возможно, браузер Telegram не поддерживает этот формат. Файл от этого не теряется и продолжает загружаться.</p>
+            </div>
         </div>
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
@@ -1578,7 +1585,11 @@ onBeforeUnmount(() => {
                                         <button v-if="item.url && !mediaIsVideo(item)" type="button"
                                             class="relative block aspect-square w-full overflow-hidden bg-slate-200"
                                             :aria-label="'Открыть фото ' + (item.name || '')" @click="openLightbox(item.source)">
-                                            <img :src="item.url" :alt="item.name || 'Фото'" class="size-full object-cover" loading="lazy">
+                                            <img v-if="!item.source.previewFailed" :src="item.url" :alt="item.name || 'Фото'"
+                                                class="size-full object-cover" loading="lazy" @error="item.source.previewFailed = true">
+                                            <span v-else class="grid size-full place-items-center p-2 text-center text-xs font-semibold text-slate-600">
+                                                {{ ['image/heic','image/heif'].includes(item.mime) ? 'Фото HEIC' : 'Предпросмотр недоступен' }}
+                                            </span>
                                             <span v-if="item.kind === 'upload'"
                                                 class="absolute inset-x-0 bottom-0 bg-slate-950/75 p-1.5 text-center text-[11px] font-semibold text-white">
                                                 {{ item.status === 'error' ? 'Ошибка загрузки' : item.status === 'queued' ? (item.source.cached ? 'На устройстве' : 'В очереди') : item.status === 'attaching' ? 'Сохраняем на сервере' : 'Загружаем ' + item.progress + '%' }}
