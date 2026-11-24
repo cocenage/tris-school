@@ -457,14 +457,17 @@ async function main() {
             await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor();
             await page.getByRole('button', { name: 'Оставить видео' }).click();
             await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor({ state: 'hidden' });
-            await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
-            await page.getByRole('button', { name: /Просмотреть видео/ }).click();
-            await page.getByRole('dialog', { name: 'Галерея фото и видео' }).waitFor();
+            await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).waitFor({ timeout: 15000 });
+            await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).click();
+            const videoDialog = page.getByRole('dialog', { name: 'Галерея фото и видео' });
+            await videoDialog.waitFor();
+            assert.equal(await videoDialog.locator('video').getAttribute('src'), videoDataUrl,
+                'The player must receive original video bytes, not the JPEG thumbnail');
             await page.getByRole('button', { name: 'Закрыть галерею' }).click();
             assert.equal(backend.media[0][0][0].mime, 'video/mp4');
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('button', { name: 'К вопросам' }).click();
-            await page.locator('video[src^="data:video/mp4"]').waitFor({ timeout: 15000 });
+            await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).waitFor({ timeout: 15000 });
             assert.equal(backend.startRequests, 1);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: saved video uses original media URL before/after reload');
