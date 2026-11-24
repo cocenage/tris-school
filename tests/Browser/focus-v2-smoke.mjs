@@ -40,7 +40,7 @@ class FakeFocusBackend {
         this.sessions = new Map();
         this.startRequests = 0;
         this.chunkRequests = 0;
-        this.failOneChunk = false;
+        this.failChunksRemaining = 0;
         this.realWrites = 0;
         this.testWrites = 0;
         this.test = {
@@ -82,7 +82,7 @@ class FakeFocusBackend {
         const basePath = '/focus-api/media/' + session.id;
         return {
             upload_id: session.id, status: session.status,
-            chunk_bytes: 524288, total_chunks: Math.ceil(session.size / 524288),
+            chunk_bytes: 1048576, total_chunks: Math.ceil(session.size / 1048576),
             received: [...session.received],
             urls: {
                 status: basePath, chunk_base: basePath + '/chunks',
@@ -165,8 +165,8 @@ class FakeFocusBackend {
                     const state = session.sandbox ? this.test : this;
                     if (segments[3] === 'chunks' && req.method() === 'PUT') {
                         this.chunkRequests += 1;
-                        if (this.failOneChunk) {
-                            this.failOneChunk = false;
+                        if (this.failChunksRemaining > 0) {
+                            this.failChunksRemaining--;
                             return reply({ message: 'Temporary network error' }, 503);
                         }
                         session.received.add(Number(segments[4]));
@@ -389,7 +389,8 @@ async function main() {
         // Interrupted upload: new WebView must recover the cached Blob and reuse its upload ID.
         {
             const backend = new FakeFocusBackend();
-            backend.failOneChunk = true;
+            // Exhaust automatic retry attempts; verify recovery on WebView reopen.
+            backend.failChunksRemaining = 3;
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
