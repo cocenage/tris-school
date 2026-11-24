@@ -38,6 +38,7 @@ const testMode = ref(false);
 const pickerFor = ref(null);
 const mediaError = ref('');
 const photoCapture = ref(null);
+const videoLightbox = ref(null);
 const lightbox = ref(null);
 const cacheWarning = ref('');
 const recoveringPhotos = ref(false);
@@ -202,6 +203,7 @@ async function initialize() {
     cacheWarning.value = '';
     closePhotoCapture();
     closeLightbox();
+    closeVideoLightbox();
     cleanupPreviews();
     uploads.value = [];
     try {
@@ -299,20 +301,22 @@ async function restoreCachedPhotos() {
     }
 }
 
-function takePhoto(event, room, question) {
+function takePhoto(event, room, question) { takeCapture(event, room, question, 'image'); }
+function takeVideo(event, room, question) { takeCapture(event, room, question, 'video'); }
+function takeCapture(event, room, question, kind) {
     const file = event.target.files?.[0];
     event.target.value = '';
     pickerFor.value = null;
     if (!file || !canEdit.value) return;
     mediaError.value = '';
     const error = allowedFocusFile(file);
-    if (error || !focusFileMime(file).startsWith('image/')) {
-        mediaError.value = error || 'Нужна фотография.';
+    if (error || !focusFileMime(file).startsWith(kind + '/')) {
+        mediaError.value = error || (kind === 'image' ? 'Нужна фотография.' : 'Нужно видео MP4, MOV или WebM.');
         return;
     }
     closePhotoCapture();
     photoCapture.value = {
-        file, room, question, preview_url: URL.createObjectURL(file), saving: false,
+        file, room, question, kind, preview_url: URL.createObjectURL(file), saving: false,
     };
 }
 function closePhotoCapture() {
@@ -322,7 +326,7 @@ function closePhotoCapture() {
 function retakePhoto() {
     const current = photoCapture.value;
     if (!current || current.saving) return;
-    const input = document.getElementById('focus-camera-' + current.room + '-' + current.question);
+    const input = document.getElementById((current.kind === 'video' ? 'focus-video-' : 'focus-camera-') + current.room + '-' + current.question);
     closePhotoCapture();
     input?.click();
 }
@@ -350,6 +354,11 @@ function openLightbox(file) {
     if (url) lightbox.value = { url, name: file.name || file.original_name || 'Фотография' };
 }
 function closeLightbox() { lightbox.value = null; }
+function openVideoLightbox(file) {
+    const url = mediaPreview(file);
+    if (url) videoLightbox.value = { url, name: file.name || file.original_name || 'Видео' };
+}
+function closeVideoLightbox() { videoLightbox.value = null; }
 
 async function choosePerson(id) {
     if (!canEdit.value) return;
@@ -1140,6 +1149,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
     closePhotoCapture();
     closeLightbox();
+    closeVideoLightbox();
     cleanupPreviews();
     clearTimeout(timer);
     window.removeEventListener('beforeunload', warnBeforeUnload);
@@ -1149,19 +1159,23 @@ onBeforeUnmount(() => {
 <template>
     <div class="min-h-screen bg-slate-50 text-slate-900">
         <div v-if="photoCapture" class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/85 p-3 sm:items-center"
-            role="dialog" aria-modal="true" aria-label="Подтвердить фотографию" @keydown.esc="closePhotoCapture">
+            role="dialog" aria-modal="true" :aria-label="photoCapture.kind === 'video' ? 'Подтвердить видео' : 'Подтвердить фотографию'" @keydown.esc="closePhotoCapture">
             <div class="w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl">
                 <div class="flex items-center justify-between p-4">
-                    <h2 class="text-lg font-semibold">Оставляем снимок?</h2>
+                    <h2 class="text-lg font-semibold">{{ photoCapture.kind === 'video' ? 'Оставляем видео?' : 'Оставляем снимок?' }}</h2>
                     <button type="button" :disabled="photoCapture.saving" class="rounded-full p-2 text-slate-600"
                         aria-label="Закрыть предпросмотр" @click="closePhotoCapture">✕</button>
                 </div>
                 <div class="flex max-h-[56vh] min-h-48 items-center justify-center bg-slate-950">
-                    <img :src="photoCapture.preview_url" alt="Новое фото перед отправкой"
+                    <video v-if="photoCapture.kind === 'video'" :src="photoCapture.preview_url" controls playsinline preload="metadata"
+                        class="max-h-[56vh] w-full object-contain" aria-label="Предпросмотр видео до отправки"></video>
+                    <img v-else :src="photoCapture.preview_url" alt="Новое фото перед отправкой"
                         class="max-h-[56vh] w-full object-contain">
                 </div>
                 <div class="space-y-3 p-4">
-                    <p class="text-xs text-slate-600">Фото появится в вопросе сразу после подтверждения. Сохранение на сервер продолжится автоматически.</p>
+                    <p class="text-xs text-slate-600">{{ photoCapture.kind === 'video'
+                        ? 'Проверьте ролик. После подтверждения он появится в вопросе, а загрузка продолжится, пока Telegram открыт.'
+                        : 'Фото появится в вопросе сразу после подтверждения. Сохранение на сервер продолжится автоматически.' }}</p>
                     <p v-if="mediaError" class="rounded-xl bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</p>
                     <div class="grid grid-cols-2 gap-3">
                         <button type="button" :disabled="photoCapture.saving"
@@ -1169,7 +1183,7 @@ onBeforeUnmount(() => {
                             @click="retakePhoto">Переснять</button>
                         <button type="button" :disabled="photoCapture.saving"
                             class="min-h-12 rounded-2xl bg-blue-600 px-3 text-sm font-semibold text-white disabled:opacity-50"
-                            @click="confirmPhoto">{{ photoCapture.saving ? 'Сохраняем…' : 'Оставить фото' }}</button>
+                            @click="confirmPhoto">{{ photoCapture.saving ? 'Сохраняем…' : photoCapture.kind === 'video' ? 'Оставить видео' : 'Оставить фото' }}</button>
                     </div>
                 </div>
             </div>
