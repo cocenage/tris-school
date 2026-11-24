@@ -56,3 +56,33 @@ it('keeps old two-question OKS deliveries readable while new deliveries use one 
     expect(array_keys(OksControlSchedule::questionsFor($modernFinish)))->toBe(['check'])
         ->and(OksControlSchedule::questionsFor($modernFinish)['check']['skip'])->toBeNull();
 });
+
+it('uses the new question as the visible rich-card heading for one-question V2 controls', function (): void {
+    foreach (['oks_schedule', 'oks_start_eleven', 'oks_linen', 'oks_first_progress',
+        'oks_first_finish', 'oks_guest_arrivals', 'oks_couriers', 'oks_cleanings', 'oks_payments'] as $type) {
+        $delivery = new TelegramScheduledMessageDelivery();
+        $delivery->control_type = $type;
+        $delivery->sequence_context = [OksControlSchedule::COPY_VERSION => 2];
+
+        $question = array_values(OksControlSchedule::questionsFor($delivery))[0];
+        expect(OksControlSchedule::headingFor($delivery))->toBe($question['title']);
+    }
+});
+
+it('preserves historical and multi-question headings in rich Telegram cards', function (): void {
+    $legacy = new TelegramScheduledMessageDelivery();
+    $legacy->control_type = 'oks_start_eleven';
+    $legacy->sequence_context = [];
+    expect(OksControlSchedule::headingFor($legacy))->toBe('Уборки до 11:00 и поздние выезды');
+
+    $multi = new TelegramScheduledMessageDelivery();
+    $multi->control_type = 'oks_start_ten';
+    $multi->sequence_context = [OksControlSchedule::COPY_VERSION => 2];
+    expect(OksControlSchedule::questionsFor($multi))->toHaveCount(2)
+        ->and(OksControlSchedule::headingFor($multi))->toBe('Начало уборок в 10:00');
+
+    $oldSplit = new TelegramScheduledMessageDelivery();
+    $oldSplit->control_type = 'oks_first_finish';
+    $oldSplit->sequence_context = [OksControlSchedule::SPLIT_FIRST_FINISH => true];
+    expect(OksControlSchedule::headingFor($oldSplit))->toBe('Повторный контроль первых уборок');
+});
