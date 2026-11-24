@@ -1502,21 +1502,38 @@ onBeforeUnmount(() => {
                                             </svg>
                                             Добавить
                                         </button>
+                                        <!-- A bottom sheet stays reachable on a short Telegram WebView,
+                                             even when the last question is near the screen edge. -->
                                         <div v-if="pickerFor === pickerKey(activeRoom, questionIndex)"
-                                            class="absolute right-0 top-full z-30 mt-2 w-60 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
-                                            <label :for="'focus-camera-' + activeRoom + '-' + questionIndex"
-                                                class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl bg-blue-50 px-3 py-3 text-sm font-semibold text-blue-900">
-                                                <span aria-hidden="true">📷</span> Сделать фото
-                                            </label>
-                                            <label :for="'focus-video-' + activeRoom + '-' + questionIndex"
-                                                class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-slate-50">
-                                                <span aria-hidden="true">🎬</span> Снять видео
-                                            </label>
-                                            <label class="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium hover:bg-slate-50">
-                                                <span aria-hidden="true">▦</span> Из галереи
-                                                <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only"
-                                                    :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
-                                            </label>
+                                            class="fixed inset-0 z-40 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4"
+                                            role="dialog" aria-modal="true" aria-label="Добавить фото или видео"
+                                            @click.self="pickerFor = null" @keydown.esc="pickerFor = null">
+                                            <div class="w-full max-w-lg space-y-2 rounded-t-3xl bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-3xl">
+                                                <div class="mb-3 flex items-center justify-between gap-3">
+                                                    <div>
+                                                        <h4 class="text-base font-bold">Добавить фото или видео</h4>
+                                                        <p class="mt-1 text-xs text-slate-500">Сначала проверим файл, затем сохраним на сервере</p>
+                                                    </div>
+                                                    <button type="button" class="grid size-11 shrink-0 place-items-center rounded-full bg-slate-100 text-lg text-slate-600"
+                                                        aria-label="Закрыть выбор медиа" @click="pickerFor = null">✕</button>
+                                                </div>
+                                                <label :for="'focus-camera-' + activeRoom + '-' + questionIndex"
+                                                    class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-blue-50 px-4 py-3 font-semibold text-blue-900">
+                                                    <span aria-hidden="true">📷</span> Сделать фото
+                                                </label>
+                                                <label :for="'focus-video-' + activeRoom + '-' + questionIndex"
+                                                    class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 font-semibold text-slate-900">
+                                                    <span aria-hidden="true">🎬</span> Снять видео
+                                                </label>
+                                                <label class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 font-semibold text-slate-900">
+                                                    <span aria-hidden="true">▦</span> Выбрать из галереи
+                                                    <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only"
+                                                        :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
+                                                </label>
+                                                <p class="px-1 pt-2 text-xs text-slate-500">
+                                                    Если Telegram не открывает камеру, используйте галерею. Можно добавить несколько файлов за раз.
+                                                </p>
+                                            </div>
                                         </div>
                                     </div>
                                     <!-- capture=environment is advisory in Telegram; gallery remains an accessible fallback. -->
