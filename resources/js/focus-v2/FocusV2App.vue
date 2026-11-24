@@ -149,6 +149,11 @@ const outstandingMedia = computed(() => new Set([
         .map(item => item.id),
 ]).size);
 const canSubmitMedia = computed(() => testMode.value || outstandingMedia.value === 0);
+const recoveryNeedingInput = computed(() => interruptedUploads.value.filter(record =>
+    !uploads.value.some(item => item.id === record.upload_id
+        && ['queued', 'uploading', 'attaching'].includes(item.status))
+    && !(media.value[record.room_index]?.[record.question_index] ?? [])
+        .some(file => file.upload_id === record.upload_id)));
 
 const csrf = document.querySelector('meta[name="csrf-token"]')?.content ?? '';
 
@@ -1198,14 +1203,14 @@ onBeforeUnmount(() => {
                             @click="keepServerVersion">Оставить серверную версию</button>
                     </div>
                 </section>
-                <section v-if="interruptedUploads.length && !testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
-                    <h2 class="font-bold">Есть незавершённые загрузки · {{ interruptedUploads.length }}</h2>
-                    <p class="mt-2">Telegram закрылся до подтверждения файлов. Контроль нельзя отправить, пока материалы не будут восстановлены. Повторная загрузка пропускает уже принятые сервером части.</p>
+                <section v-if="recoveryNeedingInput.length && !testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+                    <h2 class="font-bold">Восстановим материалы · {{ recoveryNeedingInput.length }}</h2>
+                    <p class="mt-2">Снимки уже есть на сервере частично или полностью, но им нужно завершить сохранение. Выберите исходные файлы, если автоматическое восстановление не сработало.</p>
                     <label v-if="interruptedUploads.some(item => item.status === 'pending')" class="mt-3 inline-flex cursor-pointer rounded-xl bg-blue-700 px-4 py-3 font-semibold text-white">
                         Выбрать исходные фото и видео
                         <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" @change="resumeDraftFiles">
                     </label>
-                    <div v-for="record in interruptedUploads" :key="record.upload_id" class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-white p-3">
+                    <div v-for="record in recoveryNeedingInput" :key="record.upload_id" class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-white p-3">
                         <span class="min-w-0 truncate text-xs font-semibold">{{ record.original_name }} · {{ record.status === 'ready' ? 'Получено сервером' : 'Нужно продолжить' }}</span>
                         <button v-if="record.status === 'ready'" type="button" class="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800" @click="attachReadyDraft(record)">Прикрепить</button>
                     </div>
@@ -1213,14 +1218,6 @@ onBeforeUnmount(() => {
                 <div v-if="mediaError" class="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</div>
                 <div v-if="cacheWarning && !testMode && outstandingMedia > 0"
                     class="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" role="status">{{ cacheWarning }}</div>
-                <div v-if="uploads.length && stage !== 'done'" class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs" role="status" aria-live="polite">
-                    <div class="min-w-0">
-                        <strong class="text-slate-700">Фото и видео</strong>
-                        <span class="ml-2 text-slate-500">В очереди: {{ uploads.filter(item => ['queued', 'uploading', 'attaching'].includes(item.status)).length }}</span>
-                        <span v-if="uploads.some(item => item.status === 'error')" class="ml-2 font-semibold text-red-700">Ошибки: {{ uploads.filter(item => item.status === 'error').length }}</span>
-                    </div>
-                    <span class="shrink-0 text-slate-500">Дождитесь подтверждения</span>
-                </div>
 
                 <div v-if="syncError" role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
                     {{ syncError }}
