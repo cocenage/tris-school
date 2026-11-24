@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
 import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, transferFocusFile } from './media-upload';
 import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
@@ -28,6 +28,7 @@ const media = ref([]);
 const stage = ref('setup');
 const activeRoom = ref(0);
 const blockedQuestion = ref(null);
+const highlightedReviewQuestion = ref(null);
 const submitting = ref(false);
 const submitError = ref('');
 const finalResult = ref(null);
@@ -570,6 +571,51 @@ function isNegative(question, selected) {
     return maximum > 0 && points < maximum;
 }
 
+const reviewCleanerName = computed(() => testMode.value || setup.value.cleaner_id === '__test__'
+    ? 'Тестовый сотрудник'
+    : people.value.find(person => String(person.id) === String(setup.value.cleaner_id))?.name || 'Не выбран');
+const reviewApartmentName = computed(() => apartments.value
+    .find(apartment => String(apartment.id) === String(setup.value.apartment_id))?.name || 'Не выбрана');
+const reviewFindings = computed(() => {
+    const findings = [];
+    rooms.value.forEach((room, roomIndex) => {
+        (room.items ?? []).forEach((question, questionIndex) => {
+            const answer = answers.value[roomIndex]?.[questionIndex];
+            if (!isNegative(question, answer?.selected)) return;
+            const options = question.answer_options_scored ?? [];
+            const selectedOption = options.find((option, i) => optionValue(option, i) === String(answer.selected)
+                || String(option.label) === String(answer.selected));
+            findings.push({
+                key: roomIndex + ':' + questionIndex, roomIndex, questionIndex,
+                roomTitle: room.title || 'Комната ' + (roomIndex + 1),
+                title: question.question || 'Вопрос ' + (questionIndex + 1),
+                answer: selectedOption?.label || answer?.selected || 'Замечание',
+                mediaCount: mediaCountAt(roomIndex, questionIndex),
+            });
+        });
+    });
+    return findings;
+});
+const reviewMediaStats = computed(() => {
+    let photos = 0, videos = 0;
+    rooms.value.forEach((room, roomIndex) => {
+        (room.items ?? []).forEach((_, questionIndex) => {
+            for (const item of visibleMediaAt(roomIndex, questionIndex)) {
+                if (mediaIsVideo(item)) videos++;
+                else photos++;
+            }
+        });
+    });
+    return { photos, videos, total: photos + videos, waiting: outstandingMedia.value };
+});
+async function openReviewFinding(finding) {
+    goRoom(finding.roomIndex);
+    highlightedReviewQuestion.value = finding.questionIndex;
+    await nextTick();
+    document.getElementById('focus-question-' + finding.roomIndex + '-' + finding.questionIndex)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 function optionValue(option, index) {
     return String(option.value ?? option.label ?? 'option_' + index);
 }
@@ -677,6 +723,7 @@ function goRoom(index) {
     if (index >= 0 && index < rooms.value.length) {
         activeRoom.value = index;
         blockedQuestion.value = null;
+        highlightedReviewQuestion.value = null;
         stage.value = 'questions';
         window.scrollTo({ top: 0, behavior: 'instant' });
     }
@@ -1491,7 +1538,9 @@ onBeforeUnmount(() => {
                     </div>
 
                     <div class="space-y-3">
-                        <article v-for="(question, questionIndex) in currentRoom.items" :key="activeRoom + '-' + questionIndex" class="rounded-xl border bg-white p-4" :class="blockedQuestion === questionIndex ? 'border-red-400' : 'border-slate-200'">
+                        <article v-for="(question, questionIndex) in currentRoom.items" :id="'focus-question-' + activeRoom + '-' + questionIndex"
+                            :key="activeRoom + '-' + questionIndex" class="scroll-mt-32 rounded-xl border bg-white p-4"
+                            :class="blockedQuestion === questionIndex ? 'border-red-400' : highlightedReviewQuestion === questionIndex ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'">
                             <div class="flex justify-between gap-3">
                                 <h3 class="text-base font-bold leading-snug">{{ question.question || 'Вопрос' }}</h3>
                                 <span v-if="currentRoom.is_optional || question.is_optional" class="shrink-0 text-xs text-slate-500">Необязательно</span>
@@ -1651,13 +1700,62 @@ onBeforeUnmount(() => {
 
                 <template v-else-if="stage === 'review'">
                     <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
-                        <p class="text-xs font-bold uppercase tracking-wider text-slate-500">Проверка ответов</p>
-                        <h2 class="text-xl font-semibold">Все вопросы заполнены</h2>
-                        <p class="text-sm text-slate-600">{{ completedRequired }} из {{ totalRequired }} обязательных вопросов. Сохраните ответы перед завершением.</p>
-                        <div v-for="(room, index) in rooms" :key="index" class="flex items-center justify-between border-b border-slate-100 py-2">
-                            <span class="text-sm font-semibold">{{ room.title }}</span>
-                            <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
+                        <p class="text-xs font-bold uppercase tracking-wider text-slate-500">Перед отправкой</p>
+                        <h2 class="text-xl font-semibold">Проверьте данные контроля</h2>
+                        <div class="space-y-2 rounded-2xl bg-slate-50 p-4 text-sm">
+                            <div class="flex items-start justify-between gap-3">
+                                <span class="text-slate-500">Квартира</span><strong class="max-w-[65%] text-right">{{ reviewApartmentName }}</strong>
+                            </div>
+                            <div class="flex items-start justify-between gap-3">
+                                <span class="text-slate-500">Сотрудник</span><strong class="max-w-[65%] text-right">{{ reviewCleanerName }}</strong>
+                            </div>
+                            <div v-if="setup.previous_cleaner" class="flex items-start justify-between gap-3">
+                                <span class="text-slate-500">Предыдущий сотрудник</span><strong class="max-w-[65%] text-right">{{ setup.previous_cleaner }}</strong>
+                            </div>
+                            <div class="flex items-start justify-between gap-3">
+                                <span class="text-slate-500">Уборка / проверка</span>
+                                <strong class="text-right">{{ setup.cleaning_date || '—' }} / {{ setup.inspection_date || '—' }}</strong>
+                            </div>
                         </div>
+                        <div class="rounded-2xl border border-slate-200 p-4">
+                            <div class="mb-2 flex items-center justify-between">
+                                <h3 class="text-sm font-bold">Комментарий к проверке</h3>
+                                <button type="button" class="rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" @click="stage = 'setup'">Изменить</button>
+                            </div>
+                            <p class="whitespace-pre-wrap break-words text-sm text-slate-700">{{ setup.comment?.trim() || 'Комментарий не указан' }}</p>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 text-center text-xs">
+                            <div class="rounded-xl bg-blue-50 p-3"><strong class="block text-lg text-blue-800">{{ completedRequired }}/{{ totalRequired }}</strong>Ответы</div>
+                            <div class="rounded-xl bg-amber-50 p-3"><strong class="block text-lg text-amber-800">{{ reviewFindings.length }}</strong>Замечания</div>
+                            <div class="rounded-xl bg-slate-100 p-3"><strong class="block text-lg text-slate-800">{{ reviewMediaStats.total }}</strong>Медиа</div>
+                        </div>
+                        <p class="text-xs text-slate-500">
+                            Фото: {{ reviewMediaStats.photos }} · Видео: {{ reviewMediaStats.videos }} ·
+                            {{ canSubmitMedia ? 'Все вложения подтверждены сервером' : 'Ожидается сохранение: ' + reviewMediaStats.waiting }}
+                        </p>
+                        <div v-if="reviewFindings.length" class="space-y-2">
+                            <h3 class="text-sm font-bold">Замечания — проверьте перед отправкой</h3>
+                            <button v-for="finding in reviewFindings" :key="finding.key" type="button"
+                                class="flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left"
+                                :aria-label="'Открыть замечание ' + finding.title"
+                                @click="openReviewFinding(finding)">
+                                <span class="min-w-0">
+                                    <span class="block text-xs text-amber-800">{{ finding.roomTitle }} · {{ finding.answer }}</span>
+                                    <strong class="mt-1 block text-sm text-slate-900">{{ finding.title }}</strong>
+                                    <span class="text-xs text-slate-600">Вложений: {{ finding.mediaCount }}</span>
+                                </span>
+                                <span class="shrink-0 text-lg text-blue-700" aria-hidden="true">›</span>
+                            </button>
+                        </div>
+                        <p v-else class="text-sm text-emerald-700">По выбранным ответам замечаний нет.</p>
+                        <details class="rounded-2xl border border-slate-200 p-3">
+                            <summary class="cursor-pointer text-sm font-bold">Все комнаты · {{ rooms.length }}</summary>
+                            <div v-for="(room, index) in rooms" :key="index"
+                                class="flex items-center justify-between border-b border-slate-100 py-3 last:border-b-0">
+                                <span class="text-sm font-semibold">{{ room.title }}</span>
+                                <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
+                            </div>
+                        </details>
                         <div v-if="!canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
                             Остались файлы без подтверждения · {{ outstandingMedia }}. Дождитесь завершения загрузки, повторите ошибочные файлы или восстановите их после закрытия Telegram. До этого отправка недоступна.
                         </div>
