@@ -42,6 +42,8 @@ const testMode = ref(false);
 const pickerFor = ref(null);
 const mediaError = ref('');
 const photoCapture = ref(null);
+const batchPreview = ref(null);
+const batchPreviewActive = computed(() => batchPreview.value?.items?.[batchPreview.value.index] ?? null);
 const videoLightbox = ref(null);
 const lightbox = ref(null);
 const galleryViewer = ref(null);
@@ -224,6 +226,7 @@ async function initialize() {
     mediaError.value = '';
     cacheWarning.value = '';
     closePhotoCapture();
+    closeBatchPreview();
     closeLightbox();
     closeVideoLightbox();
     galleryViewer.value = null;
@@ -376,6 +379,61 @@ async function confirmPhoto() {
     if (queued) closePhotoCapture();
     else current.saving = false;
 }
+function beginBatchPreview(selected, room, question) {
+    if (!canEdit.value) return;
+    const available = Math.max(0, 12 - mediaCountAt(room, question));
+    const accepted = [];
+    let rejected = 0;
+    for (const original of selected) {
+        if (accepted.length >= available) { rejected++; continue; }
+        const mime = focusFileMime(original);
+        const file = original.type ? original : new File([original], original.name, { type: mime });
+        const validationError = allowedFocusFile(file);
+        if (validationError) { mediaError.value = validationError; rejected++; continue; }
+        accepted.push({
+            id: crypto.randomUUID(), file, mime, url: URL.createObjectURL(file),
+        });
+    }
+    if (!accepted.length) {
+        if (!mediaError.value) mediaError.value = 'Нет места для новых файлов: не больше 12 вложений на вопрос.';
+        return;
+    }
+    closeBatchPreview();
+    batchPreview.value = { room, question, items: accepted, index: 0, saving: false };
+    if (rejected) mediaError.value = 'Выбраны только подходящие файлы в пределах лимита 12 вложений.';
+}
+function closeBatchPreview() {
+    if (batchPreview.value?.saving) return;
+    for (const item of batchPreview.value?.items ?? []) URL.revokeObjectURL(item.url);
+    batchPreview.value = null;
+}
+function dropBatchFile(id) {
+    const preview = batchPreview.value;
+    if (!preview || preview.saving) return;
+    const file = preview.items.find(item => item.id === id);
+    if (file) URL.revokeObjectURL(file.url);
+    preview.items = preview.items.filter(item => item.id !== id);
+    preview.index = Math.max(0, Math.min(preview.index, preview.items.length - 1));
+    if (!preview.items.length) closeBatchPreview();
+}
+async function confirmBatch() {
+    const preview = batchPreview.value;
+    if (!preview || preview.saving || !preview.items.length) return;
+    preview.saving = true;
+    try {
+        const queued = await queueSelectedFiles(preview.items.map(item => item.file), preview.room, preview.question);
+        if (queued) {
+            preview.saving = false;
+            closeBatchPreview();
+        } else {
+            preview.saving = false;
+        }
+    } catch (error) {
+        mediaError.value = error.message || 'Не удалось добавить выбранные файлы.';
+        preview.saving = false;
+    }
+}
+
 function openLightbox(file) {
     if (mediaIsVideo(file)) return;
     // Gallery tiles load inexpensive 360px thumbnails; fullscreen must open
@@ -990,6 +1048,10 @@ async function addFiles(event, room, question) {
             return;
         }
     }
+    if (selected.length > 1) {
+        beginBatchPreview(selected, room, question);
+        return;
+    }
     await queueSelectedFiles(selected, room, question);
 }
 
@@ -1324,6 +1386,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
     closePhotoCapture();
+    closeBatchPreview();
     closeLightbox();
     closeVideoLightbox();
     galleryViewer.value = null;
@@ -1361,6 +1424,49 @@ onBeforeUnmount(() => {
                         <button type="button" :disabled="photoCapture.saving"
                             class="min-h-12 rounded-2xl bg-blue-600 px-3 text-sm font-semibold text-white disabled:opacity-50"
                             @click="confirmPhoto">{{ photoCapture.saving ? 'Сохраняем…' : photoCapture.kind === 'video' ? 'Оставить видео' : 'Оставить фото' }}</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div v-if="batchPreview" class="fixed inset-0 z-50 flex items-end justify-center bg-black/85 p-2 sm:items-center"
+            role="dialog" aria-modal="true" aria-label="Предпросмотр выбранных файлов">
+            <div class="flex w-full max-w-lg flex-col overflow-hidden rounded-3xl bg-white text-slate-900 shadow-2xl"
+                style="max-height: 92dvh">
+                <header class="flex items-center justify-between gap-3 p-4">
+                    <div>
+                        <h2 class="text-lg font-bold">Выбранные фото и видео</h2>
+                        <p class="text-xs text-slate-500">{{ batchPreview.items.length }} файлов · сначала проверьте их</p>
+                    </div>
+                    <button type="button" class="grid size-11 place-items-center rounded-full bg-slate-100"
+                        :disabled="batchPreview.saving" aria-label="Закрыть предпросмотр файлов"
+                        @click="closeBatchPreview">✕</button>
+                </header>
+                <div v-if="batchPreviewActive" class="relative flex min-h-40 flex-1 items-center justify-center overflow-hidden bg-slate-950"
+                    style="max-height: 42dvh">
+                    <video v-if="batchPreviewActive.mime.startsWith('video/')" :key="batchPreviewActive.id"
+                        :src="batchPreviewActive.url" controls playsinline preload="metadata"
+                        class="max-h-full w-full object-contain" aria-label="Просмотр выбранного видео"></video>
+                    <img v-else :src="batchPreviewActive.url" alt="Просмотр выбранной фотографии"
+                        class="max-h-full w-full object-contain">
+                </div>
+                <div class="flex gap-2 overflow-x-auto px-4 py-3">
+                    <button v-for="(item, i) in batchPreview.items" :key="item.id" type="button"
+                        class="relative size-16 shrink-0 overflow-hidden rounded-xl border-2"
+                        :class="batchPreview.index === i ? 'border-blue-600' : 'border-slate-200'"
+                        :aria-label="'Посмотреть выбранный файл ' + (i + 1)" @click="batchPreview.index = i">
+                        <img v-if="item.mime.startsWith('image/')" :src="item.url" alt="" class="size-full object-cover">
+                        <span v-else class="grid size-full place-items-center bg-slate-900 text-2xl text-white">▶</span>
+                    </button>
+                </div>
+                <div class="space-y-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+                    <p class="text-xs text-slate-600">Файлы начнут загружаться только после подтверждения. Можно убрать лишние.</p>
+                    <p v-if="mediaError" class="rounded-xl bg-red-50 p-2 text-xs text-red-700" role="alert">{{ mediaError }}</p>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button type="button" :disabled="batchPreview.saving" class="min-h-12 rounded-xl bg-slate-100 px-2 text-sm font-semibold"
+                            @click="dropBatchFile(batchPreviewActive?.id)">Убрать файл</button>
+                        <button type="button" :disabled="batchPreview.saving || !batchPreview.items.length"
+                            class="min-h-12 rounded-xl bg-blue-600 px-2 text-sm font-semibold text-white disabled:opacity-50"
+                            @click="confirmBatch">{{ batchPreview.saving ? 'Сохраняем…' : 'Добавить ' + batchPreview.items.length }}</button>
                     </div>
                 </div>
             </div>
