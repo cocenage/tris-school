@@ -36,6 +36,7 @@ return [
 
         'inventory_thread_id' => env('STAFF_FORMS_INVENTORY_THREAD_ID'),
         'salary_thread_id' => env('STAFF_FORMS_SALARY_THREAD_ID'),
+        'salary_telegram_decisions_enabled' => env('STAFF_FORMS_SALARY_TELEGRAM_DECISIONS_ENABLED', false),
         'schedule_thread_id' => env('STAFF_FORMS_SCHEDULE_THREAD_ID'),
         'feedback_thread_id' => env('STAFF_FORMS_FEEDBACK_THREAD_ID'),
     ],

@@ -9,7 +9,7 @@ class SalaryQuestionDecision extends Model
 {
     protected $fillable = [
         'salary_question_id', 'reviewer_id', 'version', 'status', 'comment',
-        'source', 'delivery_status', 'telegram_message_id',
+        'source', 'delivery_status', 'telegram_message_id', 'card_sync_status', 'card_sync_attempts',
     ];
 
     protected $casts = [

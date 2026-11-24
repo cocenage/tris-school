@@ -24,6 +24,8 @@ return new class extends Migration
             $table->text('comment');
             $table->string('source');
             $table->string('delivery_status')->default('pending');
+            $table->string('card_sync_status')->default('pending');
+            $table->unsignedTinyInteger('card_sync_attempts')->default(0);
             $table->unsignedBigInteger('telegram_message_id')->nullable();
             $table->timestamps();
             $table->unique(['salary_question_id', 'version']);

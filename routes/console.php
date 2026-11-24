@@ -65,6 +65,20 @@ Schedule::command('telegram:scheduled-controls-summary-send --only-if-due')
     ->timezone('Europe/Rome')
     ->withoutOverlapping();
 
+// Recover committed salary decisions if the initial queue dispatch was lost.
+Schedule::call(function (): void {
+    if (! \Illuminate\Support\Facades\Schema::hasTable('salary_question_decisions')) {
+        return;
+    }
+    \App\Models\SalaryQuestionDecision::query()
+        ->where('updated_at', '<', now()->subMinute())
+        ->where(function ($query): void {
+            $query->where('delivery_status', 'pending')
+                ->orWhere(fn ($q) => $q->whereIn('card_sync_status', ['pending', 'failed'])->where('card_sync_attempts', '<', 5));
+        })->orderBy('id')->limit(50)->get(['id'])
+        ->each(fn ($decision) => \App\Jobs\DeliverSalaryQuestionDecision::dispatch($decision->id));
+})->name('salary-question-decision-recovery')->everyMinute()->withoutOverlapping();
+
 Schedule::command('controls:dispatch-completion-notifications')
     ->everyMinute()
     ->withoutOverlapping();
