@@ -297,7 +297,10 @@ async function main() {
             assert.equal(await page.locator('#focus-previous-cleaner').inputValue(), 'Настоящий сотрудник');
             await page.locator('#focus-previous-cleaner').fill('Не указан');
             await page.getByRole('option', { name: 'Не указан' }).click();
-            await page.getByText('Сохранено', { exact: true }).first().waitFor();
+            await page.waitForFunction(() => document.querySelector('#focus-previous-cleaner')?.value === 'Не указан');
+            for (let attempt = 0; backend.setup.previous_cleaner !== '' && attempt < 40; attempt++) {
+                await delay(100);
+            }
             assert.equal(backend.setup.previous_cleaner, '');
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: first-screen comment, previous-staff search and clear option persist');
