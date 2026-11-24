@@ -23,6 +23,10 @@ final class FocusV2BootstrapController extends Controller
     {
         $user = $request->user();
         abort_unless($user?->is_active && in_array($user->role, ['admin', 'supervisor'], true), 403);
+        $isSandbox = $request->boolean('test_mode');
+        if ($isSandbox) {
+            abort_unless($user->role === 'admin', 403);
+        }
 
         $control = Control::query()->where('is_active', true)->latest()->firstOrFail();
         $rooms = is_array($control->main) ? array_values($control->main) : [];
@@ -31,7 +35,7 @@ final class FocusV2BootstrapController extends Controller
         $draft = ControlResponseDraft::query()
             ->where('control_id', $control->id)
             ->where('supervisor_id', $user->getKey())
-            ->where('state', 'active')
+            ->where('state', $isSandbox ? 'sandbox' : 'active')
             ->latest('updated_at')
             ->first();
 
@@ -84,6 +88,9 @@ final class FocusV2BootstrapController extends Controller
                         continue;
                     }
                     $params = [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draft->id];
+                    if ($isSandbox) {
+                        $params['test_mode'] = 1;
+                    }
                     $media[$roomIndex][$questionIndex][] = [
                         'index' => $mediaIndex,
                         'upload_id' => (string) ($file['upload_id'] ?? ''),
@@ -116,6 +123,7 @@ final class FocusV2BootstrapController extends Controller
 
         return response()->json([
             'viewer' => ['id' => (int) $user->getKey(), 'role' => $user->role],
+            'test_mode' => $isSandbox,
             'control' => [
                 'id' => $control->id,
                 'name' => $control->name,
@@ -131,7 +139,7 @@ final class FocusV2BootstrapController extends Controller
                 'conflicted_draft_id' => $conflict ? $draft?->id : null,
             ],
             'setup' => [
-                'cleaner_id' => $conflict ? null : $draft?->cleaner_id,
+                'cleaner_id' => $isSandbox ? '__test__' : ($conflict ? null : $draft?->cleaner_id),
                 'apartment_id' => $conflict ? null : $draft?->apartment_id,
                 'is_assigned' => ! $conflict && (bool) $draft?->is_assigned,
                 'previous_cleaner' => $conflict ? '' : (string) ($draft?->previous_cleaner ?? ''),
