@@ -108,12 +108,21 @@ before enabling automatic cleanup of completed media.
   of browser state. After closing Telegram mid-transfer, the next bootstrap
   lists outstanding uploads and asks the supervisor to select matching originals;
   previously received chunks are reused.
-- The built-in **Тестовый сотрудник** option appears only to administrators.
-  It is a strictly **client-side sandbox**: no API writes, no database result,
-  no statistics, no bot messages, no file upload. It allows checking controls,
-  navigation, capture selection and local previews, **not** benchmarking
-  real network upload performance. Leaving the test reloads the unchanged
-  real draft from the server.
+- The built-in **Тестовый сотрудник** option appears only to active
+  administrators. From this release, it is a **server-backed isolated sandbox**.
+  The test draft uses a distinct `state=sandbox` record (production uses
+  `state=active`) and the upload pipeline stores files only under
+  `focus-v2-sandbox/{supervisor}/{run}/`. The sandbox can test real chunked
+  photo/video transfers, retry and attach, and can compute a preview score.
+  Finishing it changes state to `sandbox_complete` and **does not create**
+  any ControlResponse, notification, activity log, statistics, reward event,
+  or Telegram message. A regular supervisor cannot supply `test_mode=true`
+  to access it. The real draft is never overwritten when entering or exiting
+  the sandbox.
+- Test files and test drafts are deleted after seven days by the scheduled
+  `focus-v2:prune-sandbox` command, including production deployments.
+  Old Classic/real control media and results are never touched by the
+  sandbox pruner.
 - An unfinished control cannot be sent when uploads are pending, even in a
   second tab via direct POST. Explicitly cancelled uploads are omitted from
   the final manifest. This prevents falsely completed evidence.
@@ -143,8 +152,12 @@ IMPORTANT: Telegram may terminate WebView while a photo is being stored, or
 evict its IndexedDB storage. This is a **best-effort** local backup, not a
 promise of guaranteed background transfer. The UI explicitly warns when local
 backup is unavailable, and backend submission still requires **all** media
-to be fully attached. Videos remain file-reselection based, and a separate
-video-first UX and server-isolated test mode are still to be implemented.
+to be fully attached. Videos remain file-reselection based if Telegram WebView is terminated
+before completing the upload. Video capture now opens a native preview with
+**Оставить видео / Переснять** and a fullscreen player. Photo/video status
+in the question is independently tracked from answer-draft save. Optional
+Imagick HEIC thumbnails are generated only when the host has HEIF support;
+otherwise the private-image fallback placeholder remains visible.
 The existing browser-only demo employee is **not** a backend test account.
 
 Acceptance on real Telegram devices still required:
@@ -157,3 +170,23 @@ Acceptance on real Telegram devices still required:
    cannot be accessed by a different supervisor.
 5. Deny browser storage / exhaust quota: the UI must warn and keep submission
    blocked until upload is confirmed by the server.
+
+## Server sandbox security checklist
+
+- Confirm test mode is available only to active admin accounts and is denied
+  to supervisors, cleaners, and role-preview impersonation sessions.
+- Test draft save requires the reserved cleaner identifier `__test__` but
+  persists `cleaner_id = NULL` and `state = sandbox`. A normal save
+  cannot edit it. A normal submit cannot finalize it.
+- Real media upload endpoints accept `test_mode = true` only for an admin
+  with a matching sandbox draft ID/run ID. File storage paths are segregated
+  and all preview routes check both the account and sandbox draft state.
+- Test submit validates the same answers and attached media before returning
+  scored feedback, but never writes into `control_responses`, notifications,
+  activity logs or reward tables. An acknowledged retry is idempotent.
+- Run `php artisan focus-v2:prune-sandbox --days=7` for explicit cleanup.
+  Confirm the task scheduler runs daily at 03:40 Europe/Rome and only removes
+  `sandbox`/`sandbox_complete` drafts and their sandbox-prefixed storage.
+- Run real Telegram Android and iOS device tests before rollout. Browser
+  Chromium simulation cannot prove native camera capture or WebView quota
+  behavior. When HEIC conversion libraries are absent, use the fallback.
