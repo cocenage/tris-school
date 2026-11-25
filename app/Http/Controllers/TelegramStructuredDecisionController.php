@@ -52,6 +52,8 @@ class TelegramStructuredDecisionController extends Controller
             'fingerprint' => ['required', 'string', 'size:64'],
             'items' => ['required', 'array'],
             'items.*' => ['required', 'array'],
+            'items.*.qty' => [$kind === 'inventory' ? 'required' : 'prohibited', 'integer', 'min:0'],
+            'items.*.choice' => [$kind === 'inventory' ? 'prohibited' : 'required', 'in:approved,rejected'],
             'items.*.reason' => ['nullable', 'string', 'max:600'],
             'comment' => ['nullable', 'string', 'max:1800'],
         ]);
