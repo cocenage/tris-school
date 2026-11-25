@@ -4,7 +4,7 @@
         $effectiveness = $this->effectiveness;
         $outcomes = $effectiveness['overall'];
     @endphp
-    <div class="space-y-6">
+    <div class="min-w-0 space-y-4">
         <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
             @foreach([
                 ['label' => 'Обработано квартир', 'value' => $totals['treated_apartments']],
@@ -43,14 +43,14 @@
                     <p class="font-medium">Нет проверок за период</p>
                 </div>
             @else
-                <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div class="mt-4 grid grid-cols-2 gap-2 xl:grid-cols-4">
                     @foreach([
                         ['label' => 'Остались загрязнения', 'rate' => $outcomes['residual_rate'], 'value' => $outcomes['residual_yes'], 'total' => $outcomes['residual_observations'], 'note' => 'От всех ответов «да / нет»'],
                         ['label' => 'Удаляются легко', 'rate' => $outcomes['easy_rate'], 'value' => $outcomes['easy'], 'total' => $outcomes['evaluable_removal'], 'note' => 'Только когда грязь была'],
                         ['label' => 'Удаляются с трудом', 'rate' => $outcomes['difficult_rate'], 'value' => $outcomes['difficult'], 'total' => $outcomes['evaluable_removal'], 'note' => 'Только когда грязь была'],
                         ['label' => 'Квартир с наблюдениями', 'rate' => null, 'value' => $effectiveness['apartment_count'], 'total' => null, 'note' => $outcomes['reports'].' анкет после нанесения'],
                     ] as $metric)
-                        <div class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900">
+                        <div class="min-w-0 rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900">
                             <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ $metric['label'] }}</p>
                             <p class="mt-2 text-2xl font-bold tabular-nums text-gray-900 dark:text-white">
                                 {{ $metric['rate'] !== null ? $metric['rate'].'%' : ($metric['total'] === null ? $metric['value'] : '—') }}
@@ -113,7 +113,7 @@
 
                 <div class="mt-6">
                     <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Результат по поверхностям</h3>
-                    <div class="mt-3 overflow-x-auto">
+                    <div class="mt-3 w-full max-w-full overflow-x-auto">
                         <table class="w-full min-w-[620px] text-left text-sm">
                             <thead class="border-b border-gray-200 text-xs text-gray-500 dark:border-gray-700">
                                 <tr>
@@ -151,7 +151,7 @@
             <x-filament::section>
                 <div class="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                        <h2 class="text-xl font-semibold">{{ $this->apartment->name }}</h2>
+                        <h2 class="break-all text-xl font-semibold">{{ $this->apartment->name }}</h2>
                         @if($this->apartment->address)<p class="text-sm text-gray-500">{{ $this->apartment->address }}</p>@endif
                     </div>
                     <x-filament::button color="gray" icon="heroicon-m-arrow-left" wire:click="clearApartment">
@@ -252,11 +252,11 @@
                         <span class="sr-only">Поиск квартиры по названию или адресу</span>
                         <input type="search" wire:model.live.debounce.300ms="apartmentSearch"
                             placeholder="Поиск по квартире или адресу"
-                            class="block w-full rounded-lg border-gray-300 dark:border-gray-700 dark:bg-gray-900">
+                            class="block w-full rounded-lg border border-gray-300 px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
                     </label>
                 </div>
 
-                <div class="overflow-x-auto">
+                <div class="w-full max-w-full overflow-x-auto">
                     <table class="w-full min-w-[760px] text-left text-sm">
                         <thead class="border-b border-gray-200 text-gray-500 dark:border-gray-700">
                             <tr>
@@ -273,7 +273,7 @@
                             @forelse($this->overviewRows as $row)
                                 <tr wire:key="antigoccia-overview-{{ $row['id'] }}">
                                     <td class="px-3 py-3">
-                                        <p class="font-semibold">{{ $row['name'] }}</p>
+                                        <p class="max-w-[220px] break-all font-semibold">{{ $row['name'] }}</p>
                                         @if($row['address'])<p class="max-w-[250px] truncate text-xs text-gray-500">{{ $row['address'] }}</p>@endif
                                     </td>
                                     <td class="px-3 py-3">{{ $row['applied_on'] ?? '—' }}</td>
