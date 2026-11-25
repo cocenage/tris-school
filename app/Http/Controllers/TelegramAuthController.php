@@ -48,6 +48,24 @@ class TelegramAuthController extends Controller
                 'expires_at' => now()->addMinutes(20)->timestamp,
             ]);
             $redirect = route('salary.decision.show', [$question, $match[2]]);
+        } elseif (str_starts_with($startParam, 'schedule_') || str_starts_with($startParam, 'feedback_')) {
+            abort_unless(preg_match('/^(schedule|feedback)_([1-9][0-9]*)_(approve|reject|work|reply)$/D', $startParam, $match), 403);
+            [$model, $service] = match ($match[1]) {
+                'schedule' => [\App\Models\ScheduleQuestion::class, \App\Services\Forms\ScheduleQuestionDecisionService::class],
+                'feedback' => [\App\Models\FeedbackSuggestion::class, \App\Services\Forms\FeedbackSuggestionDecisionService::class],
+            };
+            $question = $model::query()->find((int) $match[2]);
+            $user = User::query()->activeStaff()->where('telegram_id', $telegramUser['telegram_id'])->first();
+            abort_unless(isset($service::ACTIONS[$match[3]]) && $question && $user && app($service)->canOpenTelegram($question, $user), 403);
+            Auth::login($user);
+            $request->session()->regenerate();
+            app(RolePreviewContext::class)->assertWritable();
+            $request->session()->put('staff_text_review_grant', [
+                'kind' => $match[1], 'question_id' => $question->id, 'actor_id' => $user->id,
+                'action' => $match[3], 'version' => (int) $question->decision_version,
+                'expires_at' => now()->addMinutes(20)->timestamp,
+            ]);
+            $redirect = route('staff-text.decision.show', [$match[1], $question->id, $match[3]]);
         } elseif (preg_match('/^oks_card_([1-9][0-9]*)$/D', $startParam, $match)) {
             $delivery = TelegramScheduledMessageDelivery::query()->withOksTests()->find($match[1]);
             $user = User::query()->activeStaff()->where('telegram_id', $telegramUser['telegram_id'])->first();

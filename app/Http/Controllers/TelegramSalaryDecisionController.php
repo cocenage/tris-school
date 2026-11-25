@@ -63,6 +63,8 @@ class TelegramSalaryDecisionController extends Controller
 
         return response()->view('telegram.salary-decision', [
             'question' => $question,
+            'requestLabel' => 'Вопрос по зарплате',
+            'formAction' => route('salary.decision.store', [$question, $action]),
             'employeeName' => $this->telegram->employeeName($question->user),
             'decisionAction' => $action,
             'version' => $version,

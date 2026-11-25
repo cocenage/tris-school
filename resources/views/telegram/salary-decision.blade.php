@@ -26,11 +26,11 @@
     <header>
         <div class="mark" aria-hidden="true">{{ $decisionAction === 'approve' ? '✓' : ($decisionAction === 'reject' ? '×' : '◷') }}</div>
         <h1>{{ $savedComment !== null ? 'Решение сохранено' : $title }}</h1>
-        <span class="hint">Вопрос по зарплате · #{{ $question->id }}</span>
+        <span class="hint">{{ $requestLabel }} · #{{ $question->id }}</span>
     </header>
     @if ($savedComment !== null)
         <div class="card" role="status">
-            <strong>{{ \App\Models\SalaryQuestion::STATUS_LABELS[$question->status] ?? $question->status }}</strong>
+            <strong>{{ $question::STATUS_LABELS[$question->status] ?? $question->status }}</strong>
             <p>{{ $savedComment }}</p>
             <small>Ответ сохранён в Academy. Доставка в Telegram обрабатывается отдельно.</small>
         </div>
@@ -48,7 +48,7 @@
                 <p>{{ $question->admin_comment }}</p>
             @endif
         </div>
-        <form id="decision-form" method="POST" action="{{ route('salary.decision.store', [$question, $decisionAction]) }}">
+        <form id="decision-form" method="POST" action="{{ $formAction }}">
             @csrf
             <input type="hidden" name="version" value="{{ $version }}">
             <div id="editor">

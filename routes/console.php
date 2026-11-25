@@ -79,6 +79,20 @@ Schedule::call(function (): void {
         ->each(fn ($decision) => \App\Jobs\DeliverSalaryQuestionDecision::dispatch($decision->id));
 })->name('salary-question-decision-recovery')->everyMinute()->withoutOverlapping();
 
+Schedule::call(function (): void {
+    foreach (['schedule' => \App\Models\ScheduleQuestionDecision::class, 'feedback' => \App\Models\FeedbackSuggestionDecision::class] as $kind => $model) {
+        if (! \Illuminate\Support\Facades\Schema::hasTable((new $model)->getTable())) {
+            continue;
+        }
+        $model::query()->where('updated_at', '<', now()->subMinute())
+            ->where(function ($query): void {
+                $query->where('delivery_status', 'pending')
+                    ->orWhere(fn ($q) => $q->whereIn('card_sync_status', ['pending', 'failed'])->where('card_sync_attempts', '<', 5));
+            })->orderBy('id')->limit(50)->get(['id'])
+            ->each(fn ($decision) => \App\Jobs\DeliverSalaryQuestionDecision::dispatch($decision->id, $kind));
+    }
+})->name('staff-text-decision-recovery')->everyMinute()->withoutOverlapping();
+
 Schedule::command('controls:dispatch-completion-notifications')
     ->everyMinute()
     ->withoutOverlapping();

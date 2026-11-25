@@ -49,6 +49,18 @@ class StaffFormTelegramService
     {
         $record->loadMissing('user');
 
+        if (app(ScheduleQuestionDecisionService::class)->enabled()) {
+            if (app(TelegramScheduleQuestionService::class)->sendCreated($record)) {
+                $this->sendAttachments(
+                    token: (string) config('services.telegram.bot_token'),
+                    chatId: (string) config('services.staff_forms.chat_id'),
+                    threadId: config('services.staff_forms.schedule_thread_id'),
+                    attachments: $record->attachments ?? [],
+                );
+            }
+            return;
+        }
+
         $this->send(
             title: '📅 Новый вопрос по графику',
             typeLabel: 'Вопрос по графику',
@@ -66,6 +78,18 @@ class StaffFormTelegramService
     public function sendFeedbackSuggestion(FeedbackSuggestion $record): void
     {
         $record->loadMissing('user');
+
+        if (app(FeedbackSuggestionDecisionService::class)->enabled()) {
+            if (app(TelegramFeedbackSuggestionService::class)->sendCreated($record)) {
+                $this->sendAttachments(
+                    token: (string) config('services.telegram.bot_token'),
+                    chatId: (string) config('services.staff_forms.chat_id'),
+                    threadId: config('services.staff_forms.feedback_thread_id'),
+                    attachments: $record->attachments ?? [],
+                );
+            }
+            return;
+        }
 
         $this->send(
             title: '💡 Новое обращение',
