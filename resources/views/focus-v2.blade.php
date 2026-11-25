@@ -13,6 +13,7 @@
         id="focus-v2-app"
         data-bootstrap-url="{{ route('page-checks.control.focus-v2.bootstrap') }}"
         data-draft-url="{{ route('page-checks.control.focus-v2.draft') }}"
+        data-reset-url="{{ route('page-checks.control.focus-v2.reset') }}"
         data-submit-url="{{ route('page-checks.control.focus-v2.submit') }}"
         data-review-status-url="{{ isset($reviewResponse) ? route('page-checks.control.focus-v2.result-media-status', $reviewResponse) : '' }}"
         data-media-start-url="{{ route('page-checks.control.focus-v2.media.start') }}"

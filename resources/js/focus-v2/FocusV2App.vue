@@ -9,6 +9,7 @@ import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRe
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
     draftUrl: { type: String, required: true },
+    resetUrl: { type: String, default: '' },
     submitUrl: { type: String, required: true },
     reviewStatusUrl: { type: String, default: '' },
     mediaStartUrl: { type: String, required: true },
@@ -32,6 +33,7 @@ const activeRoom = ref(0);
 const blockedQuestion = ref(null);
 const highlightedReviewQuestion = ref(null);
 const submitting = ref(false);
+const resetting = ref(false);
 const submitError = ref('');
 const finalResult = ref(null);
 const uploads = ref([]);
@@ -148,7 +150,7 @@ const completedRequired = computed(() => rooms.value.reduce((sum, room, roomInde
         !room.is_optional && !question.is_optional && filled(roomIndex, questionIndex)).length
 ), 0));
 const currentRoom = computed(() => rooms.value[activeRoom.value] ?? { title: '', items: [] });
-const canEdit = computed(() => Boolean(run.value && !run.value.schema_conflict && state.value !== 'conflict' && !recoveryMode.value));
+const canEdit = computed(() => Boolean(run.value && !resetting.value && !run.value.schema_conflict && state.value !== 'conflict' && !recoveryMode.value));
 const peopleOptions = computed(() => viewerRole.value === 'admin'
     ? [{ id: '__test__', name: 'Тестовый сотрудник · без статистики', thumbnail: null }, ...people.value]
     : people.value);
@@ -1070,6 +1072,45 @@ async function submitControl() {
     }
 }
 
+async function resetControl() {
+    if (!props.resetUrl || !run.value || testMode.value || stage.value === 'done' || resetting.value) return;
+    if (busyUploads.value || recoveringPhotos.value || attachInFlight || inFlight || submitting.value || uncertainSnapshot) {
+        syncError.value = 'Дождитесь сохранения или отмените загрузки перед сбросом.';
+        return;
+    }
+    if (!window.confirm('Сбросить контроль? Все ответы и материалы текущего черновика будут убраны.')) return;
+
+    resetting.value = true;
+    clearTimeout(timer);
+    timer = null;
+    try {
+        await fetchJson(props.resetUrl, {
+            method: 'POST',
+            body: JSON.stringify({
+                control_id: control.value.id,
+                run_id: run.value.id,
+                draft_id: run.value.draft_id,
+                expected_revision: run.value.revision,
+            }),
+        });
+        if (recoveryKey) {
+            await queueLocalWrite({ type: 'delete', scope: recoveryKey });
+            for (const photo of await readCachedFocusPhotos(recoveryKey)) {
+                if (photo.run_id === run.value.id || photo.run_id === recoveryRecord.value?.run_id) {
+                    await forgetCachedFocusPhoto(recoveryKey, photo.upload_id);
+                }
+            }
+        }
+        finalResult.value = null;
+        await initialize();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (error) {
+        syncError.value = error.message || 'Не удалось сбросить контроль.';
+    } finally {
+        resetting.value = false;
+    }
+}
+
 async function openClassic() {
     if (submitting.value || stage.value === 'done') return;
     if (testMode.value) {
@@ -1599,6 +1640,10 @@ onBeforeUnmount(() => {
                     <p class="text-xs font-medium text-slate-500">TRIS Academy · Focus Control</p>
                     <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
+                <button v-if="resetUrl && run && !testMode && stage !== 'done' && !run.schema_conflict && !loading && !loadError"
+                    type="button" :disabled="resetting || busyUploads || submitting || recoveringPhotos || state === 'saving'"
+                    class="ml-auto rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50"
+                    @click="resetControl">{{ resetting ? 'Сброс…' : 'Сбросить контроль' }}</button>
                 <button v-if="testMode" type="button" :disabled="busyUploads || submitting || state === 'saving'"
                     class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 disabled:opacity-50"
                     @click="exitTestMode">Выйти из теста</button>

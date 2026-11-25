@@ -3311,3 +3311,28 @@ it('deletes only the selected control responses in the admin table', function ()
     $this->assertModelMissing($selected);
     $this->assertModelExists($retained);
 });
+
+it('resets only the current owned Focus V2 draft and rejects stale writes', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $payload = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)->assertOk();
+    $draft = ControlResponseDraft::query()->sole();
+    $reset = [
+        'control_id' => $control->id,
+        'run_id' => $draft->run_id,
+        'draft_id' => $draft->id,
+        'expected_revision' => 0,
+    ];
+
+    $url = route('page-checks.control.focus-v2.reset');
+    $this->postJson($url, $reset)->assertConflict();
+    $reset['expected_revision'] = 1;
+    $this->actingAs($cleaner)->postJson($url, $reset)->assertForbidden();
+    $this->actingAs($supervisor)->postJson($url, $reset)->assertOk()->assertJsonPath('reset', true);
+    $this->postJson($url, $reset)->assertOk();
+    expect($draft->fresh()->state)->toBe('discarded')
+        ->and(ControlResponse::count())->toBe(0);
+    $this->postJson(route('page-checks.control.focus-v2.draft'), [...$payload, 'draft_id' => $draft->id, 'expected_revision' => 1])->assertConflict();
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertOk()
+        ->assertJsonPath('run.draft_id', null)->assertJsonPath('answers.0.0.selected', '');
+});
