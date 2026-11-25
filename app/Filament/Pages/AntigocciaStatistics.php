@@ -5,6 +5,7 @@ namespace App\Filament\Pages;
 use App\Models\AntigocciaReport;
 use App\Models\Apartment;
 use App\Services\Antigoccia\AntigocciaAnalytics;
+use App\Services\Antigoccia\AntigocciaEffectiveness;
 use App\Services\Antigoccia\AntigocciaOverview;
 use BackedEnum;
 use Filament\Facades\Filament;
@@ -32,10 +33,27 @@ class AntigocciaStatistics extends Page
 
     public string $apartmentId = '';
 
+    public string $effectivenessPeriod = '90';
+
     public static function canAccess(): bool
     {
         return Filament::getCurrentPanel()?->getId() === 'admin'
             && (auth()->user()?->isAdmin() ?? false);
+    }
+
+    public function updatedEffectivenessPeriod(): void
+    {
+        if (! in_array($this->effectivenessPeriod, ['30', '90', '365', '0'], true)) {
+            $this->effectivenessPeriod = '90';
+        }
+    }
+
+    public function getEffectivenessProperty(): array
+    {
+        return app(AntigocciaEffectiveness::class)->summarize(
+            (int) $this->effectivenessPeriod,
+            $this->apartment?->id,
+        );
     }
 
     public function updatedApartmentSearch(): void

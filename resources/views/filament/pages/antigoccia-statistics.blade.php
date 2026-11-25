@@ -1,5 +1,9 @@
 <x-filament-panels::page>
-    @php($totals = $this->overviewTotals)
+    @php
+        $totals = $this->overviewTotals;
+        $effectiveness = $this->effectiveness;
+        $outcomes = $effectiveness['overall'];
+    @endphp
     <div class="space-y-6">
         <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
             @foreach([
@@ -14,6 +18,151 @@
                 </x-filament::section>
             @endforeach
         </div>
+
+        <x-filament::section>
+            <div class="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Эффективность покрытия · наблюдения</h2>
+                    <p class="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">
+                        Только анкеты после нанесения покрытия. Отдельно учитываются остатки загрязнений и лёгкость их удаления.
+                    </p>
+                </div>
+                <label class="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300">
+                    Период
+                    <select wire:model.live="effectivenessPeriod" aria-label="Период наблюдений Антикапли"
+                        class="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-primary-500 focus:ring-primary-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white">
+                        <option value="30">30 дней</option>
+                        <option value="90">90 дней</option>
+                        <option value="365">365 дней</option>
+                        <option value="0">За всё время</option>
+                    </select>
+                </label>
+            </div>
+
+            <div class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                <strong>Как читать данные:</strong> это результаты после обработки, а не доказательство, что средство помогает.
+                Для вывода об эффективности нужно сравнение с состоянием до нанесения либо с похожими необработанными поверхностями.
+                Анкеты заполняют сотрудники, поэтому возможна субъективность оценок.
+            </div>
+
+            @if($outcomes['reports'] === 0)
+                <div class="mt-5 rounded-xl border border-dashed border-gray-300 p-7 text-center dark:border-gray-700">
+                    <p class="font-medium">Пока нет проверок после обработки за выбранный период</p>
+                    <p class="mt-1 text-sm text-gray-500">Мы не показываем нулевой процент там, где ещё нет наблюдений.</p>
+                </div>
+            @else
+                <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    @foreach([
+                        ['label' => 'Остались загрязнения', 'rate' => $outcomes['residual_rate'], 'value' => $outcomes['residual_yes'], 'total' => $outcomes['residual_observations'], 'note' => 'От всех ответов «да / нет»'],
+                        ['label' => 'Удаляются легко', 'rate' => $outcomes['easy_rate'], 'value' => $outcomes['easy'], 'total' => $outcomes['evaluable_removal'], 'note' => 'Только когда грязь была'],
+                        ['label' => 'Удаляются с трудом', 'rate' => $outcomes['difficult_rate'], 'value' => $outcomes['difficult'], 'total' => $outcomes['evaluable_removal'], 'note' => 'Только когда грязь была'],
+                        ['label' => 'Квартир с наблюдениями', 'rate' => null, 'value' => $effectiveness['apartment_count'], 'total' => null, 'note' => $outcomes['reports'].' анкет после нанесения'],
+                    ] as $metric)
+                        <div class="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900">
+                            <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ $metric['label'] }}</p>
+                            <p class="mt-2 text-2xl font-bold tabular-nums text-gray-900 dark:text-white">
+                                {{ $metric['rate'] !== null ? $metric['rate'].'%' : ($metric['total'] === null ? $metric['value'] : '—') }}
+                            </p>
+                            <p class="mt-1 text-xs text-gray-500">
+                                @if($metric['total'] !== null)
+                                    {{ $metric['value'] }} из {{ $metric['total'] }} ·
+                                @endif
+                                {{ $metric['note'] }}
+                            </p>
+                        </div>
+                    @endforeach
+                </div>
+
+                <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                    «Грязи не было» не считается лёгким удалением.
+                    {{ $outcomes['without_visible_dirt'] }} наблюдений без видимой грязи;
+                    {{ $outcomes['inconsistent'] }} противоречивых ответов (грязь была, но выбрано «загрязнений не было»).
+                    @if($outcomes['evaluable_removal'] < 20)
+                        Выборка для оценки удаления пока небольшая ({{ $outcomes['evaluable_removal'] }} наблюдений).
+                    @endif
+                </p>
+
+                <div class="mt-6 grid gap-6 xl:grid-cols-2">
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Срок после нанесения</h3>
+                        <p class="mt-1 text-xs text-gray-500">Доля ответов «остались загрязнения» по возрасту покрытия</p>
+                        <div class="mt-3 space-y-3">
+                            @foreach($effectiveness['ages'] as $cohort)
+                                <div class="rounded-xl border border-gray-200 px-3 py-3 dark:border-gray-700">
+                                    <div class="flex items-center justify-between gap-3 text-sm">
+                                        <span class="font-medium">{{ $cohort['label'] }}</span>
+                                        <span class="tabular-nums font-semibold">{{ $cohort['residual_rate'] === null ? '—' : $cohort['residual_rate'].'%' }}</span>
+                                    </div>
+                                    <div class="mt-2 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
+                                        @if($cohort['residual_rate'] !== null)
+                                            <div class="h-full rounded-full bg-primary-500" style="width: {{ $cohort['residual_rate'] }}%"></div>
+                                        @endif
+                                    </div>
+                                    <p class="mt-1 text-xs text-gray-500">
+                                        {{ $cohort['reports'] }} анкет · {{ $cohort['residual_observations'] }} ответов
+                                        @if($cohort['residual_observations'] > 0 && $cohort['residual_observations'] < 20)
+                                            · малая выборка
+                                        @endif
+                                    </p>
+                                </div>
+                            @endforeach
+                        </div>
+                    </div>
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Интервал между уборками</h3>
+                        <p class="mt-1 text-xs text-gray-500">Сравнивайте одинаковые интервалы, чтобы не смешивать условия</p>
+                        <div class="mt-3 space-y-3">
+                            @foreach($effectiveness['gaps'] as $cohort)
+                                <div class="flex items-center justify-between gap-3 rounded-xl border border-gray-200 px-3 py-3 dark:border-gray-700">
+                                    <div class="min-w-0">
+                                        <p class="text-sm font-medium">{{ $cohort['label'] }}</p>
+                                        <p class="mt-1 text-xs text-gray-500">{{ $cohort['reports'] }} анкет · {{ $cohort['residual_observations'] }} ответов</p>
+                                    </div>
+                                    <div class="shrink-0 text-right">
+                                        <p class="text-sm font-semibold tabular-nums">{{ $cohort['residual_rate'] === null ? '—' : $cohort['residual_rate'].'%' }} остатков</p>
+                                        <p class="text-xs text-gray-500">{{ $cohort['easy_rate'] === null ? '—' : $cohort['easy_rate'].'%' }} легко · n={{ $cohort['evaluable_removal'] }}</p>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-6">
+                    <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Результат по поверхностям</h3>
+                    <div class="mt-3 overflow-x-auto">
+                        <table class="w-full min-w-[620px] text-left text-sm">
+                            <thead class="border-b border-gray-200 text-xs text-gray-500 dark:border-gray-700">
+                                <tr>
+                                    <th class="px-3 py-3 font-medium">Поверхность</th>
+                                    <th class="px-3 py-3 font-medium">Остатки</th>
+                                    <th class="px-3 py-3 font-medium">Легко удалить</th>
+                                    <th class="px-3 py-3 font-medium">Трудно удалить</th>
+                                    <th class="px-3 py-3 font-medium">Наблюдений</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+                                @foreach($effectiveness['surfaces'] as $surface)
+                                    <tr>
+                                        <td class="px-3 py-3 font-semibold">{{ $surface['label'] }}</td>
+                                        <td class="px-3 py-3 tabular-nums">{{ $surface['residual_rate'] === null ? '—' : $surface['residual_rate'].'%' }}</td>
+                                        <td class="px-3 py-3 tabular-nums">{{ $surface['easy_rate'] === null ? '—' : $surface['easy_rate'].'%' }}</td>
+                                        <td class="px-3 py-3 tabular-nums">{{ $surface['difficult_rate'] === null ? '—' : $surface['difficult_rate'].'%' }}</td>
+                                        <td class="px-3 py-3 text-xs text-gray-500">{{ $surface['residual_observations'] }} остатки · {{ $surface['evaluable_removal'] }} удаление</td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            @endif
+
+            @if($effectiveness['unlinked_reports'] > 0)
+                <p class="mt-4 text-xs text-gray-500">
+                    {{ $effectiveness['unlinked_reports'] }} анкет не включено: на дату уборки нет подтверждённой даты нанесения покрытия.
+                </p>
+            @endif
+        </x-filament::section>
 
         @if($this->apartment)
             <x-filament::section>
