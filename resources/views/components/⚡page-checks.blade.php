@@ -45,6 +45,28 @@ new class extends Component
         </a>
       @endif
 
+       @if(auth()->user()?->is_active)
+       <a href="{{ route('antigoccia.index') }}"
+           aria-label="Антикапля — проверить покрытие поверхностей"
+           class="group block rounded-[30px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#3181BB]">
+           <div class="relative flex min-h-[132px] items-center justify-between gap-3 overflow-hidden rounded-[30px] bg-white p-[18px] shadow-[0_4px_20px_rgba(32,56,107,0.06)] transition-transform group-active:scale-[0.99]">
+               <div aria-hidden="true" class="absolute -right-8 -top-12 size-[140px] rounded-full bg-[#EFF5FB]"></div>
+               <div class="relative min-w-0 flex-1">
+                   <span class="text-[10px] font-bold uppercase tracking-[0.14em] text-[#5F7EA4]">Контроль покрытия</span>
+                   <h2 class="mt-1 text-[19px] font-bold tracking-tight text-[#20386B]">Антикапля</h2>
+                   <p class="mt-1 text-[12px] leading-5 text-[#718097]">4 поверхности · Состояние после уборки</p>
+                   <span class="mt-3 inline-flex items-center gap-1.5 text-[12px] font-bold text-[#2B6DA7]">
+                       Открыть анкету
+                       <x-heroicon-o-arrow-right class="size-4 transition-transform group-hover:translate-x-1" />
+                   </span>
+               </div>
+               <div class="relative flex size-[88px] shrink-0 items-center justify-center rounded-[26px] bg-gradient-to-br from-[#20386B] to-[#3181BB] text-white shadow-[0_8px_24px_rgba(32,56,107,0.16)]">
+                   <x-heroicon-o-sparkles class="size-10" />
+               </div>
+           </div>
+       </a>
+       @endif
+
        <a href="{{ route('page-checks.control') }}">
             <div class="grid grid-cols-3 gap-[10px] bg-[#E1E1E1] rounded-[30px]">
 
