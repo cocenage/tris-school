@@ -58,6 +58,9 @@ class SalaryQuestionInfolist
     protected static function statusLabel(?string $status): string
     {
         return match ($status) {
+            'in_progress' => 'В работе',
+            'approved' => 'Одобрено',
+            'rejected' => 'Отказано',
             'reviewed' => 'Рассмотрено',
             'closed' => 'Закрыто',
             default => 'На рассмотрении',
@@ -67,7 +70,9 @@ class SalaryQuestionInfolist
     protected static function statusColor(?string $status): string
     {
         return match ($status) {
-            'reviewed' => 'info',
+            'in_progress', 'reviewed' => 'info',
+            'approved' => 'success',
+            'rejected' => 'danger',
             'closed' => 'success',
             default => 'warning',
         };

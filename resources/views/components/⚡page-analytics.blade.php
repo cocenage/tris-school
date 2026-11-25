@@ -144,7 +144,7 @@ new class extends Component
                 <select id="analytics-date" name="day" class="min-h-11 rounded-xl border border-[#C7D6E5] bg-white pl-3 pr-8 text-sm">
                     <option value="">Весь период</option>
                     @foreach($report['dates']->reverse() as $date)
-                        <option value="{{ $date }}" @selected($date === $report['day'])>{{ CarbonImmutable::parse($date)->format('d.m') }}</option>
+                        <option value="{{ $date }}" @selected($date === $report['day'])>{{ \Carbon\CarbonImmutable::parse($date)->format('d.m') }}</option>
                     @endforeach
                 </select>
                 <button type="submit" class="min-h-11 rounded-xl bg-[#DFECF8] px-3 text-sm font-semibold text-[#214E76]">Показать</button>
@@ -206,7 +206,7 @@ new class extends Component
                                     <div aria-hidden="true" class="pointer-events-none absolute inset-x-0 top-1/2 border-t border-[#DDE7EF]"></div>
                                     @foreach($report['scores'] as $date => $score)
                                         @php
-                                            $dayLabel = CarbonImmutable::parse($date)->format('d.m');
+                                            $dayLabel = \Carbon\CarbonImmutable::parse($date)->format('d.m');
                                             $label = $dayLabel.' · '.($score['average'] === null ? 'Без оценки' : $score['average'].'%').', контролей: '.$score['count'];
                                         @endphp
                                         <a href="{{ route('page-analytics', ['tab' => 'quality', 'period' => $period, 'day' => $date]) }}#analytics-results"
@@ -244,7 +244,7 @@ new class extends Component
         @if($tab === 'quality')
             <section id="analytics-results" aria-labelledby="analytics-results-heading" class="rounded-[28px] bg-white p-4 sm:p-6">
                 <div class="flex flex-wrap items-center justify-between gap-2">
-                    <h2 id="analytics-results-heading" class="text-lg font-semibold">Результаты @if($report['day']) за {{ CarbonImmutable::parse($report['day'])->format('d.m') }} @endif</h2>
+                    <h2 id="analytics-results-heading" class="text-lg font-semibold">Результаты @if($report['day']) за {{ \Carbon\CarbonImmutable::parse($report['day'])->format('d.m') }} @endif</h2>
                     @if($report['day'])
                         <a href="{{ route('page-analytics', ['tab' => 'quality', 'period' => $period]) }}#analytics-results" class="inline-flex min-h-11 items-center text-sm font-semibold text-[#214E76]">Весь период</a>
                     @endif
@@ -255,7 +255,7 @@ new class extends Component
                             <a href="{{ route('page-profile.checks.result', $control) }}" class="flex min-h-12 items-center justify-between gap-3 py-2 text-sm">
                                 <div class="min-w-0">
                                     <span class="block break-words font-semibold">{{ $control->cleaner?->name ?? 'Сотрудник не указан' }}</span>
-                                    <span class="block break-words text-[#42556B]">{{ CarbonImmutable::parse($control->report_date)->format('d.m') }} @if($control->apartment) · {{ $control->apartment->name }} @endif</span>
+                                    <span class="block break-words text-[#42556B]">{{ \Carbon\CarbonImmutable::parse($control->report_date)->format('d.m') }} @if($control->apartment) · {{ $control->apartment->name }} @endif</span>
                                 </div>
                                 <span class="shrink-0 text-right tabular-nums">{{ $control->max_points > 0 ? ($control->score_percent ?? round(100 * $control->total_points / $control->max_points)).'%' : '—' }}<span class="block text-xs text-[#42556B]">{{ $zoneLabels[$control->result_zone][0] ?? 'Без зоны' }}</span></span>
                             </a>

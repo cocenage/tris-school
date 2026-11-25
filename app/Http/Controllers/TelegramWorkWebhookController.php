@@ -598,6 +598,11 @@ class TelegramWorkWebhookController extends Controller
             return response()->json(['ok' => true, 'skipped' => 'reviewer_not_allowed']);
         }
 
+        if ($dayOffRequest->telegram_review_version !== null) {
+            $this->answerCallback($callbackQuery, 'Откройте кнопку «Рассмотреть заявку».');
+            return response()->json(['ok' => true, 'skipped' => 'compact_review_required']);
+        }
+
         if ($day->status !== 'pending') {
             $this->logCallbackEvent($data, true, true, true, 'dayoffday_already_reviewed');
             $this->answerCallback($callbackQuery, $day->status === 'approved' ? 'Дата уже одобрена' : 'Дата уже отклонена');
@@ -621,7 +626,7 @@ class TelegramWorkWebhookController extends Controller
 
             $lockedRequest = DayOffRequest::query()->lockForUpdate()->find($lockedDay->day_off_request_id);
 
-            if (! $lockedRequest) {
+            if (! $lockedRequest || $lockedRequest->telegram_review_version !== null) {
                 return;
             }
 
@@ -673,6 +678,9 @@ class TelegramWorkWebhookController extends Controller
 
     private function syncDayOffRequestMessage(array $callbackQuery, DayOffRequest $dayOffRequest, string $action): bool
     {
+        if ($dayOffRequest->fresh()?->telegram_review_version !== null) {
+            return true;
+        }
         try {
             $edited = $this->editDayOffRequestMessage($callbackQuery, $dayOffRequest);
 

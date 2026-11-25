@@ -28,7 +28,7 @@ class DayOffRequestsTable
             ->recordTitleAttribute('user_name')
             ->recordUrl(fn ($record) => Filament::getCurrentPanel()?->getId() === 'education'
                 ? DayOffRequestResource::getUrl('view', ['record' => $record])
-                : DayOffRequestResource::getUrl('edit', ['record' => $record]))
+                : DayOffRequestResource::getUrl($record->telegram_review_version !== null ? 'view' : 'edit', ['record' => $record]))
             ->defaultSort('created_at', 'desc')
 
             ->columns([
@@ -136,9 +136,10 @@ class DayOffRequestsTable
                         ->label('Одобрить всё')
                         ->icon('heroicon-m-check')
                         ->color('success')
-                        ->visible(fn (DayOffRequest $record): bool => $record->status !== 'approved')
+                        ->visible(fn (DayOffRequest $record): bool => $record->telegram_review_version === null && $record->status !== 'approved')
                         ->requiresConfirmation()
                         ->action(function (DayOffRequest $record): void {
+                            abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                             Gate::authorize('review', $record);
                             $record->update([
                                 'status' => 'approved',
@@ -153,7 +154,7 @@ class DayOffRequestsTable
                         ->label('Отклонить всё')
                         ->icon('heroicon-m-x-mark')
                         ->color('danger')
-                        ->visible(fn (DayOffRequest $record): bool => $record->status !== 'rejected')
+                        ->visible(fn (DayOffRequest $record): bool => $record->telegram_review_version === null && $record->status !== 'rejected')
                         ->requiresConfirmation()
                         ->schema([
                             Textarea::make('admin_comment')
@@ -162,6 +163,7 @@ class DayOffRequestsTable
                                 ->default(fn (DayOffRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (DayOffRequest $record, array $data): void {
+                            abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                             Gate::authorize('review', $record);
                             $record->update([
                                 'status' => 'rejected',
@@ -176,6 +178,7 @@ class DayOffRequestsTable
                         }),
 
                     Action::make('set_admin_comment')
+                        ->visible(fn (DayOffRequest $record): bool => $record->telegram_review_version === null)
                         ->label('Комментарий администратора')
                         ->icon('heroicon-m-chat-bubble-left-right')
                         ->color('gray')
@@ -186,6 +189,7 @@ class DayOffRequestsTable
                                 ->default(fn (DayOffRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (DayOffRequest $record, array $data): void {
+                            abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                             Gate::authorize('review', $record);
                             $record->update([
                                 'admin_comment' => filled($data['admin_comment'] ?? null)
@@ -194,10 +198,16 @@ class DayOffRequestsTable
                             ]);
                         }),
 
+                    Action::make('compact_review')
+                        ->label('Рассмотреть заявку')
+                        ->visible(fn (DayOffRequest $record): bool => $record->telegram_review_version !== null && (int) $record->telegram_review_version === 0 && auth()->user()?->isAdmin())
+                        ->url(fn (DayOffRequest $record): string => route('structured.admin.show', ['day_off', $record->id])),
+
                     ViewAction::make()
                         ->label('Открыть'),
 
                     EditAction::make()
+                        ->visible(fn (DayOffRequest $record): bool => $record->telegram_review_version === null)
                         ->label('Обработать'),
                 ]),
             ])

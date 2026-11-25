@@ -28,7 +28,7 @@ class VacationRequestsTable
             ->recordTitleAttribute('id')
             ->recordUrl(fn ($record) => Filament::getCurrentPanel()?->getId() === 'education'
                 ? VacationRequestResource::getUrl('view', ['record' => $record])
-                : VacationRequestResource::getUrl('edit', ['record' => $record]))
+                : VacationRequestResource::getUrl($record->telegram_review_version !== null ? 'view' : 'edit', ['record' => $record]))
             ->defaultSort('created_at', 'desc')
 
             ->columns([
@@ -135,9 +135,10 @@ class VacationRequestsTable
                         ->label('Одобрить всё')
                         ->icon('heroicon-m-check')
                         ->color('success')
-                        ->visible(fn (VacationRequest $record): bool => $record->status !== 'approved')
+                        ->visible(fn (VacationRequest $record): bool => $record->telegram_review_version === null && $record->status !== 'approved')
                         ->requiresConfirmation()
                         ->action(function (VacationRequest $record): void {
+                            abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                             Gate::authorize('review', $record);
                             foreach ($record->days as $day) {
                                 $day->update([
@@ -156,7 +157,7 @@ class VacationRequestsTable
                         ->label('Отклонить всё')
                         ->icon('heroicon-m-x-mark')
                         ->color('danger')
-                        ->visible(fn (VacationRequest $record): bool => $record->status !== 'rejected')
+                        ->visible(fn (VacationRequest $record): bool => $record->telegram_review_version === null && $record->status !== 'rejected')
                         ->requiresConfirmation()
                         ->schema([
                             Textarea::make('admin_comment')
@@ -165,6 +166,7 @@ class VacationRequestsTable
                                 ->default(fn (VacationRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (VacationRequest $record, array $data): void {
+                            abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                             Gate::authorize('review', $record);
                             $adminComment = filled($data['admin_comment'] ?? null)
                                 ? trim((string) $data['admin_comment'])
@@ -188,6 +190,7 @@ class VacationRequestsTable
                         }),
 
                     Action::make('set_admin_comment')
+                        ->visible(fn (VacationRequest $record): bool => $record->telegram_review_version === null)
                         ->label('Комментарий администратора')
                         ->icon('heroicon-m-chat-bubble-left-right')
                         ->color('gray')
@@ -198,6 +201,7 @@ class VacationRequestsTable
                                 ->default(fn (VacationRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (VacationRequest $record, array $data): void {
+                            abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                             Gate::authorize('review', $record);
                             $record->update([
                                 'admin_comment' => filled($data['admin_comment'] ?? null)
@@ -206,10 +210,16 @@ class VacationRequestsTable
                             ]);
                         }),
 
+                    Action::make('compact_review')
+                        ->label('Рассмотреть заявку')
+                        ->visible(fn (VacationRequest $record): bool => $record->telegram_review_version !== null && (int) $record->telegram_review_version === 0 && auth()->user()?->isAdmin())
+                        ->url(fn (VacationRequest $record): string => route('structured.admin.show', ['vacation', $record->id])),
+
                     ViewAction::make()
                         ->label('Открыть'),
 
                     EditAction::make()
+                        ->visible(fn (VacationRequest $record): bool => $record->telegram_review_version === null)
                         ->label('Обработать'),
                 ]),
             ])

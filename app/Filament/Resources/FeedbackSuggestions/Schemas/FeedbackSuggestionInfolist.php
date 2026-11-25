@@ -14,14 +14,14 @@ class FeedbackSuggestionInfolist
         return $schema->components([
             Grid::make(12)
                 ->schema([
-                    Section::make('Обращение')
+                    Section::make('Вопрос')
                         ->schema([
                             TextEntry::make('user.name')
                                 ->label('Сотрудник')
                                 ->weight('bold'),
 
                             TextEntry::make('type')
-                                ->label('Тип')
+                                ->label('Тип вопроса')
                                 ->badge()
                                 ->color('gray'),
 
@@ -41,7 +41,7 @@ class FeedbackSuggestionInfolist
                     Section::make('Комментарии')
                         ->schema([
                             TextEntry::make('comment')
-                                ->label('Сообщение сотрудника')
+                                ->label('Комментарий сотрудника')
                                 ->placeholder('—')
                                 ->columnSpanFull(),
 
@@ -58,6 +58,9 @@ class FeedbackSuggestionInfolist
     protected static function statusLabel(?string $status): string
     {
         return match ($status) {
+            'in_progress' => 'В работе',
+            'approved' => 'Одобрено',
+            'rejected' => 'Отказано',
             'reviewed' => 'Рассмотрено',
             'closed' => 'Закрыто',
             default => 'На рассмотрении',
@@ -67,7 +70,9 @@ class FeedbackSuggestionInfolist
     protected static function statusColor(?string $status): string
     {
         return match ($status) {
-            'reviewed' => 'info',
+            'in_progress', 'reviewed' => 'info',
+            'approved' => 'success',
+            'rejected' => 'danger',
             'closed' => 'success',
             default => 'warning',
         };

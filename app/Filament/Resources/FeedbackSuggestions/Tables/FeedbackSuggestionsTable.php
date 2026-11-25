@@ -32,7 +32,7 @@ class FeedbackSuggestionsTable
                     ->description(fn (FeedbackSuggestion $record): string => $record->created_at?->format('d.m.Y H:i') ?? '—'),
 
                 TextColumn::make('type')
-                    ->label('Тип')
+                    ->label('Тип вопроса')
                     ->badge()
                     ->color('gray')
                     ->searchable(),
@@ -45,7 +45,7 @@ class FeedbackSuggestionsTable
                     ->sortable(),
 
                 TextColumn::make('comment')
-                    ->label('Сообщение')
+                    ->label('Комментарий')
                     ->limit(70)
                     ->wrap()
                     ->placeholder('—'),
@@ -85,24 +85,21 @@ class FeedbackSuggestionsTable
                         ->label('Рассмотрено')
                         ->icon('heroicon-m-eye')
                         ->color('info')
-                        ->visible(fn (FeedbackSuggestion $record): bool => $record->status !== 'reviewed')
+                        ->visible(fn (FeedbackSuggestion $record): bool => ! $record->usesDecisionWorkflow() && $record->status !== 'reviewed')
                         ->requiresConfirmation()
-                        ->action(fn (FeedbackSuggestion $record) => $record->update([
-                            'status' => 'reviewed',
-                        ])),
+                        ->action(fn (FeedbackSuggestion $record) => self::legacyUpdate($record, ['status' => 'reviewed'])),
 
                     Action::make('close')
                         ->label('Закрыть')
                         ->icon('heroicon-m-check-circle')
                         ->color('success')
-                        ->visible(fn (FeedbackSuggestion $record): bool => $record->status !== 'closed')
+                        ->visible(fn (FeedbackSuggestion $record): bool => ! $record->usesDecisionWorkflow() && $record->status !== 'closed')
                         ->requiresConfirmation()
-                        ->action(fn (FeedbackSuggestion $record) => $record->update([
-                            'status' => 'closed',
-                        ])),
+                        ->action(fn (FeedbackSuggestion $record) => self::legacyUpdate($record, ['status' => 'closed'])),
 
                     Action::make('set_admin_comment')
                         ->label('Комментарий администратора')
+                        ->visible(fn (FeedbackSuggestion $record): bool => ! $record->usesDecisionWorkflow())
                         ->icon('heroicon-m-chat-bubble-left-right')
                         ->color('gray')
                         ->schema([
@@ -112,7 +109,7 @@ class FeedbackSuggestionsTable
                                 ->default(fn (FeedbackSuggestion $record) => $record->admin_comment),
                         ])
                         ->action(function (FeedbackSuggestion $record, array $data): void {
-                            $record->update([
+                            self::legacyUpdate($record, [
                                 'admin_comment' => filled($data['admin_comment'] ?? null)
                                     ? trim((string) $data['admin_comment'])
                                     : null,
@@ -129,9 +126,18 @@ class FeedbackSuggestionsTable
             ->bulkActions([]);
     }
 
+    private static function legacyUpdate(FeedbackSuggestion $record, array $data): void
+    {
+        abort_unless(FeedbackSuggestion::query()->whereKey($record->id)->whereNull('telegram_source_message_id')
+            ->where('decision_version', 0)->update($data) === 1, 409, 'Заявка изменена. Откройте форму обработки.');
+    }
+
     protected static function statusLabel(?string $status): string
     {
         return match ($status) {
+            'in_progress' => 'В работе',
+            'approved' => 'Одобрено',
+            'rejected' => 'Отказано',
             'reviewed' => 'Рассмотрено',
             'closed' => 'Закрыто',
             default => 'На рассмотрении',
@@ -141,7 +147,9 @@ class FeedbackSuggestionsTable
     protected static function statusColor(?string $status): string
     {
         return match ($status) {
-            'reviewed' => 'info',
+            'in_progress', 'reviewed' => 'info',
+            'approved' => 'success',
+            'rejected' => 'danger',
             'closed' => 'success',
             default => 'warning',
         };

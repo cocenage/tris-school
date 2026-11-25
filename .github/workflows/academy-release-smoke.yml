@@ -71,6 +71,8 @@ jobs:
           php artisan route:list --path=checks
       - name: Antigoccia UI and effectiveness tests
         run: php artisan test tests/Feature/AntigocciaInterfaceTest.php tests/Feature/AntigocciaLivewireStatesTest.php tests/Feature/AntigocciaEffectivenessTest.php tests/Feature/AntigocciaAnalyticsTest.php tests/Feature/AntigocciaStatisticsTest.php tests/Feature/AntigocciaOverviewTest.php tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaOwnDeletionTest.php
+      - name: Academy analytics route tests
+        run: php artisan test tests/Feature/AcademyAnalyticsTest.php
       - name: Focus Control V2 backend tests
         run: php artisan test tests/Feature/ControlWorkflowTest.php tests/Feature/FocusV2StagingCheckTest.php
       - name: OKS copy and Telegram delivery tests

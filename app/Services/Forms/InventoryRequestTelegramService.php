@@ -12,6 +12,9 @@ class InventoryRequestTelegramService
 {
     public function syncSourceMessage(InventoryRequest $request): bool
     {
+        if ($request->telegram_review_version !== null) {
+            return false; // The compact review owns its immutable source card.
+        }
         if (! $request->telegram_source_chat_id || ! $request->telegram_source_message_id) {
             return false;
         }
@@ -81,6 +84,11 @@ class InventoryRequestTelegramService
 
     public function sendNewRequest(InventoryRequest $request): void
     {
+        if ($request->telegram_review_version !== null || app(StructuredRequestReview::class)->enabled('inventory')) {
+            app(TelegramStructuredRequestService::class)->sendCreated('inventory', $request);
+            return;
+        }
+
         $request->loadMissing(['user', 'lines']);
 
         $token = config('services.telegram.bot_token');

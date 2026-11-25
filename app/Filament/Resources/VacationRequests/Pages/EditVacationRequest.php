@@ -13,6 +13,12 @@ class EditVacationRequest extends EditRecord
 {
     protected static string $resource = VacationRequestResource::class;
 
+    protected function handleRecordUpdate(\Illuminate\Database\Eloquent\Model $record, array $data): \Illuminate\Database\Eloquent\Model
+    {
+        abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
+        return parent::handleRecordUpdate($record, $data);
+    }
+
     protected function afterSave(): void
     {
         app(VacationRequestTelegramService::class)->syncSourceMessage($this->record);
@@ -29,7 +35,7 @@ class EditVacationRequest extends EditRecord
                 ->outlined(),
 
             ViewAction::make(),
-            DeleteAction::make(),
+            DeleteAction::make()->visible(fn (): bool => $this->record->telegram_review_version === null),
         ];
     }
 }

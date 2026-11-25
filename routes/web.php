@@ -6,6 +6,7 @@ use App\Http\Controllers\ControlMediaController;
 use App\Http\Controllers\FocusMediaUploadController;
 use App\Http\Controllers\FocusV2BootstrapController;
 use App\Http\Controllers\FocusV2DraftController;
+use App\Http\Controllers\FocusV2ResetController;
 use App\Http\Controllers\FocusV2MediaController;
 use App\Http\Controllers\FocusV2MediaReviewController;
 use App\Http\Controllers\FocusV2SubmitController;
@@ -18,6 +19,7 @@ use App\Http\Controllers\TelegramAuthController;
 use App\Http\Controllers\TelegramLoginWidgetController;
 use App\Http\Controllers\TelegramOksCardController;
 use App\Http\Controllers\TelegramOksResponseController;
+use App\Http\Controllers\TelegramSalaryDecisionController;
 use App\Http\Controllers\TelegramWorkWebhookController;
 use App\Http\Controllers\TelegramWriteAccessController;
 use App\Http\Middleware\SafeguardRolePreviewData;
@@ -33,7 +35,7 @@ Route::get('/', function () {
         : [];
 
     $telegramStart = request()->query('tgWebAppStartParam');
-    if (! auth()->check() || (is_string($telegramStart) && (str_starts_with($telegramStart, 'oks_') || $telegramStart === 'antigoccia'))) {
+    if (! auth()->check() || (is_string($telegramStart) && (str_starts_with($telegramStart, 'oks_') || str_starts_with($telegramStart, 'salary_') || str_starts_with($telegramStart, 'schedule_') || str_starts_with($telegramStart, 'feedback_') || str_starts_with($telegramStart, 'review_') || $telegramStart === 'antigoccia'))) {
         return redirect()->route('landing.page', $previewParameters);
     }
 
@@ -97,6 +99,22 @@ Route::match(['GET', 'HEAD'], '/admin/education/{path?}', function (?string $pat
 })->where('path', '.*')->name('education.legacy-redirect');
 
 Route::middleware(['auth', 'approved'])->group(function () {
+    Route::get('/requests/salary/{salaryQuestion}/{action}', [TelegramSalaryDecisionController::class, 'show'])
+        ->whereNumber('salaryQuestion')->where('action', 'approve|reject|work')->name('salary.decision.show');
+    Route::post('/requests/salary/{salaryQuestion}/{action}', [TelegramSalaryDecisionController::class, 'store'])
+        ->whereNumber('salaryQuestion')->where('action', 'approve|reject|work')->middleware('throttle:20,1')->name('salary.decision.store');
+    Route::get('/requests/text/{kind}/{questionId}/{action}', [\App\Http\Controllers\TelegramStaffTextDecisionController::class, 'show'])
+        ->whereIn('kind', ['schedule', 'feedback'])->whereNumber('questionId')->where('action', 'approve|reject|work|reply')->name('staff-text.decision.show');
+    Route::post('/requests/text/{kind}/{questionId}/{action}', [\App\Http\Controllers\TelegramStaffTextDecisionController::class, 'store'])
+        ->whereIn('kind', ['schedule', 'feedback'])->whereNumber('questionId')->where('action', 'approve|reject|work|reply')->middleware('throttle:20,1')->name('staff-text.decision.store');
+    Route::get('/requests/structured/{kind}/{requestId}', [\App\Http\Controllers\TelegramStructuredDecisionController::class, 'show'])
+        ->whereIn('kind', ['day_off', 'vacation', 'inventory'])->whereNumber('requestId')->name('structured.decision.show');
+    Route::post('/requests/structured/{kind}/{requestId}', [\App\Http\Controllers\TelegramStructuredDecisionController::class, 'store'])
+        ->whereIn('kind', ['day_off', 'vacation', 'inventory'])->whereNumber('requestId')->middleware('throttle:20,1')->name('structured.decision.store');
+    Route::get('/requests/structured/{kind}/{requestId}/admin', [\App\Http\Controllers\TelegramStructuredDecisionController::class, 'show'])
+        ->whereIn('kind', ['day_off', 'vacation', 'inventory'])->whereNumber('requestId')->name('structured.admin.show');
+    Route::post('/requests/structured/{kind}/{requestId}/admin', [\App\Http\Controllers\TelegramStructuredDecisionController::class, 'store'])
+        ->whereIn('kind', ['day_off', 'vacation', 'inventory'])->whereNumber('requestId')->middleware('throttle:20,1')->name('structured.admin.store');
     Route::get('/oks/control/{delivery}/{district?}', [TelegramOksCardController::class, 'show'])->whereNumber('delivery')->name('oks.card.show');
     Route::post('/oks/control/{delivery}/{district}', [TelegramOksCardController::class, 'store'])->whereNumber('delivery')->name('oks.card.save');
     Route::get('/oks/respond/{delivery}/{question}/{district}', [TelegramOksResponseController::class, 'show'])->name('oks.response.show');
@@ -162,6 +180,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::post('/checks/control/focus-v2/draft', FocusV2DraftController::class)
         ->middleware([SafeguardRolePreviewData::class, 'throttle:120,1'])
         ->name('page-checks.control.focus-v2.draft');
+    Route::post('/checks/control/focus-v2/draft/reset', FocusV2ResetController::class)
+        ->middleware([SafeguardRolePreviewData::class, 'throttle:20,1'])
+        ->name('page-checks.control.focus-v2.reset');
     Route::post('/checks/control/focus-v2/submit', FocusV2SubmitController::class)
         ->middleware([SafeguardRolePreviewData::class, 'throttle:20,1'])
         ->name('page-checks.control.focus-v2.submit');

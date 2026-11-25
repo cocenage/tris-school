@@ -21,7 +21,7 @@ class InventoryRequestsTable
         return $table
             ->modifyQueryUsing(fn (Builder $query): Builder => $query->with(['user', 'lines']))
             ->recordTitleAttribute('user_name')
-            ->recordUrl(fn ($record) => InventoryRequestResource::getUrl('edit', ['record' => $record]))
+            ->recordUrl(fn ($record) => InventoryRequestResource::getUrl($record->telegram_review_version !== null ? 'view' : 'edit', ['record' => $record]))
             ->defaultSort('created_at', 'desc')
 
             ->columns([
@@ -100,7 +100,10 @@ class InventoryRequestsTable
                     ->label('Статус заявки')
                     ->options([
                         'pending' => 'На рассмотрении',
-                        'issued' => 'Выдано',
+                        'approved' => 'Одобрено',
+            'partially_approved' => 'Частично одобрено',
+            'rejected' => 'Отказано',
+            'issued' => 'Выдано',
                         'partially_issued' => 'Выдано частично',
                         'cancelled' => 'Не выдано',
                     ])
@@ -116,6 +119,7 @@ class InventoryRequestsTable
             ->actions([
                 ActionGroup::make([
                     Action::make('set_admin_comment')
+                        ->visible(fn (InventoryRequest $record): bool => $record->telegram_review_version === null)
                         ->label('Комментарий администратора')
                         ->icon('heroicon-m-chat-bubble-left-right')
                         ->color('gray')
@@ -126,6 +130,7 @@ class InventoryRequestsTable
                                 ->default(fn (InventoryRequest $record) => $record->admin_comment),
                         ])
                         ->action(function (InventoryRequest $record, array $data): void {
+                            abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                             $record->update([
                                 'admin_comment' => filled($data['admin_comment'] ?? null)
                                     ? trim((string) $data['admin_comment'])
@@ -133,10 +138,16 @@ class InventoryRequestsTable
                             ]);
                         }),
 
+                    Action::make('compact_review')
+                        ->label('Рассмотреть заявку')
+                        ->visible(fn (InventoryRequest $record): bool => $record->telegram_review_version !== null && (int) $record->telegram_review_version === 0 && auth()->user()?->isAdmin())
+                        ->url(fn (InventoryRequest $record): string => route('structured.admin.show', ['inventory', $record->id])),
+
                     ViewAction::make()
                         ->label('Открыть'),
 
                     EditAction::make()
+                        ->visible(fn (InventoryRequest $record): bool => $record->telegram_review_version === null)
                         ->label('Обработать'),
                 ]),
             ])
@@ -147,6 +158,9 @@ class InventoryRequestsTable
     protected static function statusLabel(?string $status): string
     {
         return match ($status) {
+            'approved' => 'Одобрено',
+            'partially_approved' => 'Частично одобрено',
+            'rejected' => 'Отказано',
             'issued' => 'Выдано',
             'partially_issued' => 'Выдано частично',
             'cancelled' => 'Не выдано',
@@ -157,9 +171,9 @@ class InventoryRequestsTable
     protected static function statusColor(?string $status): string
     {
         return match ($status) {
-            'issued' => 'success',
-            'partially_issued' => 'warning',
-            'cancelled' => 'danger',
+            'approved', 'issued' => 'success',
+            'partially_approved', 'partially_issued' => 'warning',
+            'rejected', 'cancelled' => 'danger',
             default => 'info',
         };
     }

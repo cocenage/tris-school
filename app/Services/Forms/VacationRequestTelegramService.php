@@ -13,6 +13,9 @@ class VacationRequestTelegramService
 {
     public function syncSourceMessage(VacationRequest $request): bool
     {
+        if ($request->telegram_review_version !== null) {
+            return false; // The compact review owns its immutable source card.
+        }
         if (! $request->telegram_source_chat_id || ! $request->telegram_source_message_id) {
             return false;
         }
@@ -207,6 +210,11 @@ class VacationRequestTelegramService
 
     public function sendCreated(VacationRequest $request): void
     {
+        if ($request->telegram_review_version !== null || app(StructuredRequestReview::class)->enabled('vacation')) {
+            app(TelegramStructuredRequestService::class)->sendCreated('vacation', $request);
+            return;
+        }
+
         $request->loadMissing(['user', 'days']);
 
         $token = config('services.telegram.bot_token');

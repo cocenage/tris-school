@@ -220,3 +220,25 @@ it('counts only explicit cleaner no-work marks in schedule analytics', function 
         ->assertSee('Без назначенной работы')
         ->assertSee('Без назначенной работы 1');
 });
+
+it('renders the compact Antigoccia admin overview with empty and populated observations', function (): void {
+    $this->actingAs($this->admin);
+    \Filament\Facades\Filament::setCurrentPanel(\Filament\Facades\Filament::getPanel('admin'));
+    $component = Livewire::test(\App\Filament\Pages\AntigocciaStatistics::class)
+        ->assertOk()->assertSee('Результаты покрытия')->assertSee('Нет проверок за период');
+
+    $id = DB::table('apartments')->insertGetId(['name' => 'Antigoccia fixture', 'is_active' => true]);
+    DB::table('antigoccia_applications')->insert([
+        'apartment_id' => $id, 'applied_on' => '2026-11-10', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+    DB::table('antigoccia_reports')->insert([
+        'apartment_id' => $id, 'user_id' => $this->cleaner->id, 'cleaner_name' => 'Fixture',
+        'cleaning_date' => '2026-11-15', 'days_since_previous_cleaning' => 2,
+        'answers' => json_encode(['mirrors' => ['dirt' => 1, 'removal' => 'easy', 'remaining' => 'no']]),
+        'remaining' => false, 'submission_uuid' => (string) str()->uuid(),
+        'created_at' => now(), 'updated_at' => now(),
+    ]);
+    $component->call('$refresh')->assertOk()->assertSee('100%')->assertSee('Antigoccia fixture')
+        ->call('selectApartment', $id)->assertOk()->assertSee('История проверок')
+        ->assertSee('Fixture');
+});
