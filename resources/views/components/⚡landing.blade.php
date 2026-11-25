@@ -193,7 +193,7 @@ new class extends Component {
                 tg.ready();
 
                 const startParam = String(tg.initDataUnsafe?.start_param ?? '');
-                const openingCompactForm = startParam.startsWith('oks_') || startParam.startsWith('salary_') || startParam.startsWith('schedule_') || startParam.startsWith('feedback_');
+                const openingCompactForm = startParam.startsWith('oks_') || startParam.startsWith('salary_') || startParam.startsWith('schedule_') || startParam.startsWith('feedback_') || startParam.startsWith('review_');
                 if (!openingCompactForm && typeof tg.expand === 'function') {
                     tg.expand();
                 }

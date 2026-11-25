@@ -101,7 +101,7 @@ class StructuredRequestReview
 
     public function canOpen(string $kind, Model $record, ?User $actor, bool $telegram = true): bool
     {
-        return $this->enabled($kind) && $this->canReview($actor)
+        return (! $telegram || $this->enabled($kind)) && $this->canReview($actor)
             && ($telegram || $actor->isAdmin())
             && $this->hasSource($kind, $record)
             && (int) $record->telegram_review_version === 0
