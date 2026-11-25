@@ -61,7 +61,7 @@ afterEach(function (): void {
 
 it('renders the form and switches from empty through missing photo to complete', function (): void {
     $component = Livewire::test('antigoccia.page-antigoccia')
-        ->assertSee('Антикапля')
+        ->assertSee('Данные уборки')
         ->assertSee('Не начато')
         ->assertSee('Проверка поверхностей');
 

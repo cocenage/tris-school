@@ -235,7 +235,11 @@ new class extends Component {
         } catch (ValidationException $exception) {
             $this->setErrorBag($exception->validator->errors());
             $keys = array_keys($exception->errors());
-            $this->dispatch('antigoccia-invalid', field: $keys[0] ?? 'apartmentId');
+            $order = ['apartmentId', 'coatingDate', 'cleaningDate', 'daysSincePreviousCleaning'];
+            foreach (AntigocciaAssessment::SURFACES as $surface => $label) {
+                array_push($order, "answers.$surface.dirt", "answers.$surface.removal", "answers.$surface.remaining", "photos.$surface");
+            }
+            $this->dispatch('antigoccia-invalid', field: array_values(array_intersect($order, $keys))[0] ?? $keys[0] ?? 'apartmentId');
         }
     }
 
@@ -343,7 +347,7 @@ new class extends Component {
 </x-slot:header>
 
 <div x-data
-    x-on:antigoccia-invalid.window="$nextTick(() => requestAnimationFrame(() => { const field = $event.detail.field; const el = Array.from($el.querySelectorAll('[data-antigoccia-field]')).find(node => node.dataset.antigocciaField === field); if (el) { el.scrollIntoView({behavior: 'smooth', block: 'center'}); el.focus({preventScroll: true}); } }))" class="h-full min-h-0 w-full overflow-y-auto bg-[#F2F2F2]">
+    x-on:antigoccia-invalid.window="const field = $event.detail.field; const root = $el; $nextTick(() => requestAnimationFrame(() => { const el = Array.from(root.querySelectorAll('[data-antigoccia-field]')).find(node => node.dataset.antigocciaField === field); if (el) { el.scrollIntoView({behavior: 'smooth', block: 'center'}); el.focus({preventScroll: true}); } }))" class="h-full min-h-0 w-full overflow-y-auto bg-[#F2F2F2]">
     <main class="mx-auto flex w-full max-w-[840px] flex-col gap-4 px-4 pb-[calc(112px+env(safe-area-inset-bottom))] pt-4">
         @if($saved)
             <section role="status" class="flex items-start gap-4 rounded-2xl border border-emerald-200 bg-[#F0FAF4] p-4 text-emerald-900">
@@ -481,7 +485,7 @@ new class extends Component {
                         };
                     @endphp
                     <section wire:key="antigoccia-{{ $surface }}" class="overflow-hidden rounded-2xl border {{ $state['needs_photo'] ? 'border-red-100' : 'border-white' }} bg-white">
-                        <div class="flex flex-wrap items-start justify-between gap-3 border-b border-[#EEF1F5] px-5 pb-4 pt-5">
+                        <div class="flex flex-wrap items-start justify-between gap-3 border-b border-[#EEF1F5] px-4 pb-3 pt-4">
                             <div class="flex min-w-0 items-start gap-3">
                                 
                                 <div class="min-w-0">
@@ -495,8 +499,8 @@ new class extends Component {
                         </div>
 
                         <div class="space-y-4 px-4 py-4">
-                            <fieldset tabindex="-1" data-antigoccia-field="answers.{{ $surface }}.dirt" class="scroll-mt-20 focus:outline-none @error('answers.'.$surface.'.dirt') ring-1 ring-red-400 rounded-lg @enderror">
-                                <legend class="mb-3 text-[13px] font-semibold leading-5 text-[#344460]">Загрязнение до уборки</legend>
+                            <fieldset tabindex="-1" data-antigoccia-field="answers.{{ $surface }}.dirt" class="scroll-mt-20 focus:outline-none {{ $errors->has('answers.'.$surface.'.dirt') ? 'ring-1 ring-red-400 rounded-lg' : '' }}">
+                                <legend class="mb-2 text-[13px] font-semibold leading-5 text-[#344460]">Загрязнение до уборки</legend>
                                 <div class="grid grid-cols-3 gap-2">
                                     @foreach([
                                         0 => ['name' => 'Не видно', 'hint' => 'Чисто', 'tone' => 'border-emerald-300 bg-emerald-50 text-emerald-900'],
@@ -513,7 +517,7 @@ new class extends Component {
                                 @error('answers.'.$surface.'.dirt') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
                             </fieldset>
 
-                            <fieldset tabindex="-1" data-antigoccia-field="answers.{{ $surface }}.removal" class="scroll-mt-20 focus:outline-none @error('answers.'.$surface.'.removal') ring-1 ring-red-400 rounded-lg @enderror">
+                            <fieldset tabindex="-1" data-antigoccia-field="answers.{{ $surface }}.removal" class="scroll-mt-20 focus:outline-none {{ $errors->has('answers.'.$surface.'.removal') ? 'ring-1 ring-red-400 rounded-lg' : '' }}">
                                 <legend class="mb-3 text-[13px] font-semibold leading-5 text-[#344460]">Удаление загрязнений</legend>
                                 <div class="grid grid-cols-2 gap-2">
                                     @foreach(\App\Services\Antigoccia\AntigocciaAssessment::REMOVAL_OPTIONS as $value => $option)
@@ -531,10 +535,10 @@ new class extends Component {
                                 @error('answers.'.$surface.'.removal') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
                             </fieldset>
 
-                            <fieldset tabindex="-1" data-antigoccia-field="answers.{{ $surface }}.remaining" class="scroll-mt-20 focus:outline-none @error('answers.'.$surface.'.remaining') ring-1 ring-red-400 rounded-lg @enderror">
+                            <fieldset tabindex="-1" data-antigoccia-field="answers.{{ $surface }}.remaining" class="scroll-mt-20 focus:outline-none {{ $errors->has('answers.'.$surface.'.remaining') ? 'ring-1 ring-red-400 rounded-lg' : '' }}">
                                 <legend class="mb-3 text-[13px] font-semibold leading-5 text-[#344460]">Остались загрязнения?</legend>
                                 <div class="grid grid-cols-2 gap-2">
-                                    <label class="relative flex min-h-[57px] cursor-pointer items-center justify-center gap-2 rounded-xl border px-3 text-[13px] font-bold transition-colors focus-within:ring-2 focus-within:ring-[#3181BB] {{ $remaining === 'no' ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-[#E9EDF2] bg-[#F8F9FB] text-[#5D6D84]' }}">
+                                    <label class="relative flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl border px-3 text-[13px] font-bold transition-colors focus-within:ring-2 focus-within:ring-[#3181BB] {{ $remaining === 'no' ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : 'border-[#E9EDF2] bg-[#F8F9FB] text-[#5D6D84]' }}">
                                         <input type="radio" wire:model.live="answers.{{ $surface }}.remaining" name="remaining-{{ $surface }}" value="no" class="sr-only">
                                         <x-heroicon-o-check-circle class="size-5" />
                                         Нет, чисто
@@ -583,7 +587,6 @@ new class extends Component {
                                 </label>
                                 <p wire:loading wire:target="photos.{{ $surface }}" role="status" class="mt-2 text-[12px] font-semibold text-[#2865A3]">Загружаем фотографию…</p>
                                 @error('photos.'.$surface) <p role="alert" class="mt-2 text-[12px] font-medium text-red-700">{{ $message }}</p> @enderror
-                                <p class="mt-2 text-[11px] text-[#8592A5]">JPG, PNG или WebP · до 10 МБ</p>
                             </div>
                         </div>
                     </section>
@@ -605,14 +608,13 @@ new class extends Component {
 
         <section class="overflow-hidden rounded-2xl bg-white">
             <button type="button" wire:click="$toggle('showMyReports')"
-                aria-expanded="{{ $showMyReports ? 'true' : 'false' }}" class="flex min-h-[81px] w-full items-center justify-between gap-3 px-5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#3181BB]">
+                aria-expanded="{{ $showMyReports ? 'true' : 'false' }}" class="flex min-h-14 w-full items-center justify-between gap-3 px-5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#3181BB]">
                 <span class="flex items-center gap-3">
                     <span class="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-[#F0F4FA] text-[#315E93]">
                         <x-heroicon-o-clock class="size-5" />
                     </span>
                     <span>
                         <span class="block text-[16px] font-bold text-[#243550]">Мои ответы</span>
-                        <span class="mt-1 block text-[12px] text-[#8995A6]">История отправленных анкет</span>
                     </span>
                 </span>
                 <span class="flex items-center gap-1.5 text-[12px] font-semibold text-[#37699C]">
