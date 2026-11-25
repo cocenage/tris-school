@@ -13,6 +13,12 @@ class EditInventoryRequest extends EditRecord
 {
     protected static string $resource = InventoryRequestResource::class;
 
+    protected function handleRecordUpdate(\Illuminate\Database\Eloquent\Model $record, array $data): \Illuminate\Database\Eloquent\Model
+    {
+        abort_unless($record->fresh()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
+        return parent::handleRecordUpdate($record, $data);
+    }
+
     protected function afterSave(): void
     {
         app(InventoryRequestTelegramService::class)->syncSourceMessage($this->record);
@@ -36,7 +42,7 @@ class EditInventoryRequest extends EditRecord
     {
         return [
             ViewAction::make(),
-            DeleteAction::make(),
+            DeleteAction::make()->visible(fn (): bool => $this->record->telegram_review_version === null),
         ];
     }
 

@@ -21,7 +21,11 @@ class ViewVacationRequest extends ViewRecord
                 ->color('gray')
                 ->outlined(),
 
-            EditAction::make(),
+            Action::make('compact_review')
+                ->label('Рассмотреть заявку')
+                ->visible(fn (): bool => $this->record->telegram_review_version !== null && (int) $this->record->telegram_review_version === 0 && auth()->user()?->isAdmin())
+                ->url(fn (): string => route('structured.admin.show', ['vacation', $this->record->id])),
+            EditAction::make()->visible(fn (): bool => $this->record->telegram_review_version === null),
         ];
     }
 }
