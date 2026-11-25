@@ -93,6 +93,18 @@ Schedule::call(function (): void {
     }
 })->name('staff-text-decision-recovery')->everyMinute()->withoutOverlapping();
 
+Schedule::call(function (): void {
+    if (! \Illuminate\Support\Facades\Schema::hasTable('structured_request_decisions')) {
+        return;
+    }
+    \App\Models\StructuredRequestDecision::query()->where('updated_at', '<', now()->subMinute())
+        ->where(function ($query): void {
+            $query->where('delivery_status', 'pending')
+                ->orWhere(fn ($q) => $q->whereIn('card_sync_status', ['pending', 'failed'])->where('card_sync_attempts', '<', 5));
+        })->orderBy('id')->limit(50)->get(['id'])
+        ->each(fn ($decision) => \App\Jobs\DeliverStructuredRequestDecision::dispatch($decision->id));
+})->name('structured-request-decision-recovery')->everyMinute()->withoutOverlapping();
+
 Schedule::command('controls:dispatch-completion-notifications')
     ->everyMinute()
     ->withoutOverlapping();
