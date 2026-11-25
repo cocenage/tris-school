@@ -53,12 +53,3 @@ jobs:
         run: php artisan view:cache
       - name: Verify Antigoccia states and business rules
         run: php artisan test tests/Feature/AntigocciaInterfaceTest.php tests/Feature/AntigocciaLivewireStatesTest.php tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaOwnDeletionTest.php
-      - name: Print compiled view context on failed runtime render
-        if: failure()
-        run: |
-          for file in storage/framework/views/*.php; do
-            if grep -q 'Загруженное фото поверхности' "$file"; then
-              echo "=== compiled Blade: $file ==="
-              nl -ba "$file" | sed -n '425,706p'
-            fi
-          done
