@@ -6,6 +6,10 @@ on:
   pull_request:
     paths:
       - '.github/workflows/academy-release-assets.yml'
+      - 'resources/css/**'
+      - 'resources/views/filament/**'
+      - 'app/Providers/Filament/**'
+      - 'vite.config.js'
       - 'scripts/release/academy-preflight.sh'
       - 'docs/releases/academy-production-update.md'
   workflow_dispatch:
@@ -30,6 +34,12 @@ jobs:
           cache: npm
       - name: Validate deployment preflight script
         run: bash -n scripts/release/academy-preflight.sh
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:v2
+      - name: Install PHP dependencies for Filament theme
+        run: composer install --no-interaction --prefer-dist --no-progress
       - name: Install locked dependencies
         run: npm ci
       - name: Build frontend assets
@@ -38,6 +48,7 @@ jobs:
         run: |
           test -s public/build/manifest.json
           test -d public/build/assets
+          node -e 'const fs = require("fs"); const m = require("./public/build/manifest.json"); const f = m["resources/css/filament/admin/theme.css"]?.file; if (!f || !fs.existsSync("public/build/" + f)) process.exit(1); const css = fs.readFileSync("public/build/" + f, "utf8"); for (const c of [".grid-cols-2", ".overflow-x-auto", ".tabular-nums"]) if (!css.includes(c)) process.exit(1);'
       - name: Package release files
         if: github.event_name != 'pull_request'
         run: |
