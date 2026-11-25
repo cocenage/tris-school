@@ -22,10 +22,7 @@
         <x-filament::section>
             <div class="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Эффективность покрытия · наблюдения</h2>
-                    <p class="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">
-                        Только анкеты после нанесения покрытия. Отдельно учитываются остатки загрязнений и лёгкость их удаления.
-                    </p>
+                    <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Результаты покрытия</h2>
                 </div>
                 <label class="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300">
                     Период
@@ -39,16 +36,11 @@
                 </label>
             </div>
 
-            <div class="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-                <strong>Как читать данные:</strong> это результаты после обработки, а не доказательство, что средство помогает.
-                Для вывода об эффективности нужно сравнение с состоянием до нанесения либо с похожими необработанными поверхностями.
-                Анкеты заполняют сотрудники, поэтому возможна субъективность оценок.
-            </div>
+            <p class="mt-2 text-xs text-gray-500">После обработки · без контрольной группы</p>
 
             @if($outcomes['reports'] === 0)
                 <div class="mt-5 rounded-xl border border-dashed border-gray-300 p-7 text-center dark:border-gray-700">
-                    <p class="font-medium">Пока нет проверок после обработки за выбранный период</p>
-                    <p class="mt-1 text-sm text-gray-500">Мы не показываем нулевой процент там, где ещё нет наблюдений.</p>
+                    <p class="font-medium">Нет проверок за период</p>
                 </div>
             @else
                 <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -73,19 +65,11 @@
                     @endforeach
                 </div>
 
-                <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-                    «Грязи не было» не считается лёгким удалением.
-                    {{ $outcomes['without_visible_dirt'] }} наблюдений без видимой грязи;
-                    {{ $outcomes['inconsistent'] }} противоречивых ответов (грязь была, но выбрано «загрязнений не было»).
-                    @if($outcomes['evaluable_removal'] < 20)
-                        Выборка для оценки удаления пока небольшая ({{ $outcomes['evaluable_removal'] }} наблюдений).
-                    @endif
-                </p>
+                <p class="mt-2 text-xs text-gray-500">Без грязи: {{ $outcomes['without_visible_dirt'] }} · Противоречия: {{ $outcomes['inconsistent'] }} @if($outcomes['evaluable_removal'] < 20) · Малая выборка @endif</p>
 
                 <div class="mt-6 grid gap-6 xl:grid-cols-2">
                     <div>
                         <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Срок после нанесения</h3>
-                        <p class="mt-1 text-xs text-gray-500">Доля ответов «остались загрязнения» по возрасту покрытия</p>
                         <div class="mt-3 space-y-3">
                             @foreach($effectiveness['ages'] as $cohort)
                                 <div class="rounded-xl border border-gray-200 px-3 py-3 dark:border-gray-700">
@@ -110,7 +94,6 @@
                     </div>
                     <div>
                         <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Интервал между уборками</h3>
-                        <p class="mt-1 text-xs text-gray-500">Сравнивайте одинаковые интервалы, чтобы не смешивать условия</p>
                         <div class="mt-3 space-y-3">
                             @foreach($effectiveness['gaps'] as $cohort)
                                 <div class="flex items-center justify-between gap-3 rounded-xl border border-gray-200 px-3 py-3 dark:border-gray-700">
@@ -159,7 +142,7 @@
 
             @if($effectiveness['unlinked_reports'] > 0)
                 <p class="mt-4 text-xs text-gray-500">
-                    {{ $effectiveness['unlinked_reports'] }} анкет не включено: на дату уборки нет подтверждённой даты нанесения покрытия.
+                    {{ $effectiveness['unlinked_reports'] }} анкет без даты нанесения исключено.
                 </p>
             @endif
         </x-filament::section>
@@ -176,7 +159,9 @@
                     </x-filament::button>
                 </div>
             </x-filament::section>
-            @php($stats = $this->statistics)
+            @php
+    $stats = $this->statistics;
+@endphp
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <x-filament::section>
                     <p class="text-sm text-gray-500">Дата обработки</p>
@@ -187,7 +172,7 @@
                     <p class="mt-1 text-2xl font-semibold">{{ $stats['days_since_application'] ?? '—' }}</p>
                 </x-filament::section>
                 <x-filament::section>
-                    <p class="text-sm text-gray-500">Уборок после последнего контроля</p>
+                    <p class="text-sm text-gray-500">Дней уборки после контроля</p>
                     <p class="mt-1 text-2xl font-semibold">{{ $stats['recorded_cleaning_days'] ?? '—' }}</p>
                     <p class="text-xs text-gray-500">Зарегистрированных дат</p>
                 </x-filament::section>
@@ -204,14 +189,16 @@
                     @foreach($stats['surfaces'] as $surface)
                         <div class="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
                             <h3 class="font-semibold">{{ $surface['label'] }}</h3>
-                            <p class="mt-2 text-sm">Всего: {{ $surface['total'] }} · Не легко: {{ $surface['difficult'] }} · Трудно / не удалились (старые): {{ $surface['failed'] }} · Остались: {{ $surface['remaining_count'] }}</p>
+                            <p class="mt-2 text-sm">Всего: {{ $surface['total'] }} · Не легко: {{ $surface['difficult'] }} · Трудно: {{ $surface['failed'] }} · Остались: {{ $surface['remaining_count'] }}</p>
                             @if($surface['first_issue_date'])
                                 <p class="mt-1 text-xs text-gray-500">Первое затруднение: {{ $surface['first_issue_date'] }}, контроль № {{ $surface['first_issue_report_number'] }}</p>
                             @endif
                             @if(count($surface['recent']) > 0)
                                 <div class="mt-3 flex flex-wrap gap-1" aria-label="Последние результаты удаляемости">
                                     @foreach($surface['recent'] as $point)
-                                        @php($indicator = \App\Services\Antigoccia\AntigocciaAssessment::removalIndicator($point['score']))
+                                        @php
+    $indicator = \App\Services\Antigoccia\AntigocciaAssessment::removalIndicator($point['score']);
+@endphp
                                         <span title="{{ $point['date'] }} · {{ \App\Services\Antigoccia\AntigocciaAssessment::removalLabel($point['score']) }}"
                                             class="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-semibold {{ $indicator['color'] }}">
                                             {{ $indicator['label'] }}
@@ -232,7 +219,9 @@
                             <summary class="cursor-pointer font-semibold">{{ $report->cleaning_date->format('d.m.Y') }} · {{ $report->cleaner_name }}</summary>
                             <p class="mt-2 text-sm text-gray-500">Отправлено {{ $report->created_at->format('d.m.Y H:i') }} · С прошлой уборки: {{ $report->days_since_previous_cleaning === null ? '—' : $report->days_since_previous_cleaning.' дн.' }}</p>
                             @foreach(\App\Services\Antigoccia\AntigocciaAssessment::SURFACES as $key => $label)
-                                @php($answer = $report->answers[$key] ?? [])
+                                @php
+    $answer = $report->answers[$key] ?? [];
+@endphp
                                 <div class="mt-2 border-t border-gray-100 pt-2 text-sm dark:border-gray-800">
                                     <p class="font-medium">{{ $label }}</p>
                                     <p>Загрязнение: {{ $answer['dirt'] ?? '—' }} · Удаление: {{ \App\Services\Antigoccia\AntigocciaAssessment::removalLabel($answer['removal'] ?? null) }} · Остались: {{ ($answer['remaining'] ?? null) === null ? '—' : ($answer['remaining'] === 'yes' ? 'Да' : 'Нет') }}</p>
@@ -258,7 +247,6 @@
                 <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
                     <div>
                         <h2 class="text-lg font-semibold">Квартиры под наблюдением</h2>
-                        <p class="text-xs text-gray-500">Только квартиры с обработкой или проверками ANTIGOCCIA</p>
                     </div>
                     <label class="block w-full max-w-sm text-sm font-medium">
                         <span class="sr-only">Поиск квартиры по названию или адресу</span>

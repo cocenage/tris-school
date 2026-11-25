@@ -3,8 +3,12 @@
     @if($districts->isEmpty())
         <p class="mt-3 text-sm text-[#42556B]">Данные журнала ОКС недоступны</p>
     @else
-        @php($maxTransitions = max(1, $districts->max('opened'), $districts->max('closed')))
-        @php($available = $districts->whereNotNull('opened'))
+        @php
+    $maxTransitions = max(1, $districts->max('opened'), $districts->max('closed'));
+@endphp
+        @php
+    $available = $districts->whereNotNull('opened');
+@endphp
         @if($available->isNotEmpty())
             @if($available->count() !== $districts->count())
                 <p class="mt-3 text-sm text-[#42556B]">Итоги по доступным районам</p>

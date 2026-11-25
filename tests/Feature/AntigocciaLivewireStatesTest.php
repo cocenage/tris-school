@@ -95,3 +95,18 @@ it('selects an apartment without losing previously established surface logic', f
     $component->call('clearApartment')->assertSee('Не начато');
     expect($component->instance()->completion['completed'])->toBe(0);
 });
+
+it('dispatches the first invalid field on submit instead of losing the scroll position', function (): void {
+    $component = Livewire::test('antigoccia.page-antigoccia');
+    $component->call('submit')->assertHasErrors(['apartmentId'])
+        ->assertDispatched('antigoccia-invalid', field: 'apartmentId');
+
+    $id = \Illuminate\Support\Facades\DB::table('apartments')->insertGetId([
+        'name' => 'Тестовая квартира', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+    $component->call('selectApartment', $id)
+        ->set('daysSincePreviousCleaning', '2')
+        ->set('coatingDate', now('Europe/Rome')->subDay()->toDateString())
+        ->call('submit')->assertHasErrors(['answers.mirrors.dirt'])
+        ->assertDispatched('antigoccia-invalid', field: 'answers.mirrors.dirt');
+});
