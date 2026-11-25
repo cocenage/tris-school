@@ -201,7 +201,10 @@ class TelegramStructuredRequestService
         if ($decision->delivery_status !== 'pending') {
             return;
         }
-        if (! $decision->recipient_chat_id || ! filled(config('services.telegram.bot_token'))) {
+        $model = StructuredRequestReview::model($decision->kind);
+        $record = $model::query()->find($decision->request_id);
+        if (! $record || (int) $record->telegram_review_version !== $decision->version
+            || ! $decision->recipient_chat_id || ! filled(config('services.telegram.bot_token'))) {
             $decision->update(['delivery_status' => 'failed']);
             return;
         }
