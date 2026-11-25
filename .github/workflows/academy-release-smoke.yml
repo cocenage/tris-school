@@ -1,0 +1,81 @@
+name: Academy release smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/academy-release-smoke.yml'
+      - 'app/Services/Antigoccia/**'
+      - 'app/Filament/Pages/AntigocciaStatistics.php'
+      - 'app/Services/Telegram/OksControlSchedule.php'
+      - 'app/Console/Commands/SendTeamCelebrationsNotification.php'
+      - 'resources/views/components/antigoccia/**'
+      - 'resources/views/components/⚡page-checks.blade.php'
+      - 'resources/views/filament/pages/antigoccia-statistics.blade.php'
+  pull_request:
+    paths:
+      - '.github/workflows/academy-release-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      APP_ENV: testing
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      DB_URL: ''
+      DB_ANALYTICS_DATABASE: ':memory:'
+      DB_OLD_DATABASE: ':memory:'
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
+      TELEGRAM_BOT_TOKEN: test-work-token
+      TELEGRAM_SCHEDULED_BOT_TOKEN: test-scheduled-token
+      PULSE_ENABLED: 'false'
+      TELESCOPE_ENABLED: 'false'
+      NIGHTWATCH_ENABLED: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, dom, fileinfo, pdo_sqlite, sqlite3, gd, intl, zip
+          coverage: none
+          tools: composer:v2
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Verify Focus V2 recovery JavaScript
+        run: node --test tests/JavaScript/FocusV2MediaRetry.test.mjs tests/JavaScript/FocusV2LocalRecovery.test.mjs tests/JavaScript/FocusV2Transport.test.mjs tests/JavaScript/FocusV2PhotoCache.test.mjs
+      - name: Build frontend assets
+        run: npm run build
+      - name: Prepare isolated application
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+      - name: Compile Blade and inspect release routes
+        run: |
+          php artisan view:cache
+          php artisan route:list --path=antigoccia
+          php artisan route:list --path=checks
+      - name: Antigoccia UI and effectiveness tests
+        run: php artisan test tests/Feature/AntigocciaInterfaceTest.php tests/Feature/AntigocciaLivewireStatesTest.php tests/Feature/AntigocciaEffectivenessTest.php tests/Feature/AntigocciaAnalyticsTest.php tests/Feature/AntigocciaStatisticsTest.php tests/Feature/AntigocciaOverviewTest.php tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaOwnDeletionTest.php
+      - name: Focus Control V2 backend tests
+        run: php artisan test tests/Feature/ControlWorkflowTest.php tests/Feature/FocusV2StagingCheckTest.php
+      - name: OKS copy and Telegram delivery tests
+        run: |
+          php artisan test tests/Feature/OksControlCopyTest.php
+          php artisan test tests/Feature/TelegramScheduledMessagesTest.php --filter='(?i)oks'
+      - name: Calendar empty-digest and celebration tests
+        run: php artisan test tests/Feature/TeamCelebrationsNotificationTest.php tests/Feature/TeamCelebrationServiceTest.php tests/Feature/CalendarEventsServiceTest.php
