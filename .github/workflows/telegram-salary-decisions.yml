@@ -60,7 +60,7 @@ jobs:
           cp .env.example .env
           php artisan key:generate --no-interaction
       - name: Verify salary Mini App and decision delivery
-        run: php artisan test tests/Feature/TelegramSalaryDecisionTest.php
+        run: php artisan test tests/Feature/TelegramSalaryDecisionTest.php tests/Feature/TelegramStaffTextDecisionTest.php
       - name: Verify existing request source messages
         run: php artisan test tests/Feature/TelegramRequestSourceMessagesTest.php tests/Feature/RequestFormGuidesTest.php
       - name: Verify OKS and Work bot callbacks

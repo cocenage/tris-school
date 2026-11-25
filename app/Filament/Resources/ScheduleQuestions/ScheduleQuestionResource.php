@@ -63,7 +63,7 @@ class ScheduleQuestionResource extends Resource
     public static function getNavigationBadge(): ?string
     {
         $pendingCount = static::getModel()::query()
-            ->where('status', 'pending')
+            ->whereIn('status', ['pending', 'in_progress'])
             ->count();
 
         return $pendingCount > 0 ? (string) $pendingCount : null;

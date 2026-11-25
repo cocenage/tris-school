@@ -2,6 +2,8 @@
 
 namespace App\Filament\Resources\ScheduleQuestions\Schemas;
 
+use App\Models\ScheduleQuestion;
+use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -26,13 +28,22 @@ class ScheduleQuestionForm
 
                     Select::make('status')
                         ->label('Статус')
-                        ->options([
-                            'pending' => 'На рассмотрении',
-                            'reviewed' => 'Рассмотрено',
-                            'closed' => 'Закрыто',
-                        ])
+                        ->options(function (?ScheduleQuestion $record): array {
+                            if (! $record?->usesDecisionWorkflow()) {
+                                return ['pending' => 'На рассмотрении', 'reviewed' => 'Рассмотрено', 'closed' => 'Закрыто'];
+                            }
+                            if (! in_array($record->status, ['pending', 'in_progress'], true)) {
+                                return [$record->status => ScheduleQuestion::STATUS_LABELS[$record->status] ?? $record->status];
+                            }
+                            return array_intersect_key(ScheduleQuestion::STATUS_LABELS, array_flip(
+                                $record->status === 'pending' ? ['pending', ...ScheduleQuestion::DECISION_STATUSES] : ScheduleQuestion::DECISION_STATUSES
+                            ));
+                        })
+                        ->live()
                         ->required()
                         ->native(false),
+
+                    Hidden::make('decision_version')->dehydrated(fn (?ScheduleQuestion $record): bool => $record?->usesDecisionWorkflow() ?? false),
 
                     Placeholder::make('created_at')
                         ->label('Создано')
@@ -52,9 +63,11 @@ class ScheduleQuestionForm
                         ->columnSpanFull(),
 
                     Textarea::make('admin_comment')
-                        ->label('Комментарий администратора')
+                        ->label('Комментарий руководителя')
+                        ->required(fn (?ScheduleQuestion $record, $get): bool => ($record?->usesDecisionWorkflow() ?? false) && in_array($get('status'), ScheduleQuestion::DECISION_STATUSES, true))
+                        ->maxLength(1800)
                         ->rows(4)
-                        ->placeholder('Например: вопрос по графику проверен')
+                        ->placeholder('Например: вопрос проверен, ответ передан сотруднику')
                         ->columnSpanFull(),
                 ])
                 ->columnSpanFull(),
