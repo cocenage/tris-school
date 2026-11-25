@@ -1,0 +1,54 @@
+name: Antigoccia UI checks
+
+on:
+  pull_request:
+    paths:
+      - 'resources/views/components/antigoccia/**'
+      - 'resources/views/components/⚡page-checks.blade.php'
+      - 'tests/Feature/AntigocciaInterfaceTest.php'
+      - '.github/workflows/antigoccia-ui.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_ENV: testing
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ':memory:'
+      DB_URL: ''
+      DB_ANALYTICS_DATABASE: ':memory:'
+      DB_OLD_DATABASE: ':memory:'
+      CACHE_STORE: array
+      QUEUE_CONNECTION: sync
+      SESSION_DRIVER: array
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, dom, fileinfo, pdo_sqlite, sqlite3, gd, intl, zip
+          coverage: none
+          tools: composer:v2
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build styles and assets
+        run: npm run build
+      - name: Prepare application
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+      - name: Compile Blade templates
+        run: php artisan view:cache
+      - name: Verify Antigoccia states and business rules
+        run: php artisan test tests/Feature/AntigocciaInterfaceTest.php tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaOwnDeletionTest.php
