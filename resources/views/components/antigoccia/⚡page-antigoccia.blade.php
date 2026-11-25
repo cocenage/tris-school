@@ -470,7 +470,9 @@ new class extends Component {
         </section>
 
         @unless($saved)
-            @php($completion = $this->completion)
+            @php
+                $completion = $this->completion;
+            @endphp
             <section class="rounded-[28px] bg-white p-5 shadow-[0_3px_22px_rgba(25,40,65,0.04)] sm:p-6" aria-label="Прогресс проверки">
                 <div class="flex items-end justify-between gap-3">
                     <div>
