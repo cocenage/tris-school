@@ -13,6 +13,11 @@ class DayOffRequestTelegramService
 {
     public function sendCreated(DayOffRequest $request): void
     {
+        if ($request->telegram_review_version !== null || app(StructuredRequestReview::class)->enabled('day_off')) {
+            app(TelegramStructuredRequestService::class)->sendCreated('day_off', $request);
+            return;
+        }
+
         $request->loadMissing(['user', 'days']);
 
         $token = config('services.telegram.bot_token');

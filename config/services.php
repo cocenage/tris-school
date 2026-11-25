@@ -34,8 +34,14 @@ return [
     'staff_forms' => [
         'chat_id' => env('TELEGRAM_CHAT_ID_STAFF_FORMS'),
 
+        'day_off_telegram_review_enabled' => env('STAFF_FORMS_DAY_OFF_TELEGRAM_REVIEW_ENABLED', false),
+        'vacation_telegram_review_enabled' => env('STAFF_FORMS_VACATION_TELEGRAM_REVIEW_ENABLED', false),
+        'inventory_telegram_review_enabled' => env('STAFF_FORMS_INVENTORY_TELEGRAM_REVIEW_ENABLED', false),
         'inventory_thread_id' => env('STAFF_FORMS_INVENTORY_THREAD_ID'),
         'salary_thread_id' => env('STAFF_FORMS_SALARY_THREAD_ID'),
+        'salary_telegram_decisions_enabled' => env('STAFF_FORMS_SALARY_TELEGRAM_DECISIONS_ENABLED', false),
+        'schedule_telegram_decisions_enabled' => env('STAFF_FORMS_SCHEDULE_TELEGRAM_DECISIONS_ENABLED', false),
+        'feedback_telegram_decisions_enabled' => env('STAFF_FORMS_FEEDBACK_TELEGRAM_DECISIONS_ENABLED', false),
         'schedule_thread_id' => env('STAFF_FORMS_SCHEDULE_THREAD_ID'),
         'feedback_thread_id' => env('STAFF_FORMS_FEEDBACK_THREAD_ID'),
     ],

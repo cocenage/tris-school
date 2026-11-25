@@ -25,7 +25,10 @@ class InventoryRequestForm
                             ->label('Статус заявки')
                             ->content(function ($record) {
                                 $label = match ($record?->status) {
-                                    'issued' => 'Выдано',
+                                    'approved' => 'Одобрено',
+            'partially_approved' => 'Частично одобрено',
+            'rejected' => 'Отказано',
+            'issued' => 'Выдано',
                                     'partially_issued' => 'Выдано частично',
                                     'cancelled' => 'Не выдано',
                                     default => 'На рассмотрении',

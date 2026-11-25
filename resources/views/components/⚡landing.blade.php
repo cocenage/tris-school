@@ -192,8 +192,9 @@ new class extends Component {
             try {
                 tg.ready();
 
-                const openingOksForm = String(tg.initDataUnsafe?.start_param ?? '').startsWith('oks_');
-                if (!openingOksForm && typeof tg.expand === 'function') {
+                const startParam = String(tg.initDataUnsafe?.start_param ?? '');
+                const openingCompactForm = startParam.startsWith('oks_') || startParam.startsWith('salary_') || startParam.startsWith('schedule_') || startParam.startsWith('feedback_') || startParam.startsWith('review_');
+                if (!openingCompactForm && typeof tg.expand === 'function') {
                     tg.expand();
                 }
 
@@ -216,7 +217,7 @@ new class extends Component {
                     throw new Error(data.message || 'Ошибка авторизации');
                 }
 
-                if (!openingOksForm) {
+                if (!openingCompactForm) {
                     await tryRequestWriteAccess(tg);
                 }
 

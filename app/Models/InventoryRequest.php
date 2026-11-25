@@ -55,6 +55,10 @@ class InventoryRequest extends Model
 
     public function recalculateStatus(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $statuses = $this->lines()->pluck('status');
 
         if ($statuses->isEmpty()) {
@@ -113,6 +117,10 @@ class InventoryRequest extends Model
 
     public function resetNotification(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $this->update([
             'notified_at' => null,
         ]);
@@ -120,6 +128,10 @@ class InventoryRequest extends Model
 
     public function notifyUserIfFinal(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $this->loadMissing(['user', 'lines']);
 
         Log::info('Inventory notify check', [
@@ -172,6 +184,10 @@ class InventoryRequest extends Model
 
     public function syncStatusAndNotify(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $this->recalculateStatus();
 
         $this->refresh();

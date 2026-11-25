@@ -54,6 +54,10 @@ class DayOffRequest extends Model
 
     public function recalculateStatus(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $statuses = $this->days()->pluck('status');
 
         if ($statuses->isEmpty()) {
@@ -91,6 +95,10 @@ class DayOffRequest extends Model
 
     public function resetNotification(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $this->update([
             'notified_at' => null,
         ]);
@@ -98,6 +106,10 @@ class DayOffRequest extends Model
 
     public function notifyUserIfFinal(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $this->loadMissing(['user', 'days']);
 
         Log::info('DayOff notify check', [
@@ -145,6 +157,10 @@ class DayOffRequest extends Model
 
     public function syncStatusAndNotify(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $this->recalculateStatus();
 
         $this->refresh();

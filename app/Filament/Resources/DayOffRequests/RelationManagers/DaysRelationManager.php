@@ -65,9 +65,10 @@ class DaysRelationManager extends RelationManager
                     ->label('Одобрить')
                     ->icon('heroicon-m-check')
                     ->color('success')
-                    ->visible(fn (DayOffRequestDay $record): bool => $record->status !== 'approved')
+                    ->visible(fn (DayOffRequestDay $record): bool => $record->request?->telegram_review_version === null && $record->status !== 'approved')
                     ->requiresConfirmation()
                     ->action(function (DayOffRequestDay $record): void {
+                        abort_unless($record->request()->first()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                         Gate::authorize('review', $record);
                         $request = $record->request;
 
@@ -89,7 +90,7 @@ class DaysRelationManager extends RelationManager
                     ->label('Отклонить')
                     ->icon('heroicon-m-x-mark')
                     ->color('danger')
-                    ->visible(fn (DayOffRequestDay $record): bool => $record->status !== 'rejected')
+                    ->visible(fn (DayOffRequestDay $record): bool => $record->request?->telegram_review_version === null && $record->status !== 'rejected')
                     ->requiresConfirmation()
                     ->schema([
                         Textarea::make('admin_comment')
@@ -98,6 +99,7 @@ class DaysRelationManager extends RelationManager
                             ->default(fn (DayOffRequestDay $record) => $record->admin_comment),
                     ])
                     ->action(function (DayOffRequestDay $record, array $data): void {
+                        abort_unless($record->request()->first()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                         Gate::authorize('review', $record);
                         $request = $record->request;
 
@@ -127,9 +129,10 @@ class DaysRelationManager extends RelationManager
                     ->label('Сбросить')
                     ->icon('heroicon-m-arrow-path')
                     ->color('gray')
-                    ->visible(fn (DayOffRequestDay $record): bool => $record->status !== 'pending')
+                    ->visible(fn (DayOffRequestDay $record): bool => $record->request?->telegram_review_version === null && $record->status !== 'pending')
                     ->requiresConfirmation()
                     ->action(function (DayOffRequestDay $record): void {
+                        abort_unless($record->request()->first()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                         Gate::authorize('review', $record);
                         $request = $record->request;
 

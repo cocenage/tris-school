@@ -53,8 +53,14 @@ class LinesRelationManager extends RelationManager
                     ->badge()
                     ->color('gray'),
 
+                TextColumn::make('approved_qty')
+                    ->label('Согласовано')
+                    ->placeholder('—')
+                    ->badge()
+                    ->color('success'),
+
                 TextColumn::make('issued_qty')
-                    ->label('Выдано')
+                    ->label('Выдано (история)')
                     ->badge()
                     ->color(fn ($state): string => (int) $state > 0 ? 'success' : 'gray'),
 
@@ -79,6 +85,7 @@ class LinesRelationManager extends RelationManager
             ->headerActions([])
             ->actions([
                 Action::make('issue')
+                    ->visible(fn (InventoryRequestLine $record): bool => $record->request?->telegram_review_version === null)
                     ->label('Выдать')
                     ->icon('heroicon-m-check')
                     ->color('success')
@@ -97,6 +104,7 @@ class LinesRelationManager extends RelationManager
                             ->default(fn (InventoryRequestLine $record) => $record->admin_comment),
                     ])
                     ->action(function (InventoryRequestLine $record, array $data): void {
+                        abort_unless($record->request()->first()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                         $request = $record->request;
 
                         $issuedQty = max(0, (int) ($data['issued_qty'] ?? 0));
@@ -134,6 +142,7 @@ class LinesRelationManager extends RelationManager
                     }),
 
                 Action::make('cancel')
+                    ->visible(fn (InventoryRequestLine $record): bool => $record->request?->telegram_review_version === null)
                     ->label('Не выдавать')
                     ->icon('heroicon-m-x-mark')
                     ->color('danger')
@@ -145,6 +154,7 @@ class LinesRelationManager extends RelationManager
                             ->default(fn (InventoryRequestLine $record) => $record->admin_comment),
                     ])
                     ->action(function (InventoryRequestLine $record, array $data): void {
+                        abort_unless($record->request()->first()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                         $request = $record->request;
 
                         $adminComment = filled($data['admin_comment'] ?? null)
@@ -172,11 +182,13 @@ class LinesRelationManager extends RelationManager
                     }),
 
                 Action::make('reset')
+                    ->visible(fn (InventoryRequestLine $record): bool => $record->request?->telegram_review_version === null)
                     ->label('Сбросить')
                     ->icon('heroicon-m-arrow-path')
                     ->color('gray')
                     ->requiresConfirmation()
                     ->action(function (InventoryRequestLine $record): void {
+                        abort_unless($record->request()->first()?->telegram_review_version === null, 409, 'Используйте общую форму рассмотрения.');
                         $request = $record->request;
 
                         $record->update([
@@ -196,6 +208,9 @@ class LinesRelationManager extends RelationManager
     protected static function statusLabel(?string $status): string
     {
         return match ($status) {
+            'approved' => 'Одобрено',
+            'partially_approved' => 'Частично одобрено',
+            'rejected' => 'Отказано',
             'issued' => 'Выдано',
             'partially_issued' => 'Частично',
             'cancelled' => 'Не выдано',
@@ -206,9 +221,9 @@ class LinesRelationManager extends RelationManager
     protected static function statusColor(?string $status): string
     {
         return match ($status) {
-            'issued' => 'success',
-            'partially_issued' => 'warning',
-            'cancelled' => 'danger',
+            'approved', 'issued' => 'success',
+            'partially_approved', 'partially_issued' => 'warning',
+            'rejected', 'cancelled' => 'danger',
             default => 'info',
         };
     }

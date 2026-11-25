@@ -48,6 +48,10 @@ class VacationRequest extends Model
 
     public function resetNotification(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $this->forceFill([
             'notified_at' => null,
         ])->saveQuietly();
@@ -55,6 +59,10 @@ class VacationRequest extends Model
 
     public function recalculateStatus(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $statuses = $this->days()
             ->pluck('status')
             ->values();
@@ -89,6 +97,10 @@ class VacationRequest extends Model
 
     public function syncStatusAndNotify(): void
     {
+        if ($this->telegram_review_version !== null) {
+            return; // Compact review owns the final status and notification.
+        }
+
         $this->load(['days', 'user']);
 
         $statuses = $this->days->pluck('status')->unique();

@@ -68,6 +68,9 @@ class SalaryQuestionsTable
                     ->label('Статус')
                     ->options([
                         'pending' => 'На рассмотрении',
+                        'in_progress' => 'В работе',
+                        'approved' => 'Одобрено',
+                        'rejected' => 'Отказано',
                         'reviewed' => 'Рассмотрено',
                         'closed' => 'Закрыто',
                     ])
@@ -85,24 +88,21 @@ class SalaryQuestionsTable
                         ->label('Рассмотрено')
                         ->icon('heroicon-m-eye')
                         ->color('info')
-                        ->visible(fn (SalaryQuestion $record): bool => $record->status !== 'reviewed')
+                        ->visible(fn (SalaryQuestion $record): bool => ! $record->usesDecisionWorkflow() && $record->status !== 'reviewed')
                         ->requiresConfirmation()
-                        ->action(fn (SalaryQuestion $record) => $record->update([
-                            'status' => 'reviewed',
-                        ])),
+                        ->action(fn (SalaryQuestion $record) => self::legacyUpdate($record, ['status' => 'reviewed'])),
 
                     Action::make('close')
                         ->label('Закрыть')
                         ->icon('heroicon-m-check-circle')
                         ->color('success')
-                        ->visible(fn (SalaryQuestion $record): bool => $record->status !== 'closed')
+                        ->visible(fn (SalaryQuestion $record): bool => ! $record->usesDecisionWorkflow() && $record->status !== 'closed')
                         ->requiresConfirmation()
-                        ->action(fn (SalaryQuestion $record) => $record->update([
-                            'status' => 'closed',
-                        ])),
+                        ->action(fn (SalaryQuestion $record) => self::legacyUpdate($record, ['status' => 'closed'])),
 
                     Action::make('set_admin_comment')
                         ->label('Комментарий администратора')
+                        ->visible(fn (SalaryQuestion $record): bool => ! $record->usesDecisionWorkflow())
                         ->icon('heroicon-m-chat-bubble-left-right')
                         ->color('gray')
                         ->schema([
@@ -112,7 +112,7 @@ class SalaryQuestionsTable
                                 ->default(fn (SalaryQuestion $record) => $record->admin_comment),
                         ])
                         ->action(function (SalaryQuestion $record, array $data): void {
-                            $record->update([
+                            self::legacyUpdate($record, [
                                 'admin_comment' => filled($data['admin_comment'] ?? null)
                                     ? trim((string) $data['admin_comment'])
                                     : null,
@@ -129,9 +129,18 @@ class SalaryQuestionsTable
             ->bulkActions([]);
     }
 
+    private static function legacyUpdate(SalaryQuestion $record, array $data): void
+    {
+        abort_unless(SalaryQuestion::query()->whereKey($record->id)->whereNull('telegram_source_message_id')
+            ->where('decision_version', 0)->update($data) === 1, 409, 'Заявка изменена. Откройте форму обработки.');
+    }
+
     protected static function statusLabel(?string $status): string
     {
         return match ($status) {
+            'in_progress' => 'В работе',
+            'approved' => 'Одобрено',
+            'rejected' => 'Отказано',
             'reviewed' => 'Рассмотрено',
             'closed' => 'Закрыто',
             default => 'На рассмотрении',
@@ -141,7 +150,9 @@ class SalaryQuestionsTable
     protected static function statusColor(?string $status): string
     {
         return match ($status) {
-            'reviewed' => 'info',
+            'in_progress', 'reviewed' => 'info',
+            'approved' => 'success',
+            'rejected' => 'danger',
             'closed' => 'success',
             default => 'warning',
         };

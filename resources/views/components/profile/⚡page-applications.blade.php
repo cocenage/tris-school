@@ -121,15 +121,16 @@ new class extends Component
             ->values();
     }
 
-    public function statusLabel(?string $status): string
+    public function statusLabel(?string $status, ?string $requestType = null): string
     {
         return match ($status) {
             'approved' => 'одобрено',
-            'rejected' => 'отклонено',
+            'rejected' => in_array($requestType, ['salary','schedule','inventory'], true) ? 'отказано' : 'отклонено',
             'partially_approved' => 'частично',
             'issued' => 'выдано',
             'partially_issued' => 'частично',
             'cancelled' => 'отменено',
+            'in_progress' => 'в работе',
             'reviewed' => 'рассмотрено',
             'closed' => 'закрыто',
             default => 'на рассмотрении',
@@ -178,6 +179,9 @@ new class extends Component
     public function itemStatusLabel(?string $status): string
     {
         return match ($status) {
+            'approved' => 'одобрено',
+            'partially_approved' => 'частично одобрено',
+            'rejected' => 'отказано',
             'issued' => 'выдано',
             'partially_issued' => 'частично',
             'cancelled' => 'не выдано',
@@ -188,9 +192,9 @@ new class extends Component
     public function itemStatusClasses(?string $status): string
     {
         return match ($status) {
-            'issued' => 'text-[#1F7A45]',
-            'cancelled' => 'text-[#C53B32]',
-            'partially_issued' => 'text-[#B76A16]',
+            'approved', 'issued' => 'text-[#1F7A45]',
+            'rejected', 'cancelled' => 'text-[#C53B32]',
+            'partially_approved', 'partially_issued' => 'text-[#B76A16]',
             default => 'text-[#2457A5]',
         };
     }
@@ -414,7 +418,7 @@ new class extends Component
                             </div>
 
                             <span class="inline-flex shrink-0 rounded-full px-[10px] py-[5px] text-[12px] font-medium {{ $this->statusBadgeClasses($request->status) }}">
-                                {{ $this->statusLabel($request->status) }}
+                                {{ $this->statusLabel($request->status, $request->request_type) }}
                             </span>
                         </div>
 
@@ -438,7 +442,11 @@ new class extends Component
                                                     <div class="mt-[4px] text-[12px] text-[#8A8A84]">
                                                         Запрошено: {{ $item->requested_qty }}
                                                         <span class="text-[#C2C2BC]">·</span>
-                                                        Выдано: {{ $item->issued_qty }}
+                                                        @if ($request->telegram_review_version !== null)
+                                                            Согласовано: {{ $item->approved_qty ?? '—' }}
+                                                        @else
+                                                            Выдано: {{ $item->issued_qty }}
+                                                        @endif
                                                     </div>
                                                 </div>
 

@@ -63,7 +63,9 @@ class InventoryRequestInfolist
                                                 $issued = (int) $line->issued_qty;
                                                 $requested = (int) $line->requested_qty;
 
-                                                return "{$name}: запрошено {$requested}, выдано {$issued}";
+                                                return $line->approved_qty !== null
+                                                    ? "{$name}: запрошено {$requested}, согласовано {$line->approved_qty}"
+                                                    : "{$name}: запрошено {$requested}, выдано {$issued}";
                                             })
                                             ->implode("\n");
                                     })
@@ -109,6 +111,9 @@ class InventoryRequestInfolist
     protected static function statusLabel(?string $status): string
     {
         return match ($status) {
+            'approved' => 'Одобрено',
+            'partially_approved' => 'Частично одобрено',
+            'rejected' => 'Отказано',
             'issued' => 'Выдано',
             'partially_issued' => 'Выдано частично',
             'cancelled' => 'Не выдано',
@@ -119,9 +124,9 @@ class InventoryRequestInfolist
     protected static function statusColor(?string $status): string
     {
         return match ($status) {
-            'issued' => 'success',
-            'partially_issued' => 'warning',
-            'cancelled' => 'danger',
+            'approved', 'issued' => 'success',
+            'partially_approved', 'partially_issued' => 'warning',
+            'rejected', 'cancelled' => 'danger',
             default => 'info',
         };
     }

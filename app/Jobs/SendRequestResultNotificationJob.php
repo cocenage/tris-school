@@ -88,6 +88,10 @@ class SendRequestResultNotificationJob implements ShouldQueue, ShouldBeUnique
             return;
         }
 
+        if ($record->telegram_review_version !== null) {
+            return; // The structured decision outbox owns this notification.
+        }
+
         if ($this->deliveryContext) {
             app(TelegramOutboundMonitor::class)->withContext(
                 $this->deliveryContext,
