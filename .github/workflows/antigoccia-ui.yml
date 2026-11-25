@@ -6,6 +6,7 @@ on:
       - 'resources/views/components/antigoccia/**'
       - 'resources/views/components/⚡page-checks.blade.php'
       - 'tests/Feature/AntigocciaInterfaceTest.php'
+      - 'tests/Feature/AntigocciaLivewireStatesTest.php'
       - '.github/workflows/antigoccia-ui.yml'
   workflow_dispatch:
 
@@ -51,4 +52,4 @@ jobs:
       - name: Compile Blade templates
         run: php artisan view:cache
       - name: Verify Antigoccia states and business rules
-        run: php artisan test tests/Feature/AntigocciaInterfaceTest.php tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaOwnDeletionTest.php
+        run: php artisan test tests/Feature/AntigocciaInterfaceTest.php tests/Feature/AntigocciaLivewireStatesTest.php tests/Feature/AntigocciaTest.php tests/Feature/AntigocciaOwnDeletionTest.php
