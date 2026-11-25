@@ -9,7 +9,7 @@ it('links the Antigoccia form from the Controls page without replacing other con
         ->toContain("route('antigoccia.index')")
         ->toContain('Антикапля')
         ->toContain('Контроль покрытия')
-        ->toContain('group-focus-visible')
+        ->toContain('focus-visible:outline')
         ->not->toContain('wire:click="submitAntigoccia"')
         ->toContain("route('page-checks.control')")
         ->toContain("route('page-coachings')");
@@ -20,10 +20,10 @@ it('provides progress, severity, photo and saved states without changing indepen
 
     expect($view)
         ->toContain('getCompletionProperty(): array')
-        ->toContain("'completed' => $completed")
-        ->toContain("'needs_photo' => $needsPhoto")
-        ->toContain("'has_photo' => $hasPhoto")
-        ->toContain("'label' => $needsPhoto")
+        ->toContain("'completed' => " . '$completed')
+        ->toContain("'needs_photo' => " . '$needsPhoto')
+        ->toContain("'has_photo' => " . '$hasPhoto')
+        ->toContain("'label' => " . '$needsPhoto')
         ->toContain('role="progressbar"')
         ->toContain('Нужно фото')
         ->toContain('Есть остатки')
@@ -57,8 +57,8 @@ it('keeps all four surfaces and the four independent removal choices', function 
     expect($view)
         ->toContain('AntigocciaAssessment::SURFACES as $surface => $label')
         ->toContain('AntigocciaAssessment::REMOVAL_OPTIONS as $value => $option')
-        ->toContain("in_array($dirt, [0, 1, 2], true)")
-        ->toContain("in_array($remaining, ['yes', 'no'], true)")
-        ->toContain("($this->photos[$surface])")
+        ->toContain('in_array($dirt, [0, 1, 2], true)')
+        ->toContain("in_array(" . '$remaining' . ", ['yes', 'no'], true)")
+        ->toContain("isset(" . '$this->photos[$surface]' . ")")
         ->toContain('Фото поверхности');
 });
