@@ -18,11 +18,11 @@ class DeliverSalaryQuestionDecision implements ShouldQueue, ShouldBeUnique
     public int $timeout = 40;
     public int $uniqueFor = 600;
 
-    public function __construct(public int $decisionId) {}
+    public function __construct(public int $decisionId, public string $kind = 'salary') {}
 
     public function uniqueId(): string
     {
-        return (string) $this->decisionId;
+        return $this->kind.':'.$this->decisionId;
     }
 
     public function backoff(): array
@@ -32,12 +32,22 @@ class DeliverSalaryQuestionDecision implements ShouldQueue, ShouldBeUnique
 
     public function handle(TelegramSalaryQuestionService $telegram): void
     {
-        $decision = SalaryQuestionDecision::query()->find($this->decisionId);
+        $model = match ($this->kind) {
+            'salary' => SalaryQuestionDecision::class,
+            'schedule' => \App\Models\ScheduleQuestionDecision::class,
+            'feedback' => \App\Models\FeedbackSuggestionDecision::class,
+        };
+        $telegram = match ($this->kind) {
+            'salary' => $telegram,
+            'schedule' => app(\App\Services\Forms\TelegramScheduleQuestionService::class),
+            'feedback' => app(\App\Services\Forms\TelegramFeedbackSuggestionService::class),
+        };
+        $decision = $model::query()->find($this->decisionId);
         if (! $decision) {
             return;
         }
 
-        Cache::lock('salary-question-delivery:'.$decision->salary_question_id, 60)->block(5, function () use ($decision, $telegram): void {
+        Cache::lock('staff-text-delivery:'.$this->kind.':'.$decision->question?->id, 60)->block(5, function () use ($decision, $telegram): void {
             $decision->refresh();
             $question = $decision->question;
             if (! $question) {
