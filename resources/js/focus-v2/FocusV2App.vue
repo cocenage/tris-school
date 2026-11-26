@@ -102,7 +102,7 @@ async function keepServerVersion() {
         await queueLocalWrite({ type: 'delete', scope: recoveryKey });
         recoveryRecord.value = null;
         recoveryMode.value = '';
-        void restoreCachedPhotos();
+        void restoreDraftMedia();
     } catch (error) {
         recoveryError.value = 'Не удалось удалить локальную копию. Проверьте разрешения браузера.';
     } finally {
@@ -120,10 +120,11 @@ function restoreLocalVersion() {
     recoveryRecord.value = null;
     recoveryMode.value = '';
     touch();
-    void restoreCachedPhotos();
+    void restoreDraftMedia();
 }
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
+let recoveringDraftMedia = false;
 let attachInFlight = false;
 let attachQueue = Promise.resolve();
 
@@ -315,13 +316,25 @@ async function initialize() {
         }
         stage.value = 'setup';
         if (recoveryKey && !recoveryMode.value && !data.run?.schema_conflict) {
-            await autoAttachReadyDraftFiles();
-            await restoreCachedPhotos();
+            await restoreDraftMedia();
         }
     } catch (error) {
         loadError.value = error.message || 'Не удалось загрузить контроль.';
     } finally {
         loading.value = false;
+    }
+}
+
+async function restoreDraftMedia() {
+    if (!canEdit.value || recoveringDraftMedia) return;
+    recoveringDraftMedia = true;
+    try {
+        // Ready files are already on the server and may have no local Blob.
+        // Finalize them first, before cached transfers start competing for revisions.
+        await autoAttachReadyDraftFiles();
+        if (canEdit.value) await restoreCachedPhotos();
+    } finally {
+        recoveringDraftMedia = false;
     }
 }
 
@@ -532,7 +545,7 @@ async function choosePerson(id) {
     if (!canEdit.value) return;
     if (id === '__test__') {
         if (viewerRole.value !== 'admin' || testMode.value) return;
-        if (busyUploads.value) {
+        if (busyUploads.value || recoveringDraftMedia || attachInFlight) {
             syncError.value = 'Завершите или отмените реальные загрузки перед переходом в тест.';
             return;
         }
@@ -572,8 +585,7 @@ async function choosePerson(id) {
             syncError.value = data.run?.schema_conflict ? 'Тестовый шаблон изменился. Завершите старый тест отдельно.' : '';
             stage.value = 'setup';
             if (!data.run?.schema_conflict) {
-                await autoAttachReadyDraftFiles();
-                await restoreCachedPhotos();
+                await restoreDraftMedia();
                 if (!data.run?.draft_id) touch();
             }
         } catch (error) {
@@ -599,7 +611,7 @@ async function exitTestMode() {
     if (!testMode.value) return;
     // Never switch the active Vue run while a test upload/save callback is
     // in flight: that could otherwise write to the newly bootstrapped real run.
-    if (busyUploads.value || attachInFlight || inFlight || submitting.value) {
+    if (busyUploads.value || recoveringDraftMedia || attachInFlight || inFlight || submitting.value) {
         syncError.value = 'Сначала завершите или отмените тестовые загрузки и дождитесь сохранения ответов.';
         return;
     }
@@ -660,15 +672,20 @@ async function autoAttachReadyDraftFiles() {
 }
 
 async function attachReadyDraft(record) {
-    if (!canEdit.value || record.status !== 'ready') return;
+    if (!canEdit.value || record.status !== 'ready' || record.run_id !== run.value.id) return;
     if (activeTransfers || attachInFlight) {
         mediaError.value = 'Подождите завершения текущих загрузок.';
         return;
     }
     mediaError.value = '';
+    let locked = false;
     try {
         if (!(await ensureSynced())) throw new Error('Не удалось сохранить ответы.');
+        if (!canEdit.value || record.run_id !== run.value.id
+            || !interruptedUploads.value.some(item => item.upload_id === record.upload_id)
+            || attachInFlight || activeTransfers) return;
         attachInFlight = true;
+        locked = true;
         const info = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
         if (info.status !== 'ready' && info.status !== 'attached') {
             throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
@@ -686,7 +703,7 @@ async function attachReadyDraft(record) {
     } catch (error) {
         mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
     } finally {
-        attachInFlight = false;
+        if (locked) attachInFlight = false;
     }
 }
 
@@ -1074,7 +1091,7 @@ async function submitControl() {
 
 async function resetControl() {
     if (!props.resetUrl || !run.value || testMode.value || stage.value === 'done' || resetting.value) return;
-    if (busyUploads.value || recoveringPhotos.value || attachInFlight || inFlight || submitting.value || uncertainSnapshot) {
+    if (busyUploads.value || recoveringDraftMedia || attachInFlight || inFlight || submitting.value || uncertainSnapshot) {
         syncError.value = 'Дождитесь сохранения или отмените загрузки перед сбросом.';
         return;
     }

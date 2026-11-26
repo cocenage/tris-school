@@ -536,6 +536,50 @@ async function main() {
             await context.close();
         }
 
+        // Reopening with unsaved answers should not strand an already uploaded
+        // video once the supervisor has decided which answers to keep.
+        for (const restore of [true, false]) {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            const comment = 'Комментарий, введённый без интернета';
+            const uploadId = '00000000-0000-4000-8000-000000000092';
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await context.setOffline(true);
+            await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+            await page.getByText('Нет интернета', { exact: true }).waitFor();
+            await page.locator('#focus-inspection-comment').fill(comment);
+            await page.waitForFunction(async expected => {
+                const { readLocalRecovery, recoveryScope } = await import('/resources/js/focus-v2/local-recovery.js');
+                const saved = await readLocalRecovery(recoveryScope(100, 1, 'a'.repeat(64)));
+                return saved?.setup?.comment === expected;
+            }, comment);
+            // Model a final upload acknowledgement arriving on the server as
+            // the WebView closes. No media Blob is available on the device.
+            await page.close();
+            backend.sessions.set(uploadId, {
+                id: uploadId, room: 0, question: 0, name: 'recovered-ready.mp4',
+                size: 128, mime: 'video/mp4', status: 'ready', received: new Set(),
+            });
+            await context.setOffline(false);
+            const { page: reopened, errors: reopenErrors } = await pageFor(context, backend);
+            const choice = reopened.getByRole('button', {
+                name: restore ? 'Восстановить локальные ответы' : 'Оставить серверную версию',
+            });
+            await choice.waitFor();
+            assert.equal(backend.sessions.get(uploadId).status, 'ready', 'Media attached before choosing answers.');
+            await choice.click();
+            for (let i = 0; backend.media[0][0].length === 0 && i < 60; i++) await delay(100);
+            assert.equal(backend.media[0][0].length, 1, 'Ready file did not attach after resolving local recovery.');
+            assert.equal(backend.media[0][0][0].upload_id, uploadId);
+            assert.equal(backend.setup.comment, restore ? comment : '');
+            assert.equal(backend.startRequests, 0, 'Ready file should not restart the upload.');
+            assert.deepEqual([...errors, ...reopenErrors], []);
+            console.log('PASS mobile UI: ready video attaches after choosing ' + (restore ? 'local answers' : 'server answers'));
+            await context.close();
+        }
+
         // Interrupted upload: new WebView must recover the cached Blob and reuse its upload ID.
         {
             const backend = new FakeFocusBackend();
