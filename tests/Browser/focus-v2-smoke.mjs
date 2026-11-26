@@ -252,14 +252,16 @@ async function selectTestStaff(page) {
     await page.getByText('Тестовый сотрудник · серверная загрузка').waitFor({ timeout: 15000 });
     await page.getByRole('button', { name: 'К вопросам' }).click();
 }
+async function addGalleryFile(page, file) {
+    await page.getByRole('button', { name: 'Добавить', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: 'Добавить фото или видео' });
+    await picker.locator('input[type=file]').setInputFiles(file);
+    const preview = page.getByRole('dialog', { name: 'Предпросмотр выбранных файлов' });
+    await preview.getByRole('button', { name: 'Добавить 1' }).click();
+    await preview.waitFor({ state: 'hidden' });
+}
 async function addPhoto(page) {
-    await page.locator('#focus-camera-0-0').setInputFiles({
-        name: 'photo.png', mimeType: 'image/png', buffer: image,
-    });
-    await page.getByRole('dialog', { name: 'Подтвердить фотографию' }).waitFor();
-    assert.equal(await page.getByRole('button', { name: 'Переснять' }).isVisible(), true);
-    await page.getByRole('button', { name: 'Оставить фото' }).click();
-    await page.getByRole('dialog', { name: 'Подтвердить фотографию' }).waitFor({ state: 'hidden' });
+    await addGalleryFile(page, { name: 'photo.png', mimeType: 'image/png', buffer: image });
 }
 async function expectPhoto(page) {
     const tile = page.getByRole('button', { name: 'Открыть фото photo.png' });
@@ -277,8 +279,8 @@ async function restoreInterruptedOriginalIfNeeded(page, { name, mimeType, buffer
     } catch (_) {
         // WebKit and Telegram may reject or evict IndexedDB blobs. The app
         // must give a reliable server-session fallback using the same ID.
-        const section = page.locator('section').filter({ has: page.getByRole('heading', { name: /Восстановим материалы/ }) });
-        const reselect = section.locator('input[type=file][multiple]');
+        const section = page.locator('section').filter({ has: page.getByRole('heading', { name: /Незавершённые вложения/ }) });
+        const reselect = section.getByLabel('Выбрать оригинал').first();
         await reselect.waitFor({ timeout: 15000 });
         await reselect.setInputFiles({ name, mimeType, buffer });
         await button.waitFor({ timeout: 15000 });
@@ -301,26 +303,112 @@ async function main() {
     try {
         await waitForVite(vite);
         browser = await (process.env.FOCUS_BROWSER === 'webkit' ? webkit : chromium).launch({
-            headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox'] }),
+            headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }),
         });
 
-        // A real form must expose its comment and persist previous-cleaner
+        // Room switching stays available while scrolling and preserves answers.
+        {
+            const backend = new FakeFocusBackend();
+            const bootstrap = backend.bootstrap.bind(backend);
+            backend.bootstrap = () => ({
+                ...bootstrap(),
+                rooms: [...rooms, { ...rooms[0], title: 'Ванная', is_optional: true }],
+                answers: [...backend.answers.slice(0, 1), backend.answers[1] ?? initialAnswers()[0]],
+                media: [...backend.media.slice(0, 1), backend.media[1] ?? [[]]],
+            });
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Нет', exact: true }).click();
+            await page.getByRole('button', { name: /Комнаты · 1\/2/ }).click();
+            const picker = page.getByRole('dialog', { name: 'Комнаты проверки' });
+            assert.equal(await picker.locator('[aria-current="step"]').count(), 1);
+            await picker.getByRole('button', { name: /Ванная/ }).click();
+            await page.getByRole('heading', { name: 'Ванная', exact: true }).waitFor();
+            await page.getByRole('button', { name: 'Предыдущая комната' }).click();
+            assert.equal(await page.getByRole('button', { name: 'Нет', exact: true }).getAttribute('aria-pressed'), 'true');
+            await page.getByRole('button', { name: 'Следующая комната' }).click();
+            await page.getByRole('heading', { name: 'Ванная', exact: true }).waitFor();
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: named room jump and next/previous preserve answers');
+            await context.close();
+        }
+
+        // Chromium's virtual devices exercise capture, not the file chooser.
+        if (process.env.FOCUS_BROWSER !== 'webkit') {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['camera', 'microphone'] });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            let filePickers = 0;
+            page.on('filechooser', () => filePickers++);
+            for (const video of [false, true]) {
+                await page.getByRole('button', { name: 'Добавить', exact: true }).click();
+                await page.getByRole('button', { name: video ? 'Снять видео' : 'Сделать фото' }).click();
+                const camera = page.getByRole('dialog', { name: video ? 'Камера для видео' : 'Камера для фото' });
+                await camera.getByRole('button', { name: video ? 'Начать запись' : 'Сделать снимок' }).click();
+                if (video) {
+                    await delay(1300);
+                    await camera.getByRole('button', { name: 'Остановить запись' }).click();
+                }
+                const preview = page.getByRole('dialog', { name: video ? 'Подтвердить видео' : 'Подтвердить фотографию' });
+                await preview.waitFor();
+                assert.equal(backend.startRequests, video ? 1 : 0, 'Must not upload before preview confirmation.');
+                await preview.getByRole('button', { name: video ? 'Оставить видео' : 'Оставить фото' }).click();
+                for (let i = 0; backend.media[0][0].length !== (video ? 2 : 1) && i < 80; i++) await delay(100);
+                assert.equal(backend.media[0][0].length, video ? 2 : 1);
+            }
+            assert.equal(filePickers, 0);
+            assert.equal(backend.media[0][0][0].mime, 'image/jpeg');
+            assert.match(backend.media[0][0][1].mime, /^video\/(mp4|webm)$/);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: camera photo and recorded video upload only after preview');
+            await context.close();
+        }
+
+        // Denial must not silently substitute a file picker for the camera.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            await context.addInitScript(() => {
+                Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+                    value: () => Promise.reject(new DOMException('Denied', 'NotAllowedError')),
+                });
+            });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Добавить', exact: true }).click();
+            await page.getByRole('button', { name: 'Сделать фото' }).click();
+            await page.getByRole('alert').filter({ hasText: /Нет доступа к камере/ }).waitFor();
+            const camera = page.getByRole('dialog', { name: 'Камера для фото' });
+            await camera.locator('input[type=file]').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: image });
+            await page.getByRole('dialog', { name: 'Предпросмотр выбранных файлов' })
+                .getByRole('button', { name: 'Добавить 1' }).click();
+            await expectPhoto(page);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: camera denial is explicit, gallery is a separate action');
+            await context.close();
+        }
+
+        // Hide the comment editor without changing existing data; previous-cleaner
         // selection as a legacy name rather than an internal staff ID.
         {
             const backend = new FakeFocusBackend();
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            backend.setup.comment = 'Старое замечание';
             const { page, errors } = await pageFor(context, backend);
             const comment = page.locator('#focus-inspection-comment');
-            assert.equal(await comment.isVisible(), true);
-            await comment.fill('Замечание: ключи получены у администратора');
+            assert.equal(await comment.count(), 0);
+            assert.equal(await page.getByText('TRIS Academy · Focus Control', { exact: true }).count(), 0);
+            assert.equal(await page.getByRole('link', { name: /старый/i }).count(), 0);
             await page.locator('#focus-previous-cleaner').fill('Настоящий');
             await page.getByRole('option', { name: 'Настоящий сотрудник' }).click();
             await page.getByText('Сохранено', { exact: true }).first().waitFor();
-            assert.equal(backend.setup.comment, 'Замечание: ключи получены у администратора');
+            assert.equal(backend.setup.comment, 'Старое замечание');
             assert.equal(backend.setup.previous_cleaner, 'Настоящий сотрудник');
             await page.reload({ waitUntil: 'domcontentloaded' });
             await page.getByRole('heading', { name: 'Данные проверки' }).waitFor();
-            assert.equal(await comment.inputValue(), backend.setup.comment);
+            assert.equal(await comment.count(), 0);
             assert.equal(await page.locator('#focus-previous-cleaner').inputValue(), 'Настоящий сотрудник');
             await page.locator('#focus-previous-cleaner').fill('Не указан');
             await page.getByRole('option', { name: 'Не указан' }).click();
@@ -330,7 +418,7 @@ async function main() {
             }
             assert.equal(backend.setup.previous_cleaner, '');
             assert.deepEqual(errors, []);
-            console.log('PASS mobile UI: first-screen comment, previous-staff search and clear option persist');
+            console.log('PASS mobile UI: clean setup, legacy comment preserved, previous-staff search and clear option persist');
             await context.close();
         }
 
@@ -443,15 +531,15 @@ async function main() {
             await context.setOffline(true);
             await page.evaluate(() => window.dispatchEvent(new Event('offline')));
             await page.getByText('Нет интернета', { exact: true }).waitFor();
-            await page.locator('#focus-inspection-comment').fill('Сеть отключена — комментарий должен пережить сбой');
+            await page.getByLabel('Назначенная уборка').check();
             assert.equal(backend.realWrites, 0, 'Offline edit unexpectedly wrote server draft');
             assert.equal(await page.getByText('Сохранено', { exact: true }).count(), 0);
             await context.setOffline(false);
             await page.evaluate(() => window.dispatchEvent(new Event('online')));
-            for (let i = 0; backend.setup.comment !== 'Сеть отключена — комментарий должен пережить сбой' && i < 80; i++) {
+            for (let i = 0; !backend.setup.is_assigned && i < 80; i++) {
                 await delay(100);
             }
-            assert.equal(backend.setup.comment, 'Сеть отключена — комментарий должен пережить сбой');
+            assert.equal(backend.setup.is_assigned, true);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: offline draft edit is not claimed saved and syncs on reconnect');
             await context.close();
@@ -489,14 +577,9 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
-            await page.getByRole('button', { name: 'Добавить' }).click();
-            await page.getByRole('dialog', { name: 'Добавить фото или видео' }).waitFor();
-            await page.locator('#focus-video-0-0').setInputFiles({
+            await addGalleryFile(page, {
                 name: 'inspection.mp4', mimeType: 'video/mp4', buffer: Buffer.from('video-fixture'),
             });
-            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor();
-            await page.getByRole('button', { name: 'Оставить видео' }).click();
-            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor({ state: 'hidden' });
             await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).waitFor({ timeout: 15000 });
             await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).click();
             const videoDialog = page.getByRole('dialog', { name: 'Галерея фото и видео' });
@@ -542,19 +625,18 @@ async function main() {
             const backend = new FakeFocusBackend();
             backend.draftId = 51;
             backend.revision = 1;
-            const comment = 'Комментарий, введённый без интернета';
             const uploadId = '00000000-0000-4000-8000-000000000092';
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await context.setOffline(true);
             await page.evaluate(() => window.dispatchEvent(new Event('offline')));
             await page.getByText('Нет интернета', { exact: true }).waitFor();
-            await page.locator('#focus-inspection-comment').fill(comment);
-            await page.waitForFunction(async expected => {
+            await page.getByLabel('Назначенная уборка').check();
+            await page.waitForFunction(async () => {
                 const { readLocalRecovery, recoveryScope } = await import('/resources/js/focus-v2/local-recovery.js');
                 const saved = await readLocalRecovery(recoveryScope(100, 1, 'a'.repeat(64)));
-                return saved?.setup?.comment === expected;
-            }, comment);
+                return saved?.setup?.is_assigned === true;
+            });
             // Model a final upload acknowledgement arriving on the server as
             // the WebView closes. No media Blob is available on the device.
             await page.close();
@@ -573,10 +655,41 @@ async function main() {
             for (let i = 0; backend.media[0][0].length === 0 && i < 60; i++) await delay(100);
             assert.equal(backend.media[0][0].length, 1, 'Ready file did not attach after resolving local recovery.');
             assert.equal(backend.media[0][0][0].upload_id, uploadId);
-            assert.equal(backend.setup.comment, restore ? comment : '');
+            assert.equal(backend.setup.is_assigned, restore);
             assert.equal(backend.startRequests, 0, 'Ready file should not restart the upload.');
             assert.deepEqual([...errors, ...reopenErrors], []);
             console.log('PASS mobile UI: ready video attaches after choosing ' + (restore ? 'local answers' : 'server answers'));
+            await context.close();
+        }
+
+        // A partial upload with no device cache explains which question
+        // needs media and can be replaced without an original.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            const uploadId = '00000000-0000-4000-8000-000000000093';
+            backend.sessions.set(uploadId, {
+                id: uploadId, room: 0, question: 0, name: 'missing.png',
+                size: image.length, mime: 'image/png', status: 'pending', received: new Set(),
+            });
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            const recovery = page.locator('section').filter({ has: page.getByRole('heading', { name: /Незавершённые вложения/ }) });
+            assert.match(await recovery.getByRole('button', { name: /вопрос 1/ }).innerText(), /Кухня/);
+            await recovery.getByLabel('Выбрать оригинал').setInputFiles({ name: 'different.png', mimeType: 'image/png', buffer: image });
+            await recovery.getByRole('alert').filter({ hasText: 'Это другой файл' }).waitFor();
+            page.once('dialog', dialog => dialog.accept());
+            await recovery.getByRole('button', { name: 'Снять или выбрать заново' }).click();
+            const picker = page.getByRole('dialog', { name: 'Добавить фото или видео' });
+            await picker.waitFor();
+            assert.equal(backend.sessions.get(uploadId).status, 'cancelled');
+            await picker.locator('input[type=file]').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: image });
+            await page.getByRole('button', { name: 'Добавить 1' }).click();
+            for (let i = 0; !backend.media[0][0].length && i < 80; i++) await delay(100);
+            assert.equal(backend.media[0][0][0].name, 'photo.png');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: missing originals can be replaced in the correct question');
             await context.close();
         }
 
@@ -614,11 +727,9 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
-            await page.locator('#focus-video-0-0').setInputFiles({
+            await addGalleryFile(page, {
                 name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'),
             });
-            await page.getByRole('dialog', { name: 'Подтвердить видео' }).waitFor();
-            await page.getByRole('button', { name: 'Оставить видео' }).click();
             await page.getByText('Temporary network error').waitFor({ timeout: 15000 });
             const uploadId = [...backend.sessions.keys()][0];
             assert.ok(uploadId);

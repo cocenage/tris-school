@@ -10,6 +10,5 @@ if (root) {
         submitUrl: root.dataset.submitUrl,
         reviewStatusUrl: root.dataset.reviewStatusUrl || '',
         mediaStartUrl: root.dataset.mediaStartUrl,
-        classicUrl: root.dataset.classicUrl,
     }).mount(root);
 }
