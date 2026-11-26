@@ -30,6 +30,7 @@ const answers = ref([]);
 const media = ref([]);
 const stage = ref('setup');
 const activeRoom = ref(0);
+const resumePosition = ref(null);
 const blockedQuestion = ref(null);
 const highlightedReviewQuestion = ref(null);
 const submitting = ref(false);
@@ -123,6 +124,7 @@ function restoreLocalVersion() {
     }
     setup.value = JSON.parse(JSON.stringify(saved.setup));
     answers.value = JSON.parse(JSON.stringify(saved.answers));
+    readResumePosition();
     recoveryRecord.value = null;
     recoveryMode.value = '';
     touch();
@@ -256,6 +258,7 @@ async function initialize() {
     recoveryRecord.value = null;
     recoveryMode.value = '';
     recoveryKey = null;
+    resumePosition.value = null;
     loading.value = true;
     loadError.value = '';
     testMode.value = false;
@@ -298,6 +301,7 @@ async function initialize() {
         } else {
             state.value = 'idle';
             recoveryKey = recoveryScope(data.viewer?.id, data.control?.id, data.control?.schema_version);
+            readResumePosition();
             if (recoveryKey) {
                 try {
                     const saved = await readLocalRecovery(recoveryKey);
@@ -595,6 +599,7 @@ async function choosePerson(id) {
             interruptedUploads.value = data.pending_uploads ?? [];
             run.value = data.run;
             recoveryKey = recoveryScope(data.viewer.id, data.control.id, data.control.schema_version) + ':sandbox';
+            readResumePosition();
             changeSerial = 0;
             acknowledgedSerial = 0;
             uncertainSnapshot = null;
@@ -930,6 +935,84 @@ async function ensureSynced() {
     return false;
 }
 
+function positionKey() {
+    return recoveryKey ? recoveryKey + ':position' : null;
+}
+function readResumePosition() {
+    resumePosition.value = null;
+    const key = positionKey();
+    if (!key || !run.value?.id) return;
+    try {
+        const point = JSON.parse(localStorage.getItem(key));
+        if (point?.runId !== run.value.id || !Number.isInteger(point.room) || !rooms.value[point.room]) return;
+        const question = Number.isInteger(point.question) && rooms.value[point.room].items?.[point.question]
+            ? point.question : null;
+        resumePosition.value = { room: point.room, question };
+    } catch (_) { /* Position is a convenience; access to answers is unaffected. */ }
+}
+function rememberPosition(room, question = null) {
+    if (!canEdit.value || stage.value !== 'questions' || room !== activeRoom.value || !rooms.value[room]) return;
+    const point = { room, question };
+    if (resumePosition.value?.room === room && resumePosition.value?.question === question) return;
+    resumePosition.value = point;
+    const key = positionKey();
+    if (!key) return;
+    try {
+        localStorage.setItem(key, JSON.stringify({ ...point, runId: run.value.id }));
+    } catch (_) { /* Best effort, including private WebViews. */ }
+}
+function clearResumePosition() {
+    const key = positionKey();
+    if (key) {
+        try { localStorage.removeItem(key); } catch (_) { /* A new run also ignores the old position. */ }
+    }
+    resumePosition.value = null;
+}
+function startQuestions() {
+    const position = resumePosition.value;
+    if (position) {
+        if (position.question == null) goRoom(position.room);
+        else jumpToQuestion(position.room, position.question, 'resume');
+        return;
+    }
+    // Older drafts and browsers without local storage can still start at the first gap.
+    if (run.value?.draft_id && completedRequired.value > 0 && firstMissing()) {
+        jumpToMissing();
+        return;
+    }
+    goRoom(0);
+}
+function jumpToQuestion(room, question, reason) {
+    if (!rooms.value[room]?.items?.[question]) return;
+    goRoom(room);
+    rememberPosition(room, question);
+    if (reason === 'missing') blockedQuestion.value = question;
+    else highlightedReviewQuestion.value = question;
+    void nextTick().then(() => {
+        if (activeRoom.value !== room || stage.value !== 'questions') return;
+        const element = document.getElementById('focus-question-' + room + '-' + question);
+        element?.scrollIntoView({ block: 'start' });
+        element?.focus({ preventScroll: true });
+    });
+}
+function jumpToMissing() {
+    const missing = firstMissing();
+    if (missing) jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
+}
+function jumpToPendingMedia() {
+    const record = recoveryNeedingInput.value[0];
+    if (record) {
+        // The recovery card holds the actions; each card already links back to its question.
+        void nextTick().then(() => {
+            const element = document.getElementById('focus-recovery-' + record.upload_id);
+            element?.scrollIntoView({ block: 'start' });
+            element?.focus({ preventScroll: true });
+        });
+        return;
+    }
+    const upload = failedMediaTransfers.value[0] ?? currentMediaTransfers.value[0];
+    if (upload) jumpToQuestion(upload.room, upload.question, 'media');
+}
 function firstMissing() {
     for (let roomIndex = 0; roomIndex < rooms.value.length; roomIndex++) {
         const room = rooms.value[roomIndex];
@@ -960,6 +1043,7 @@ function goRoom(index) {
         blockedQuestion.value = null;
         highlightedReviewQuestion.value = null;
         stage.value = 'questions';
+        rememberPosition(index);
         window.scrollTo({ top: 0, behavior: 'instant' });
         if (wasPicking) void nextTick().then(() => document.getElementById('focus-room-heading')?.focus({ preventScroll: true }));
     }
@@ -976,8 +1060,7 @@ function nextRoom() {
 function openReview() {
     const missing = firstMissing();
     if (missing) {
-        goRoom(missing.roomIndex);
-        blockedQuestion.value = missing.questionIndex;
+        jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
         return;
     }
     stage.value = 'review';
@@ -1099,8 +1182,7 @@ async function submitControl() {
     if (submitting.value || stage.value !== 'review' || !canEdit.value) return;
     const missing = firstMissing();
     if (missing) {
-        goRoom(missing.roomIndex);
-        blockedQuestion.value = missing.questionIndex;
+        jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
         return;
     }
     submitting.value = true;
@@ -1138,6 +1220,7 @@ async function submitControl() {
             throw new Error('Сервер не подтвердил завершение проверки.');
         }
         finalResult.value = result;
+        clearResumePosition();
         stage.value = 'done';
         state.value = 'synced';
         if (recoveryKey) void queueLocalWrite({ type: 'delete', scope: recoveryKey });
@@ -1180,6 +1263,7 @@ async function resetControl() {
                 }
             }
         }
+        clearResumePosition();
         finalResult.value = null;
         await initialize();
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1739,6 +1823,8 @@ onBeforeUnmount(() => {
                         <span class="min-w-0 truncate">{{ currentRoom.title || 'Комната ' + (activeRoom + 1) }}</span>
                         <span class="shrink-0 text-xs">Комнаты · {{ activeRoom + 1 }}/{{ rooms.length }} ▾</span>
                     </button>
+                    <button v-if="stage === 'questions' && completedRequired < totalRequired" type="button"
+                        class="min-h-10 rounded-lg px-2 text-left text-xs font-semibold text-blue-800" @click="jumpToMissing">К первому пропуску ↓</button>
                     <div v-if="outstandingMedia > 0" class="space-y-2" role="status" aria-live="polite">
                         <div class="flex items-start justify-between gap-2 text-xs">
                             <span class="font-semibold" :class="failedMediaTransfers.length ? 'text-red-800' : 'text-blue-800'">
@@ -1762,7 +1848,10 @@ onBeforeUnmount(() => {
                                         ? 'Можете отвечать дальше. Не закрывайте Telegram до подтверждения загрузки.'
                                         : 'Откройте восстановление файлов ниже. Отправка пока недоступна.' }}
                             </p>
-                            <button v-if="failedMediaTransfers.length" type="button" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
+                            <button v-if="stage !== 'done' && (recoveryNeedingInput.length || failedMediaTransfers.length || currentMediaTransfers.length)"
+                                type="button" class="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800"
+                                @click="jumpToPendingMedia">К вложению</button>
+                            <button v-if="failedMediaTransfers.length && stage === 'done'" type="button" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
                                 @click="retryFailedFiles">Повторить</button>
                         </div>
                     </div>
@@ -1808,7 +1897,7 @@ onBeforeUnmount(() => {
                 <section v-if="recoveryNeedingInput.length" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
                     <h2 class="font-bold">Незавершённые вложения · {{ recoveryNeedingInput.length }}</h2>
                     <p class="mt-1 text-xs">Полностью полученные файлы прикрепятся без повторной загрузки. Если файл не дошёл, выберите оригинал или добавьте новый у нужного вопроса.</p>
-                    <div v-for="record in recoveryNeedingInput" :key="record.upload_id" class="mt-3 rounded-xl bg-white p-3">
+                    <div v-for="record in recoveryNeedingInput" :id="'focus-recovery-' + record.upload_id" :key="record.upload_id" tabindex="-1" class="mt-3 scroll-mt-64 rounded-xl bg-white p-3">
                         <button type="button" class="text-left font-semibold text-blue-800" @click="openRecoveryQuestion(record)">
                             {{ rooms[record.room_index]?.title || 'Комната ' + (record.room_index + 1) }} · вопрос {{ record.question_index + 1 }} →
                         </button>
@@ -1869,8 +1958,8 @@ onBeforeUnmount(() => {
                             placeholder="Найти по имени или оставить пустым"
                             :disabled="!canEdit" @select="choosePreviousCleaner" />
 
-                        <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="goRoom(0)">
-                            К вопросам
+                        <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="startQuestions">
+                            {{ resumePosition || (run?.draft_id && completedRequired > 0 && firstMissing()) ? 'Продолжить контроль' : 'К вопросам' }}
                         </button>
                     </section>
                 </template>
@@ -1893,7 +1982,9 @@ onBeforeUnmount(() => {
 
                     <div class="space-y-3">
                         <article v-for="(question, questionIndex) in currentRoom.items" :id="'focus-question-' + activeRoom + '-' + questionIndex"
-                            :key="activeRoom + '-' + questionIndex" class="scroll-mt-32 rounded-xl border bg-white p-4"
+                            :key="activeRoom + '-' + questionIndex" tabindex="-1"
+                            class="scroll-mt-64 rounded-xl border bg-white p-4"
+                            @focusin="rememberPosition(activeRoom, questionIndex)" @click.capture="rememberPosition(activeRoom, questionIndex)"
                             :class="blockedQuestion === questionIndex ? 'border-red-400' : highlightedReviewQuestion === questionIndex ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'">
                             <div class="flex justify-between gap-3">
                                 <h3 class="text-base font-bold leading-snug">{{ question.question || 'Вопрос' }}</h3>
@@ -2098,7 +2189,8 @@ onBeforeUnmount(() => {
                             </div>
                         </details>
                         <div v-if="!canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
-                            Остались файлы без подтверждения · {{ outstandingMedia }}. Дождитесь завершения загрузки, повторите ошибочные файлы или восстановите их после закрытия Telegram. До этого отправка недоступна.
+                            Остались файлы без подтверждения · {{ outstandingMedia }}. Отправка станет доступна после их сохранения или отмены.
+                            <button type="button" class="mt-2 block min-h-10 rounded-lg bg-white px-3 font-bold text-blue-800" @click="jumpToPendingMedia">К незагруженному вложению</button>
                         </div>
                         <p v-else-if="testMode" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
                             Тест проходит настоящий серверный цикл, но не попадает в рабочие результаты, статистику, награды и Telegram.

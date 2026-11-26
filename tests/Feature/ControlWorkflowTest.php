@@ -387,7 +387,8 @@ it('serves the experimental Vue Focus page only to active supervisors and admins
     $this->get($route)
         ->assertOk()
         ->assertSee('id="focus-v2-app"', false)
-        ->assertSee('Focus Control V2');
+        ->assertSee('Контроль качества')
+        ->assertDontSee('data-classic-url');
 
     $this->actingAs($cleaner)->get($route)->assertForbidden();
     $supervisor->forceFill(['is_active' => false])->save();

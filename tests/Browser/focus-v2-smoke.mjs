@@ -250,7 +250,7 @@ async function selectTestStaff(page) {
     await page.locator('#focus-cleaner').fill('Тестовый');
     await page.getByRole('option', { name: /Тестовый сотрудник/ }).click();
     await page.getByText('Тестовый сотрудник · серверная загрузка').waitFor({ timeout: 15000 });
-    await page.getByRole('button', { name: 'К вопросам' }).click();
+    await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
 }
 async function addGalleryFile(page, file) {
     await page.getByRole('button', { name: 'Добавить', exact: true }).click();
@@ -318,7 +318,7 @@ async function main() {
             });
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await page.getByRole('button', { name: 'Нет', exact: true }).click();
             await page.getByRole('button', { name: /Комнаты · 1\/2/ }).click();
             const picker = page.getByRole('dialog', { name: 'Комнаты проверки' });
@@ -334,12 +334,61 @@ async function main() {
             await context.close();
         }
 
+        // Resume restores the last focused question for this run only.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            const bootstrap = backend.bootstrap.bind(backend);
+            const bathroom = { title: 'Ванная', is_optional: false, items: [
+                { ...rooms[0].items[0], question: 'Зеркало чистое?' },
+                { ...rooms[0].items[0], question: 'Душ чистый?' },
+            ] };
+            const empty = initialAnswers()[0][0];
+            backend.bootstrap = () => ({
+                ...bootstrap(), rooms: [...rooms, bathroom],
+                answers: [backend.answers[0], backend.answers[1] ?? [{ ...empty }, { ...empty }]],
+                media: [backend.media[0], [[], []]],
+            });
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Следующая комната' }).click();
+            await page.locator('#focus-question-1-1').getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).first().waitFor();
+            await page.close();
+            const { page: reopened, errors: reopenErrors } = await pageFor(context, backend);
+            await reopened.getByRole('button', { name: 'Продолжить контроль' }).click();
+            await reopened.waitForFunction(() => document.activeElement?.id === 'focus-question-1-1');
+            assert.equal(await reopened.locator('#focus-question-1-1').getByRole('button', { name: 'Да', exact: true }).getAttribute('aria-pressed'), 'true');
+            await reopened.getByRole('button', { name: /К первому пропуску/ }).click();
+            await reopened.waitForFunction(() => document.activeElement?.id === 'focus-question-0-0');
+            assert.equal(await reopened.locator('#focus-question-0-0').evaluate(el => el.classList.contains('border-red-400')), true);
+
+            // A fresh server run must not open the old local position.
+            backend.draftId = null;
+            backend.revision = 0;
+            backend.answers = initialAnswers();
+            const originalBootstrap = backend.bootstrap;
+            backend.bootstrap = () => {
+                const state = originalBootstrap();
+                state.run.id = '00000000-0000-4000-8000-000000000099';
+                return state;
+            };
+            await reopened.reload({ waitUntil: 'domcontentloaded' });
+            await reopened.getByRole('button', { name: 'К вопросам' }).waitFor();
+            assert.equal(await reopened.getByRole('button', { name: 'Продолжить контроль' }).count(), 0);
+            assert.deepEqual([...errors, ...reopenErrors], []);
+            console.log('PASS mobile UI: resume exact question, jump to first required gap, isolate new runs');
+            await context.close();
+        }
+
         // Chromium's virtual devices exercise capture, not the file chooser.
         if (process.env.FOCUS_BROWSER !== 'webkit') {
             const backend = new FakeFocusBackend();
             const context = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['camera', 'microphone'] });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             let filePickers = 0;
             page.on('filechooser', () => filePickers++);
             for (const video of [false, true]) {
@@ -376,7 +425,7 @@ async function main() {
                 });
             });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await page.getByRole('button', { name: 'Добавить', exact: true }).click();
             await page.getByRole('button', { name: 'Сделать фото' }).click();
             await page.getByRole('alert').filter({ hasText: /Нет доступа к камере/ }).waitFor();
@@ -467,7 +516,7 @@ async function main() {
             const backend = new FakeFocusBackend();
             const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await page.getByRole('button', { name: 'Добавить' }).click();
             const galleryInput = page.locator('input[type=file][multiple]').last();
             await galleryInput.setInputFiles([
@@ -505,7 +554,7 @@ async function main() {
             const backend = new FakeFocusBackend();
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await addPhoto(page);
             const replacement = page.locator('label').filter({ hasText: 'Заменить' }).locator('input[type=file]').first();
             await replacement.waitFor({ timeout: 15000 });
@@ -550,7 +599,7 @@ async function main() {
             const backend = new FakeFocusBackend();
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await page.getByRole('button', { name: 'Нет' }).click();
             await addPhoto(page);
             await page.getByText('Сохранено', { exact: true }).first().waitFor({ timeout: 20000 });
@@ -558,7 +607,7 @@ async function main() {
             assert.equal(backend.media[0][0].length, 1);
             assert.equal(backend.startRequests, 1);
             await page.reload({ waitUntil: 'domcontentloaded' });
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await expectPhoto(page);
             assert.equal(backend.startRequests, 1, 'Attached photo was uploaded twice after reload.');
             page.once('dialog', dialog => dialog.accept());
@@ -576,7 +625,7 @@ async function main() {
             const backend = new FakeFocusBackend();
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await addGalleryFile(page, {
                 name: 'inspection.mp4', mimeType: 'video/mp4', buffer: Buffer.from('video-fixture'),
             });
@@ -589,7 +638,7 @@ async function main() {
             await page.getByRole('button', { name: 'Закрыть галерею' }).click();
             assert.equal(backend.media[0][0][0].mime, 'video/mp4');
             await page.reload({ waitUntil: 'domcontentloaded' });
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await page.getByRole('button', { name: /Просмотреть видео inspection.mp4/ }).waitFor({ timeout: 15000 });
             assert.equal(backend.startRequests, 1);
             assert.deepEqual(errors, []);
@@ -610,7 +659,7 @@ async function main() {
             });
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await page.getByRole('button', { name: /Просмотреть видео ready-video.mp4/ }).waitFor({ timeout: 15000 });
             assert.equal(backend.media[0][0].length, 1, 'Server-ready file was not automatically attached.');
             assert.equal(backend.sessions.get(uploadId).status, 'attached');
@@ -676,6 +725,8 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             const recovery = page.locator('section').filter({ has: page.getByRole('heading', { name: /Незавершённые вложения/ }) });
+            await page.getByRole('button', { name: 'К вложению', exact: true }).click();
+            await page.waitForFunction(id => document.activeElement?.id === 'focus-recovery-' + id, uploadId);
             assert.match(await recovery.getByRole('button', { name: /вопрос 1/ }).innerText(), /Кухня/);
             await recovery.getByLabel('Выбрать оригинал').setInputFiles({ name: 'different.png', mimeType: 'image/png', buffer: image });
             await recovery.getByRole('alert').filter({ hasText: 'Это другой файл' }).waitFor();
@@ -700,13 +751,13 @@ async function main() {
             backend.failChunksRemaining = 3;
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await addPhoto(page);
             await page.getByText('Temporary network error').waitFor({ timeout: 10000 });
             const uploadId = [...backend.sessions.keys()][0];
             assert.ok(uploadId, 'No server-side reservation before a chunk failure.');
             await page.reload({ waitUntil: 'domcontentloaded' });
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             const recoveryPath = await restoreInterruptedOriginalIfNeeded(page, {
                 name: 'photo.png', mimeType: 'image/png', buffer: image,
             });
@@ -726,7 +777,7 @@ async function main() {
             backend.failChunksRemaining = 3;
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await addGalleryFile(page, {
                 name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'),
             });
@@ -734,7 +785,7 @@ async function main() {
             const uploadId = [...backend.sessions.keys()][0];
             assert.ok(uploadId);
             await page.reload({ waitUntil: 'domcontentloaded' });
-            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             const recoveryPath = await restoreInterruptedOriginalIfNeeded(page, {
                 name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'), video: true,
             });
