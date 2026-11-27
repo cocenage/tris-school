@@ -206,3 +206,24 @@ test('rejects inconsistent upload parameters and a failed final assembly', async
         globalThis.fetch = original;
     }
 });
+
+
+test('does not immediately repeat a throttled upload and preserves its cooldown and stage', async () => {
+    const original = globalThis.fetch;
+    let requests = 0;
+    globalThis.fetch = async () => {
+        requests++;
+        return { ...reply({ message: 'Too Many Attempts.' }, 429), headers: new Headers({ 'Retry-After': '60' }) };
+    };
+    try {
+        await assert.rejects(transfer(fileOfSize(10)), error => {
+            assert.equal(error.status, 429);
+            assert.equal(error.retryDelay, 60_000);
+            assert.equal(error.uploadStage, 'Подключение');
+            return true;
+        });
+        assert.equal(requests, 1);
+    } finally {
+        globalThis.fetch = original;
+    }
+});

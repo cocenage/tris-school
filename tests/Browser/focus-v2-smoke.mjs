@@ -1099,7 +1099,7 @@ async function main() {
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await addPhoto(page);
-            await page.getByText('Temporary network error').waitFor({ timeout: 10000 });
+            await page.getByText('Не удалось передать файл. Он остаётся в очереди.').waitFor({ timeout: 10000 });
             const uploadId = [...backend.sessions.keys()][0];
             assert.ok(uploadId, 'No server-side reservation before a chunk failure.');
             await page.reload({ waitUntil: 'domcontentloaded' });
@@ -1145,11 +1145,11 @@ async function main() {
             assert.equal(backend.media[0][0].length, 2);
             backend.failChunksRemaining = 3;
             await addGalleryFile(page, { name: 'failed.png', mimeType: 'image/png', buffer: image });
-            await page.getByText('Temporary network error').waitFor({ timeout: 15000 });
+            await page.getByText('Не удалось передать файл. Он остаётся в очереди.').waitFor({ timeout: 15000 });
             const failed = [...backend.sessions.values()].find(session => session.name === 'failed.png');
             assert.ok(failed);
             await page.getByRole('button', { name: 'Убрать', exact: true }).click();
-            await page.getByText('Temporary network error').waitFor({ state: 'hidden' });
+            await page.getByText('Не удалось передать файл. Он остаётся в очереди.').waitFor({ state: 'hidden' });
             assert.equal(failed.status, 'cancelled');
             assert.deepEqual(errors, []);
             await page.getByRole('button', { name: 'Да', exact: true }).click();
@@ -1208,7 +1208,7 @@ async function main() {
             await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             assert.equal(await page.evaluate(() => navigator.onLine), true);
             await addPhoto(page);
-            await page.getByText('Temporary network error').waitFor({ timeout: 10000 });
+            await page.getByText('Не удалось передать файл. Он остаётся в очереди.').waitFor({ timeout: 10000 });
             const id = [...backend.sessions.keys()][0];
             await page.getByRole('button', { name: 'Да', exact: true }).click();
             await page.getByText('Сохранено', { exact: true }).waitFor();
@@ -1277,7 +1277,7 @@ async function main() {
             await addGalleryFile(page, {
                 name: 'cached-clip.mp4', mimeType: 'video/mp4', buffer: Buffer.from('short-test-video'),
             });
-            await page.getByText('Temporary network error').waitFor({ timeout: 15000 });
+            await page.getByText('Не удалось передать файл. Он остаётся в очереди.').waitFor({ timeout: 15000 });
             const uploadId = [...backend.sessions.keys()][0];
             assert.ok(uploadId);
             await page.reload({ waitUntil: 'domcontentloaded' });

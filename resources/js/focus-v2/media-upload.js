@@ -39,6 +39,14 @@ export function allowedFocusFile(file) {
     return '';
 }
 
+// Keep the response status, even if a proxy serves a non-JSON error page.
+function setRetryAfter(error, response) {
+    const value = response.headers?.get('Retry-After');
+    if (!value) return;
+    const seconds = /^\d+$/.test(value) ? Number(value) : (Date.parse(value) - Date.now()) / 1000;
+    if (Number.isFinite(seconds)) error.retryDelay = Math.max(0, seconds * 1000);
+}
+
 export async function focusMediaRequest(url, method, body, csrf, signal, timeoutMs = 45_000) {
     const bounded = timeoutMs > 0 ? new AbortController() : null;
     if (signal?.aborted) throw new DOMException('Отменено', 'AbortError');
@@ -69,6 +77,7 @@ export async function focusMediaRequest(url, method, body, csrf, signal, timeout
         if (!response.ok) {
             const error = new Error(result.message || 'Загрузка не удалась. Повторите попытку.');
             error.status = response.status;
+            setRetryAfter(error, response);
             throw error;
         }
         return result;
@@ -116,6 +125,7 @@ async function sendChunk(url, bytes, csrf, signal) {
             const data = await response.json().catch(() => ({}));
             const error = new Error(data.message || 'Часть файла не загрузилась.');
             error.status = response.status;
+            setRetryAfter(error, response);
             throw error;
         }
     } catch (error) {
@@ -150,10 +160,15 @@ async function retryFocusUpload(operation, signal, onRetry, label) {
         try {
             return await operation();
         } catch (error) {
+            // Identify the exact failed stage without exposing file names,
+            // URLs, tokens or request bodies to the UI or diagnostics.
+            error.uploadStage = label;
             if (signal?.aborted || attempt === 3 || !isTransientFocusUploadError(error)) throw error;
+            // Long cooldowns are handled by the outer queue, not while
+            // holding an attachment revision lock.
+            if (error.status === 429) throw error;
             onRetry?.({ label, attempt, maxAttempts: 3 });
-            // 250ms and 750ms prevent repeated request storms on a shared host.
-            await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 250 : 750));
+            await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 1000 : 3000));
         }
     }
 }

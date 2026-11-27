@@ -139,6 +139,8 @@ function restoreLocalVersion() {
 }
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
+let mediaCooldownUntil = 0;
+let mediaCooldownTimer = null;
 const photoRetryTimers = new Map();
 const photoRetryDelays = [4_000, 15_000, 45_000];
 let recoveringDraftMedia = false;
@@ -267,7 +269,7 @@ function retrySaveLater(delay) {
     const requestedRun = run.value?.id;
     serverRetryTimer = setTimeout(() => {
         clearServerWait();
-        if (run.value?.id === requestedRun && canEdit.value) void flush();
+        if (run.value?.id === requestedRun && canEdit.value) void flush().finally(pumpTransfers);
     }, delay);
 }
 
@@ -1541,7 +1543,7 @@ async function submitControl() {
             if (error.status === 429) {
                 clearServerWait();
                 serverWaiting.value = true;
-                serverRetryTimer = setTimeout(clearServerWait, error.retryDelay);
+                serverRetryTimer = setTimeout(() => { clearServerWait(); pumpTransfers(); }, error.retryDelay);
             }
             return;
         }
@@ -1719,11 +1721,17 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
 }
 
 function pumpTransfers() {
+    if (serverWaiting.value) return;
+    if (Date.now() < mediaCooldownUntil) {
+        clearTimeout(mediaCooldownTimer);
+        mediaCooldownTimer = setTimeout(pumpTransfers, mediaCooldownUntil - Date.now());
+        return;
+    }
     if (!connectionOnline.value) {
         if (outstandingMedia.value > 0) scheduleReachabilityCheck();
         return;
     }
-    while (activeTransfers < 2 && (canEdit.value || stage.value === 'done')) {
+    while (activeTransfers < 1 && (canEdit.value || stage.value === 'done')) {
         const next = uploads.value.find(item => item.status === 'queued' && !item.cancelling);
         if (!next) break;
         next.status = 'uploading';
@@ -1846,7 +1854,17 @@ async function sendOne(item) {
         }
         item.status = 'error';
         item.retryable = isTransientFocusUploadError(error);
-        item.error = error.message || 'Не удалось загрузить файл.';
+        item.error = item.retryable
+            ? 'Не удалось передать файл. Он остаётся в очереди.'
+            : (error.message || 'Не удалось загрузить файл.');
+        if (item.retryable) {
+            const cooldown = error.status === 429 ? Math.max(1000, error.retryDelay ?? 60_000) : 5000;
+            item.retryDelay = cooldown;
+            mediaCooldownUntil = Math.max(mediaCooldownUntil, Date.now() + cooldown);
+            // Console metadata identifies the failing operation without
+            // personal data, filenames, paths, tokens or payloads.
+            console.warn('Focus media transport', { stage: error.uploadStage ?? 'draft or attachment', status: error.status ?? null, type: error.name });
+        }
         schedulePhotoRetry(item);
         if (error.status === 409 && item.progress === 100) {
             syncError.value = 'Не удалось прикрепить файл из-за изменения черновика. Проверьте ответы перед повтором.';
@@ -1860,8 +1878,10 @@ function clearPhotoRetry(id) {
 }
 
 function schedulePhotoRetry(item) {
-    const delay = photoRetryDelays[item.autoRetries ?? 0];
-    if (delay === undefined || !focusFileMime(item.file).startsWith('image/')
+    const backoff = photoRetryDelays[item.autoRetries ?? 0];
+    const delay = Math.max(backoff ?? 0, item.retryDelay ?? 0);
+    item.retryHint = '';
+    if (backoff === undefined || !item.file
         || item.status !== 'error' || !item.retryable || item.cancelling
         || photoRetryTimers.has(item.id)
         || !canRetryFocusFile(item, canEdit.value, finalResult.value?.response_id)) return;
@@ -1904,6 +1924,7 @@ function retryFile(item, automatic = false) {
     item.error = '';
     item.retryHint = '';
     item.retryable = false;
+    item.retryDelay = 0;
     pumpTransfers();
 }
 
@@ -2253,6 +2274,7 @@ onMounted(() => {
 function stopPageCamera() { camera.value = null; }
 onBeforeUnmount(() => {
     clearServerWait();
+    clearTimeout(mediaCooldownTimer);
     cancelReachabilityCheck();
     closePhotoCapture();
     closeBatchPreview();
