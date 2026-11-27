@@ -25,6 +25,9 @@ beforeEach(function (): void {
         $table->unsignedBigInteger('apartment_id');
         $table->date('cleaning_date');
         $table->boolean('remaining')->default(false);
+        $table->unsignedBigInteger('user_id')->nullable();
+        $table->string('cleaner_name')->default('Сотрудник');
+        $table->timestamps();
     });
     CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-11-23', 'Europe/Rome'));
 });
@@ -79,4 +82,37 @@ it('returns an empty dashboard rather than showing every apartment or fake numbe
     ]);
     expect($service->apartmentQuery()->get())->toBeEmpty();
     expect($service->rowsForApartments(collect()))->toBe([]);
+});
+
+it('counts submitted questionnaires and distinguishes current-cycle coverage from earlier observations', function (): void {
+    DB::table('apartments')->insert([
+        ['id' => 10, 'name' => 'A', 'address' => null],
+        ['id' => 11, 'name' => 'B', 'address' => null],
+        ['id' => 12, 'name' => 'C', 'address' => null],
+    ]);
+    DB::table('antigoccia_applications')->insert([
+        ['apartment_id' => 10, 'applied_on' => '2026-11-10'],
+        ['apartment_id' => 10, 'applied_on' => '2026-11-20'],
+        ['apartment_id' => 11, 'applied_on' => '2026-11-10'],
+    ]);
+    DB::table('antigoccia_reports')->insert([
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-18', 'user_id' => 1, 'cleaner_name' => 'A', 'created_at' => '2026-11-21 10:00:00'],
+        ['apartment_id' => 11, 'cleaning_date' => '2026-11-18', 'user_id' => 1, 'cleaner_name' => 'A', 'created_at' => '2026-11-21 11:00:00'],
+        ['apartment_id' => 11, 'cleaning_date' => '2026-11-22', 'user_id' => 2, 'cleaner_name' => 'B', 'created_at' => '2026-11-23 10:00:00'],
+        ['apartment_id' => 12, 'cleaning_date' => '2026-11-22', 'user_id' => 2, 'cleaner_name' => 'B', 'created_at' => '2026-11-23 11:00:00'],
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-12', 'user_id' => 1, 'cleaner_name' => 'A', 'created_at' => '2026-11-12 11:00:00'],
+    ]);
+
+    $activity = app(AntigocciaOverview::class)->activity(7);
+
+    expect($activity['reports'])->toBe(4)
+        ->and($activity['treated'])->toBe(2)
+        ->and($activity['covered'])->toBe(1)
+        ->and($activity['uncovered'])->toBe(1)
+        ->and($activity['staff_count'])->toBe(2)
+        ->and($activity['daily']['2026-11-17'])->toBe(0)
+        ->and($activity['daily']['2026-11-21'])->toBe(2)
+        ->and($activity['apartments'][0]['covered'])->toBeFalse()
+        ->and($activity['apartments'][1]['mean_interval'])->toEqual(4)
+        ->and($activity['apartments'][2]['applied_on'])->toBeNull();
 });
