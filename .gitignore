@@ -34,3 +34,6 @@ Thumbs.db
 /mobile/android/.gradle/
 /mobile/android/app/build/
 /mobile/android/build/
+
+/mobile/.push-smoke-src/
+/mobile/.push-smoke-dist/

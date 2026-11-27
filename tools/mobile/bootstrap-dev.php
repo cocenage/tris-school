@@ -74,11 +74,12 @@ $user->forceFill([
     'is_active' => true,
     'email_verified_at' => now(),
     'password' => $password,
-])->saveQuietly();
+]);
 
-// Quiet creation skips the ID allocator; create new accounts with model events.
-if (! $user->tris_id) {
-    $user->forceFill(['tris_id' => app(\App\Services\TrisIdGenerator::class)::generate()])->saveQuietly();
+if ($user->exists) {
+    $user->saveQuietly();
+} else {
+    $user->save();
 }
 
 echo PHP_EOL."Local QA admin: mobile-qa@example.invalid".PHP_EOL;

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>TRIS · Push QA</title>
+<style>
+:root{color-scheme:light dark;font:16px system-ui,sans-serif;background:Canvas;color:CanvasText}
+body{margin:0;padding:max(30px,env(safe-area-inset-top)) 22px 24px;max-width:620px;margin-inline:auto}
+h1{font-size:42px;margin:0 0 8px;letter-spacing:-2px} p{line-height:1.5}
+button{font:inherit;border:1px solid #888;border-radius:10px;background:transparent;color:inherit;padding:13px 16px;margin:5px 0;width:100%;text-align:left}
+button:disabled{opacity:.5} textarea{width:100%;box-sizing:border-box;font:13px monospace;overflow-wrap:anywhere;height:96px;padding:10px}
+#log{white-space:pre-wrap;overflow-wrap:anywhere;font:13px monospace;border-top:1px solid #888;padding-top:12px}
+small{opacity:.7} #status{font-weight:600}
+</style>
+</head><body>
+<small>TRIS DEV / QA 0.2</small>
+<h1>Push.</h1>
+<p>Проверка Firebase Cloud Messaging на физическом устройстве. Использовать только с отдельным DEV-проектом.</p>
+<p id="status" role="status">Подготовка…</p>
+<button id="register" disabled>Разрешить и зарегистрировать уведомления</button>
+<label for="token">FCM token (не публиковать)</label>
+<textarea id="token" readonly placeholder="После регистрации"></textarea>
+<button id="copy" disabled>Скопировать токен</button>
+<button id="delivered" disabled>Проверить уведомления в шторке</button>
+<button id="clear">Очистить журнал</button>
+<h2>События</h2><pre id="log" aria-live="polite"></pre>
+<script type="module" src="./main.js"></script>
+</body></html>
