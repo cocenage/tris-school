@@ -242,9 +242,10 @@ final class ControlSchema
                 continue;
             }
 
-            $values[] = (string) ($option['value'] ?? $option['label'] ?? 'option_'.$index);
+            // Submitted answers and the score resolver already trim values.
+            $values[] = trim((string) ($option['value'] ?? $option['label'] ?? 'option_'.$index));
             if (isset($option['label'])) {
-                $values[] = (string) $option['label'];
+                $values[] = trim((string) $option['label']);
             }
             $values[] = 'option_'.$index;
         }
