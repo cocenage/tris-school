@@ -3411,3 +3411,30 @@ it('does not misreport a database lock as a stale revision for an existing Focus
     }
     expect($draft->fresh()->revision)->toBe(1);
 });
+
+it('does not let media requests exhaust the Focus V2 submission rate limit', function (): void {
+    Queue::fake();
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $cleaner->forceFill(['telegram_id' => 'focus-v2-rate-limit-test'])->save();
+    $this->postJson(route('page-checks.control.focus-v2.draft'), focusV2DraftSavePayload($control, $cleaner, $apartment))
+        ->assertOk();
+
+    // Even rejected requests consume the route's throttle budget.
+    // Thirty-one media requests must not consume the submit budget of 20.
+    for ($i = 0; $i < 31; $i++) {
+        $this->postJson(route('page-checks.control.focus-v2.media.start'), [])->assertUnprocessable();
+    }
+
+    $draft = ControlResponseDraft::query()->sole();
+    $final = focusV2FinalPayload($draft);
+    $this->postJson(route('page-checks.control.focus-v2.submit'), $final)
+        ->assertOk()->assertJsonPath('submitted', true);
+
+    // Keep the existing submission protection (including replay attempts).
+    for ($i = 1; $i < 20; $i++) {
+        $this->postJson(route('page-checks.control.focus-v2.submit'), [])->assertUnprocessable();
+    }
+    $this->postJson(route('page-checks.control.focus-v2.submit'), [])->assertStatus(429);
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), [])->assertUnprocessable();
+    expect(ControlResponse::count())->toBe(1);
+});
