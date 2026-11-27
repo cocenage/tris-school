@@ -176,7 +176,7 @@ class UsersTable
             ->label('Одобрить доступ')
             ->icon('heroicon-m-check')
             ->color('success')
-            ->visible(fn ($record): bool => $record->status !== 'approved')
+            ->visible(fn ($record): bool => in_array($record->status, ['pending', 'rejected'], true))
             ->requiresConfirmation()
             ->action(function ($record): void {
                 $record->update([

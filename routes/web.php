@@ -58,6 +58,13 @@ Route::post('/logout', LogoutController::class)
     ->middleware('auth')
     ->name('logout');
 
+Route::middleware(['auth'])->group(function () {
+    Route::get('/access/registration', [\App\Http\Controllers\AccessRegistrationController::class, 'show'])
+        ->name('access.registration');
+    Route::post('/access/registration', [\App\Http\Controllers\AccessRegistrationController::class, 'store'])
+        ->middleware('throttle:5,1')->name('access.registration.store');
+});
+
 Route::livewire('/access/pending', 'access.pending')
     ->middleware('auth')
     ->name('access.pending');

@@ -29,7 +29,7 @@ class TelegramAuthService
 
         if ($isNew) {
             $user->role = 'cleaner';
-            $user->status = 'pending';
+            $user->status = 'new';
             $user->is_active = true;
             $user->password = Str::password(32);
         }
@@ -40,7 +40,6 @@ class TelegramAuthService
             $notifications = app(TelegramUserNotificationService::class);
 
             $notifications->accessRequested($user);
-            $notifications->accessPending($user);
         }
 
         Auth::login($user, true);

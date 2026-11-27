@@ -33,6 +33,22 @@ class TelegramUserNotificationService
         $context = $this->accessContext($user, 'requested', (string) $adminChatId, $adminThreadId);
         app(TelegramOutboundMonitor::class)->expect($context);
 
+        $fields = [
+            'Имя' => $this->userName($user),
+            'Telegram' => $this->telegramUsername($user),
+            'TRIS ID' => $user->tris_id ?? '—',
+        ];
+
+        $registration = $user->registration_data ?? [];
+        foreach (['phone' => 'Телефон', 'requested_role' => 'Запрошенная должность', 'city' => 'Город / зона', 'supervisor' => 'Супервайзер', 'work_started_at' => 'Начало работы'] as $key => $label) {
+            if (isset($registration[$key])) {
+                $value = (string) $registration[$key];
+                $fields[$label] = $key === 'requested_role'
+                    ? (['cleaner' => 'Клинер', 'supervisor' => 'Супервайзер'][$value] ?? $value)
+                    : $value;
+            }
+        }
+
         $payload = [
             'chat_id' => $adminChatId,
             'parse_mode' => 'HTML',
@@ -40,8 +56,7 @@ class TelegramUserNotificationService
             'text' => implode("\n", [
                 '👤 <b>Новая заявка на доступ</b>',
                 '',
-                '<b>Имя:</b> '.$this->escape($this->userName($user)),
-                '<b>Telegram:</b> '.$this->escape($this->telegramUsername($user)),
+                ...collect($fields)->map(fn ($value, $label) => '<b>'.$this->escape($label).':</b> '.$this->escape($value))->values()->all(),
                 '<b>Статус:</b> ожидает одобрения',
                 '',
                 'Пользователь ждёт подтверждения доступа к сайту.',
@@ -75,10 +90,7 @@ class TelegramUserNotificationService
         $rich = app(TelegramRichMessageBuilder::class)->build(
             title: 'Заявка на доступ',
             status: 'Ожидает одобрения',
-            fields: [
-                'Имя' => $this->userName($user),
-                'Telegram' => $this->telegramUsername($user),
-            ],
+            fields: $fields,
             notice: 'Пользователь ждёт подтверждения доступа к сайту.',
         );
 

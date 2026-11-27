@@ -73,6 +73,8 @@ class User extends Authenticatable implements FilamentUser
             'telegram_write_access_granted_at' => 'datetime',
             'telegram_last_auth_at' => 'datetime',
             'telegram_access_approved_notified_at' => 'datetime',
+            'registration_data' => 'array',
+            'registration_submitted_at' => 'datetime',
             'birthday' => 'date',
             'work_started_at' => 'date',
             'dip' => 'boolean',
@@ -208,6 +210,7 @@ class User extends Authenticatable implements FilamentUser
         }
 
         return match ($this->status) {
+            'new' => 'access.registration',
             'approved' => 'page-home',
             'pending' => 'access.pending',
             'rejected' => 'access.rejected',

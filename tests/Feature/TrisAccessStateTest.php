@@ -24,6 +24,8 @@ it('uses the same access decision for work pages and Telegram redirects', functi
             ->and($response->headers->get('Location'))->toBe(route($routeName));
     }
 })->with([
+    ['new', true, 'access.registration'],
+    ['new', false, 'access.rejected'],
     ['approved', true, 'page-home'],
     ['approved', false, 'access.rejected'],
     ['pending', true, 'access.pending'],

@@ -27,6 +27,7 @@ class UserForm
                         Select::make('status')
                             ->label('Доступ к сайту')
                             ->options([
+                                'new' => 'Анкета не отправлена',
                                 'pending' => 'Ожидает доступ',
                                 'approved' => 'Доступ разрешён',
                                 'rejected' => 'Доступ запрещён',
@@ -62,6 +63,13 @@ class UserForm
                         Placeholder::make('tris_id_display')
                             ->label('TRIS ID')
                             ->content(fn (?User $record): string => $record?->tris_id ?? 'Присваивается автоматически'),
+
+                        Placeholder::make('registration_summary')
+                            ->label('Анкета сотрудника')
+                            ->visible(fn (?User $record): bool => ! empty($record?->registration_data))
+                            ->content(fn (?User $record): string => collect($record?->registration_data ?? [])
+                                ->map(fn ($value, $key) => (['first_name' => 'Имя', 'last_name' => 'Фамилия', 'birthday' => 'Дата рождения', 'phone' => 'Телефон', 'requested_role' => 'Запрошенная должность', 'city' => 'Город / зона', 'work_started_at' => 'Начало работы', 'supervisor' => 'Супервайзер'][$key] ?? $key).': '.(string) $value)
+                                ->implode(' · ')),
 
                         TextInput::make('name')
                             ->label('ФИО')
