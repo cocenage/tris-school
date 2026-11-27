@@ -60,7 +60,7 @@ class FakeFocusBackend {
             };
         }
         const state = sandbox ? this.test : this;
-        const currentRunId = sandbox ? state.runId : runId;
+        const currentRunId = state.runId || state.emptyRunId || runId;
         return {
             viewer: { id: 100, role: 'admin' },
             test_mode: sandbox,
@@ -121,6 +121,7 @@ class FakeFocusBackend {
                     if (state.draftId !== null && snapshot.expected_revision !== state.revision) {
                         return reply({ message: 'Conflict', error: 'revision_conflict' }, 409);
                     }
+                    if (state.draftId === null) state.runId = snapshot.run_id;
                     state.draftId ??= sandbox ? 91 : 51;
                     state.revision += 1;
                     if (sandbox) this.testWrites += 1;
@@ -128,7 +129,7 @@ class FakeFocusBackend {
                     state.setup = snapshot.setup;
                     state.answers = snapshot.answers;
                     return reply({ run: {
-                        id: sandbox ? state.runId : runId,
+                        id: state.runId || runId,
                         draft_id: state.draftId, revision: state.revision,
                     } });
                 }
@@ -152,6 +153,9 @@ class FakeFocusBackend {
                     const sandbox = payload.test_mode === true;
                     const state = sandbox ? this.test : this;
                     this.startRequests += 1;
+                    if (payload.run_id !== (state.runId || runId) || payload.draft_id !== state.draftId) {
+                        return reply({ message: 'Wrong draft or run' }, 409);
+                    }
                     let session = state.sessions.get(payload.upload_id);
                     if (!session) {
                         session = {
@@ -201,6 +205,10 @@ class FakeFocusBackend {
                             });
                             session.status = 'attached';
                             state.revision++;
+                        }
+                        if (this.dropAttachAck) {
+                            this.dropAttachAck = false;
+                            return route.abort('failed');
                         }
                         return reply({
                             run: { draft_id: state.draftId, revision: state.revision },
@@ -309,6 +317,67 @@ async function main() {
         browser = await (process.env.FOCUS_BROWSER === 'webkit' ? webkit : chromium).launch({
             headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }),
         });
+
+        // Attachment is idempotent even if the server's first receipt never reaches the phone.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            backend.dropAttachAck = true;
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            const picker = page.getByRole('dialog', { name: 'Добавить фото или видео' });
+            await page.getByRole('button', { name: 'Добавить', exact: true }).click();
+            await picker.locator('input[type=file]').setInputFiles(['first.png','second.png'].map(name =>
+                ({ name, mimeType: 'image/png', buffer: image })));
+            await page.getByRole('button', { name: 'Добавить 2' }).click();
+            for (let i = 0; backend.media[0][0].length < 2 && i < 50; i++) await delay(100);
+            assert.equal(backend.media[0][0].length, 2, 'A lost attachment receipt blocked the next photo');
+            assert.equal(backend.sessions.size, 2);
+            assert.equal(backend.chunkRequests, 2);
+            await page.getByRole('button', { name: 'Удалить', exact: true }).last().waitFor();
+            assert.equal(await page.getByText('Ошибка загрузки', { exact: true }).count(), 0);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: lost attachment receipt is retried without duplicates or reuploading bytes');
+            await context.close();
+        }
+
+        // The first confirmed file belongs to the local run until the server creates its draft.
+        for (const differentActiveDraft of [false, true]) {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.evaluate(() => {
+                Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+                window.dispatchEvent(new Event('offline'));
+            });
+            await addPhoto(page);
+            await page.getByText('На устройстве', { exact: true }).waitFor({ timeout: 5000 });
+            assert.equal(backend.startRequests, 0);
+            await page.close();
+            const freshRun = '00000000-0000-4000-8000-000000000098';
+            if (differentActiveDraft) {
+                backend.runId = freshRun;
+                backend.draftId = 51;
+                backend.revision = 1;
+            } else backend.emptyRunId = freshRun;
+            const { page: reopened, errors: reopenErrors } = await pageFor(context, backend);
+            if (differentActiveDraft) {
+                await reopened.getByRole('button', { name: 'К вопросам' }).click();
+                assert.equal(await reopened.getByRole('button', { name: 'Открыть фото photo.png' }).count(), 0);
+                assert.equal(backend.startRequests, 0);
+            } else {
+                for (let i = 0; backend.media[0][0].length === 0 && i < 70; i++) await delay(100);
+                assert.equal(backend.media[0][0].length, 1, 'Offline photo did not resume after reopening');
+                assert.equal(backend.runId, runId, 'The draft was not bound to the original offline run');
+                assert.equal(backend.sessions.size, 1);
+            }
+            assert.deepEqual([...errors, ...reopenErrors], []);
+            console.log('PASS mobile UI: first offline photo ' + (differentActiveDraft ? 'does not join another active run' : 'survives closing and uploads to its run'));
+            await context.close();
+        }
 
         // The second upload may start while the first holds the draft revision.
         {

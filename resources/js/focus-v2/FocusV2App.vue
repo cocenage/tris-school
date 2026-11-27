@@ -4,7 +4,7 @@ import FocusCamera from './FocusCamera.vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
 import FocusMediaViewer from './FocusMediaViewer.vue';
 import FocusVideoThumb from './FocusVideoThumb.vue';
-import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, isTransientFocusUploadError, transferFocusFile } from './media-upload';
+import { allowedFocusFile, attachFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, isTransientFocusUploadError, transferFocusFile } from './media-upload';
 import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
@@ -341,6 +341,18 @@ async function restoreCachedPhotos() {
     recoveringPhotos.value = true;
     try {
         const cached = await readCachedFocusPhotos(recoveryKey);
+        // Bootstrap issues a new provisional ID when no server draft exists.
+        // Only a single locally started run can claim an empty server slot.
+        // Never move files into an existing or ambiguous run.
+        if (run.value.draft_id == null && run.value.revision === 0
+            && !cached.some(saved => saved.run_id === run.value.id)) {
+            const localRuns = new Set(cached.filter(saved => saved.before_draft === true
+                && rooms.value[saved.room]?.items?.[saved.question]).map(saved => saved.run_id));
+            if (localRuns.size === 1) {
+                run.value = { ...run.value, id: [...localRuns][0] };
+                readResumePosition();
+            }
+        }
         for (const saved of cached) {
             // Never attach a cached file to a different draft/run.
             if (saved.run_id !== run.value.id) {
@@ -725,7 +737,7 @@ async function attachReadyDraft(record) {
             if (info.status !== 'ready' && info.status !== 'attached') {
                 throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
             }
-            const attached = await focusMediaRequest(info.urls.attach, 'POST', {
+            const attached = await attachFocusFile(info.urls.attach, {
                 draft_id: run.value.draft_id, expected_revision: run.value.revision,
             }, csrf);
             run.value = { ...run.value, ...attached.run };
@@ -1330,13 +1342,8 @@ function addFiles(event, room, question) {
 async function queueSelectedFiles(selected, room, question, options = {}) {
     if (!canEdit.value) return false;
     mediaError.value = '';
-    if (selected.length && !run.value?.draft_id) {
-        if (!inFlight && changeSerial === acknowledgedSerial) touch();
-        if (!(await flush()) || !run.value?.draft_id) {
-            mediaError.value = syncError.value || 'Не удалось создать черновик. Файл остался в предпросмотре.';
-            return false;
-        }
-    }
+    const beforeDraft = run.value.draft_id == null;
+    const firstBackups = [];
     let accepted = 0;
     let reserved = mediaCountAt(room, question);
     for (const original of selected) {
@@ -1366,7 +1373,7 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
             queued.cachePending = true;
             queued.cachePromise = cacheFocusPhoto({
                 scope: recoveryKey, uploadId: id, runId: run.value.id,
-                file, room, question,
+                file, room, question, beforeDraft,
             }).then(() => {
                 queued.cached = true;
             }).catch(() => {
@@ -1374,12 +1381,16 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
             }).finally(() => {
                 queued.cachePending = false;
             });
+            if (beforeDraft) firstBackups.push(queued.cachePromise);
         } else if (mime.startsWith('video/')) {
             cacheWarning.value = 'Большое видео нельзя безопасно хранить в памяти Telegram. Дождитесь сохранения на сервере или сохраните исходник для восстановления.';
         }
         reserved++;
         accepted++;
     }
+    // Don't close the first-file preview before IndexedDB has attempted to
+    // persist it, otherwise closing Telegram immediately can lose the file.
+    await Promise.all(firstBackups);
     pumpTransfers();
     return accepted > 0;
 }
@@ -1409,8 +1420,14 @@ async function sendOne(item) {
         if (item.cachePromise) await item.cachePromise;
         if (controller.signal.aborted) return;
         if (!item.record && !run.value?.draft_id) {
-            throw new Error('Сервер не подтвердил создание черновика.');
+            if (!inFlight && changeSerial === acknowledgedSerial) touch();
+            if (!(await flush()) || !run.value?.draft_id) {
+                const error = new Error(syncError.value || 'Сервер не подтвердил создание черновика.');
+                if (!connectionOnline.value || uncertainSnapshot) error.name = 'TimeoutError';
+                throw error;
+            }
         }
+        if (controller.signal.aborted) return;
         const context = item.record
             ? {
                 control_id: item.record.control_id,
@@ -1451,10 +1468,12 @@ async function sendOne(item) {
         const task = attachQueue.catch(() => {}).then(async () => {
             const attach = async () => {
                 if (controller.signal.aborted) return;
-                const attached = await focusMediaRequest(result.urls.attach, 'POST', {
+                const attached = await attachFocusFile(result.urls.attach, {
                     draft_id: context.draft_id,
                     expected_revision: finalResult.value ? 0 : run.value.revision,
-                }, csrf, controller.signal);
+                }, csrf, controller.signal, notice => {
+                    item.retryHint = notice.label + ': восстанавливаем соединение (' + notice.attempt + '/2)';
+                });
                 if (finalResult.value) {
                     await refreshMediaReview();
                 } else {

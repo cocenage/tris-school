@@ -139,7 +139,7 @@ export function createLocalRecoveryQueue(writer) {
  * Telegram WebView may evict its origin storage; callers MUST treat errors
  * here as a warning, not as proof that an unsent photo is safe.
  */
-export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, question }) {
+export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, question, beforeDraft = false }) {
     if (!scope || !/^[0-9a-f-]{36}$/i.test(uploadId) || !runId
         || !canCacheFocusMedia(file)
         || !Number.isInteger(room) || room < 0
@@ -148,6 +148,7 @@ export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, ques
     }
     const record = {
         key: scope + ':' + uploadId, scope, upload_id: uploadId, run_id: runId,
+        ...(beforeDraft ? { before_draft: true } : {}),
         room, question, name: String(file.name || 'photo.jpg'),
         mime: file.type, size: file.size, saved_at: Date.now(),
         // Safari/WebKit can reject structured-cloning File objects in

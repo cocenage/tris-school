@@ -39,26 +39,52 @@ export function allowedFocusFile(file) {
     return '';
 }
 
-export async function focusMediaRequest(url, method, body, csrf, signal) {
-    const response = await fetch(url, {
-        method,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal,
-        credentials: 'same-origin',
-        cache: 'no-store',
-        headers: {
-            Accept: 'application/json',
-            'X-CSRF-TOKEN': csrf,
-            ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        },
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        const error = new Error(result.message || 'Загрузка не удалась. Повторите попытку.');
-        error.status = response.status;
+export async function focusMediaRequest(url, method, body, csrf, signal, timeoutMs = 0) {
+    const bounded = timeoutMs > 0 ? new AbortController() : null;
+    if (signal?.aborted) throw new DOMException('Отменено', 'AbortError');
+    const abortFromUser = () => bounded?.abort();
+    let timedOut = false;
+    const timeout = bounded ? setTimeout(() => {
+        timedOut = true;
+        bounded.abort();
+    }, timeoutMs) : null;
+    if (bounded) signal?.addEventListener('abort', abortFromUser, { once: true });
+    try {
+        const response = await fetch(url, {
+            method,
+            body: body === undefined ? undefined : JSON.stringify(body),
+            signal: bounded?.signal ?? signal,
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: {
+                Accept: 'application/json',
+                'X-CSRF-TOKEN': csrf,
+                ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+            },
+        });
+        const result = await response.json().catch(error => {
+            if (error?.name === 'AbortError' || error instanceof TypeError) throw error;
+            return {};
+        });
+        if (!response.ok) {
+            const error = new Error(result.message || 'Загрузка не удалась. Повторите попытку.');
+            error.status = response.status;
+            throw error;
+        }
+        return result;
+    } catch (error) {
+        if (timedOut && !signal?.aborted) {
+            const timeoutError = new Error('Сервер не подтвердил прикрепление. Повторите попытку.');
+            timeoutError.name = 'TimeoutError';
+            throw timeoutError;
+        }
         throw error;
+    } finally {
+        if (bounded) {
+            clearTimeout(timeout);
+            signal?.removeEventListener('abort', abortFromUser);
+        }
     }
-    return result;
 }
 
 async function sendChunk(url, bytes, csrf, signal) {
@@ -130,6 +156,19 @@ async function retryFocusUpload(operation, signal, onRetry, label) {
             await new Promise(resolve => setTimeout(resolve, attempt === 1 ? 250 : 750));
         }
     }
+}
+
+// The same upload ID can be attached again after a lost receipt; the server
+// returns the existing media item and current revision without adding a copy.
+// Keep the caller's revision lock held across all attempts.
+export function attachFocusFile(url, draft, csrf, signal, onRetry) {
+    return retryFocusUpload(async () => {
+        const attached = await focusMediaRequest(url, 'POST', draft, csrf, signal, 15_000);
+        if (attached.media_item || attached.media) return attached;
+        const error = new Error('Сервер не подтвердил прикрепление. Повторите попытку.');
+        error.name = 'TimeoutError';
+        throw error;
+    }, signal, onRetry, 'Подтверждение файла');
 }
 
 /**
