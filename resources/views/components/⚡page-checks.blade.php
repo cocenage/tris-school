@@ -12,82 +12,28 @@ new class extends Component
     <livewire:search.search-bar />
 </x-slot:header>
 
-<div class="flex flex-col justify-between h-full w-full">
-    <div class="space-y-3 p-5">
-        <h1 class="text-xl font-semibold">Контроли</h1>
-        <nav class="flex flex-wrap gap-2" aria-label="История контролей">
-            <a href="{{ route('page-profile.checks') }}" class="inline-flex min-h-11 items-center rounded-full bg-[#EFF1F3] px-4 text-sm font-semibold text-[#213259]">Мои контроли</a>
-            @if(auth()->user()?->canViewAllStaffActivity() && ! app(\App\Services\RolePreviewContext::class)->isActive())
-                <a href="{{ route('page-profile.all-checks') }}" class="inline-flex min-h-11 items-center rounded-full bg-[#EFF1F3] px-4 text-sm font-semibold text-[#213259]">Все контроли</a>
-            @endif
-        </nav>
-    </div>
-    <div class="px-[20px] pb-[20px] flex flex-col gap-[10px]">
+<div class="w-full space-y-3 p-5">
+    <h1 class="text-xl font-semibold">Контроли</h1>
 
-      @if(auth()->user()?->is_active && in_array(auth()->user()?->role, ['admin', 'supervisor'], true))
-      <a href="{{ config('focus-v2.enabled') ? route('page-checks.control.focus-v2') : route('page-checks.control.focus') }}">
-            <div class="grid grid-cols-3 gap-[10px] bg-[#E1E1E1] rounded-[30px]">
-
-                {{-- большая --}}
-                <div class="col-span-2 rounded-[30px] bg-[#E1E1E1] h-full flex items-start">
-                    <p class="p-[15px]">Фокус контроль</p>
-                    @if(config('focus-v2.enabled'))
-                        <p class="px-[15px] pb-[12px] text-xs text-[#425570]">Новая версия</p>
-                    @endif
-                </div>
-
-                {{-- квадрат --}}
-                <div class="aspect-square rounded-[30px] bg-[#E1E1E1] flex items-start">
-
-                </div>
-
-            </div>
+    @if(auth()->user()?->is_active && in_array(auth()->user()?->role, ['admin', 'supervisor'], true))
+        <a href="{{ config('focus-v2.enabled') ? route('page-checks.control.focus-v2') : route('page-checks.control.focus') }}"
+            class="flex min-h-20 items-center gap-3 rounded-2xl bg-[#E1E1E1] p-4">
+            <x-heroicon-o-clipboard-document-check class="size-7 shrink-0 text-[#425570]" />
+            <h2 class="flex-1 text-base font-semibold">Фокус контроль</h2>
+            <x-heroicon-o-chevron-right class="size-5 text-[#425570]" />
         </a>
-      @endif
+    @endif
 
-       @if(auth()->user()?->is_active)
-       <a href="{{ route('antigoccia.index') }}"
-           aria-label="Антикапля — проверить покрытие поверхностей"
-           class="group block rounded-[30px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#3181BB]">
-           <div class="flex min-h-16 items-center justify-between rounded-2xl bg-[#E1E1E1] px-4 py-3">
-               <div>
-                   <h2 class="text-base font-semibold">Антикапля</h2>
-                   <p class="mt-0.5 text-xs text-[#425570]">Контроль покрытия</p>
-               </div>
-               <x-heroicon-o-chevron-right class="size-5 text-[#425570]" />
-           </div>
-       </a>
-       @endif
-
-       <a href="{{ route('page-checks.control') }}">
-            <div class="grid grid-cols-3 gap-[10px] bg-[#E1E1E1] rounded-[30px]">
-
-                {{-- большая --}}
-                <div class="col-span-2 rounded-[30px] bg-[#E1E1E1] h-full flex items-start">
-                    <p class="p-[15px]">Контроль</p>
-                </div>
-
-                {{-- квадрат --}}
-                <div class="aspect-square rounded-[30px] bg-[#E1E1E1] flex items-start">
-
-                </div>
-
+    @if(auth()->user()?->is_active)
+        <a href="{{ route('antigoccia.index') }}"
+            aria-label="Антикапля — проверить покрытие поверхностей"
+            class="flex min-h-20 items-center gap-3 rounded-2xl bg-[#E1E1E1] p-4">
+            <x-heroicon-o-beaker class="size-7 shrink-0 text-[#425570]" />
+            <div class="flex-1">
+                <h2 class="text-base font-semibold">Антикапля</h2>
+                <p class="mt-0.5 text-xs text-[#425570]">Контроль покрытия</p>
             </div>
+            <x-heroicon-o-chevron-right class="size-5 text-[#425570]" />
         </a>
-
-        <a href="{{ route('page-coachings') }}">
-            <div class="grid grid-cols-3 gap-[10px] bg-[#E1E1E1] rounded-[30px]">
-
-                {{-- большая --}}
-                <div class="col-span-2 rounded-[30px] bg-[#E1E1E1] h-full flex items-start">
-                    <p class="p-[15px]">Коучинг</p>
-                </div>
-
-                {{-- квадрат --}}
-                <div class="aspect-square rounded-[30px] bg-[#E1E1E1] flex items-start">
-
-                </div>
-            </div>
-        </a>
-    </div>
+    @endif
 </div>
