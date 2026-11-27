@@ -65,7 +65,8 @@ class FakeFocusBackend {
             viewer: { id: 100, role: 'admin' },
             test_mode: sandbox,
             control: { id: 1, name: 'Smoke Focus', schema_version: schemaVersion },
-            rooms,
+            rooms: this.rooms ?? rooms,
+            ...(this.independentMedia ? { media_revision_scope: 'answers' } : {}),
             run: {
                 id: currentRunId, draft_id: state.draftId, revision: state.revision,
                 schema_conflict: false,
@@ -130,7 +131,9 @@ class FakeFocusBackend {
                     if (sandbox) this.testWrites += 1;
                     else this.realWrites += 1;
                     state.setup = snapshot.setup;
-                    state.answers = snapshot.answers;
+                    state.answers = snapshot.answers.map(room => room.map(answer => ({
+                        ...answer, custom: answer.custom.trim(),
+                    })));
                     return reply({ run: {
                         id: state.runId || runId,
                         draft_id: state.draftId, revision: state.revision,
@@ -214,7 +217,8 @@ class FakeFocusBackend {
                     }
                     if (segments[3] === 'attach') {
                         if (this.beforeAttach) await this.beforeAttach(session);
-                        if (session.status !== 'attached' && json().expected_revision !== state.revision) {
+                        const independent = this.independentMedia && json().revision_scope === 'answers';
+                        if (!independent && session.status !== 'attached' && json().expected_revision !== state.revision) {
                             return reply({ message: 'Conflict' }, 409);
                         }
                         if (session.status !== 'ready' && session.status !== 'attached') {
@@ -228,7 +232,7 @@ class FakeFocusBackend {
                                 thumbnail_url: dataUrl,
                             });
                             session.status = 'attached';
-                            state.revision++;
+                            if (!independent) state.revision++;
                         }
                         if (this.dropAttachAcks > 0) {
                             this.dropAttachAcks--;
@@ -238,20 +242,28 @@ class FakeFocusBackend {
                             this.dropAttachAck = false;
                             return route.abort('failed');
                         }
+                        const answerRevision = state.revision;
+                        if (this.beforeAttachReceipt) await this.beforeAttachReceipt();
+                        this.attachReceipts = (this.attachReceipts ?? 0) + 1;
                         return reply({
-                            run: { draft_id: state.draftId, revision: state.revision },
+                            run: { draft_id: state.draftId, revision: answerRevision },
+                            ...(independent ? { media_revision_scope: 'answers' } : {}),
                             room_index: session.room, question_index: session.question,
                             media_item: state.media[session.room][session.question].find(f => f.upload_id === session.id),
                         });
                     }
                     if (segments[3] === 'attached' && req.method() === 'DELETE') {
-                        if (json().expected_revision !== state.revision) return reply({ message: 'Conflict' }, 409);
+                        const independent = this.independentMedia && json().revision_scope === 'answers';
+                        if (!independent && json().expected_revision !== state.revision) return reply({ message: 'Conflict' }, 409);
                         state.media[session.room][session.question] = state.media[session.room][session.question]
                             .filter(f => f.upload_id !== session.id);
                         state.sessions.delete(session.id);
-                        state.revision++;
+                        if (!independent) state.revision++;
                         if (this.dropDeleteAck) { this.dropDeleteAck=false; return route.abort('failed'); }
-                        return reply({ deleted: true, run: { draft_id: state.draftId, revision: state.revision } });
+                        return reply({
+                            deleted: true, run: { draft_id: state.draftId, revision: state.revision },
+                            ...(independent ? { media_revision_scope: 'answers' } : {}),
+                        });
                     }
                     if (req.method() === 'GET') return reply(this.describe(session));
                     if (req.method() === 'DELETE') {
@@ -1015,6 +1027,8 @@ async function main() {
             const uploadId = '00000000-0000-4000-8000-000000000092';
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
+            // Load the test reader before disconnecting the simulated device.
+            await page.evaluate(() => import('/resources/js/focus-v2/local-recovery.js').then(() => {}));
             await context.setOffline(true);
             await page.evaluate(() => window.dispatchEvent(new Event('offline')));
             await page.getByText('Нет интернета', { exact: true }).waitFor();
@@ -1112,6 +1126,93 @@ async function main() {
             console.log('PASS mobile UI: failed network upload resumes cached photo with identical server ID');
             await context.close();
         }
+        // Saving answers must not wait for any individual photo receipt.
+        {
+            const backend = new FakeFocusBackend();
+            backend.independentMedia = true;
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам', exact: true }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor();
+            const originalRun = backend.runId;
+            const originalDraft = backend.draftId;
+            const firstRevision = backend.revision;
+
+            let releaseReceipt;
+            const receiptGate = new Promise(resolve => { releaseReceipt = resolve; });
+            let uploadAttached;
+            const attached = new Promise(resolve => { uploadAttached = resolve; });
+            backend.beforeAttachReceipt = async () => {
+                uploadAttached();
+                await receiptGate;
+            };
+            try {
+                await addPhoto(page);
+                await Promise.race([attached, delay(7000).then(() => { throw new Error('Upload never reached receipt gate'); })]);
+                assert.equal(backend.revision, firstRevision, 'Attaching evidence changed the answer revision');
+                await page.getByRole('button', { name: 'Нет', exact: true }).click();
+                await page.getByText('Сохранено', { exact: true }).waitFor({ timeout: 5000 });
+                assert.equal(backend.answers[0][0].selected, 'no');
+                assert.equal(backend.revision, firstRevision + 1);
+            } finally {
+                releaseReceipt();
+            }
+            await expectPhoto(page);
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor({ timeout: 5000 });
+            assert.equal(backend.revision, firstRevision + 2, 'A late attachment receipt rewound the answer revision');
+
+            backend.beforeAttachReceipt = null;
+            backend.dropAttachAcks = 3;
+            await addGalleryFile(page, { name: 'second.png', mimeType: 'image/png', buffer: image });
+            await page.getByRole('button', { name: 'Открыть фото second.png' }).waitFor({ timeout: 25000 });
+            for (let tries = 0; backend.attachReceipts !== 2 && tries < 125; tries++) await delay(100);
+            assert.equal(backend.attachReceipts, 2, 'The client did not recover the lost attach receipts automatically');
+            assert.equal(backend.sessions.size, 2, 'Lost receipts created a duplicate upload');
+            assert.equal(backend.revision, firstRevision + 2);
+
+            await page.getByRole('button', { name: 'К сводке' }).click();
+            await page.getByRole('button', { name: 'Отправить контроль' }).click();
+            await page.getByRole('link', { name: 'Результат', exact: true }).waitFor();
+            assert.equal(backend.runId, originalRun);
+            assert.equal(backend.draftId, originalDraft);
+            assert.equal(backend.media[0][0].length, 2);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: delayed and lost photo receipts do not block or roll back answers or recreate the draft');
+            await context.close();
+        }
+        // The Laravel controller trims free text before acknowledging the draft.
+        // An attachment conflict must compare that canonical answer, not its raw input.
+        {
+            const backend = new FakeFocusBackend();
+            backend.rooms = structuredClone(rooms);
+            backend.rooms[0].items[0].answer_type = 'both';
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам', exact: true }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByRole('textbox', { name: 'Комментарий', exact: true }).fill(' stain on glass ');
+            await page.getByText('Сохранено', { exact: true }).waitFor();
+            assert.equal(backend.answers[0][0].custom, 'stain on glass');
+            const originalRun = backend.runId;
+            backend.beforeAttach = async () => {
+                backend.beforeAttach = null;
+                backend.revision++;
+            };
+            await addPhoto(page);
+            await expectPhoto(page);
+            await page.getByRole('button', { name: 'К сводке' }).click();
+            await page.getByRole('button', { name: 'Отправить контроль' }).click();
+            await page.getByRole('link', { name: 'Результат', exact: true }).waitFor();
+            assert.equal(backend.runId, originalRun);
+            assert.equal(backend.answers[0][0].custom, 'stain on glass');
+            assert.equal(backend.media[0][0].length, 1);
+            assert.deepEqual(errors, []);
+            console.log('PASS: photo and normalized answer submit in the same draft');
+            await context.close();
+        }
+
         // A photo can move the server revision even when every answer there is unchanged.
         {
             const backend = new FakeFocusBackend();

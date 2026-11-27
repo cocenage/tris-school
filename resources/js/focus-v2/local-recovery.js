@@ -17,11 +17,30 @@ export function recoveryScope(userId, controlId, schemaVersion) {
 
 // Keep the last acknowledged answer/setup content separate from pending edits.
 export function recoveryContentStamp(setup, answers) {
-    return JSON.stringify({ setup, answers }, (_, value) => {
+    return JSON.stringify({ setup, answers }, (key, value) => {
+        // The draft controller trims these fields before it saves them.
+        // Compare that same value, not the exact text the user typed.
+        if (typeof value === 'string' && ['selected', 'custom', 'action'].includes(key)) {
+            return value.replace(/^[ \t\r\n\v\x00]+|[ \t\r\n\v\x00]+$/g, '');
+        }
         if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
         return Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]));
     });
 }
+
+function matchesStoredBase(base, serverContent) {
+    if (typeof base !== 'string') return false;
+    if (base === serverContent) return true;
+    try {
+        // Older on-device records stored the raw pre-normalization stamp.
+        const parsed = JSON.parse(base);
+        return Boolean(parsed?.setup && Array.isArray(parsed.answers)
+            && recoveryContentStamp(parsed.setup, parsed.answers) === serverContent);
+    } catch {
+        return false;
+    }
+}
+
 
 export function chooseLocalRecovery(record, server, now = Date.now()) {
     if (!record || record.scope !== server.scope
@@ -44,7 +63,7 @@ export function chooseLocalRecovery(record, server, now = Date.now()) {
         // Only allow restoration if the current server answers and setup
         // still exactly match the known common base for this draft.
         if (record.draft_id != null && record.base_revision < server.run?.revision
-            && record.base_content === serverContent) return 'safe';
+            && matchesStoredBase(record.base_content, serverContent)) return 'safe';
     }
 
     return 'conflict';

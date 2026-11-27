@@ -149,6 +149,7 @@ let timer = null;
 let inFlight = null;
 let uncertainSnapshot = null;
 let pendingMediaReplay = null;
+let independentMedia = false;
 let acknowledgedContent = null;
 
 const statusLabel = computed(() => testMode.value && state.value === 'synced' ? 'Тестовый черновик сохранён' : ({
@@ -293,6 +294,7 @@ async function initialize(sandbox = false) {
         if (sandbox && (!data.test_mode || data.viewer?.role !== 'admin')) {
             throw new Error('Сервер не подтвердил безопасный тестовый режим.');
         }
+        independentMedia = data.media_revision_scope === 'answers';
         viewerRole.value = data.viewer?.role ?? '';
         viewerId.value = data.viewer?.id ?? null;
         interruptedUploads.value = data.pending_uploads ?? [];
@@ -769,8 +771,10 @@ async function attachReadyDraft(record) {
                 throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
             }
             const publish = attached => {
-                run.value = { ...run.value, ...attached.run };
-                if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                if (attached.run) {
+                    run.value = { ...run.value, ...attached.run };
+                    if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                }
                 const files = media.value[record.room_index][record.question_index];
                 if (!files.some(file => file.upload_id === attached.media_item.upload_id)) files.push(attached.media_item);
                 interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
@@ -941,12 +945,12 @@ async function flush() {
             : 'Нет интернета и локальная копия недоступна. Не закрывайте Telegram до восстановления связи.';
         return false;
     }
-    if (attachInFlight) {
+    if (!independentMedia && attachInFlight) {
         await attachInFlight;
         return flush();
     }
     if (inFlight) return inFlight;
-    if (pendingMediaReplay) {
+    if (!independentMedia && pendingMediaReplay) {
         if (!(await reconcilePendingMedia())) return false;
         return flush();
     }
@@ -1065,6 +1069,18 @@ async function reconcilePendingMedia() {
 
 async function saveMediaAttachment({ url, body, signal, notify, publish, afterReplay, uploadId, alreadyAttached = false }) {
     const base = { ...run.value };
+    if (independentMedia) {
+        const result = await attachFocusFile(url, { ...body, revision_scope: 'answers' }, csrf, signal, notify);
+        if (result.media_revision_scope !== 'answers' || result.run?.draft_id !== base.draft_id
+            || result.media_item?.upload_id !== uploadId || run.value?.id !== base.id
+            || run.value?.draft_id !== base.draft_id) {
+            throw new Error('Сервер не подтвердил прикрепление файла к этой проверке.');
+        }
+        // The server's answer revision in this response may be older than a
+        // just-completed save. Attachment receipts never change client revision.
+        await publish({ media_item: result.media_item });
+        return;
+    }
     let requestBody = body;
     const perform = async currentSignal => {
         const attach = async () => {
@@ -1111,7 +1127,7 @@ async function saveMediaAttachment({ url, body, signal, notify, publish, afterRe
 async function writeDraftMedia(action) {
     while (true) {
         if (!canEdit.value) throw new Error(syncError.value || 'Черновик сейчас недоступен.');
-        if (attachInFlight || inFlight) {
+        if (attachInFlight || (!independentMedia && inFlight)) {
             await (attachInFlight || inFlight);
             continue;
         }
@@ -1121,7 +1137,7 @@ async function writeDraftMedia(action) {
         }
         // A lost save acknowledgement may already have advanced the revision.
         // Reconcile it before sending an attachment or a deletion.
-        if (uncertainSnapshot) {
+        if (!independentMedia && uncertainSnapshot) {
             if (!(await flush())) throw new Error(syncError.value || 'Сервер не подтвердил состояние черновика.');
             continue;
         }
@@ -1463,6 +1479,7 @@ async function submitControl() {
             throw new Error('Черновик ещё не сохранён.');
         }
         await attachQueue;
+        await attachInFlight;
         if (!canSubmitMedia.value) {
             throw new Error('Не все фото и видео подтверждены сервером.');
         }
@@ -1763,8 +1780,10 @@ async function sendOne(item) {
                     return;
                 }
                 const publish = async attached => {
-                    run.value = { ...run.value, ...attached.run };
-                    if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                    if (attached.run) {
+                        run.value = { ...run.value, ...attached.run };
+                        if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                    }
                     const arr = media.value[item.room] ?? (media.value[item.room] = []);
                     const files = arr[item.question] ?? (arr[item.question] = []);
                     if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
@@ -1806,7 +1825,7 @@ async function sendOne(item) {
         item.retryable = isTransientFocusUploadError(error);
         item.error = error.message || 'Не удалось загрузить файл.';
         schedulePhotoRetry(item);
-        if (error.status === 409 && item.progress === 100) {
+        if (!independentMedia && error.status === 409 && item.progress === 100) {
             syncError.value = 'Не удалось прикрепить файл из-за изменения черновика. Проверьте ответы перед повтором.';
         }
     }
@@ -1972,8 +1991,10 @@ async function deleteDraftAttachment(room, question, uploadId, signal) {
     const url = props.mediaStartUrl + '/' + encodeURIComponent(uploadId) + '/attached';
     const conflict = () => Object.assign(new Error('Черновик изменился во время удаления.'), { status: 409 });
     const publish = async revision => {
-        run.value = { ...run.value, revision };
-        if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+        if (!independentMedia) {
+            run.value = { ...run.value, revision };
+            if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+        }
         media.value[room][question] = media.value[room][question].filter(item => item.upload_id !== uploadId);
         mediaError.value = '';
         if (recoveryKey) {
@@ -1981,9 +2002,10 @@ async function deleteDraftAttachment(room, question, uploadId, signal) {
         }
     };
     const send = async currentSignal => {
-        const deleted = await focusMediaRequest(url, 'DELETE', { expected_revision: original.revision }, csrf, currentSignal);
+        const body = { expected_revision: original.revision, ...(independentMedia ? { revision_scope: 'answers' } : {}) };
+        const deleted = await focusMediaRequest(url, 'DELETE', body, csrf, currentSignal);
         if (!deleted.deleted || deleted.run?.draft_id !== original.draft_id
-            || deleted.run?.revision !== original.revision + 1) {
+            || (independentMedia ? deleted.media_revision_scope !== 'answers' : deleted.run.revision !== original.revision + 1)) {
             const error = new Error('Сервер не подтвердил удаление.');
             error.name = 'TimeoutError';
             throw error;
@@ -1992,18 +2014,19 @@ async function deleteDraftAttachment(room, question, uploadId, signal) {
     };
     const inspect = async () => {
         const server = await fetchJson(props.bootstrapUrl + (testMode.value ? '?test_mode=1' : ''));
-        if (server.run?.id !== original.id || server.run?.draft_id !== original.draft_id
+        if (server.viewer?.id !== viewerId.value || server.run?.id !== original.id || server.run?.draft_id !== original.draft_id
             || server.run.schema_conflict || server.control?.id !== control.value.id
             || server.control?.schema_version !== control.value.schema_version
             || Boolean(server.test_mode) !== testMode.value
-            || recoveryContentStamp(server.setup, server.answers) !== baseContent
+            || (independentMedia ? server.media_revision_scope !== 'answers'
+                : recoveryContentStamp(server.setup, server.answers) !== baseContent)
             || !Array.isArray(server.media?.[room]?.[question])) throw conflict();
         const present = server.media[room][question].some(file => file.upload_id === uploadId);
-        if (!present && server.run.revision === original.revision + 1) {
+        if (!present && (independentMedia || server.run.revision === original.revision + 1)) {
             await publish(server.run.revision);
             return true;
         }
-        if (!present || server.run.revision !== original.revision) throw conflict();
+        if (!independentMedia && (!present || server.run.revision !== original.revision)) throw conflict();
         return false;
     };
     const replay = async () => {
@@ -2022,6 +2045,7 @@ async function deleteDraftAttachment(room, question, uploadId, signal) {
         try {
             await replay();
         } catch (checkError) {
+            if (independentMedia) throw checkError;
             if (checkError.status === 409) {
                 state.value = 'conflict';
                 syncError.value = checkError.message;

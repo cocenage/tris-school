@@ -21,6 +21,7 @@ final class ControlRunManager
         string $schemaVersion,
         array $attributes,
         string $state = 'active',
+        bool $preserveLatestEvidence = false,
     ): ControlResponseDraft {
         // Sandbox drafts share no completed-result path with production:
         // only this explicitly whitelisted state can be created here.
@@ -39,6 +40,7 @@ final class ControlRunManager
                 $schemaVersion,
                 $attributes,
                 $state,
+                $preserveLatestEvidence,
             ): ControlResponseDraft {
                 // Let the unique run_id index arbitrate concurrent first saves.
                 $draft = $draftId === null
@@ -67,6 +69,18 @@ final class ControlRunManager
                     }
 
                     unset($attributes['schema_snapshot']);
+                    if ($preserveLatestEvidence) {
+                        // Media can commit without changing the answer revision.
+                        // Merge the latest evidence only while holding this row lock.
+                        $latest = $draft->responses ?? [];
+                        foreach ($attributes['responses'] as $room => &$questions) {
+                            foreach ($questions as $index => &$answer) {
+                                $answer['media'] = array_values((array) ($latest[$room][$index]['media'] ?? []));
+                            }
+                            unset($answer);
+                        }
+                        unset($questions);
+                    }
                     $draft->fill($attributes);
                     $draft->run_id = $runId;
                     $draft->schema_version = $schemaVersion;

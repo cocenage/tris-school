@@ -82,12 +82,18 @@ final class FocusV2BootstrapController extends Controller
                     }
                     $disk = $file['disk'] ?? null;
                     $path = (string) ($file['path'] ?? '');
+                    $allowedPath = str_starts_with($path, 'controls/'.$control->id.'/')
+                        || ($isSandbox && $disk === 'local'
+                            && str_starts_with($path, 'focus-v2-sandbox/'.$user->getKey().'/'.$draft->run_id.'/'));
                     if (! in_array($disk, ['local', 'public'], true)
-                        || ! str_starts_with($path, 'controls/'.$control->id.'/')
+                        || ! $allowedPath
                         || str_contains($path, '..') || str_contains($path, '\\')) {
                         continue;
                     }
                     $params = [$control, $roomIndex, $questionIndex, $mediaIndex, 'draft_id' => $draft->id];
+                    if (is_string($file['upload_id'] ?? null) && $file['upload_id'] !== '') {
+                        $params['upload_id'] = $file['upload_id'];
+                    }
                     if ($isSandbox) {
                         $params['test_mode'] = 1;
                     }
@@ -124,6 +130,7 @@ final class FocusV2BootstrapController extends Controller
         return response()->json([
             'viewer' => ['id' => (int) $user->getKey(), 'role' => $user->role],
             'test_mode' => $isSandbox,
+            'media_revision_scope' => 'answers',
             'control' => [
                 'id' => $control->id,
                 'name' => $control->name,

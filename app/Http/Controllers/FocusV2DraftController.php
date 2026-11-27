@@ -141,6 +141,7 @@ final class FocusV2DraftController extends Controller
                 schemaVersion: $schemaVersion,
                 attributes: $attributes,
                 state: $draftState,
+                preserveLatestEvidence: true,
             );
         } catch (ValidationException) {
             // Includes a concurrent request that won the optimistic revision lock.

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     FOCUS_RECOVERY_MAX_AGE_MS, VIDEO_RECOVERY_MAX_BYTES, canCacheFocusMedia, chooseLocalRecovery,
-    createLocalRecoveryQueue, recoveryScope,
+    createLocalRecoveryQueue, recoveryContentStamp, recoveryScope,
 } from '../../resources/js/focus-v2/local-recovery.js';
 
 const version = 'a'.repeat(64);
@@ -79,4 +79,20 @@ test('coalesces typing but commits a final delete after any older write', async 
         'start:write:first', 'done:write:first',
         'start:delete:', 'done:delete:',
     ]);
+});
+
+test('keeps same-draft recovery available when a photo advances a server-trimmed answer', () => {
+    const answer = custom => [[{ selected: 'other', custom, corrective: {
+        repeats: true, recheck: false, action: 'clean again',
+    } }]];
+    const received = answer('stain on glass');
+    const sent = answer(' stain on glass \t');
+    assert.equal(recoveryContentStamp(setup, sent), recoveryContentStamp(setup, received));
+    assert.notEqual(recoveryContentStamp(setup, sent), recoveryContentStamp(setup, answer('stain on floor')));
+    const oldBase = JSON.stringify({ setup, answers: sent });
+    const newer = { ...server, answers: received, run: { ...server.run, revision: 9 } };
+    const offline = { ...local, base_content: oldBase };
+    assert.equal(chooseLocalRecovery(offline, newer, savedAt + 100), 'safe');
+    assert.equal(chooseLocalRecovery(offline, { ...newer, answers: answer('stain on floor') }, savedAt + 100), 'conflict');
+    assert.equal(chooseLocalRecovery(offline, { ...newer, run: { ...newer.run, id: 'different' } }, savedAt + 100), 'conflict');
 });
