@@ -11,12 +11,12 @@
 <body class="bg-[#EDF0F4]">
     <div
         id="focus-v2-app"
-        data-bootstrap-url="{{ route('page-checks.control.focus-v2.bootstrap') }}"
-        data-draft-url="{{ route('page-checks.control.focus-v2.draft') }}"
-        data-reset-url="{{ route('page-checks.control.focus-v2.reset') }}"
-        data-submit-url="{{ route('page-checks.control.focus-v2.submit') }}"
-        data-review-status-url="{{ isset($reviewResponse) ? route('page-checks.control.focus-v2.result-media-status', $reviewResponse) : '' }}"
-        data-media-start-url="{{ route('page-checks.control.focus-v2.media.start') }}"
+        data-bootstrap-url="{{ route('page-checks.control.focus-v2.bootstrap', [], false) }}"
+        data-draft-url="{{ route('page-checks.control.focus-v2.draft', [], false) }}"
+        data-reset-url="{{ route('page-checks.control.focus-v2.reset', [], false) }}"
+        data-submit-url="{{ route('page-checks.control.focus-v2.submit', [], false) }}"
+        data-review-status-url="{{ isset($reviewResponse) ? route('page-checks.control.focus-v2.result-media-status', $reviewResponse, false) : '' }}"
+        data-media-start-url="{{ route('page-checks.control.focus-v2.media.start', [], false) }}"
     >
         <div class="mx-auto max-w-2xl p-6 text-center text-sm text-slate-600">
             Загружаем контроль…
