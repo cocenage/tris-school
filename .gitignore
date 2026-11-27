@@ -24,3 +24,13 @@ Homestead.yaml
 Thumbs.db
 /storage/framework/sessions/*
 !/storage/framework/sessions/.gitignore
+
+# Isolated Android development environment
+/.env.mobiledev
+/storage/app/mobile-dev/
+/mobile/node_modules/
+/mobile/android/local.properties
+/mobile/android/app/google-services.json
+/mobile/android/.gradle/
+/mobile/android/app/build/
+/mobile/android/build/
