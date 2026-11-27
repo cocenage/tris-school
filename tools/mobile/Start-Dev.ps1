@@ -18,7 +18,7 @@ if (Test-Path 'public/hot') { throw 'Stop Vite dev server in this worktree befor
 # Remove inherited environment overrides, including prior in-memory test settings.
 # This script is intended to run in a child PowerShell process.
 Get-ChildItem Env: | Where-Object {
-    $_.Name -match '^(APP_|DB_|SESSION_|CACHE_|QUEUE_|TELEGRAM_|STAFF_FORMS_|MOBILITY_|TRIS_MARE_|WEATHERAPI_|AWS_|REDIS_|MAIL_|BROADCAST_|FILESYSTEM_)'
+    $_.Name -match '^(TRIS_PUSH_|APP_|DB_|SESSION_|CACHE_|QUEUE_|TELEGRAM_|STAFF_FORMS_|MOBILITY_|TRIS_MARE_|WEATHERAPI_|AWS_|REDIS_|MAIL_|BROADCAST_|FILESYSTEM_)'
 } | ForEach-Object { Remove-Item ("Env:" + $_.Name) }
 
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
@@ -81,6 +81,28 @@ if ((Test-Path $env:APP_CONFIG_CACHE) -or (Test-Path $env:APP_ROUTES_CACHE)) {
     throw 'Unexpected cached mobile config or routes. Inspect the mobile-dev directory.'
 }
 
+$firebase = Join-Path $mobile 'android\app\google-services.json'
+$credentials = Join-Path $directory 'firebase-service-account.json'
+$env:TRIS_PUSH_ENABLED = 'false'
+if ((Test-Path $firebase) -and (Test-Path $credentials)) {
+    $google = Get-Content $firebase -Raw | ConvertFrom-Json
+    $service = Get-Content $credentials -Raw | ConvertFrom-Json
+    if (!($google.client | Where-Object { $_.client_info.android_client_info.package_name -eq 'eu.trisservice.academy.dev' })) {
+        throw 'Firebase Android configuration does not match the DEV package.'
+    }
+    if (!$google.project_info.project_id -or $google.project_info.project_id -ne $service.project_id -or $service.type -ne 'service_account') {
+        throw 'Firebase Android configuration and service account must belong to the same DEV project.'
+    }
+    $env:TRIS_PUSH_PROJECT_ID = $google.project_info.project_id
+    $env:TRIS_PUSH_ENABLED = 'true'
+    Run { composer install --working-dir=tools/mobile/fcm --no-interaction }
+    Set-Location $mobile
+    Run { npm.cmd install @capacitor/push-notifications@8 }
+    Set-Location $root
+    Write-Host 'PUSH 0.1 enabled for this isolated DEV project.'
+} else {
+    Write-Host 'Push disabled: both DEV Firebase files are required.'
+}
 Run { npm.cmd ci }
 Run { npm.cmd run build }
 Run { php tools/mobile/bootstrap-dev.php }

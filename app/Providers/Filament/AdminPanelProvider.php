@@ -33,6 +33,12 @@ class AdminPanelProvider extends PanelProvider
             ->login()
             ->viteTheme('resources/css/filament/admin/theme.css')
             ->brandName('Админ-панель')
+            ->navigationItems([
+                \Filament\Navigation\NavigationItem::make('Устройства и уведомления')
+                    ->url(fn () => route('mobile.push.admin'))
+                    ->visible(fn () => \App\Services\MobilePush\PushService::enabled() && auth()->user()?->isApproved() && auth()->user()?->role === 'admin')
+                    ->sort(110),
+            ])
             ->colors([
                 'primary' => Color::Sky,
                 'gray' => Color::Slate,

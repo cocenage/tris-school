@@ -21,3 +21,16 @@ Native Telegram SDK needs a registered Android package/signature and Telegram Ap
 ## Independent push smoke build
 
 Place the Firebase DEV project's google-services.json into mobile/android/app. Ensure it belongs to an isolated Firebase project, not production. Then run `powershell.exe -NoProfile -File tools/mobile/Test-Push.ps1` from the root. This builds a separate bundled screen using the official Capacitor push plugin, replacing the installed DEV APK, not the production app. It asks permission, registers with FCM, shows the device token for a console test message, and logs foreground receipt and notification taps. Test with an open app, background, and locked screen. No user binding or Laravel dispatch is implemented yet. The original Capacitor config is restored; package.json/package-lock.json are updated by npm and should be reviewed before commit. The generated assets remain those of the last build until cap sync. Re-run Start-Dev.ps1 to return to the local web integration build.
+
+
+## Integrated PUSH 0.1
+
+Create an isolated Firebase DEV project, register Android package `eu.trisservice.academy.dev`, and place:
+- Android `google-services.json` in `mobile/android/app/`.
+- A DEV-only service account JSON with permission to send FCM messages in `storage/app/mobile-dev/firebase-service-account.json` (private; never commit or send it in chat).
+
+The two JSON files must belong to the same DEV Firebase project. Enable FCM HTTP v1 in the project if necessary. The service account needs only the Firebase Cloud Messaging API Admin role; do not use a production account. The existing Start-Dev.ps1 detects the two files and installs the official Google Auth library in tools/mobile/fcm and the Android plugin. If either file is missing the feature stays disabled. No change to main Composer dependencies.
+
+Run Start-Dev.ps1. In the phone's profile open Уведомления and explicitly enable notifications. On the PC sign in with the synthetic QA admin and open /admin/mobile-push. Select the registered device and send a test push. Check the foreground banner, background notification, locked screen, notification tap, and history; refresh the admin page to see callback timestamps. FCM accepted is not confirmed delivery. Test payload contains only a generic test message and its UUID. The page only permits approved active employees, and the sender is restricted to DEV admins. Session logout revokes the current registered token on the Laravel logout path; old registrations expire from sending after 24 hours without registration. Full native session revocation and pending-account approval pushes are not implemented. These routes are unavailable outside mobiledev/testing even if the env flag is set.
+
+The standalone Test-Push.ps1 remains available for testing Firebase independently of Laravel, but is not needed for the integrated build.

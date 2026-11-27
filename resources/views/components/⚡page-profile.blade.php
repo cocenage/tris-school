@@ -372,6 +372,9 @@ $this->profileRequired = false;
 
     @if(!app(\App\Services\RolePreviewContext::class)->isActive())
         <div class="mb-[10px]"><a href="{{ route('profile.devices') }}">TRIS ID: {{ $user->tris_id }} · Подключение устройств</a></div>
+        @if(\App\Services\MobilePush\PushService::enabled())
+            <div class="mb-[10px]"><a href="{{ route('mobile.push') }}">Уведомления · PUSH 0.1</a></div>
+        @endif
     @endif
     <div class="mb-[10px]">
         <span class="text-[16px] opacity-50">
