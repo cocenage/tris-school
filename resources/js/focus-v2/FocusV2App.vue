@@ -133,7 +133,7 @@ function restoreLocalVersion() {
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
 let recoveringDraftMedia = false;
-let attachInFlight = false;
+let attachInFlight = null;
 let attachQueue = Promise.resolve();
 
 let changeSerial = 0;
@@ -184,21 +184,6 @@ const canSubmitMedia = computed(() => outstandingMedia.value === 0);
 const currentMediaTransfers = computed(() => uploads.value.filter(item =>
     ['queued', 'uploading', 'attaching'].includes(item.status)));
 const failedMediaTransfers = computed(() => uploads.value.filter(item => item.status === 'error'));
-const mediaTransferProgress = computed(() => {
-    const pending = currentMediaTransfers.value;
-    const totalBytes = pending.reduce((sum, item) => sum + (item.file?.size || 0), 0);
-    if (totalBytes === 0) return 0;
-    return Math.min(100, Math.round(pending.reduce((sum, item) =>
-        sum + (item.file?.size || 0) * (item.progress || 0) / 100, 0) * 100 / totalBytes));
-});
-function fileCountLabel(n) {
-    const rem100 = n % 100, rem10 = n % 10;
-    return rem100 >= 11 && rem100 <= 14 ? 'файлов'
-        : rem10 === 1 ? 'файл' : rem10 >= 2 && rem10 <= 4 ? 'файла' : 'файлов';
-}
-function retryFailedFiles() {
-    for (const item of failedMediaTransfers.value) retryFile(item);
-}
 const recoveryNeedingInput = computed(() => interruptedUploads.value.filter(record =>
     !uploads.value.some(item => item.id === record.upload_id
         && ['queued', 'uploading', 'attaching'].includes(item.status))
@@ -432,20 +417,15 @@ async function confirmPhoto() {
     const current = photoCapture.value;
     if (!current || current.saving) return;
     current.saving = true;
-    // First ensure this run has a server-owned draft. A freshly created
-    // phone photo must not be cached with a run ID the server never saw.
-    if (!run.value?.draft_id) {
-        touch();
-        if (!(await ensureSynced()) || !run.value?.draft_id) {
-            mediaError.value = 'Не удалось создать черновик. Проверьте соединение и повторите подтверждение фото.';
-            current.saving = false;
-            return;
-        }
+    try {
+        const queued = await queueSelectedFiles([current.file], current.room, current.question,
+            { replaceUploadId: current.replaceUploadId });
+        if (queued) closePhotoCapture();
+    } catch (error) {
+        mediaError.value = error.message || 'Не удалось добавить файл.';
+    } finally {
+        current.saving = false;
     }
-    const queued = await queueSelectedFiles([current.file], current.room, current.question,
-        { replaceUploadId: current.replaceUploadId });
-    if (queued) closePhotoCapture();
-    else current.saving = false;
 }
 function beginBatchPreview(selected, room, question) {
     if (!canEdit.value) return;
@@ -678,6 +658,11 @@ function resumeDraftFile(event, record) {
 }
 function openRecoveryQuestion(record, showPicker = false) {
     if (!rooms.value[record.room_index]?.items?.[record.question_index]) return;
+    const earlier = firstMissing(record.room_index - 1);
+    if (earlier) {
+        jumpToQuestion(earlier.roomIndex, earlier.questionIndex, 'missing');
+        return;
+    }
     goRoom(record.room_index);
     highlightedReviewQuestion.value = record.question_index;
     void nextTick().then(() => {
@@ -732,32 +717,28 @@ async function attachReadyDraft(record) {
         return;
     }
     mediaError.value = '';
-    let locked = false;
     try {
-        if (!(await ensureSynced())) throw new Error('Не удалось сохранить ответы.');
-        if (!canEdit.value || record.run_id !== run.value.id
-            || !interruptedUploads.value.some(item => item.upload_id === record.upload_id)
-            || attachInFlight || activeTransfers) return;
-        attachInFlight = true;
-        locked = true;
-        const info = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
-        if (info.status !== 'ready' && info.status !== 'attached') {
-            throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
-        }
-        const attached = await focusMediaRequest(info.urls.attach, 'POST', {
-            draft_id: run.value.draft_id, expected_revision: run.value.revision,
-        }, csrf);
-        run.value = { ...run.value, ...attached.run };
-        const files = media.value[record.room_index][record.question_index];
-        if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
-            files.push(attached.media_item);
-        }
-        interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
-        if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
+        await writeDraftMedia(async () => {
+            if (record.run_id !== run.value.id
+                || !interruptedUploads.value.some(item => item.upload_id === record.upload_id)) return;
+            const info = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
+            if (info.status !== 'ready' && info.status !== 'attached') {
+                throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
+            }
+            const attached = await focusMediaRequest(info.urls.attach, 'POST', {
+                draft_id: run.value.draft_id, expected_revision: run.value.revision,
+            }, csrf);
+            run.value = { ...run.value, ...attached.run };
+            if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+            const files = media.value[record.room_index][record.question_index];
+            if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
+                files.push(attached.media_item);
+            }
+            interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
+            if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
+        });
     } catch (error) {
         mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
-    } finally {
-        if (locked) attachInFlight = false;
     }
 }
 
@@ -888,7 +869,10 @@ async function flush() {
             : 'Нет интернета и локальная копия недоступна. Не закрывайте Telegram до восстановления связи.';
         return false;
     }
-    if (attachInFlight) { queueSave(450); return false; }
+    if (attachInFlight) {
+        await attachInFlight;
+        return flush();
+    }
     if (inFlight) return inFlight;
     if (!uncertainSnapshot && changeSerial === acknowledgedSerial) return true;
 
@@ -935,6 +919,34 @@ async function ensureSynced() {
     return false;
 }
 
+// Only revision-changing requests are serialized. Chunks and their
+// reservations do not depend on the latest answers or draft revision.
+async function writeDraftMedia(action) {
+    while (true) {
+        if (!canEdit.value) throw new Error(syncError.value || 'Черновик сейчас недоступен.');
+        if (attachInFlight || inFlight) {
+            await (attachInFlight || inFlight);
+            continue;
+        }
+        // A lost save acknowledgement may already have advanced the revision.
+        // Reconcile it before sending an attachment or a deletion.
+        if (uncertainSnapshot) {
+            if (!(await flush())) throw new Error(syncError.value || 'Сервер не подтвердил состояние черновика.');
+            continue;
+        }
+        break;
+    }
+    let unlock;
+    attachInFlight = new Promise(resolve => { unlock = resolve; });
+    try {
+        return await action();
+    } finally {
+        attachInFlight = null;
+        unlock();
+        if (state.value === 'dirty' && changeSerial !== acknowledgedSerial) queueSave(0);
+    }
+}
+
 function positionKey() {
     return recoveryKey ? recoveryKey + ':position' : null;
 }
@@ -971,6 +983,11 @@ function clearResumePosition() {
 function startQuestions() {
     const position = resumePosition.value;
     if (position) {
+        const earlier = firstMissing(position.room - 1);
+        if (earlier) {
+            jumpToQuestion(earlier.roomIndex, earlier.questionIndex, 'missing');
+            return;
+        }
         if (position.question == null) goRoom(position.room);
         else jumpToQuestion(position.room, position.question, 'resume');
         return;
@@ -999,8 +1016,8 @@ function jumpToMissing() {
     const missing = firstMissing();
     if (missing) jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
 }
-function jumpToPendingMedia() {
-    const record = recoveryNeedingInput.value[0];
+function jumpToPendingMedia(throughRoom = rooms.value.length - 1, includeActive = true) {
+    const record = recoveryNeedingInput.value.find(item => item.room_index <= throughRoom);
     if (record) {
         // The recovery card holds the actions; each card already links back to its question.
         void nextTick().then(() => {
@@ -1008,13 +1025,16 @@ function jumpToPendingMedia() {
             element?.scrollIntoView({ block: 'start' });
             element?.focus({ preventScroll: true });
         });
-        return;
+        return true;
     }
-    const upload = failedMediaTransfers.value[0] ?? currentMediaTransfers.value[0];
-    if (upload) jumpToQuestion(upload.room, upload.question, 'media');
+    const upload = failedMediaTransfers.value.find(item => item.room <= throughRoom)
+        ?? (includeActive ? currentMediaTransfers.value.find(item => item.room <= throughRoom) : null);
+    if (!upload) return false;
+    jumpToQuestion(upload.room, upload.question, 'media');
+    return true;
 }
-function firstMissing() {
-    for (let roomIndex = 0; roomIndex < rooms.value.length; roomIndex++) {
+function firstMissing(throughRoom = rooms.value.length - 1) {
+    for (let roomIndex = 0; roomIndex <= throughRoom; roomIndex++) {
         const room = rooms.value[roomIndex];
         for (let questionIndex = 0; questionIndex < (room.items ?? []).length; questionIndex++) {
             if (!room.is_optional && !room.items[questionIndex].is_optional && !filled(roomIndex, questionIndex)) {
@@ -1050,6 +1070,14 @@ function goRoom(index) {
 }
 
 function nextRoom() {
+    const missing = firstMissing(activeRoom.value);
+    if (missing) {
+        jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
+        return;
+    }
+    // A healthy transfer may finish while the inspector answers in the next room.
+    // Errors and missing originals must be dealt with before moving forward.
+    if (jumpToPendingMedia(activeRoom.value, false)) return;
     if (activeRoom.value + 1 < rooms.value.length) {
         goRoom(activeRoom.value + 1);
         return;
@@ -1303,9 +1331,9 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
     if (!canEdit.value) return false;
     mediaError.value = '';
     if (selected.length && !run.value?.draft_id) {
-        touch();
-        if (!(await ensureSynced()) || !run.value?.draft_id) {
-            mediaError.value = 'Нет связи с сервером. Сначала сохраните черновик, затем добавьте файл.';
+        if (!inFlight && changeSerial === acknowledgedSerial) touch();
+        if (!(await flush()) || !run.value?.draft_id) {
+            mediaError.value = syncError.value || 'Не удалось создать черновик. Файл остался в предпросмотре.';
             return false;
         }
     }
@@ -1380,11 +1408,8 @@ async function sendOne(item) {
         // Let emergency on-device caching finish before network transfer.
         if (item.cachePromise) await item.cachePromise;
         if (controller.signal.aborted) return;
-        // Before completion, the draft must be saved. Afterwards, transfers
-        // resume against their original registered upload ID and result.
-        if (!finalResult.value) {
-            if (!run.value?.draft_id) touch();
-            if (!(await ensureSynced())) throw new Error('Сначала сохраните ответы. Затем повторите загрузку.');
+        if (!item.record && !run.value?.draft_id) {
+            throw new Error('Сервер не подтвердил создание черновика.');
         }
         const context = item.record
             ? {
@@ -1424,11 +1449,8 @@ async function sendOne(item) {
         item.status = 'attaching';
 
         const task = attachQueue.catch(() => {}).then(async () => {
-            if (!finalResult.value && !(await ensureSynced())) {
-                throw new Error('Ответы не сохранены. Повторите прикрепление.');
-            }
-            attachInFlight = true;
-            try {
+            const attach = async () => {
+                if (controller.signal.aborted) return;
                 const attached = await focusMediaRequest(result.urls.attach, 'POST', {
                     draft_id: context.draft_id,
                     expected_revision: finalResult.value ? 0 : run.value.revision,
@@ -1464,10 +1486,8 @@ async function sendOne(item) {
                         }
                     }
                 }
-            } finally {
-                attachInFlight = false;
-                if (!finalResult.value && changeSerial !== acknowledgedSerial) queueSave(0);
-            }
+            };
+            return finalResult.value ? attach() : writeDraftMedia(attach);
         });
         attachQueue = task.catch(() => {});
         await task;
@@ -1591,12 +1611,14 @@ async function removeSavedMedia(room, question, file) {
     if (!window.confirm('Удалить это фото из черновика?')) return;
     mediaError.value = '';
     try {
-        if (!(await ensureSynced())) throw new Error(syncError.value || 'Черновик не сохранён.');
-        const data = await focusMediaRequest(props.mediaStartUrl + '/' + encodeURIComponent(file.upload_id) + '/attached',
-            'DELETE', { expected_revision: run.value.revision }, csrf);
-        run.value = { ...run.value, ...data.run };
-        media.value[room][question] = media.value[room][question].filter(item => item !== file);
-        if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, file.upload_id).catch(() => {});
+        await writeDraftMedia(async () => {
+            const data = await focusMediaRequest(props.mediaStartUrl + '/' + encodeURIComponent(file.upload_id) + '/attached',
+                'DELETE', { expected_revision: run.value.revision }, csrf);
+            run.value = { ...run.value, ...data.run };
+            if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+            media.value[room][question] = media.value[room][question].filter(item => item !== file);
+            if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, file.upload_id).catch(() => {});
+        });
     } catch (error) {
         mediaError.value = error.message || 'Не удалось удалить фото. Повторите попытку.';
     }
@@ -1698,8 +1720,9 @@ onBeforeUnmount(() => {
                 <nav aria-label="Комнаты" class="space-y-1">
                     <button v-for="(room, index) in rooms" :key="index" type="button"
                         class="flex min-h-12 w-full items-center justify-between gap-3 rounded-xl px-3 text-left text-sm"
-                        :class="index === activeRoom ? 'bg-blue-50 font-bold text-blue-800' : 'hover:bg-slate-50'"
-                        :aria-current="index === activeRoom ? 'step' : undefined" @click="goRoom(index)">
+                        :class="index === activeRoom ? 'bg-blue-50 font-bold text-blue-800' : index > activeRoom ? 'text-slate-500' : 'hover:bg-slate-50'"
+                        :aria-current="index === activeRoom ? 'step' : undefined" :disabled="index > activeRoom"
+                        @click="index <= activeRoom && goRoom(index)">
                         <span>{{ room.title || 'Комната ' + (index + 1) }}</span>
                         <span class="shrink-0 text-xs">{{ room.is_optional ? 'Необязательно' : roomCompleted(index) + '/' + roomRequired(index) }}</span>
                     </button>
@@ -1823,38 +1846,6 @@ onBeforeUnmount(() => {
                         <span class="min-w-0 truncate">{{ currentRoom.title || 'Комната ' + (activeRoom + 1) }}</span>
                         <span class="shrink-0 text-xs">Комнаты · {{ activeRoom + 1 }}/{{ rooms.length }} ▾</span>
                     </button>
-                    <button v-if="stage === 'questions' && completedRequired < totalRequired" type="button"
-                        class="min-h-10 rounded-lg px-2 text-left text-xs font-semibold text-blue-800" @click="jumpToMissing">К первому пропуску ↓</button>
-                    <div v-if="outstandingMedia > 0" class="space-y-2" role="status" aria-live="polite">
-                        <div class="flex items-start justify-between gap-2 text-xs">
-                            <span class="font-semibold" :class="failedMediaTransfers.length ? 'text-red-800' : 'text-blue-800'">
-                                {{ failedMediaTransfers.length
-                                    ? 'Ошибка: ' + failedMediaTransfers.length + ' ' + fileCountLabel(failedMediaTransfers.length)
-                                    : currentMediaTransfers.length
-                                        ? 'Сохраняем фото и видео · ' + currentMediaTransfers.length + ' ' + fileCountLabel(currentMediaTransfers.length)
-                                        : 'Требуется восстановить материалы' }}
-                            </span>
-                            <span v-if="currentMediaTransfers.length" class="shrink-0 tabular-nums font-bold text-blue-800">{{ mediaTransferProgress }}%</span>
-                        </div>
-                        <div v-if="currentMediaTransfers.length" class="h-1.5 overflow-hidden rounded-full bg-blue-100"
-                            role="progressbar" aria-label="Передача фото и видео" :aria-valuenow="mediaTransferProgress" aria-valuemin="0" aria-valuemax="100">
-                            <div class="h-full rounded-full bg-blue-600 transition-[width] duration-200" :style="{ width: mediaTransferProgress + '%' }"></div>
-                        </div>
-                        <div class="flex items-center justify-between gap-2">
-                            <p class="text-[11px] leading-tight text-slate-600">
-                                {{ failedMediaTransfers.length
-                                    ? 'Повторите ошибочные файлы или удалите их из очереди. Ответы сохранены отдельно.'
-                                    : currentMediaTransfers.length
-                                        ? 'Можете отвечать дальше. Не закрывайте Telegram до подтверждения загрузки.'
-                                        : 'Откройте восстановление файлов ниже. Отправка пока недоступна.' }}
-                            </p>
-                            <button v-if="stage !== 'done' && (recoveryNeedingInput.length || failedMediaTransfers.length || currentMediaTransfers.length)"
-                                type="button" class="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800"
-                                @click="jumpToPendingMedia">К вложению</button>
-                            <button v-if="failedMediaTransfers.length && stage === 'done'" type="button" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
-                                @click="retryFailedFiles">Повторить</button>
-                        </div>
-                    </div>
                 </div>
 
                 <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
@@ -1897,7 +1888,7 @@ onBeforeUnmount(() => {
                 <section v-if="recoveryNeedingInput.length" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
                     <h2 class="font-bold">Незавершённые вложения · {{ recoveryNeedingInput.length }}</h2>
                     <p class="mt-1 text-xs">Полностью полученные файлы прикрепятся без повторной загрузки. Если файл не дошёл, выберите оригинал или добавьте новый у нужного вопроса.</p>
-                    <div v-for="record in recoveryNeedingInput" :id="'focus-recovery-' + record.upload_id" :key="record.upload_id" tabindex="-1" class="mt-3 scroll-mt-64 rounded-xl bg-white p-3">
+                    <div v-for="record in recoveryNeedingInput" :id="'focus-recovery-' + record.upload_id" :key="record.upload_id" tabindex="-1" class="mt-3 scroll-mt-36 rounded-xl bg-white p-3">
                         <button type="button" class="text-left font-semibold text-blue-800" @click="openRecoveryQuestion(record)">
                             {{ rooms[record.room_index]?.title || 'Комната ' + (record.room_index + 1) }} · вопрос {{ record.question_index + 1 }} →
                         </button>
@@ -1983,7 +1974,7 @@ onBeforeUnmount(() => {
                     <div class="space-y-3">
                         <article v-for="(question, questionIndex) in currentRoom.items" :id="'focus-question-' + activeRoom + '-' + questionIndex"
                             :key="activeRoom + '-' + questionIndex" tabindex="-1"
-                            class="scroll-mt-64 rounded-xl border bg-white p-4"
+                            class="scroll-mt-36 rounded-xl border bg-white p-4"
                             @focusin="rememberPosition(activeRoom, questionIndex)" @click.capture="rememberPosition(activeRoom, questionIndex)"
                             :class="blockedQuestion === questionIndex ? 'border-red-400' : highlightedReviewQuestion === questionIndex ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'">
                             <div class="flex justify-between gap-3">
@@ -2190,7 +2181,7 @@ onBeforeUnmount(() => {
                         </details>
                         <div v-if="!canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
                             Остались файлы без подтверждения · {{ outstandingMedia }}. Отправка станет доступна после их сохранения или отмены.
-                            <button type="button" class="mt-2 block min-h-10 rounded-lg bg-white px-3 font-bold text-blue-800" @click="jumpToPendingMedia">К незагруженному вложению</button>
+                            <button type="button" class="mt-2 block min-h-10 rounded-lg bg-white px-3 font-bold text-blue-800" @click="jumpToPendingMedia()">К незагруженному вложению</button>
                         </div>
                         <p v-else-if="testMode" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
                             Тест проходит настоящий серверный цикл, но не попадает в рабочие результаты, статистику, награды и Telegram.

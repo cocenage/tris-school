@@ -185,6 +185,10 @@ class FakeFocusBackend {
                         return reply(this.describe(session));
                     }
                     if (segments[3] === 'attach') {
+                        if (this.beforeAttach) await this.beforeAttach(session);
+                        if (session.status !== 'attached' && json().expected_revision !== state.revision) {
+                            return reply({ message: 'Conflict' }, 409);
+                        }
                         if (session.status !== 'ready' && session.status !== 'attached') {
                             return reply({ message: 'Incomplete upload' }, 409);
                         }
@@ -306,7 +310,41 @@ async function main() {
             headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }),
         });
 
-        // Room switching stays available while scrolling and preserves answers.
+        // The second upload may start while the first holds the draft revision.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            let releaseAttach, enteredAttach;
+            const held = new Promise(resolve => { releaseAttach = resolve; });
+            const entered = new Promise(resolve => { enteredAttach = resolve; });
+            backend.beforeAttach = async session => {
+                if (session.name === 'first.png') {
+                    enteredAttach();
+                    await held;
+                }
+            };
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await addGalleryFile(page, {name:'first.png',mimeType:'image/png',buffer:image});
+            try {
+                await Promise.race([entered, delay(5000).then(() => { throw new Error('First attach did not start'); })]);
+                await page.getByRole('button', {name:'Да',exact:true}).click();
+                await addGalleryFile(page, {name:'second.png',mimeType:'image/png',buffer:image});
+                for (let i = 0; backend.startRequests < 2 && i < 50; i++) await delay(100);
+                assert.equal(backend.startRequests, 2, 'Second file did not start while the first was attaching');
+                assert.equal(await page.getByRole('progressbar', {name:'Передача фото и видео'}).count(), 0);
+            } finally { releaseAttach(); }
+            for (let i = 0; (backend.media[0][0].length !== 2 || backend.answers[0][0].selected !== 'yes') && i < 70; i++) await delay(100);
+            assert.deepEqual(backend.media[0][0].map(item => item.name), ['first.png','second.png']);
+            assert.equal(backend.answers[0][0].selected, 'yes');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: parallel upload, sequential attachment, and answer edit during attach');
+            await context.close();
+        }
+
+        // Room order is enforced, including the optional room; completed rooms can be revisited.
         {
             const backend = new FakeFocusBackend();
             const bootstrap = backend.bootstrap.bind(backend);
@@ -319,11 +357,16 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
-            await page.getByRole('button', { name: 'Нет', exact: true }).click();
+            await page.getByRole('button', { name: 'Следующая комната' }).click();
+            await page.waitForFunction(() => document.activeElement?.id === 'focus-question-0-0');
+            assert.equal(await page.getByRole('button', { name: /К первому пропуску/ }).count(), 0);
             await page.getByRole('button', { name: /Комнаты · 1\/2/ }).click();
             const picker = page.getByRole('dialog', { name: 'Комнаты проверки' });
             assert.equal(await picker.locator('[aria-current="step"]').count(), 1);
-            await picker.getByRole('button', { name: /Ванная/ }).click();
+            assert.equal(await picker.getByRole('button', { name: /Ванная/ }).isDisabled(), true);
+            await picker.getByRole('button', { name: 'Закрыть список комнат' }).click();
+            await page.getByRole('button', { name: 'Нет', exact: true }).click();
+            await page.getByRole('button', { name: 'Следующая комната' }).click();
             await page.getByRole('heading', { name: 'Ванная', exact: true }).waitFor();
             await page.getByRole('button', { name: 'Предыдущая комната' }).click();
             assert.equal(await page.getByRole('button', { name: 'Нет', exact: true }).getAttribute('aria-pressed'), 'true');
@@ -353,6 +396,7 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
             await page.getByRole('button', { name: 'Следующая комната' }).click();
             await page.locator('#focus-question-1-1').getByRole('button', { name: 'Да', exact: true }).click();
             await page.getByText('Сохранено', { exact: true }).first().waitFor();
@@ -361,9 +405,9 @@ async function main() {
             await reopened.getByRole('button', { name: 'Продолжить контроль' }).click();
             await reopened.waitForFunction(() => document.activeElement?.id === 'focus-question-1-1');
             assert.equal(await reopened.locator('#focus-question-1-1').getByRole('button', { name: 'Да', exact: true }).getAttribute('aria-pressed'), 'true');
-            await reopened.getByRole('button', { name: /К первому пропуску/ }).click();
-            await reopened.waitForFunction(() => document.activeElement?.id === 'focus-question-0-0');
-            assert.equal(await reopened.locator('#focus-question-0-0').evaluate(el => el.classList.contains('border-red-400')), true);
+            await reopened.getByRole('button', { name: 'К сводке' }).click();
+            await reopened.waitForFunction(() => document.activeElement?.id === 'focus-question-1-0');
+            assert.equal(await reopened.locator('#focus-question-1-0').evaluate(el => el.classList.contains('border-red-400')), true);
 
             // A fresh server run must not open the old local position.
             backend.draftId = null;
@@ -725,7 +769,9 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             const recovery = page.locator('section').filter({ has: page.getByRole('heading', { name: /Незавершённые вложения/ }) });
-            await page.getByRole('button', { name: 'К вложению', exact: true }).click();
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByRole('button', { name: 'К сводке' }).click();
             await page.waitForFunction(id => document.activeElement?.id === 'focus-recovery-' + id, uploadId);
             assert.match(await recovery.getByRole('button', { name: /вопрос 1/ }).innerText(), /Кухня/);
             await recovery.getByLabel('Выбрать оригинал').setInputFiles({ name: 'different.png', mimeType: 'image/png', buffer: image });
