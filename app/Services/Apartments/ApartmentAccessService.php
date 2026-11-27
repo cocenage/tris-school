@@ -30,6 +30,21 @@ class ApartmentAccessService
                 ->active());
     }
 
+    /**
+     * ANTIGOCCIA only needs the active apartment directory, not access to
+     * apartment knowledge-base contents. Individual grants are not required.
+     */
+    public function antigocciaQuery(?User $user): Builder
+    {
+        $query = Apartment::query()->select(['id', 'name', 'address']);
+
+        if (! $user || ! $user->isApproved() || ! $user->is_active) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where('is_active', true);
+    }
+
     public function canView(?User $user, Apartment $apartment): bool
     {
         return $this->visibleQuery($user)->whereKey($apartment->getKey())->exists();

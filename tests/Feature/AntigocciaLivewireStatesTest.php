@@ -106,7 +106,34 @@ it('dispatches the first invalid field on submit instead of losing the scroll po
     ]);
     $component->call('selectApartment', $id)
         ->set('daysSincePreviousCleaning', '2')
-        ->set('coatingDate', now('Europe/Rome')->subDay()->toDateString())
         ->call('submit')->assertHasErrors(['answers.mirrors.dirt'])
         ->assertDispatched('antigoccia-invalid', field: 'answers.mirrors.dirt');
+});
+
+it('lets approved cleaners select active apartments without individual grants', function (): void {
+    $actor = new User([
+        'name' => 'Клинер',
+        'role' => 'cleaner',
+        'status' => 'approved',
+        'is_active' => true,
+    ]);
+    $actor->id = 52;
+    Livewire::actingAs($actor);
+
+    $id = \Illuminate\Support\Facades\DB::table('apartments')->insertGetId([
+        'name' => 'Квартира без доступа',
+        'information_status' => 'draft',
+        'is_active' => true,
+    ]);
+    $inactive = \Illuminate\Support\Facades\DB::table('apartments')->insertGetId([
+        'name' => 'Архивная квартира',
+        'is_active' => false,
+    ]);
+    $component = Livewire::test('antigoccia.page-antigoccia')
+        ->assertSee('Квартира без доступа')
+        ->assertDontSee('Архивная квартира')
+        ->call('selectApartment', $id)
+        ->assertSet('apartmentId', (string) $id);
+
+    $component->call('selectApartment', $inactive)->assertForbidden();
 });

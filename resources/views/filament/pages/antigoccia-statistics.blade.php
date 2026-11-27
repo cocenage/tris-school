@@ -19,6 +19,77 @@
             @endforeach
         </div>
 
+        @php($activity = $this->activity)
+        <x-filament::section>
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <h2 class="text-lg font-semibold">Активность Антикапли</h2>
+                <select wire:model.live="activityPeriod" aria-label="Период активности" class="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
+                    <option value="7">7 дней</option>
+                    <option value="30">30 дней</option>
+                    <option value="90">90 дней</option>
+                </select>
+            </div>
+            <div class="mt-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                @foreach([
+                    'Отправлено анкет' => $activity['reports'],
+                    'Участников' => $activity['staff_count'],
+                    'Охват текущих обработок' => $activity['covered'].' / '.$activity['treated'],
+                    'Без наблюдений текущего цикла за период' => $activity['uncovered'],
+                ] as $label => $value)
+                    <div class="rounded-xl border border-gray-200 p-3 dark:border-gray-700">
+                        <p class="text-xs text-gray-500">{{ $label }}</p>
+                        <p class="mt-2 text-2xl font-semibold tabular-nums">{{ $value }}</p>
+                    </div>
+                @endforeach
+            </div>
+            <p class="mt-3 text-xs text-gray-500">По дате отправки анкеты. Не является количеством фактических уборок.</p>
+            <h3 class="mt-5 text-sm font-semibold">Анкеты по дням</h3>
+            <div class="mt-3 max-h-64 space-y-2 overflow-y-auto">
+                @php($maxDaily = max(1, ...array_values($activity['daily'])))
+                @foreach($activity['daily'] as $date => $count)
+                    <div class="flex items-center gap-3 text-xs">
+                        <span class="w-20 shrink-0">{{ \Carbon\CarbonImmutable::parse($date)->format('d.m') }}</span>
+                        <div class="h-2 flex-1 overflow-hidden rounded bg-gray-100 dark:bg-gray-800">
+                            <div class="h-full rounded bg-primary-500" style="width: {{ $count * 100 / $maxDaily }}%"></div>
+                        </div>
+                        <span class="w-8 text-right tabular-nums">{{ $count }}</span>
+                    </div>
+                @endforeach
+            </div>
+            <details class="mt-5 border-t border-gray-200 pt-4 dark:border-gray-700">
+                <summary class="cursor-pointer text-sm font-semibold">Активность по сотрудникам</summary>
+                <div class="mt-3 max-h-96 overflow-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead><tr><th class="p-2">Сотрудник</th><th class="p-2">Анкет</th><th class="p-2">Последняя отправка</th></tr></thead>
+                        <tbody>
+                            @forelse($activity['staff'] as $row)
+                                <tr class="border-t border-gray-200 dark:border-gray-700"><td class="p-2">{{ $row['name'] }}</td><td class="p-2 tabular-nums">{{ $row['count'] }}</td><td class="p-2">{{ $row['last'] }}</td></tr>
+                            @empty
+                                <tr><td class="p-2 text-gray-500" colspan="3">Нет анкет за период</td></tr>
+                            @endforelse
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+            <details class="mt-4 border-t border-gray-200 pt-4 dark:border-gray-700">
+                <summary class="cursor-pointer text-sm font-semibold">Регулярность по квартирам</summary>
+                <div class="mt-3 max-h-96 overflow-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead><tr><th class="p-2">Квартира</th><th class="p-2">Анкет</th><th class="p-2">Обработка</th><th class="p-2">Последнее наблюдение за период</th><th class="p-2">Средний интервал, дн.</th><th class="p-2">Текущий цикл</th></tr></thead>
+                        <tbody>
+                            @forelse($activity['apartments'] as $row)
+                                <tr class="border-t border-gray-200 dark:border-gray-700">
+                                    <td class="p-2">{{ $row['name'] }}</td><td class="p-2 tabular-nums">{{ $row['count'] }}</td><td class="p-2">{{ $row['applied_on'] ?? '—' }}</td><td class="p-2">{{ $row['last'] ?? '—' }}</td><td class="p-2">{{ $row['mean_interval'] ?? '—' }}</td><td class="p-2">{{ $row['applied_on'] === null ? 'Нет даты' : ($row['covered'] ? 'Есть наблюдения' : 'Нет наблюдений за период') }}</td>
+                                </tr>
+                            @empty
+                                <tr><td class="p-2 text-gray-500" colspan="6">Нет данных</td></tr>
+                            @endforelse
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+        </x-filament::section>
+
         <x-filament::section>
             <div class="flex flex-wrap items-start justify-between gap-4">
                 <div>
