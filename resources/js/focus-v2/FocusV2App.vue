@@ -4,8 +4,8 @@ import FocusCamera from './FocusCamera.vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
 import FocusMediaViewer from './FocusMediaViewer.vue';
 import FocusVideoThumb from './FocusVideoThumb.vue';
-import { allowedFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, isTransientFocusUploadError, transferFocusFile } from './media-upload';
-import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
+import { allowedFocusFile, attachFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, isTransientFocusUploadError, transferFocusFile } from './media-upload';
+import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryContentStamp, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
@@ -36,6 +36,8 @@ const highlightedReviewQuestion = ref(null);
 const submitting = ref(false);
 const resetting = ref(false);
 const submitError = ref('');
+const setupIssue = ref(null);
+const editingReviewSetup = ref(false);
 const finalResult = ref(null);
 const uploads = ref([]);
 const interruptedUploads = ref([]);
@@ -88,6 +90,7 @@ function saveLocalSnapshot() {
             run_id: run.value.id,
             draft_id: run.value.draft_id,
             base_revision: run.value.revision,
+            base_content: acknowledgedContent,
             setup: JSON.parse(JSON.stringify(setup.value)),
             answers: JSON.parse(JSON.stringify(answers.value)),
         },
@@ -133,7 +136,7 @@ function restoreLocalVersion() {
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
 let recoveringDraftMedia = false;
-let attachInFlight = false;
+let attachInFlight = null;
 let attachQueue = Promise.resolve();
 
 let changeSerial = 0;
@@ -141,6 +144,8 @@ let acknowledgedSerial = 0;
 let timer = null;
 let inFlight = null;
 let uncertainSnapshot = null;
+let pendingMediaReplay = null;
+let acknowledgedContent = null;
 
 const statusLabel = computed(() => testMode.value && state.value === 'synced' ? 'Тестовый черновик сохранён' : ({
     idle: 'Готово',
@@ -184,21 +189,6 @@ const canSubmitMedia = computed(() => outstandingMedia.value === 0);
 const currentMediaTransfers = computed(() => uploads.value.filter(item =>
     ['queued', 'uploading', 'attaching'].includes(item.status)));
 const failedMediaTransfers = computed(() => uploads.value.filter(item => item.status === 'error'));
-const mediaTransferProgress = computed(() => {
-    const pending = currentMediaTransfers.value;
-    const totalBytes = pending.reduce((sum, item) => sum + (item.file?.size || 0), 0);
-    if (totalBytes === 0) return 0;
-    return Math.min(100, Math.round(pending.reduce((sum, item) =>
-        sum + (item.file?.size || 0) * (item.progress || 0) / 100, 0) * 100 / totalBytes));
-});
-function fileCountLabel(n) {
-    const rem100 = n % 100, rem10 = n % 10;
-    return rem100 >= 11 && rem100 <= 14 ? 'файлов'
-        : rem10 === 1 ? 'файл' : rem10 >= 2 && rem10 <= 4 ? 'файла' : 'файлов';
-}
-function retryFailedFiles() {
-    for (const item of failedMediaTransfers.value) retryFile(item);
-}
 const recoveryNeedingInput = computed(() => interruptedUploads.value.filter(record =>
     !uploads.value.some(item => item.id === record.upload_id
         && ['queued', 'uploading', 'attaching'].includes(item.status))
@@ -216,7 +206,7 @@ async function fetchJson(url, options = {}) {
     options.signal?.addEventListener('abort', abort, { once: true });
     let timeoutFired = false;
     const timeout = setTimeout(() => { timeoutFired = true; controller.abort(); }, 25_000);
-    let response;
+    let response, data;
     try {
         response = await fetch(url, {
             credentials: 'same-origin',
@@ -228,6 +218,10 @@ async function fetchJson(url, options = {}) {
             ...options,
             signal: controller.signal,
         });
+        data = await response.json().catch(error => {
+            if (error?.name === 'AbortError' || error instanceof TypeError) throw error;
+            return {};
+        });
     } catch (error) {
         if (timeoutFired) throw new Error('Соединение зависло. При восстановлении повторим сохранение без потери ответов.');
         throw error;
@@ -235,13 +229,13 @@ async function fetchJson(url, options = {}) {
         clearTimeout(timeout);
         options.signal?.removeEventListener('abort', abort);
     }
-    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
         const firstError = Object.values(data.errors ?? {}).flat().find(message => typeof message === 'string');
         const exception = new Error(firstError || data.message || (response.status === 419
             ? 'Сессия истекла. Войдите снова.' : 'Сервер не ответил.'));
         exception.status = response.status;
         exception.code = data.error;
+        exception.fields = data.errors;
         throw exception;
     }
     return data;
@@ -255,10 +249,14 @@ async function initialize() {
     changeSerial = 0;
     acknowledgedSerial = 0;
     uncertainSnapshot = null;
+    pendingMediaReplay = null;
+    acknowledgedContent = null;
     recoveryRecord.value = null;
     recoveryMode.value = '';
     recoveryKey = null;
     resumePosition.value = null;
+    setupIssue.value = null;
+    editingReviewSetup.value = false;
     loading.value = true;
     loadError.value = '';
     testMode.value = false;
@@ -294,6 +292,7 @@ async function initialize() {
         apartments.value = data.apartments ?? [];
         setup.value = data.setup ?? {};
         answers.value = data.answers ?? [];
+        acknowledgedContent = recoveryContentStamp(setup.value, answers.value);
         media.value = data.media ?? [];
         if (data.run?.schema_conflict) {
             state.value = 'conflict';
@@ -356,6 +355,18 @@ async function restoreCachedPhotos() {
     recoveringPhotos.value = true;
     try {
         const cached = await readCachedFocusPhotos(recoveryKey);
+        // Bootstrap issues a new provisional ID when no server draft exists.
+        // Only a single locally started run can claim an empty server slot.
+        // Never move files into an existing or ambiguous run.
+        if (run.value.draft_id == null && run.value.revision === 0
+            && !cached.some(saved => saved.run_id === run.value.id)) {
+            const localRuns = new Set(cached.filter(saved => saved.before_draft === true
+                && rooms.value[saved.room]?.items?.[saved.question]).map(saved => saved.run_id));
+            if (localRuns.size === 1) {
+                run.value = { ...run.value, id: [...localRuns][0] };
+                readResumePosition();
+            }
+        }
         for (const saved of cached) {
             // Never attach a cached file to a different draft/run.
             if (saved.run_id !== run.value.id) {
@@ -376,6 +387,7 @@ async function restoreCachedPhotos() {
                 record: record || null, status: 'queued', progress: 0, error: '',
                 info: null, controller: null, preview_url: URL.createObjectURL(file),
                 cached: true,
+                reservationAttempted: !!record || run.value.draft_id != null,
             });
         }
         pumpTransfers();
@@ -432,20 +444,15 @@ async function confirmPhoto() {
     const current = photoCapture.value;
     if (!current || current.saving) return;
     current.saving = true;
-    // First ensure this run has a server-owned draft. A freshly created
-    // phone photo must not be cached with a run ID the server never saw.
-    if (!run.value?.draft_id) {
-        touch();
-        if (!(await ensureSynced()) || !run.value?.draft_id) {
-            mediaError.value = 'Не удалось создать черновик. Проверьте соединение и повторите подтверждение фото.';
-            current.saving = false;
-            return;
-        }
+    try {
+        const queued = await queueSelectedFiles([current.file], current.room, current.question,
+            { replaceUploadId: current.replaceUploadId });
+        if (queued) closePhotoCapture();
+    } catch (error) {
+        mediaError.value = error.message || 'Не удалось добавить файл.';
+    } finally {
+        current.saving = false;
     }
-    const queued = await queueSelectedFiles([current.file], current.room, current.question,
-        { replaceUploadId: current.replaceUploadId });
-    if (queued) closePhotoCapture();
-    else current.saving = false;
 }
 function beginBatchPreview(selected, room, question) {
     if (!canEdit.value) return;
@@ -595,6 +602,7 @@ async function choosePerson(id) {
             apartments.value = data.apartments ?? [];
             setup.value = data.setup;
             answers.value = data.answers;
+            acknowledgedContent = recoveryContentStamp(setup.value, answers.value);
             media.value = data.media;
             interruptedUploads.value = data.pending_uploads ?? [];
             run.value = data.run;
@@ -603,6 +611,7 @@ async function choosePerson(id) {
             changeSerial = 0;
             acknowledgedSerial = 0;
             uncertainSnapshot = null;
+            pendingMediaReplay = null;
             clearTimeout(timer);
             finalResult.value = null;
             state.value = data.run?.schema_conflict ? 'conflict' : 'synced';
@@ -619,11 +628,13 @@ async function choosePerson(id) {
     }
     if (testMode.value) return;
     setup.value.cleaner_id = id;
+    clearSetupIssue('cleaner_id');
     touch();
 }
 function chooseApartment(id) {
     if (!canEdit.value) return;
     setup.value.apartment_id = id;
+    clearSetupIssue('apartment_id');
     touch();
 }
 function choosePreviousCleaner(name) {
@@ -678,6 +689,11 @@ function resumeDraftFile(event, record) {
 }
 function openRecoveryQuestion(record, showPicker = false) {
     if (!rooms.value[record.room_index]?.items?.[record.question_index]) return;
+    const earlier = firstMissing(record.room_index - 1);
+    if (earlier) {
+        jumpToQuestion(earlier.roomIndex, earlier.questionIndex, 'missing');
+        return;
+    }
     goRoom(record.room_index);
     highlightedReviewQuestion.value = record.question_index;
     void nextTick().then(() => {
@@ -732,32 +748,30 @@ async function attachReadyDraft(record) {
         return;
     }
     mediaError.value = '';
-    let locked = false;
     try {
-        if (!(await ensureSynced())) throw new Error('Не удалось сохранить ответы.');
-        if (!canEdit.value || record.run_id !== run.value.id
-            || !interruptedUploads.value.some(item => item.upload_id === record.upload_id)
-            || attachInFlight || activeTransfers) return;
-        attachInFlight = true;
-        locked = true;
-        const info = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
-        if (info.status !== 'ready' && info.status !== 'attached') {
-            throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
-        }
-        const attached = await focusMediaRequest(info.urls.attach, 'POST', {
-            draft_id: run.value.draft_id, expected_revision: run.value.revision,
-        }, csrf);
-        run.value = { ...run.value, ...attached.run };
-        const files = media.value[record.room_index][record.question_index];
-        if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
-            files.push(attached.media_item);
-        }
-        interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
-        if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
+        await writeDraftMedia(async () => {
+            if (record.run_id !== run.value.id
+                || !interruptedUploads.value.some(item => item.upload_id === record.upload_id)) return;
+            const info = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
+            if (info.status !== 'ready' && info.status !== 'attached') {
+                throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
+            }
+            const publish = attached => {
+                run.value = { ...run.value, ...attached.run };
+                if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                const files = media.value[record.room_index][record.question_index];
+                if (!files.some(file => file.upload_id === attached.media_item.upload_id)) files.push(attached.media_item);
+                interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
+                if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
+            };
+            const body = { draft_id: run.value.draft_id, expected_revision: run.value.revision };
+            // Already attached on bootstrap means a previous request was confirmed
+            // by the server snapshot, not a new revision-changing write.
+            if (info.status === 'attached') publish(await attachFocusFile(info.urls.attach, body, csrf));
+            else await saveMediaAttachment({ url: info.urls.attach, body, publish, uploadId: record.upload_id });
+        });
     } catch (error) {
         mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
-    } finally {
-        if (locked) attachInFlight = false;
     }
 }
 
@@ -778,11 +792,13 @@ function roomRequired(index) {
 
 function isNegative(question, selected) {
     const options = question?.answer_options_scored ?? [];
-    if (!selected || !['options', 'both'].includes(question.answer_type ?? 'options') || !options.length) return false;
-    const maximum = Math.max(0, ...options.map(option => Number(option.points ?? 0)));
+    if (!['options', 'both'].includes(question.answer_type ?? 'options') || !options.length) return false;
+    const value = String(selected ?? '').trim();
+    const score = option => Math.trunc(Number(option.points ?? 0)) || 0;
+    const maximum = Math.max(0, ...options.map(score));
     const points = options.reduce((result, option, index) => {
         const matches = [option.value ?? option.label ?? '', option.label ?? '', 'option_' + index];
-        return matches.map(String).includes(String(selected).trim()) ? Number(option.points ?? 0) : result;
+        return value && matches.some(match => String(match).trim() === value) ? score(option) : result;
     }, 0);
     return maximum > 0 && points < maximum;
 }
@@ -795,7 +811,9 @@ const reviewApartmentName = computed(() => apartments.value
 const reviewFindings = computed(() => {
     const findings = [];
     rooms.value.forEach((room, roomIndex) => {
+        if (room.is_optional) return;
         (room.items ?? []).forEach((question, questionIndex) => {
+            if (question.is_optional) return;
             const answer = answers.value[roomIndex]?.[questionIndex];
             if (!isNegative(question, answer?.selected)) return;
             const options = question.answer_options_scored ?? [];
@@ -805,7 +823,7 @@ const reviewFindings = computed(() => {
                 key: roomIndex + ':' + questionIndex, roomIndex, questionIndex,
                 roomTitle: room.title || 'Комната ' + (roomIndex + 1),
                 title: question.question || 'Вопрос ' + (questionIndex + 1),
-                answer: selectedOption?.label || answer?.selected || 'Замечание',
+                answer: selectedOption?.label || answer?.selected || answer?.custom || 'Замечание',
                 mediaCount: mediaCountAt(roomIndex, questionIndex),
             });
         });
@@ -888,8 +906,15 @@ async function flush() {
             : 'Нет интернета и локальная копия недоступна. Не закрывайте Telegram до восстановления связи.';
         return false;
     }
-    if (attachInFlight) { queueSave(450); return false; }
+    if (attachInFlight) {
+        await attachInFlight;
+        return flush();
+    }
     if (inFlight) return inFlight;
+    if (pendingMediaReplay) {
+        if (!(await reconcilePendingMedia())) return false;
+        return flush();
+    }
     if (!uncertainSnapshot && changeSerial === acknowledgedSerial) return true;
 
     const snapshot = uncertainSnapshot ?? takeSnapshot();
@@ -903,9 +928,14 @@ async function flush() {
                 method: 'POST',
                 body: JSON.stringify(body),
             });
+            if (result.run?.id !== body.run_id || !(result.run?.draft_id > 0)
+                || !Number.isInteger(result.run?.revision) || result.run.revision < Math.max(1, body.expected_revision)) {
+                throw new Error('Сервер не подтвердил сохранение черновика.');
+            }
             run.value = { ...run.value, ...result.run };
             uncertainSnapshot = null;
             acknowledgedSerial = Math.max(acknowledgedSerial, serial);
+            acknowledgedContent = recoveryContentStamp(body.setup, body.answers);
             state.value = changeSerial === acknowledgedSerial ? 'synced' : 'dirty';
             syncError.value = '';
             settleLocalSnapshot();
@@ -933,6 +963,94 @@ async function ensureSynced() {
         if (changeSerial === acknowledgedSerial && !inFlight) return true;
     }
     return false;
+}
+
+// Only revision-changing requests are serialized. Chunks and their
+// reservations do not depend on the latest answers or draft revision.
+async function holdDraftMedia(action) {
+    let unlock;
+    attachInFlight = new Promise(resolve => { unlock = resolve; });
+    try {
+        return await action();
+    } finally {
+        attachInFlight = null;
+        unlock();
+        if (state.value === 'dirty' && changeSerial !== acknowledgedSerial) queueSave(0);
+    }
+}
+
+async function reconcilePendingMedia() {
+    if (attachInFlight) {
+        await attachInFlight;
+        return reconcilePendingMedia();
+    }
+    const pending = pendingMediaReplay;
+    if (!pending) return canEdit.value;
+    if (!connectionOnline.value || !canEdit.value) return false;
+    return holdDraftMedia(async () => {
+        try {
+            await pending.replay();
+            if (pendingMediaReplay === pending) pendingMediaReplay = null;
+            if (!canEdit.value) return false;
+            state.value = changeSerial === acknowledgedSerial ? 'synced' : 'dirty';
+            syncError.value = '';
+            return true;
+        } catch (error) {
+            // A revision conflict after this replay is real. Do not adopt a
+            // different snapshot or retry as if it were our own write.
+            if (error.status === 409) {
+                pendingMediaReplay = null;
+                state.value = 'conflict';
+            } else state.value = 'error';
+            syncError.value = 'Не удалось сверить изменение вложения. Новые ответы остаются в этом черновике на устройстве.';
+            return false;
+        }
+    });
+}
+
+async function saveMediaAttachment({ url, body, signal, notify, publish, afterReplay, uploadId }) {
+    const perform = async currentSignal => {
+        const result = await attachFocusFile(url, body, csrf, currentSignal, notify);
+        if (result.run?.revision !== body.expected_revision + 1) {
+            const error = new Error('Черновик изменился после прикрепления файла.');
+            error.status = 409;
+            throw error;
+        }
+        await publish(result);
+    };
+    try {
+        await perform(signal);
+    } catch (error) {
+        if (isTransientFocusUploadError(error)) {
+            pendingMediaReplay = { uploadId, replay: async () => {
+                await perform();
+                await afterReplay?.();
+            } };
+        }
+        throw error;
+    }
+}
+
+async function writeDraftMedia(action) {
+    while (true) {
+        if (!canEdit.value) throw new Error(syncError.value || 'Черновик сейчас недоступен.');
+        if (attachInFlight || inFlight) {
+            await (attachInFlight || inFlight);
+            continue;
+        }
+        if (pendingMediaReplay) {
+            if (!(await reconcilePendingMedia())) throw new Error(syncError.value || 'Файл ещё не подтверждён.');
+            continue;
+        }
+        // A lost save acknowledgement may already have advanced the revision.
+        // Reconcile it before sending an attachment or a deletion.
+        if (uncertainSnapshot) {
+            if (!(await flush())) throw new Error(syncError.value || 'Сервер не подтвердил состояние черновика.');
+            continue;
+        }
+        break;
+    }
+    return holdDraftMedia(action);
 }
 
 function positionKey() {
@@ -968,9 +1086,68 @@ function clearResumePosition() {
     }
     resumePosition.value = null;
 }
+const setupFieldIds = {
+    cleaner_id: 'focus-cleaner',
+    apartment_id: 'focus-apartment',
+    cleaning_date: 'focus-cleaning-date',
+    inspection_date: 'focus-inspection-date',
+};
+
+function showSetupIssue(field, message) {
+    setupIssue.value = { field, message };
+    void nextTick().then(() => {
+        const input = document.getElementById(setupFieldIds[field]);
+        input?.scrollIntoView({ block: 'center' });
+        input?.focus({ preventScroll: true });
+    });
+}
+
+function validateSetup() {
+    const data = setup.value;
+    const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '');
+    let issue = null;
+    if (!testMode.value && !people.value.some(person => String(person.id) === String(data.cleaner_id))) {
+        issue = ['cleaner_id', 'Выберите сотрудника.'];
+    } else if (!apartments.value.some(apartment => String(apartment.id) === String(data.apartment_id))) {
+        issue = ['apartment_id', 'Выберите квартиру.'];
+    } else if (!validDate(data.cleaning_date)) {
+        issue = ['cleaning_date', 'Укажите дату уборки.'];
+    } else if (!validDate(data.inspection_date)) {
+        issue = ['inspection_date', 'Укажите дату проверки.'];
+    } else if (data.inspection_date < data.cleaning_date) {
+        issue = ['inspection_date', 'Дата проверки не может быть раньше даты уборки.'];
+    }
+    if (issue) { showSetupIssue(...issue); return false; }
+    setupIssue.value = null;
+    return true;
+}
+
+function clearSetupIssue(field) {
+    if (setupIssue.value?.field === field) setupIssue.value = null;
+}
+
+function editReviewSetup() {
+    editingReviewSetup.value = true;
+    stage.value = 'setup';
+    window.scrollTo({ top: 0, behavior: 'instant' });
+}
+
 function startQuestions() {
+    if (!validateSetup()) return;
+    if (editingReviewSetup.value) {
+        editingReviewSetup.value = false;
+        openReview();
+        void nextTick().then(() => document.getElementById('focus-review-heading')?.focus({ preventScroll: true }));
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        return;
+    }
     const position = resumePosition.value;
     if (position) {
+        const earlier = firstMissing(position.room - 1);
+        if (earlier) {
+            jumpToQuestion(earlier.roomIndex, earlier.questionIndex, 'missing');
+            return;
+        }
         if (position.question == null) goRoom(position.room);
         else jumpToQuestion(position.room, position.question, 'resume');
         return;
@@ -999,8 +1176,8 @@ function jumpToMissing() {
     const missing = firstMissing();
     if (missing) jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
 }
-function jumpToPendingMedia() {
-    const record = recoveryNeedingInput.value[0];
+function jumpToPendingMedia(throughRoom = rooms.value.length - 1, includeActive = true) {
+    const record = recoveryNeedingInput.value.find(item => item.room_index <= throughRoom);
     if (record) {
         // The recovery card holds the actions; each card already links back to its question.
         void nextTick().then(() => {
@@ -1008,13 +1185,16 @@ function jumpToPendingMedia() {
             element?.scrollIntoView({ block: 'start' });
             element?.focus({ preventScroll: true });
         });
-        return;
+        return true;
     }
-    const upload = failedMediaTransfers.value[0] ?? currentMediaTransfers.value[0];
-    if (upload) jumpToQuestion(upload.room, upload.question, 'media');
+    const upload = failedMediaTransfers.value.find(item => item.room <= throughRoom)
+        ?? (includeActive ? currentMediaTransfers.value.find(item => item.room <= throughRoom) : null);
+    if (!upload) return false;
+    jumpToQuestion(upload.room, upload.question, 'media');
+    return true;
 }
-function firstMissing() {
-    for (let roomIndex = 0; roomIndex < rooms.value.length; roomIndex++) {
+function firstMissing(throughRoom = rooms.value.length - 1) {
+    for (let roomIndex = 0; roomIndex <= throughRoom; roomIndex++) {
         const room = rooms.value[roomIndex];
         for (let questionIndex = 0; questionIndex < (room.items ?? []).length; questionIndex++) {
             if (!room.is_optional && !room.items[questionIndex].is_optional && !filled(roomIndex, questionIndex)) {
@@ -1050,6 +1230,14 @@ function goRoom(index) {
 }
 
 function nextRoom() {
+    const missing = firstMissing(activeRoom.value);
+    if (missing) {
+        jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
+        return;
+    }
+    // A healthy transfer may finish while the inspector answers in the next room.
+    // Errors and missing originals must be dealt with before moving forward.
+    if (jumpToPendingMedia(activeRoom.value, false)) return;
     if (activeRoom.value + 1 < rooms.value.length) {
         goRoom(activeRoom.value + 1);
         return;
@@ -1225,6 +1413,12 @@ async function submitControl() {
         state.value = 'synced';
         if (recoveryKey) void queueLocalWrite({ type: 'delete', scope: recoveryKey });
     } catch (error) {
+        const invalidSetup = error.status === 422 && Object.keys(setupFieldIds).find(field => error.fields?.[field]?.length);
+        if (invalidSetup) {
+            editReviewSetup();
+            showSetupIssue(invalidSetup, error.fields[invalidSetup][0]);
+            return;
+        }
         submitError.value = error.message || 'Не удалось завершить контроль. Повторите отправку.';
         if (error.status === 409 && error.code !== 'submission_in_progress') {
             state.value = 'conflict';
@@ -1302,13 +1496,8 @@ function addFiles(event, room, question) {
 async function queueSelectedFiles(selected, room, question, options = {}) {
     if (!canEdit.value) return false;
     mediaError.value = '';
-    if (selected.length && !run.value?.draft_id) {
-        touch();
-        if (!(await ensureSynced()) || !run.value?.draft_id) {
-            mediaError.value = 'Нет связи с сервером. Сначала сохраните черновик, затем добавьте файл.';
-            return false;
-        }
-    }
+    const beforeDraft = run.value.draft_id == null;
+    const firstBackups = [];
     let accepted = 0;
     let reserved = mediaCountAt(room, question);
     for (const original of selected) {
@@ -1338,7 +1527,7 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
             queued.cachePending = true;
             queued.cachePromise = cacheFocusPhoto({
                 scope: recoveryKey, uploadId: id, runId: run.value.id,
-                file, room, question,
+                file, room, question, beforeDraft,
             }).then(() => {
                 queued.cached = true;
             }).catch(() => {
@@ -1346,12 +1535,16 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
             }).finally(() => {
                 queued.cachePending = false;
             });
+            if (beforeDraft) firstBackups.push(queued.cachePromise);
         } else if (mime.startsWith('video/')) {
             cacheWarning.value = 'Большое видео нельзя безопасно хранить в памяти Telegram. Дождитесь сохранения на сервере или сохраните исходник для восстановления.';
         }
         reserved++;
         accepted++;
     }
+    // Don't close the first-file preview before IndexedDB has attempted to
+    // persist it, otherwise closing Telegram immediately can lose the file.
+    await Promise.all(firstBackups);
     pumpTransfers();
     return accepted > 0;
 }
@@ -1359,7 +1552,7 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
 function pumpTransfers() {
     if (!connectionOnline.value) return;
     while (activeTransfers < 2 && (canEdit.value || stage.value === 'done')) {
-        const next = uploads.value.find(item => item.status === 'queued');
+        const next = uploads.value.find(item => item.status === 'queued' && !item.cancelling);
         if (!next) break;
         next.status = 'uploading';
         activeTransfers++;
@@ -1380,12 +1573,15 @@ async function sendOne(item) {
         // Let emergency on-device caching finish before network transfer.
         if (item.cachePromise) await item.cachePromise;
         if (controller.signal.aborted) return;
-        // Before completion, the draft must be saved. Afterwards, transfers
-        // resume against their original registered upload ID and result.
-        if (!finalResult.value) {
-            if (!run.value?.draft_id) touch();
-            if (!(await ensureSynced())) throw new Error('Сначала сохраните ответы. Затем повторите загрузку.');
+        if (!item.record && !run.value?.draft_id) {
+            if (!inFlight && changeSerial === acknowledgedSerial) touch();
+            if (!(await flush()) || !run.value?.draft_id) {
+                const error = new Error(syncError.value || 'Сервер не подтвердил создание черновика.');
+                if (!connectionOnline.value || uncertainSnapshot) error.name = 'TimeoutError';
+                throw error;
+            }
         }
+        if (controller.signal.aborted) return;
         const context = item.record
             ? {
                 control_id: item.record.control_id,
@@ -1402,6 +1598,7 @@ async function sendOne(item) {
                 test_mode: testMode.value,
             };
 
+        item.reservationAttempted = true;
         const result = await transferFocusFile({
             startUrl: props.mediaStartUrl,
             file: item.file,
@@ -1424,18 +1621,18 @@ async function sendOne(item) {
         item.status = 'attaching';
 
         const task = attachQueue.catch(() => {}).then(async () => {
-            if (!finalResult.value && !(await ensureSynced())) {
-                throw new Error('Ответы не сохранены. Повторите прикрепление.');
-            }
-            attachInFlight = true;
-            try {
-                const attached = await focusMediaRequest(result.urls.attach, 'POST', {
-                    draft_id: context.draft_id,
-                    expected_revision: finalResult.value ? 0 : run.value.revision,
-                }, csrf, controller.signal);
+            const attach = async () => {
+                if (controller.signal.aborted) return;
+                const body = { draft_id: context.draft_id, expected_revision: finalResult.value ? 0 : run.value.revision };
+                const notify = notice => {
+                    item.retryHint = notice.label + ': восстанавливаем соединение (' + notice.attempt + '/2)';
+                };
                 if (finalResult.value) {
+                    await attachFocusFile(result.urls.attach, body, csrf, controller.signal, notify);
                     await refreshMediaReview();
-                } else {
+                    return;
+                }
+                const publish = async attached => {
                     run.value = { ...run.value, ...attached.run };
                     if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
                     const arr = media.value[item.room] ?? (media.value[item.room] = []);
@@ -1450,42 +1647,33 @@ async function sendOne(item) {
                         const previous = files.find(file => file.upload_id === item.replaceUploadId);
                         if (previous) {
                             try {
-                                const removed = await focusMediaRequest(
-                                    props.mediaStartUrl + '/' + encodeURIComponent(previous.upload_id) + '/attached',
-                                    'DELETE', { expected_revision: run.value.revision }, csrf, controller.signal);
-                                run.value = { ...run.value, ...removed.run };
-                                media.value[item.room][item.question] = files.filter(file => file.upload_id !== previous.upload_id);
+                                await deleteDraftAttachment(item.room, item.question, previous.upload_id, controller.signal);
                             } catch (replaceError) {
                                 // Never discard either file when the final
                                 // delete acknowledgement is lost.
-                                mediaError.value = 'Новый файл сохранён, но старый не удалён. Удалите его вручную: '
+                                mediaError.value = 'Новый файл сохранён. Удаление старого пока не подтверждено: '
                                     + (replaceError.message || 'сервер не подтвердил замену');
                             }
                         }
                     }
+                };
+                if (result.status === 'attached') {
+                    const confirmed = await attachFocusFile(result.urls.attach, body, csrf, controller.signal, notify);
+                    await publish(confirmed);
+                } else {
+                    await saveMediaAttachment({ url: result.urls.attach, body, signal: controller.signal, notify,
+                        publish, afterReplay: () => finishUploadedItem(item), uploadId: item.id });
                 }
-            } finally {
-                attachInFlight = false;
-                if (!finalResult.value && changeSerial !== acknowledgedSerial) queueSave(0);
-            }
+            };
+            return finalResult.value ? attach() : writeDraftMedia(attach);
         });
         attachQueue = task.catch(() => {});
         await task;
-        interruptedUploads.value = interruptedUploads.value.filter(other => other.upload_id !== item.id);
-        if (item.cached && recoveryKey) {
-            try {
-                await forgetCachedFocusPhoto(recoveryKey, item.id);
-            } catch (_) {
-                // The next bootstrap detects the already-attached upload ID
-                // and clears its stale local copy without sending it again.
-            }
-        }
-        if (item.preview_url) URL.revokeObjectURL(item.preview_url);
-        uploads.value = uploads.value.filter(other => other.id !== item.id);
+        await finishUploadedItem(item);
     } catch (error) {
         if (controller.signal.aborted) {
             // Cancellation may still be awaiting its own server confirmation.
-            if (item.status !== 'error') item.status = 'cancelled';
+            if (!item.cancelling && item.status !== 'error') item.status = 'cancelled';
             return;
         }
         item.status = 'error';
@@ -1497,7 +1685,21 @@ async function sendOne(item) {
     }
 }
 
+async function finishUploadedItem(item) {
+    interruptedUploads.value = interruptedUploads.value.filter(other => other.upload_id !== item.id);
+    if (item.cached && recoveryKey) {
+        try { await forgetCachedFocusPhoto(recoveryKey, item.id); } catch (_) { /* Bootstrap will clear the confirmed copy. */ }
+    }
+    if (item.preview_url) URL.revokeObjectURL(item.preview_url);
+    uploads.value = uploads.value.filter(other => other.id !== item.id);
+}
+
 function retryFile(item) {
+    if (!item) return;
+    if (pendingMediaReplay?.uploadId === item.id) {
+        void flush().then(() => pumpTransfers());
+        return;
+    }
     if (!canRetryFocusFile(item, canEdit.value, finalResult.value?.response_id)) return;
     item.status = 'queued';
     item.error = '';
@@ -1507,7 +1709,28 @@ function retryFile(item) {
 }
 
 async function cancelFile(item) {
-    if (!['queued', 'uploading', 'error'].includes(item.status)) return;
+    if (item.cancelling || !['queued', 'uploading', 'error'].includes(item.status)) return;
+    if (pendingMediaReplay?.uploadId === item.id) {
+        item.error = 'Сначала подтвердите состояние файла кнопкой «Повторить».';
+        return;
+    }
+    if (!item.reservationAttempted && !item.info && !item.record) {
+        // No POST /media/start ever left this client. No server draft or
+        // reservation is needed to remove a local-only file.
+        item.cancelling = true;
+        item.controller?.abort();
+        try {
+            if (item.cachePromise) await item.cachePromise;
+            if (item.cached && recoveryKey) await forgetCachedFocusPhoto(recoveryKey, item.id);
+            if (item.preview_url) URL.revokeObjectURL(item.preview_url);
+            uploads.value = uploads.value.filter(other => other.id !== item.id);
+        } catch (_) {
+            item.status = 'error';
+            item.retryable = false;
+            item.error = 'Не удалось удалить локальную копию. Нажмите «Убрать» ещё раз.';
+        } finally { item.cancelling = false; }
+        return;
+    }
 
     // If attach succeeded but its response was lost, deleting from the
     // client must not falsely claim that the evidence was removed.
@@ -1581,6 +1804,76 @@ function removeTestMedia(room, question, file) {
     if (file.local && file.url) URL.revokeObjectURL(file.url);
     media.value[room][question] = media.value[room][question].filter(item => item !== file);
 }
+// Called while holding the draft revision lock. A DELETE that lost its
+// response might have erased its own upload row, so replay alone isn't safe.
+async function deleteDraftAttachment(room, question, uploadId, signal) {
+    const original = { ...run.value };
+    const baseContent = acknowledgedContent;
+    const url = props.mediaStartUrl + '/' + encodeURIComponent(uploadId) + '/attached';
+    const conflict = () => Object.assign(new Error('Черновик изменился во время удаления.'), { status: 409 });
+    const publish = async revision => {
+        run.value = { ...run.value, revision };
+        if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+        media.value[room][question] = media.value[room][question].filter(item => item.upload_id !== uploadId);
+        mediaError.value = '';
+        if (recoveryKey) {
+            try { await forgetCachedFocusPhoto(recoveryKey, uploadId); } catch (_) { /* Confirmed server state remains authoritative. */ }
+        }
+    };
+    const send = async currentSignal => {
+        const deleted = await focusMediaRequest(url, 'DELETE', { expected_revision: original.revision }, csrf, currentSignal);
+        if (!deleted.deleted || deleted.run?.draft_id !== original.draft_id
+            || deleted.run?.revision !== original.revision + 1) {
+            const error = new Error('Сервер не подтвердил удаление.');
+            error.name = 'TimeoutError';
+            throw error;
+        }
+        await publish(deleted.run.revision);
+    };
+    const inspect = async () => {
+        const server = await fetchJson(props.bootstrapUrl + (testMode.value ? '?test_mode=1' : ''));
+        if (server.run?.id !== original.id || server.run?.draft_id !== original.draft_id
+            || server.run.schema_conflict || server.control?.id !== control.value.id
+            || server.control?.schema_version !== control.value.schema_version
+            || Boolean(server.test_mode) !== testMode.value
+            || recoveryContentStamp(server.setup, server.answers) !== baseContent
+            || !Array.isArray(server.media?.[room]?.[question])) throw conflict();
+        const present = server.media[room][question].some(file => file.upload_id === uploadId);
+        if (!present && server.run.revision === original.revision + 1) {
+            await publish(server.run.revision);
+            return true;
+        }
+        if (!present || server.run.revision !== original.revision) throw conflict();
+        return false;
+    };
+    const replay = async () => {
+        if (await inspect()) return;
+        try {
+            await send();
+        } catch (error) {
+            if ((isTransientFocusUploadError(error) || error.status === 404 || error.status === 409) && await inspect()) return;
+            throw error;
+        }
+    };
+    try {
+        await send(signal);
+    } catch (error) {
+        if (!isTransientFocusUploadError(error) && error.status !== 404) throw error;
+        try {
+            await replay();
+        } catch (checkError) {
+            if (checkError.status === 409) {
+                state.value = 'conflict';
+                syncError.value = checkError.message;
+            } else {
+                pendingMediaReplay = { uploadId, replay };
+                state.value = 'error';
+            }
+            throw checkError;
+        }
+    }
+}
+
 async function removeSavedMedia(room, question, file) {
     if (!canEdit.value || !file) return;
     if (testMode.value && file.local) {
@@ -1591,12 +1884,11 @@ async function removeSavedMedia(room, question, file) {
     if (!window.confirm('Удалить это фото из черновика?')) return;
     mediaError.value = '';
     try {
-        if (!(await ensureSynced())) throw new Error(syncError.value || 'Черновик не сохранён.');
-        const data = await focusMediaRequest(props.mediaStartUrl + '/' + encodeURIComponent(file.upload_id) + '/attached',
-            'DELETE', { expected_revision: run.value.revision }, csrf);
-        run.value = { ...run.value, ...data.run };
-        media.value[room][question] = media.value[room][question].filter(item => item !== file);
-        if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, file.upload_id).catch(() => {});
+        await writeDraftMedia(async () => {
+            if (media.value[room]?.[question]?.some(item => item.upload_id === file.upload_id)) {
+                await deleteDraftAttachment(room, question, file.upload_id);
+            }
+        });
     } catch (error) {
         mediaError.value = error.message || 'Не удалось удалить фото. Повторите попытку.';
     }
@@ -1646,7 +1938,7 @@ function handleNetworkUpdate() {
     connectionOnline.value = navigator.onLine !== false;
     if (!connectionOnline.value) return;
     if (!wasOnline) {
-        if (['dirty', 'error'].includes(state.value)) queueSave(200);
+        if (pendingMediaReplay || ['dirty', 'error'].includes(state.value)) queueSave(200);
         // Retry only errors caused by temporary transport failures;
         // permissions/invalid files must remain visible for manual action.
         for (const item of uploads.value) {
@@ -1698,8 +1990,9 @@ onBeforeUnmount(() => {
                 <nav aria-label="Комнаты" class="space-y-1">
                     <button v-for="(room, index) in rooms" :key="index" type="button"
                         class="flex min-h-12 w-full items-center justify-between gap-3 rounded-xl px-3 text-left text-sm"
-                        :class="index === activeRoom ? 'bg-blue-50 font-bold text-blue-800' : 'hover:bg-slate-50'"
-                        :aria-current="index === activeRoom ? 'step' : undefined" @click="goRoom(index)">
+                        :class="index === activeRoom ? 'bg-blue-50 font-bold text-blue-800' : index > activeRoom ? 'text-slate-500' : 'hover:bg-slate-50'"
+                        :aria-current="index === activeRoom ? 'step' : undefined" :disabled="index > activeRoom"
+                        @click="index <= activeRoom && goRoom(index)">
                         <span>{{ room.title || 'Комната ' + (index + 1) }}</span>
                         <span class="shrink-0 text-xs">{{ room.is_optional ? 'Необязательно' : roomCompleted(index) + '/' + roomRequired(index) }}</span>
                     </button>
@@ -1820,41 +2113,8 @@ onBeforeUnmount(() => {
                     <button v-if="stage === 'questions'" ref="roomPickerTrigger" type="button" aria-haspopup="dialog" :aria-expanded="roomPickerShown"
                         class="flex min-h-11 w-full items-center justify-between gap-3 rounded-xl bg-slate-100 px-3 text-left text-sm font-semibold text-slate-800"
                         @click="showRooms">
-                        <span class="min-w-0 truncate">{{ currentRoom.title || 'Комната ' + (activeRoom + 1) }}</span>
-                        <span class="shrink-0 text-xs">Комнаты · {{ activeRoom + 1 }}/{{ rooms.length }} ▾</span>
+                        <span>Комнаты · {{ activeRoom + 1 }}/{{ rooms.length }} ▾</span>
                     </button>
-                    <button v-if="stage === 'questions' && completedRequired < totalRequired" type="button"
-                        class="min-h-10 rounded-lg px-2 text-left text-xs font-semibold text-blue-800" @click="jumpToMissing">К первому пропуску ↓</button>
-                    <div v-if="outstandingMedia > 0" class="space-y-2" role="status" aria-live="polite">
-                        <div class="flex items-start justify-between gap-2 text-xs">
-                            <span class="font-semibold" :class="failedMediaTransfers.length ? 'text-red-800' : 'text-blue-800'">
-                                {{ failedMediaTransfers.length
-                                    ? 'Ошибка: ' + failedMediaTransfers.length + ' ' + fileCountLabel(failedMediaTransfers.length)
-                                    : currentMediaTransfers.length
-                                        ? 'Сохраняем фото и видео · ' + currentMediaTransfers.length + ' ' + fileCountLabel(currentMediaTransfers.length)
-                                        : 'Требуется восстановить материалы' }}
-                            </span>
-                            <span v-if="currentMediaTransfers.length" class="shrink-0 tabular-nums font-bold text-blue-800">{{ mediaTransferProgress }}%</span>
-                        </div>
-                        <div v-if="currentMediaTransfers.length" class="h-1.5 overflow-hidden rounded-full bg-blue-100"
-                            role="progressbar" aria-label="Передача фото и видео" :aria-valuenow="mediaTransferProgress" aria-valuemin="0" aria-valuemax="100">
-                            <div class="h-full rounded-full bg-blue-600 transition-[width] duration-200" :style="{ width: mediaTransferProgress + '%' }"></div>
-                        </div>
-                        <div class="flex items-center justify-between gap-2">
-                            <p class="text-[11px] leading-tight text-slate-600">
-                                {{ failedMediaTransfers.length
-                                    ? 'Повторите ошибочные файлы или удалите их из очереди. Ответы сохранены отдельно.'
-                                    : currentMediaTransfers.length
-                                        ? 'Можете отвечать дальше. Не закрывайте Telegram до подтверждения загрузки.'
-                                        : 'Откройте восстановление файлов ниже. Отправка пока недоступна.' }}
-                            </p>
-                            <button v-if="stage !== 'done' && (recoveryNeedingInput.length || failedMediaTransfers.length || currentMediaTransfers.length)"
-                                type="button" class="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800"
-                                @click="jumpToPendingMedia">К вложению</button>
-                            <button v-if="failedMediaTransfers.length && stage === 'done'" type="button" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
-                                @click="retryFailedFiles">Повторить</button>
-                        </div>
-                    </div>
                 </div>
 
                 <div v-if="testMode" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status">
@@ -1897,7 +2157,7 @@ onBeforeUnmount(() => {
                 <section v-if="recoveryNeedingInput.length" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
                     <h2 class="font-bold">Незавершённые вложения · {{ recoveryNeedingInput.length }}</h2>
                     <p class="mt-1 text-xs">Полностью полученные файлы прикрепятся без повторной загрузки. Если файл не дошёл, выберите оригинал или добавьте новый у нужного вопроса.</p>
-                    <div v-for="record in recoveryNeedingInput" :id="'focus-recovery-' + record.upload_id" :key="record.upload_id" tabindex="-1" class="mt-3 scroll-mt-64 rounded-xl bg-white p-3">
+                    <div v-for="record in recoveryNeedingInput" :id="'focus-recovery-' + record.upload_id" :key="record.upload_id" tabindex="-1" class="mt-3 scroll-mt-36 rounded-xl bg-white p-3">
                         <button type="button" class="text-left font-semibold text-blue-800" @click="openRecoveryQuestion(record)">
                             {{ rooms[record.room_index]?.title || 'Комната ' + (record.room_index + 1) }} · вопрос {{ record.question_index + 1 }} →
                         </button>
@@ -1935,18 +2195,30 @@ onBeforeUnmount(() => {
                         </div>
                         <FocusSearchSelect id="focus-cleaner" :items="peopleOptions" :model-value="setup.cleaner_id"
                             label="Сотрудник" placeholder="Найти сотрудника по имени" :disabled="!canEdit"
+                            :error="setupIssue?.field === 'cleaner_id' ? setupIssue.message : ''"
                             @select="choosePerson" />
                         <FocusSearchSelect id="focus-apartment" :items="apartments" :model-value="setup.apartment_id"
                             label="Квартира" placeholder="Найти квартиру по названию" :disabled="!canEdit"
+                            :error="setupIssue?.field === 'apartment_id' ? setupIssue.message : ''"
                             @select="chooseApartment" />
  
 
                         <div class="grid grid-cols-2 gap-3">
                             <label class="text-sm font-semibold">Дата уборки
-                                <input v-model="setup.cleaning_date" type="date" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base" @change="touch">
+                                <input id="focus-cleaning-date" v-model="setup.cleaning_date" type="date" :disabled="!canEdit"
+                                    :aria-invalid="setupIssue?.field === 'cleaning_date' || undefined"
+                                    :aria-describedby="setupIssue?.field === 'cleaning_date' ? 'focus-cleaning-date-error' : undefined"
+                                    class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base"
+                                    @change="clearSetupIssue('cleaning_date'); touch()">
+                                <span v-if="setupIssue?.field === 'cleaning_date'" id="focus-cleaning-date-error" role="alert" class="mt-1 block text-xs text-red-700">{{ setupIssue.message }}</span>
                             </label>
                             <label class="text-sm font-semibold">Дата проверки
-                                <input v-model="setup.inspection_date" type="date" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base" @change="touch">
+                                <input id="focus-inspection-date" v-model="setup.inspection_date" type="date" :disabled="!canEdit"
+                                    :aria-invalid="setupIssue?.field === 'inspection_date' || undefined"
+                                    :aria-describedby="setupIssue?.field === 'inspection_date' ? 'focus-inspection-date-error' : undefined"
+                                    class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base"
+                                    @change="clearSetupIssue('inspection_date'); touch()">
+                                <span v-if="setupIssue?.field === 'inspection_date'" id="focus-inspection-date-error" role="alert" class="mt-1 block text-xs text-red-700">{{ setupIssue.message }}</span>
                             </label>
                         </div>
                         <label class="flex items-center gap-3 rounded-xl bg-slate-50 p-3 text-sm font-medium">
@@ -1959,7 +2231,7 @@ onBeforeUnmount(() => {
                             :disabled="!canEdit" @select="choosePreviousCleaner" />
 
                         <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="startQuestions">
-                            {{ resumePosition || (run?.draft_id && completedRequired > 0 && firstMissing()) ? 'Продолжить контроль' : 'К вопросам' }}
+                            {{ editingReviewSetup ? 'Вернуться к сводке' : resumePosition || (run?.draft_id && completedRequired > 0 && firstMissing()) ? 'Продолжить контроль' : 'К вопросам' }}
                         </button>
                     </section>
                 </template>
@@ -1976,14 +2248,13 @@ onBeforeUnmount(() => {
                     </section>
 
                     <div class="mb-4 flex items-start justify-between gap-2 px-1">
-                        <h2 id="focus-room-heading" tabindex="-1" class="text-xl font-semibold">{{ currentRoom.title }}</h2>
-                        <span class="whitespace-nowrap text-xs font-semibold text-slate-500">{{ activeRoom + 1 }}/{{ rooms.length }}</span>
+                        <h2 id="focus-room-heading" tabindex="-1" class="text-xl font-semibold">{{ currentRoom.title || 'Комната ' + (activeRoom + 1) }}</h2>
                     </div>
 
                     <div class="space-y-3">
                         <article v-for="(question, questionIndex) in currentRoom.items" :id="'focus-question-' + activeRoom + '-' + questionIndex"
                             :key="activeRoom + '-' + questionIndex" tabindex="-1"
-                            class="scroll-mt-64 rounded-xl border bg-white p-4"
+                            class="scroll-mt-36 rounded-xl border bg-white p-4"
                             @focusin="rememberPosition(activeRoom, questionIndex)" @click.capture="rememberPosition(activeRoom, questionIndex)"
                             :class="blockedQuestion === questionIndex ? 'border-red-400' : highlightedReviewQuestion === questionIndex ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'">
                             <div class="flex justify-between gap-3">
@@ -2139,7 +2410,7 @@ onBeforeUnmount(() => {
                 <template v-else-if="stage === 'review'">
                     <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
                         <p class="text-xs font-bold uppercase tracking-wider text-slate-500">Перед отправкой</p>
-                        <h2 class="text-xl font-semibold">Проверьте данные контроля</h2>
+                        <h2 id="focus-review-heading" tabindex="-1" class="text-xl font-semibold">Проверьте данные контроля</h2>
                         <div class="space-y-2 rounded-2xl bg-slate-50 p-4 text-sm">
                             <div class="flex items-start justify-between gap-3">
                                 <span class="text-slate-500">Квартира</span><strong class="max-w-[65%] text-right">{{ reviewApartmentName }}</strong>
@@ -2155,6 +2426,9 @@ onBeforeUnmount(() => {
                                 <strong class="text-right">{{ setup.cleaning_date || '—' }} / {{ setup.inspection_date || '—' }}</strong>
                             </div>
                         </div>
+                        <button type="button" :disabled="!canEdit || submitting"
+                            class="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-800 disabled:opacity-50"
+                            @click="editReviewSetup">Изменить данные</button>
                         <p v-if="setup.comment?.trim()" class="whitespace-pre-wrap break-words text-sm text-slate-700">{{ setup.comment }}</p>
                         <div class="grid grid-cols-3 gap-2 text-center text-xs">
                             <div class="rounded-xl bg-blue-50 p-3"><strong class="block text-lg text-blue-800">{{ completedRequired }}/{{ totalRequired }}</strong>Ответы</div>
@@ -2190,7 +2464,7 @@ onBeforeUnmount(() => {
                         </details>
                         <div v-if="!canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
                             Остались файлы без подтверждения · {{ outstandingMedia }}. Отправка станет доступна после их сохранения или отмены.
-                            <button type="button" class="mt-2 block min-h-10 rounded-lg bg-white px-3 font-bold text-blue-800" @click="jumpToPendingMedia">К незагруженному вложению</button>
+                            <button type="button" class="mt-2 block min-h-10 rounded-lg bg-white px-3 font-bold text-blue-800" @click="jumpToPendingMedia()">К незагруженному вложению</button>
                         </div>
                         <p v-else-if="testMode" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
                             Тест проходит настоящий серверный цикл, но не попадает в рабочие результаты, статистику, награды и Telegram.

@@ -23,7 +23,7 @@ const rooms = [{
     }],
 }];
 const initialSetup = () => ({
-    cleaner_id: null, apartment_id: null, cleaning_date: '2026-11-24',
+    cleaner_id: 8, apartment_id: 10, cleaning_date: '2026-11-24',
     inspection_date: '2026-11-24', is_assigned: false, previous_cleaner: '', comment: '',
 });
 const initialAnswers = () => [[{
@@ -60,7 +60,7 @@ class FakeFocusBackend {
             };
         }
         const state = sandbox ? this.test : this;
-        const currentRunId = sandbox ? state.runId : runId;
+        const currentRunId = state.runId || state.emptyRunId || runId;
         return {
             viewer: { id: 100, role: 'admin' },
             test_mode: sandbox,
@@ -121,6 +121,7 @@ class FakeFocusBackend {
                     if (state.draftId !== null && snapshot.expected_revision !== state.revision) {
                         return reply({ message: 'Conflict', error: 'revision_conflict' }, 409);
                     }
+                    if (state.draftId === null) state.runId = snapshot.run_id;
                     state.draftId ??= sandbox ? 91 : 51;
                     state.revision += 1;
                     if (sandbox) this.testWrites += 1;
@@ -128,7 +129,7 @@ class FakeFocusBackend {
                     state.setup = snapshot.setup;
                     state.answers = snapshot.answers;
                     return reply({ run: {
-                        id: sandbox ? state.runId : runId,
+                        id: state.runId || runId,
                         draft_id: state.draftId, revision: state.revision,
                     } });
                 }
@@ -152,6 +153,11 @@ class FakeFocusBackend {
                     const sandbox = payload.test_mode === true;
                     const state = sandbox ? this.test : this;
                     this.startRequests += 1;
+                    if (this.beforeStart) await this.beforeStart();
+                    if (!payload.draft_id) return reply({message: "Draft ID required"}, 422);
+                    if (payload.run_id !== (state.runId || runId) || payload.draft_id !== state.draftId) {
+                        return reply({ message: 'Wrong draft or run' }, 409);
+                    }
                     let session = state.sessions.get(payload.upload_id);
                     if (!session) {
                         session = {
@@ -185,6 +191,10 @@ class FakeFocusBackend {
                         return reply(this.describe(session));
                     }
                     if (segments[3] === 'attach') {
+                        if (this.beforeAttach) await this.beforeAttach(session);
+                        if (session.status !== 'attached' && json().expected_revision !== state.revision) {
+                            return reply({ message: 'Conflict' }, 409);
+                        }
                         if (session.status !== 'ready' && session.status !== 'attached') {
                             return reply({ message: 'Incomplete upload' }, 409);
                         }
@@ -198,6 +208,14 @@ class FakeFocusBackend {
                             session.status = 'attached';
                             state.revision++;
                         }
+                        if (this.dropAttachAcks > 0) {
+                            this.dropAttachAcks--;
+                            return route.abort("failed");
+                        }
+                        if (this.dropAttachAck) {
+                            this.dropAttachAck = false;
+                            return route.abort('failed');
+                        }
                         return reply({
                             run: { draft_id: state.draftId, revision: state.revision },
                             room_index: session.room, question_index: session.question,
@@ -210,6 +228,7 @@ class FakeFocusBackend {
                             .filter(f => f.upload_id !== session.id);
                         state.sessions.delete(session.id);
                         state.revision++;
+                        if (this.dropDeleteAck) { this.dropDeleteAck=false; return route.abort('failed'); }
                         return reply({ deleted: true, run: { draft_id: state.draftId, revision: state.revision } });
                     }
                     if (req.method() === 'GET') return reply(this.describe(session));
@@ -306,7 +325,298 @@ async function main() {
             headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }),
         });
 
-        // Room switching stays available while scrolling and preserves answers.
+        // The server may apply DELETE and lose its reply. Do not save against the old revision.
+        {
+            const backend=new FakeFocusBackend();
+            backend.draftId=51; backend.revision=1; backend.dropDeleteAck=true;
+            const context=await browser.newContext({viewport:{width:390,height:844}});
+            const {page,errors}=await pageFor(context,backend);
+            await page.getByRole('button',{name:'К вопросам'}).click();
+            await addPhoto(page);
+            await page.getByRole('button',{name:'Удалить',exact:true}).waitFor();
+            page.once('dialog',dialog=>dialog.accept());
+            await page.getByRole('button',{name:'Удалить',exact:true}).click();
+            await page.getByRole('button',{name:'Да',exact:true}).click();
+            for(let i=0;backend.answers[0][0].selected!=='yes'&&i<45;i++) await delay(100);
+            assert.equal(backend.answers[0][0].selected,'yes','Lost delete acknowledgement blocked the next answer');
+            assert.equal(backend.media[0][0].length,0);
+            assert.equal(await page.getByRole('button',{name:'Открыть фото photo.png'}).count(),0);
+            assert.deepEqual(errors,[]);
+            console.log('PASS mobile UI: lost delete receipt reconciles and does not block answers');
+            await context.close();
+        }
+        // A media-only revision change can be safely reconciled after reopen, a real answer change cannot.
+        for (const changedServerAnswer of [false,true]) {
+            const backend=new FakeFocusBackend();
+            backend.draftId=51; backend.revision=1; backend.dropAttachAcks=3;
+            const context=await browser.newContext({viewport:{width:390,height:844}});
+            const {page,errors}=await pageFor(context,backend);
+            await page.getByRole('button',{name:'К вопросам'}).click();
+            await addPhoto(page);
+            await page.getByText('Ошибка загрузки',{exact:true}).waitFor({timeout:8000});
+            await page.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,get:()=>false});window.dispatchEvent(new Event('offline'));});
+            await page.getByRole('button',{name:'Да',exact:true}).click();
+            await page.waitForFunction(async({schemaVersion})=>{
+                const m=await import('/resources/js/focus-v2/local-recovery.js');
+                const saved=await m.readLocalRecovery(m.recoveryScope(100,1,schemaVersion));
+                return saved?.answers[0][0].selected==='yes';
+            },{schemaVersion});
+            await page.close();
+            if(changedServerAnswer) {
+                backend.answers[0][0].selected='no';
+                backend.revision++;
+            }
+            const {page:reopened,errors:reopenErrors}=await pageFor(context,backend);
+            if(changedServerAnswer) {
+                await reopened.getByText('Показать локальные ответы для копирования').waitFor();
+                assert.equal(backend.answers[0][0].selected,'no');
+                assert.equal(await reopened.getByRole('button',{name:'Восстановить локальные ответы'}).count(),0);
+            } else {
+                await reopened.getByRole('button',{name:'Восстановить локальные ответы'}).click({timeout:7000});
+                for(let i=0;backend.answers[0][0].selected!=='yes'&&i<45;i++) await delay(100);
+                assert.equal(backend.answers[0][0].selected,'yes');
+                assert.equal(backend.media[0][0].length,1);
+                await reopened.getByRole('button',{name:/^(К вопросам|Продолжить контроль)$/}).click();
+                await reopened.getByRole('button',{name:'К сводке'}).click();
+                await reopened.getByRole('button',{name:'Отправить контроль'}).click();
+                await reopened.getByRole('heading',{name:'Контроль завершён'}).waitFor();
+            }
+            assert.deepEqual([...errors,...reopenErrors],[]);
+            console.log('PASS mobile UI: reopen '+(changedServerAnswer?'protects actual server changes':'restores offline answers after media-only revision and finishes'));
+            await context.close();
+        }
+
+        // Offline removal must be durable, and never reserve an unsent file.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name:'К вопросам' }).click();
+            await page.evaluate(() => {
+                Object.defineProperty(navigator, 'onLine', { configurable:true, get:()=>false });
+                window.dispatchEvent(new Event('offline'));
+            });
+            await addPhoto(page);
+            await page.getByText('На устройстве', { exact:true }).waitFor();
+            await page.getByRole('button', { name:'Убрать', exact:true }).click();
+            await page.getByRole('button', { name:'Открыть фото photo.png' }).waitFor({ state:'hidden', timeout:6000 });
+            assert.equal(backend.startRequests, 0);
+            await page.close();
+            const { page:reopened, errors:reopenErrors } = await pageFor(context, backend);
+            await reopened.getByRole('button', { name:/^(К вопросам|Продолжить контроль)$/ }).click();
+            assert.equal(await reopened.getByRole('button', { name:'Открыть фото photo.png' }).count(), 0);
+            assert.equal(backend.startRequests, 0);
+            assert.deepEqual([...errors,...reopenErrors], []);
+            console.log('PASS mobile UI: offline-only removal survives reopening without a server reservation');
+            await context.close();
+        }
+        // After all attach replies are lost once, a subsequent answer must reconcile the media revision.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId=51; backend.revision=1; backend.dropAttachAcks=3;
+            const context=await browser.newContext({ viewport:{ width:390,height:844 } });
+            const {page,errors}=await pageFor(context,backend);
+            await page.getByRole('button',{name:'К вопросам'}).click();
+            await addPhoto(page);
+            await page.getByText('Ошибка загрузки',{exact:true}).waitFor({timeout:7000});
+            await page.getByRole('button',{name:'Да',exact:true}).click();
+            for(let i=0;backend.answers[0][0].selected!=='yes'&&i<45;i++) await delay(100);
+            assert.equal(backend.answers[0][0].selected,'yes','Autosave used a stale revision after a lost attach receipt');
+            assert.equal(await page.getByText('Конфликт черновика',{exact:true}).count(),0);
+            assert.equal(backend.media[0][0].length,1);
+            assert.equal(backend.chunkRequests,1);
+            await page.getByRole('button',{name:'К сводке'}).click();
+            await page.getByRole('button',{name:'Отправить контроль'}).click();
+            await page.getByRole('heading',{name:'Контроль завершён'}).waitFor();
+            assert.deepEqual(errors,[]);
+            console.log('PASS mobile UI: reconciles lost attachment before answer save and final submission');
+            await context.close();
+        }
+        // A stalled reservation must time out and replay the same upload ID.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId=51; backend.revision=1;
+            let releaseStart;
+            const firstStart=new Promise(resolve=>{releaseStart=resolve;});
+            backend.beforeStart=async()=>{ if(backend.startRequests===1) await firstStart; };
+            const context=await browser.newContext({ viewport:{ width:390,height:844 } });
+            const {page,errors}=await pageFor(context,backend);
+            await page.clock.install();
+            await page.getByRole('button',{name:'К вопросам'}).click();
+            await addPhoto(page);
+            try {
+                for(let i=0;backend.startRequests<1&&i<40;i++) await delay(50);
+                assert.equal(backend.startRequests,1);
+                await page.clock.fastForward(120000);
+                for(let i=0;backend.media[0][0].length<1&&i<45;i++) await delay(100);
+                assert.equal(backend.startRequests,2);
+                assert.equal(backend.media[0][0].length,1);
+                assert.equal(backend.sessions.size,1);
+                assert.deepEqual(errors,[]);
+            } finally { releaseStart(); }
+            console.log('PASS mobile UI: stalled upload start times out and retries without duplicate');
+            await context.close();
+        }
+
+        // Setup validation, room chrome, and review share the real workflow.
+        {
+            const backend = new FakeFocusBackend();
+            backend.setup.cleaner_id = null;
+            backend.setup.apartment_id = null;
+            const bootstrap = backend.bootstrap.bind(backend);
+            backend.bootstrap = () => {
+                const data = bootstrap();
+                data.rooms = [{...rooms[0],items:[rooms[0].items[0],{...rooms[0].items[0],is_optional:true,question:'Необязательное наблюдение'}]}];
+                data.answers = [data.answers[0].length===2 ? data.answers[0] : [data.answers[0][0], initialAnswers()[0][0]]];
+                data.media = [[data.media[0][0], data.media[0][1] ?? []]];
+                return data;
+            };
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const {page, errors} = await pageFor(context, backend);
+            const next = page.getByRole('button',{name:'К вопросам'});
+            await next.click();
+            assert.equal(await page.getByRole('heading',{name:'Данные проверки'}).isVisible(), true, 'Missing setup allowed starting the inspection');
+            await page.waitForFunction(() => document.activeElement?.id === 'focus-cleaner');
+            const cleaner = page.locator('#focus-cleaner');
+            await cleaner.fill('Настоящий');
+            const option = page.locator('#focus-cleaner-options').getByRole('option').first();
+            assert.ok(await option.getAttribute('id'));
+            assert.equal(await cleaner.getAttribute('aria-activedescendant'), await option.getAttribute('id'));
+            await cleaner.press('Enter');
+            await next.click();
+            await page.waitForFunction(() => document.activeElement?.id === 'focus-apartment');
+            await page.locator('#focus-apartment').fill('10');
+            await page.locator('#focus-apartment-options').getByRole('option').first().click();
+            const inspection = page.getByLabel('Дата проверки');
+            await inspection.fill('2026-11-23');
+            await next.click();
+            assert.equal(await inspection.getAttribute('aria-invalid'), 'true');
+            await inspection.fill('2026-11-24');
+            await next.click();
+            const main = page.locator('#focus-question-0-0');
+            await main.getByRole('button',{name:'Да',exact:true}).click();
+            await page.locator('#focus-question-0-1').getByRole('button',{name:'Нет',exact:true}).click();
+            assert.equal(await page.getByText('Кухня',{exact:true}).count(),1);
+            await main.getByRole('button',{name:'Добавить',exact:true}).click();
+            await page.getByRole('dialog',{name:'Добавить фото или видео'}).locator('input[type=file]')
+                .setInputFiles({ name:'evidence.png', mimeType:'image/png', buffer:image });
+            await page.getByRole('button',{name:'Добавить 1'}).click();
+            await main.getByRole('button',{name:'Удалить',exact:true}).waitFor();
+            await page.getByRole('button',{name:'К сводке'}).click();
+            await page.getByRole('heading',{name:'Проверьте данные контроля'}).waitFor();
+            assert.equal(await page.getByRole('button',{name:/Открыть замечание Необязательное наблюдение/}).count(),0);
+            await page.getByRole('button',{name:'Изменить данные'}).click();
+            await page.getByRole('heading',{name:'Данные проверки'}).waitFor();
+            await inspection.fill('2026-11-25');
+            await page.getByRole('button',{name:'Вернуться к сводке'}).click();
+            await page.getByRole('heading',{name:'Проверьте данные контроля'}).waitFor();
+            assert.equal(await page.getByText('2026-11-24 / 2026-11-25').count(),1);
+            await page.getByRole('button',{name:'Отправить контроль'}).click();
+            await page.getByRole('heading',{name:'Контроль завершён'}).waitFor();
+            assert.equal(backend.answers[0][0].selected,'yes');
+            assert.equal(backend.answers[0][1].selected,'no');
+            assert.equal(backend.media[0][0][0].name,'evidence.png');
+            assert.deepEqual(errors,[]);
+            console.log('PASS mobile UI: validate setup before rooms, align optional findings, edit setup from review, and preserve answers');
+            await context.close();
+        }
+
+        // Attachment is idempotent even if the server's first receipt never reaches the phone.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            backend.dropAttachAck = true;
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            const picker = page.getByRole('dialog', { name: 'Добавить фото или видео' });
+            await page.getByRole('button', { name: 'Добавить', exact: true }).click();
+            await picker.locator('input[type=file]').setInputFiles(['first.png','second.png'].map(name =>
+                ({ name, mimeType: 'image/png', buffer: image })));
+            await page.getByRole('button', { name: 'Добавить 2' }).click();
+            for (let i = 0; backend.media[0][0].length < 2 && i < 50; i++) await delay(100);
+            assert.equal(backend.media[0][0].length, 2, 'A lost attachment receipt blocked the next photo');
+            assert.equal(backend.sessions.size, 2);
+            assert.equal(backend.chunkRequests, 2);
+            await page.getByRole('button', { name: 'Удалить', exact: true }).last().waitFor();
+            assert.equal(await page.getByText('Ошибка загрузки', { exact: true }).count(), 0);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: lost attachment receipt is retried without duplicates or reuploading bytes');
+            await context.close();
+        }
+
+        // The first confirmed file belongs to the local run until the server creates its draft.
+        for (const differentActiveDraft of [false, true]) {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.evaluate(() => {
+                Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+                window.dispatchEvent(new Event('offline'));
+            });
+            await addPhoto(page);
+            await page.getByText('На устройстве', { exact: true }).waitFor({ timeout: 5000 });
+            assert.equal(backend.startRequests, 0);
+            await page.close();
+            const freshRun = '00000000-0000-4000-8000-000000000098';
+            if (differentActiveDraft) {
+                backend.runId = freshRun;
+                backend.draftId = 51;
+                backend.revision = 1;
+            } else backend.emptyRunId = freshRun;
+            const { page: reopened, errors: reopenErrors } = await pageFor(context, backend);
+            if (differentActiveDraft) {
+                await reopened.getByRole('button', { name: 'К вопросам' }).click();
+                assert.equal(await reopened.getByRole('button', { name: 'Открыть фото photo.png' }).count(), 0);
+                assert.equal(backend.startRequests, 0);
+            } else {
+                for (let i = 0; backend.media[0][0].length === 0 && i < 70; i++) await delay(100);
+                assert.equal(backend.media[0][0].length, 1, 'Offline photo did not resume after reopening');
+                assert.equal(backend.runId, runId, 'The draft was not bound to the original offline run');
+                assert.equal(backend.sessions.size, 1);
+            }
+            assert.deepEqual([...errors, ...reopenErrors], []);
+            console.log('PASS mobile UI: first offline photo ' + (differentActiveDraft ? 'does not join another active run' : 'survives closing and uploads to its run'));
+            await context.close();
+        }
+
+        // The second upload may start while the first holds the draft revision.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId = 51;
+            backend.revision = 1;
+            let releaseAttach, enteredAttach;
+            const held = new Promise(resolve => { releaseAttach = resolve; });
+            const entered = new Promise(resolve => { enteredAttach = resolve; });
+            backend.beforeAttach = async session => {
+                if (session.name === 'first.png') {
+                    enteredAttach();
+                    await held;
+                }
+            };
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await addGalleryFile(page, {name:'first.png',mimeType:'image/png',buffer:image});
+            try {
+                await Promise.race([entered, delay(5000).then(() => { throw new Error('First attach did not start'); })]);
+                await page.getByRole('button', {name:'Да',exact:true}).click();
+                await addGalleryFile(page, {name:'second.png',mimeType:'image/png',buffer:image});
+                for (let i = 0; backend.startRequests < 2 && i < 50; i++) await delay(100);
+                assert.equal(backend.startRequests, 2, 'Second file did not start while the first was attaching');
+                assert.equal(await page.getByRole('progressbar', {name:'Передача фото и видео'}).count(), 0);
+            } finally { releaseAttach(); }
+            for (let i = 0; (backend.media[0][0].length !== 2 || backend.answers[0][0].selected !== 'yes') && i < 70; i++) await delay(100);
+            assert.deepEqual(backend.media[0][0].map(item => item.name), ['first.png','second.png']);
+            assert.equal(backend.answers[0][0].selected, 'yes');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: parallel upload, sequential attachment, and answer edit during attach');
+            await context.close();
+        }
+
+        // Room order is enforced, including the optional room; completed rooms can be revisited.
         {
             const backend = new FakeFocusBackend();
             const bootstrap = backend.bootstrap.bind(backend);
@@ -319,11 +629,16 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
-            await page.getByRole('button', { name: 'Нет', exact: true }).click();
+            await page.getByRole('button', { name: 'Следующая комната' }).click();
+            await page.waitForFunction(() => document.activeElement?.id === 'focus-question-0-0');
+            assert.equal(await page.getByRole('button', { name: /К первому пропуску/ }).count(), 0);
             await page.getByRole('button', { name: /Комнаты · 1\/2/ }).click();
             const picker = page.getByRole('dialog', { name: 'Комнаты проверки' });
             assert.equal(await picker.locator('[aria-current="step"]').count(), 1);
-            await picker.getByRole('button', { name: /Ванная/ }).click();
+            assert.equal(await picker.getByRole('button', { name: /Ванная/ }).isDisabled(), true);
+            await picker.getByRole('button', { name: 'Закрыть список комнат' }).click();
+            await page.getByRole('button', { name: 'Нет', exact: true }).click();
+            await page.getByRole('button', { name: 'Следующая комната' }).click();
             await page.getByRole('heading', { name: 'Ванная', exact: true }).waitFor();
             await page.getByRole('button', { name: 'Предыдущая комната' }).click();
             assert.equal(await page.getByRole('button', { name: 'Нет', exact: true }).getAttribute('aria-pressed'), 'true');
@@ -353,6 +668,7 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
             await page.getByRole('button', { name: 'Следующая комната' }).click();
             await page.locator('#focus-question-1-1').getByRole('button', { name: 'Да', exact: true }).click();
             await page.getByText('Сохранено', { exact: true }).first().waitFor();
@@ -361,9 +677,9 @@ async function main() {
             await reopened.getByRole('button', { name: 'Продолжить контроль' }).click();
             await reopened.waitForFunction(() => document.activeElement?.id === 'focus-question-1-1');
             assert.equal(await reopened.locator('#focus-question-1-1').getByRole('button', { name: 'Да', exact: true }).getAttribute('aria-pressed'), 'true');
-            await reopened.getByRole('button', { name: /К первому пропуску/ }).click();
-            await reopened.waitForFunction(() => document.activeElement?.id === 'focus-question-0-0');
-            assert.equal(await reopened.locator('#focus-question-0-0').evaluate(el => el.classList.contains('border-red-400')), true);
+            await reopened.getByRole('button', { name: 'К сводке' }).click();
+            await reopened.waitForFunction(() => document.activeElement?.id === 'focus-question-1-0');
+            assert.equal(await reopened.locator('#focus-question-1-0').evaluate(el => el.classList.contains('border-red-400')), true);
 
             // A fresh server run must not open the old local position.
             backend.draftId = null;
@@ -725,7 +1041,9 @@ async function main() {
             const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
             const { page, errors } = await pageFor(context, backend);
             const recovery = page.locator('section').filter({ has: page.getByRole('heading', { name: /Незавершённые вложения/ }) });
-            await page.getByRole('button', { name: 'К вложению', exact: true }).click();
+            await page.getByRole('button', { name: 'К вопросам' }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByRole('button', { name: 'К сводке' }).click();
             await page.waitForFunction(id => document.activeElement?.id === 'focus-recovery-' + id, uploadId);
             assert.match(await recovery.getByRole('button', { name: /вопрос 1/ }).innerText(), /Кухня/);
             await recovery.getByLabel('Выбрать оригинал').setInputFiles({ name: 'different.png', mimeType: 'image/png', buffer: image });

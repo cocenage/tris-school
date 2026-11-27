@@ -15,6 +15,14 @@ export function recoveryScope(userId, controlId, schemaVersion) {
     return ['focus-v2', String(userId), String(controlId), String(schemaVersion)].join(':');
 }
 
+// Keep the last acknowledged answer/setup content separate from pending edits.
+export function recoveryContentStamp(setup, answers) {
+    return JSON.stringify({ setup, answers }, (_, value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+        return Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]));
+    });
+}
+
 export function chooseLocalRecovery(record, server, now = Date.now()) {
     if (!record || record.scope !== server.scope
         || !Number.isFinite(record.saved_at) || record.saved_at > now + 60000
@@ -23,17 +31,21 @@ export function chooseLocalRecovery(record, server, now = Date.now()) {
         || !record.setup || typeof record.setup !== 'object') return 'none';
 
     if (now - record.saved_at > FOCUS_RECOVERY_MAX_AGE_MS) return 'expired';
-    if (JSON.stringify(record.answers) === JSON.stringify(server.answers)
-        && JSON.stringify(record.setup) === JSON.stringify(server.setup)) return 'synced';
+    const serverContent = recoveryContentStamp(server.setup, server.answers);
+    if (recoveryContentStamp(record.setup, record.answers) === serverContent) return 'synced';
 
     // A first, completely local run can continue only when the server has no active draft.
     if (record.draft_id == null && record.base_revision === 0
         && server.run?.draft_id == null && server.run?.revision === 0) return 'safe';
 
-    // If a server draft exists, never silently apply edits based on an older revision.
-    if (record.run_id === server.run?.id
-        && record.draft_id === server.run?.draft_id
-        && record.base_revision === server.run?.revision) return 'safe';
+    if (record.run_id === server.run?.id && record.draft_id === server.run?.draft_id) {
+        if (record.base_revision === server.run?.revision) return 'safe';
+        // A revision can advance because a photo was attached or deleted.
+        // Only allow restoration if the current server answers and setup
+        // still exactly match the known common base for this draft.
+        if (record.draft_id != null && record.base_revision < server.run?.revision
+            && record.base_content === serverContent) return 'safe';
+    }
 
     return 'conflict';
 }
@@ -139,7 +151,7 @@ export function createLocalRecoveryQueue(writer) {
  * Telegram WebView may evict its origin storage; callers MUST treat errors
  * here as a warning, not as proof that an unsent photo is safe.
  */
-export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, question }) {
+export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, question, beforeDraft = false }) {
     if (!scope || !/^[0-9a-f-]{36}$/i.test(uploadId) || !runId
         || !canCacheFocusMedia(file)
         || !Number.isInteger(room) || room < 0
@@ -148,6 +160,7 @@ export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, ques
     }
     const record = {
         key: scope + ':' + uploadId, scope, upload_id: uploadId, run_id: runId,
+        ...(beforeDraft ? { before_draft: true } : {}),
         room, question, name: String(file.name || 'photo.jpg'),
         mime: file.type, size: file.size, saved_at: Date.now(),
         // Safari/WebKit can reject structured-cloning File objects in

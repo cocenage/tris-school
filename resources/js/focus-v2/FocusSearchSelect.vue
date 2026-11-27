@@ -7,6 +7,7 @@ const props = defineProps({
     label: { type: String, required: true },
     placeholder: { type: String, default: 'Поиск…' },
     disabled: { type: Boolean, default: false },
+    error: { type: String, default: '' },
     id: { type: String, required: true },
 });
 const emit = defineEmits(['select']);
@@ -20,6 +21,9 @@ const filtered = computed(() => {
     return props.items.filter(item => !term || item.name.toLocaleLowerCase('ru').includes(term)).slice(0, 50);
 });
 const listId = computed(() => props.id + '-options');
+const optionId = index => props.id + '-option-' + index;
+const activeOptionId = computed(() => open.value && !props.disabled && filtered.value[activeIndex.value]
+    ? optionId(activeIndex.value) : undefined);
 watch([selected, open], () => {
     if (!open.value) query.value = selected.value?.name ?? '';
 }, { immediate: true });
@@ -69,15 +73,18 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', clickAway));
             <span v-else-if="selected" class="grid size-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-500">{{ selected.name.slice(0, 1) }}</span>
             <svg v-else class="size-5 shrink-0 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg>
             <input :id="id" v-model="query" type="search" autocomplete="off" :disabled="disabled" :placeholder="placeholder"
-                role="combobox" aria-autocomplete="list" :aria-expanded="open" :aria-controls="listId"
+                role="combobox" aria-autocomplete="list" :aria-expanded="open" :aria-controls="open ? listId : undefined"
+                :aria-activedescendant="activeOptionId" :aria-invalid="!!error || undefined"
+                :aria-describedby="error ? id + '-error' : undefined"
                 class="min-w-0 flex-1 border-0 bg-transparent py-3 text-base outline-none focus:ring-0 disabled:opacity-50"
                 @focus="startSearch" @input="open = true; activeIndex = 0" @keydown="keydown">
             <button v-if="selected && !disabled" type="button" class="shrink-0 rounded-lg px-2 py-2 text-xs font-medium text-slate-500"
                 :aria-label="'Изменить: ' + label" @click="startSearch">Изменить</button>
         </div>
+        <p v-if="error" :id="id + '-error'" class="mt-1 text-xs font-semibold text-red-700" role="alert">{{ error }}</p>
         <div v-if="open && !disabled" :id="listId" role="listbox"
             class="absolute inset-x-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
-            <button v-for="(item, index) in filtered" :key="item.id" type="button" role="option"
+            <button v-for="(item, index) in filtered" :key="item.id" :id="optionId(index)" type="button" role="option"
                 :aria-selected="String(item.id) === String(modelValue)"
                 class="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm"
                 :class="activeIndex === index ? 'bg-blue-50 text-blue-900' : 'hover:bg-slate-50'"

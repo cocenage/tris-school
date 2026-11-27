@@ -142,4 +142,3 @@ function finish() {
         </section>
     </div>
 </template>
-
