@@ -1,0 +1,10 @@
+# Native Telegram login — DEV only
+
+Official Android SDK 1.0.0: https://github.com/TelegramMessenger/telegram-login-android
+Token validation: https://core.telegram.org/bots/telegram-login
+
+The server endpoints are POST /telegram/native/start and POST /telegram/native/complete (same-origin web session, CSRF required, JSON only). Disabled unless APP_ENV=mobiledev or testing and TRIS_NATIVE_TELEGRAM_ENABLED=true. Configure TRIS_NATIVE_TELEGRAM_CLIENT_ID to the registered test bot's public Client ID, install the verifier with composer install --working-dir=tools/mobile/telegram-auth and apply the migration to the isolated DEV database. No client secret or bot token is required for verifying the SDK's signed ID token.
+
+Start returns an attempt and client_id. The native SDK must request the profile scope and return the ID token via a verified HTTPS Android App Link. Complete accepts attempt and id_token; the server verifies RS256 via Telegram's fixed JWKS, issuer, configured audience, expiration, issuance time (120 seconds), and signed numeric id (not OIDC sub). A database uniqueness constraint prevents reuse; tokens are not persisted. The same existing TelegramAuthService resolves users, preserves their TRIS ID, creates new accounts with status new, and returns a route for their status.
+
+The SDK's current source implements PKCE but does not expose a nonce for server challenge binding. The session attempt and replay table are not equivalent to a token-bound nonce: stolen fresh bearer tokens remain a risk. Do not enable in production or expose the DEV server. Production requires a reviewed challenge-bound authentication protocol and transport/session revocation. This branch does not yet modify the local Android project's Java, manifest or Gradle files: those files are not present in GitHub. Register the test package eu.trisservice.academy.dev and debug SHA-256 in BotFather, then integrate the SDK against the actual Android sources. Keep the existing Telegram Mini App and web-widget paths unchanged.

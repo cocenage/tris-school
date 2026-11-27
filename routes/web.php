@@ -63,6 +63,11 @@ Route::middleware(['auth'])->controller(\App\Http\Controllers\MobilePushControll
     Route::post('/admin/mobile-push', 'send')->middleware('throttle:5,1')->name('mobile.push.send');
 });
 
+Route::controller(\App\Http\Controllers\NativeTelegramLoginController::class)->group(function () {
+    Route::post('/telegram/native/start', 'start')->middleware('throttle:5,1')->name('telegram.native.start');
+    Route::post('/telegram/native/complete', 'complete')->middleware('throttle:5,1')->name('telegram.native.complete');
+});
+
 Route::post('/telegram/auth', TelegramAuthController::class)
     ->name('telegram.auth');
 
