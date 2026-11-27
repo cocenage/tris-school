@@ -2,9 +2,11 @@
 
 use App\Models\User;
 use App\Services\TelegramUserNotificationService;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Support\TrisAuthTestDatabase;
 
-uses(RefreshDatabase::class);
+beforeEach(function (): void {
+    TrisAuthTestDatabase::migrate();
+});
 
 it('requires the full registration before sending an access request', function () {
     $user = User::factory()->create(['status' => 'new', 'role' => 'cleaner', 'is_active' => true]);

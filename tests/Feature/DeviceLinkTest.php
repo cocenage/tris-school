@@ -2,9 +2,11 @@
 
 use App\Models\DeviceLinkRequest;
 use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Support\TrisAuthTestDatabase;
 
-uses(RefreshDatabase::class);
+beforeEach(function (): void {
+    TrisAuthTestDatabase::migrate();
+});
 
 it('does not authenticate a requester just for knowing a TRIS ID', function () {
     $user = User::factory()->create(['status' => 'approved', 'is_active' => true]);

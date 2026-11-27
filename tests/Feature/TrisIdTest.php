@@ -1,9 +1,11 @@
 <?php
 
 use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Support\TrisAuthTestDatabase;
 
-uses(RefreshDatabase::class);
+beforeEach(function (): void {
+    TrisAuthTestDatabase::migrate();
+});
 
 it('generates distinct public identifiers for newly created users', function () {
     $first = User::factory()->create();
