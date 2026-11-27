@@ -65,3 +65,13 @@ it('keeps all four surfaces and the four independent removal choices', function 
         ->toContain("isset(" . '$this->photos[$surface]' . ")")
         ->toContain('Фото поверхности');
 });
+
+
+it('compiles the actual Filament statistics Blade into valid PHP', function (): void {
+    $source = file_get_contents(resource_path('views/filament/pages/antigoccia-statistics.blade.php'));
+    $compiled = app('blade.compiler')->compileString($source);
+
+    // Static markup checks do not detect a PHP syntax error produced by
+    // Blade when inline and block PHP directives are mixed.
+    expect(fn () => token_get_all($compiled, TOKEN_PARSE))->not->toThrow(\ParseError::class);
+});
