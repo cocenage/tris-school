@@ -36,6 +36,8 @@ const highlightedReviewQuestion = ref(null);
 const submitting = ref(false);
 const resetting = ref(false);
 const submitError = ref('');
+const serverWaiting = ref(false);
+let serverRetryTimer = null;
 const setupIssue = ref(null);
 const editingReviewSetup = ref(false);
 const finalResult = ref(null);
@@ -151,7 +153,7 @@ let uncertainSnapshot = null;
 let pendingMediaReplay = null;
 let acknowledgedContent = null;
 
-const statusLabel = computed(() => testMode.value && state.value === 'synced' ? 'Тестовый черновик сохранён' : ({
+const statusLabel = computed(() => serverWaiting.value ? 'Сервер занят · ожидаем' : !connectionOnline.value ? 'Ожидаем подключения' : testMode.value && state.value === 'synced' ? 'Тестовый черновик сохранён' : ({
     idle: 'Готово',
     dirty: 'Не сохранено',
     saving: 'Сохраняем…',
@@ -234,6 +236,14 @@ async function fetchJson(url, options = {}) {
         options.signal?.removeEventListener('abort', abort);
     }
     if (!response.ok) {
+        if (response.status === 429) {
+            const header = response.headers.get('Retry-After');
+            const seconds = header && /^\d+$/.test(header) ? Number(header) : header ? (Date.parse(header) - Date.now()) / 1000 : NaN;
+            const error = new Error('Сервер занят. Подождите, не закрывая контроль.');
+            error.status = 429;
+            error.retryDelay = Number.isFinite(seconds) ? Math.max(1000, seconds * 1000 + 500) : 60_000;
+            throw error;
+        }
         const firstError = Object.values(data.errors ?? {}).flat().find(message => typeof message === 'string');
         const exception = new Error(firstError || data.message || (response.status === 419
             ? 'Сессия истекла. Войдите снова.' : 'Сервер не ответил.'));
@@ -245,7 +255,24 @@ async function fetchJson(url, options = {}) {
     return data;
 }
 
+function clearServerWait() {
+    clearTimeout(serverRetryTimer);
+    serverRetryTimer = null;
+    serverWaiting.value = false;
+}
+
+function retrySaveLater(delay) {
+    clearServerWait();
+    serverWaiting.value = true;
+    const requestedRun = run.value?.id;
+    serverRetryTimer = setTimeout(() => {
+        clearServerWait();
+        if (run.value?.id === requestedRun && canEdit.value) void flush();
+    }, delay);
+}
+
 async function initialize(sandbox = false) {
+    clearServerWait();
     cancelReachabilityCheck();
     sandbox = sandbox === true;
     // The same component can switch between real and test runs.
@@ -932,7 +959,7 @@ function applyNewerDraft(latest) {
 async function flush() {
     clearTimeout(timer);
     timer = null;
-    if (!canEdit.value) return false;
+    if (!canEdit.value || serverWaiting.value) return false;
     if (!connectionOnline.value) {
         scheduleReachabilityCheck();
         state.value = 'dirty';
@@ -999,12 +1026,18 @@ async function flush() {
             // Retry the identical body before sending any newer edits. The backend
             // detects a lost acknowledgement and returns the original revision.
             uncertainSnapshot = error.status === 422 ? null : { body, serial };
+            if (error.status === 429) {
+                state.value = 'dirty';
+                syncError.value = '';
+                retrySaveLater(error.retryDelay);
+                return false;
+            }
             state.value = error.status === 409 ? 'conflict' : 'error';
             syncError.value = error.message || 'Не удалось сохранить изменения.';
             return false;
         } finally {
             inFlight = null;
-            if (state.value === 'dirty') queueSave(0);
+            if (state.value === 'dirty' && !serverWaiting.value) queueSave(0);
         }
     })();
     return inFlight;
@@ -1444,7 +1477,7 @@ function resumeDeferredFiles(event) {
 
 
 async function submitControl() {
-    if (submitting.value || stage.value !== 'review' || !canEdit.value) return;
+    if (submitting.value || serverWaiting.value || stage.value !== 'review' || !canEdit.value) return;
     const missing = firstMissing();
     if (missing) {
         jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
@@ -1503,6 +1536,15 @@ async function submitControl() {
         state.value = 'synced';
         if (recoveryKey) void queueLocalWrite({ type: 'delete', scope: recoveryKey });
     } catch (error) {
+        if (error.status === 429 || serverWaiting.value) {
+            submitError.value = '';
+            if (error.status === 429) {
+                clearServerWait();
+                serverWaiting.value = true;
+                serverRetryTimer = setTimeout(clearServerWait, error.retryDelay);
+            }
+            return;
+        }
         const invalidSetup = error.status === 422 && Object.keys(setupFieldIds).find(field => error.fields?.[field]?.length);
         if (invalidSetup) {
             editReviewSetup();
@@ -2163,6 +2205,37 @@ function applyConnectionState(online) {
         pumpTransfers();
     }
 }
+async function navigateBack() {
+    if (submitting.value || resetting.value) return;
+    if (stage.value === 'review') {
+        goRoom(rooms.value.length - 1);
+        return;
+    }
+    if (stage.value === 'questions') {
+        if (activeRoom.value > 0) goRoom(activeRoom.value - 1);
+        else {
+            stage.value = 'setup';
+            window.scrollTo({ top: 0, behavior: 'instant' });
+        }
+        return;
+    }
+    if (stage.value !== 'done' && !loading.value && !loadError.value) {
+        if (busyUploads.value || outstandingMedia.value > 0 || recoveringPhotos.value || recoveryMode.value || serverWaiting.value) {
+            if (!serverWaiting.value) syncError.value = 'Дождитесь сохранения фото и ответов, прежде чем выйти.';
+            return;
+        }
+        if (hasOfflineWork() && !(await ensureSynced())) {
+            if (!serverWaiting.value) syncError.value = 'Дождитесь сохранения ответов, прежде чем выйти.';
+            return;
+        }
+    }
+    if (stage.value === 'done' && outstandingMedia.value > 0) {
+        submitError.value = 'Дождитесь сохранения материалов, прежде чем выйти.';
+        return;
+    }
+    window.location.assign('/checks');
+}
+
 function warnBeforeUnload(event) {
     if (submitting.value || busyUploads.value || state.value === 'dirty' || state.value === 'saving' || state.value === 'error') {
         event.preventDefault();
@@ -2179,6 +2252,7 @@ onMounted(() => {
 });
 function stopPageCamera() { camera.value = null; }
 onBeforeUnmount(() => {
+    clearServerWait();
     cancelReachabilityCheck();
     closePhotoCapture();
     closeBatchPreview();
@@ -2297,8 +2371,9 @@ onBeforeUnmount(() => {
             @close="galleryViewer = null" @remove="removeGalleryItem" />
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
-                <div>
-                    <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
+                <div class="flex min-w-0 items-center gap-3">
+                    <button type="button" aria-label="Назад" :disabled="submitting || resetting" class="grid size-11 shrink-0 place-items-center rounded-full bg-slate-100 text-xl font-semibold text-slate-700 disabled:opacity-50" @click="navigateBack">←</button>
+                    <h1 class="text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
                 <button v-if="resetUrl && run && !testMode && stage !== 'done' && !run.schema_conflict && !resetAfterConflict && !loading && !loadError"
                     type="button" :disabled="resetting || busyUploads || submitting || recoveringPhotos || state === 'saving'"
@@ -2323,7 +2398,7 @@ onBeforeUnmount(() => {
                             <span class="size-2.5 shrink-0 rounded-full" :class="state === 'synced' || state === 'idle' ? 'bg-emerald-500' : state === 'saving' ? 'bg-blue-500' : state === 'dirty' ? 'bg-amber-500' : 'bg-red-500'"></span>
                             <strong class="truncate">{{ statusLabel }}</strong>
                         </div>
-                        <button v-if="stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving'" class="shrink-0 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
+                        <button v-if="stage !== 'done'" type="button" :disabled="!canEdit || state === 'saving' || serverWaiting" class="shrink-0 rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 disabled:opacity-50" @click="flush">
                             {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
                         </button>
                     </div>
@@ -2338,16 +2413,10 @@ onBeforeUnmount(() => {
                     <strong>Тестовый сотрудник · серверная загрузка</strong>
                     <p class="mt-1">Фото, видео и ответы сохраняются в отдельном тестовом черновике. Рабочие контроли, рейтинги, баллы наград и сообщения Telegram не создаются. Тестовые материалы очищаются автоматически.</p>
                 </div>
-                <div v-if="!connectionOnline && stage !== 'done'"
-                    class="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950"
-                    role="status" aria-live="polite">
-                    <strong>Нет интернета</strong>
-                    <p class="mt-1">Продолжайте отвечать. Локальная копия создаётся, если браузер разрешает хранение. Файлы и ответы считаются сохранёнными только после подтверждения сервера.</p>
-                </div>
-                <div v-if="!localStorageAvailable && stage !== 'done'" role="status" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
-                    Локальное восстановление недоступно в этом браузере. Дождитесь статуса «Сохранено» перед закрытием Telegram.
-                </div>
-                <section v-if="recoveryMode && recoveryRecord" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+                <p v-if="serverWaiting && stage !== 'done'" class="mb-3 text-sm text-slate-600" role="status" aria-live="polite">Сервер занят. Подождите, не закрывая контроль.</p>
+                <p v-else-if="!connectionOnline && stage !== 'done'" class="mb-3 text-sm text-slate-600" role="status">Нет связи. Можно продолжать отвечать. Не закрывайте контроль до сохранения.</p>
+                <p v-else-if="!localStorageAvailable && stage !== 'done' && state !== 'synced' && state !== 'idle'" class="mb-3 text-xs text-slate-500" role="status">Не закрывайте контроль до сохранения.</p>
+                <section v-if="recoveryMode && recoveryRecord" class="mb-4 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-800" role="alert">
                     <h2 class="font-bold">Найдена локальная копия ответов</h2>
                     <p v-if="recoveryMode === 'safe'" class="mt-2">
                         Эти изменения могли не успеть сохраниться на сервере. Выберите, какую версию продолжить.
@@ -2371,7 +2440,7 @@ onBeforeUnmount(() => {
                             @click="keepServerVersion">Оставить серверную версию</button>
                     </div>
                 </section>
-                <section v-if="recoveryNeedingInput.length" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                <section v-if="recoveryNeedingInput.length" class="mb-4 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-800">
                     <h2 class="font-bold">Незавершённые вложения · {{ recoveryNeedingInput.length }}</h2>
                     <p class="mt-1 text-xs">Полностью полученные файлы прикрепятся без повторной загрузки. Если файл не дошёл, выберите оригинал или добавьте новый у нужного вопроса.</p>
                     <div v-for="record in recoveryNeedingInput" :id="'focus-recovery-' + record.upload_id" :key="record.upload_id" tabindex="-1" class="mt-3 scroll-mt-36 rounded-xl bg-white p-3">
@@ -2396,8 +2465,7 @@ onBeforeUnmount(() => {
                     </div>
                 </section>
                 <div v-if="mediaError" class="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</div>
-                <div v-if="cacheWarning && outstandingMedia > 0"
-                    class="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" role="status">{{ cacheWarning }}</div>
+                <p v-if="cacheWarning && outstandingMedia > 0 && !serverWaiting" class="mb-3 text-xs text-slate-500" role="status">Не закрывайте контроль до завершения загрузки.</p>
 
                 <div v-if="syncError" role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
                     {{ syncError }}
@@ -2587,7 +2655,7 @@ onBeforeUnmount(() => {
                                             <div v-if="item.status === 'uploading'" class="mb-1.5 h-1 overflow-hidden rounded-full bg-slate-300">
                                                 <div class="h-full bg-blue-600" :style="{ width: item.progress + '%' }"></div>
                                             </div>
-                                            <p v-if="item.source.retryHint" class="mb-1 break-words text-amber-800" role="status">{{ item.source.retryHint }}</p>
+                                            <p v-if="item.source.retryHint" class="mb-1 text-slate-500" role="status">{{ item.source.retryHint }}</p>
                                             <p v-if="item.source.error" class="break-words text-red-700" role="alert">{{ item.source.error }}</p>
                                             <button v-if="item.status === 'error'" type="button" class="rounded-lg bg-blue-600 px-2 py-1.5 font-semibold text-white"
                                                 @click="retryFile(item.source)">Повторить</button>
@@ -2684,8 +2752,8 @@ onBeforeUnmount(() => {
                                 <span class="text-sm font-bold text-blue-700">{{ roomCompleted(index) }}/{{ roomRequired(index) }}</span>
                             </div>
                         </details>
-                        <div v-if="!canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
-                            Остались файлы без подтверждения · {{ outstandingMedia }}. Отправка станет доступна после их сохранения или отмены.
+                        <div v-if="!canSubmitMedia" class="rounded-xl bg-slate-100 p-4 text-sm text-slate-700" role="status">
+                            Сохраняем материалы · осталось {{ outstandingMedia }}. Подождите, не закрывая контроль.
                             <button type="button" class="mt-2 block min-h-10 rounded-lg bg-white px-3 font-bold text-blue-800" @click="jumpToPendingMedia()">К незагруженному вложению</button>
                         </div>
                         <p v-else-if="testMode" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
@@ -2694,8 +2762,8 @@ onBeforeUnmount(() => {
                         <div v-if="submitError" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert">
                             {{ submitError }}
                         </div>
-                        <button type="button" :disabled="!canEdit || submitting || !canSubmitMedia" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
-                            {{ submitting ? 'Завершаем…' : testMode ? 'Завершить тест без статистики' : 'Отправить контроль' }}
+                        <button type="button" :disabled="!canEdit || submitting || !canSubmitMedia || serverWaiting" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
+                            {{ serverWaiting ? 'Подождите…' : submitting ? 'Завершаем…' : !canSubmitMedia ? 'Сохраняем материалы…' : testMode ? 'Завершить тест без статистики' : 'Отправить контроль' }}
                         </button>
                         <button type="button" :disabled="submitting" class="w-full rounded-xl bg-slate-100 p-3 text-sm font-bold disabled:opacity-50" @click="goRoom(rooms.length - 1)">Вернуться к вопросам</button>
                     </section>
