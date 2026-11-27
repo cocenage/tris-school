@@ -33,7 +33,7 @@ new class extends Component {
         $this->newForm();
         $suggested = request()->query('apartment');
         if (ctype_digit((string) $suggested)
-            && app(ApartmentAccessService::class)->visibleQuery(auth()->user())->whereKey((int) $suggested)->exists()) {
+            && app(ApartmentAccessService::class)->antigocciaQuery(auth()->user())->whereKey((int) $suggested)->exists()) {
             $this->selectApartment((int) $suggested);
         }
     }
@@ -51,7 +51,7 @@ new class extends Component {
 
     public function selectApartment(int $id): void
     {
-        $apartment = app(ApartmentAccessService::class)->visibleQuery(auth()->user())
+        $apartment = app(ApartmentAccessService::class)->antigocciaQuery(auth()->user())
             ->whereKey($id)->first();
 
         abort_unless($apartment, 403);
@@ -71,7 +71,7 @@ new class extends Component {
     public function getApartmentMatchesProperty()
     {
         $search = mb_strtolower(trim($this->apartmentSearch));
-        return app(ApartmentAccessService::class)->visibleQuery(auth()->user())
+        return app(ApartmentAccessService::class)->antigocciaQuery(auth()->user())
             ->when($search !== '', fn ($query) => $query->where(function ($query) use ($search) {
                 $query->whereRaw('LOWER(name) LIKE ?', ['%'.$search.'%'])
                     ->orWhereRaw("LOWER(COALESCE(address, '')) LIKE ?", ['%'.$search.'%']);
@@ -104,7 +104,7 @@ new class extends Component {
             return null;
         }
 
-        return app(ApartmentAccessService::class)->visibleQuery(auth()->user())
+        return app(ApartmentAccessService::class)->antigocciaQuery(auth()->user())
             ->find((int) $this->apartmentId);
     }
 
