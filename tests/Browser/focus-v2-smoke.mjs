@@ -228,6 +228,7 @@ class FakeFocusBackend {
                             .filter(f => f.upload_id !== session.id);
                         state.sessions.delete(session.id);
                         state.revision++;
+                        if (this.dropDeleteAck) { this.dropDeleteAck=false; return route.abort('failed'); }
                         return reply({ deleted: true, run: { draft_id: state.draftId, revision: state.revision } });
                     }
                     if (req.method() === 'GET') return reply(this.describe(session));
@@ -323,6 +324,67 @@ async function main() {
         browser = await (process.env.FOCUS_BROWSER === 'webkit' ? webkit : chromium).launch({
             headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }),
         });
+
+        // The server may apply DELETE and lose its reply. Do not save against the old revision.
+        {
+            const backend=new FakeFocusBackend();
+            backend.draftId=51; backend.revision=1; backend.dropDeleteAck=true;
+            const context=await browser.newContext({viewport:{width:390,height:844}});
+            const {page,errors}=await pageFor(context,backend);
+            await page.getByRole('button',{name:'К вопросам'}).click();
+            await addPhoto(page);
+            await page.getByRole('button',{name:'Удалить',exact:true}).waitFor();
+            page.once('dialog',dialog=>dialog.accept());
+            await page.getByRole('button',{name:'Удалить',exact:true}).click();
+            await page.getByRole('button',{name:'Да',exact:true}).click();
+            for(let i=0;backend.answers[0][0].selected!=='yes'&&i<45;i++) await delay(100);
+            assert.equal(backend.answers[0][0].selected,'yes','Lost delete acknowledgement blocked the next answer');
+            assert.equal(backend.media[0][0].length,0);
+            assert.equal(await page.getByRole('button',{name:'Открыть фото photo.png'}).count(),0);
+            assert.deepEqual(errors,[]);
+            console.log('PASS mobile UI: lost delete receipt reconciles and does not block answers');
+            await context.close();
+        }
+        // A media-only revision change can be safely reconciled after reopen, a real answer change cannot.
+        for (const changedServerAnswer of [false,true]) {
+            const backend=new FakeFocusBackend();
+            backend.draftId=51; backend.revision=1; backend.dropAttachAcks=3;
+            const context=await browser.newContext({viewport:{width:390,height:844}});
+            const {page,errors}=await pageFor(context,backend);
+            await page.getByRole('button',{name:'К вопросам'}).click();
+            await addPhoto(page);
+            await page.getByText('Ошибка загрузки',{exact:true}).waitFor({timeout:8000});
+            await page.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,get:()=>false});window.dispatchEvent(new Event('offline'));});
+            await page.getByRole('button',{name:'Да',exact:true}).click();
+            await page.waitForFunction(async({schemaVersion})=>{
+                const m=await import('/resources/js/focus-v2/local-recovery.js');
+                const saved=await m.readLocalRecovery(m.recoveryScope(100,1,schemaVersion));
+                return saved?.answers[0][0].selected==='yes';
+            },{schemaVersion});
+            await page.close();
+            if(changedServerAnswer) {
+                backend.answers[0][0].selected='no';
+                backend.revision++;
+            }
+            const {page:reopened,errors:reopenErrors}=await pageFor(context,backend);
+            if(changedServerAnswer) {
+                await reopened.getByText('Показать локальные ответы для копирования').waitFor();
+                assert.equal(backend.answers[0][0].selected,'no');
+                assert.equal(await reopened.getByRole('button',{name:'Восстановить локальные ответы'}).count(),0);
+            } else {
+                await reopened.getByRole('button',{name:'Восстановить локальные ответы'}).click({timeout:7000});
+                for(let i=0;backend.answers[0][0].selected!=='yes'&&i<45;i++) await delay(100);
+                assert.equal(backend.answers[0][0].selected,'yes');
+                assert.equal(backend.media[0][0].length,1);
+                await reopened.getByRole('button',{name:/^(К вопросам|Продолжить контроль)$/}).click();
+                await reopened.getByRole('button',{name:'К сводке'}).click();
+                await reopened.getByRole('button',{name:'Отправить контроль'}).click();
+                await reopened.getByRole('heading',{name:'Контроль завершён'}).waitFor();
+            }
+            assert.deepEqual([...errors,...reopenErrors],[]);
+            console.log('PASS mobile UI: reopen '+(changedServerAnswer?'protects actual server changes':'restores offline answers after media-only revision and finishes'));
+            await context.close();
+        }
 
         // Offline removal must be durable, and never reserve an unsent file.
         {

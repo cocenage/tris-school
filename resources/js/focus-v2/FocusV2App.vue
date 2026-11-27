@@ -5,7 +5,7 @@ import FocusSearchSelect from './FocusSearchSelect.vue';
 import FocusMediaViewer from './FocusMediaViewer.vue';
 import FocusVideoThumb from './FocusVideoThumb.vue';
 import { allowedFocusFile, attachFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, isTransientFocusUploadError, transferFocusFile } from './media-upload';
-import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryScope, writeLocalRecovery } from './local-recovery';
+import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryContentStamp, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
@@ -90,6 +90,7 @@ function saveLocalSnapshot() {
             run_id: run.value.id,
             draft_id: run.value.draft_id,
             base_revision: run.value.revision,
+            base_content: acknowledgedContent,
             setup: JSON.parse(JSON.stringify(setup.value)),
             answers: JSON.parse(JSON.stringify(answers.value)),
         },
@@ -143,7 +144,8 @@ let acknowledgedSerial = 0;
 let timer = null;
 let inFlight = null;
 let uncertainSnapshot = null;
-let pendingAttachReplay = null;
+let pendingMediaReplay = null;
+let acknowledgedContent = null;
 
 const statusLabel = computed(() => testMode.value && state.value === 'synced' ? 'Тестовый черновик сохранён' : ({
     idle: 'Готово',
@@ -247,7 +249,8 @@ async function initialize() {
     changeSerial = 0;
     acknowledgedSerial = 0;
     uncertainSnapshot = null;
-    pendingAttachReplay = null;
+    pendingMediaReplay = null;
+    acknowledgedContent = null;
     recoveryRecord.value = null;
     recoveryMode.value = '';
     recoveryKey = null;
@@ -289,6 +292,7 @@ async function initialize() {
         apartments.value = data.apartments ?? [];
         setup.value = data.setup ?? {};
         answers.value = data.answers ?? [];
+        acknowledgedContent = recoveryContentStamp(setup.value, answers.value);
         media.value = data.media ?? [];
         if (data.run?.schema_conflict) {
             state.value = 'conflict';
@@ -598,6 +602,7 @@ async function choosePerson(id) {
             apartments.value = data.apartments ?? [];
             setup.value = data.setup;
             answers.value = data.answers;
+            acknowledgedContent = recoveryContentStamp(setup.value, answers.value);
             media.value = data.media;
             interruptedUploads.value = data.pending_uploads ?? [];
             run.value = data.run;
@@ -606,7 +611,7 @@ async function choosePerson(id) {
             changeSerial = 0;
             acknowledgedSerial = 0;
             uncertainSnapshot = null;
-            pendingAttachReplay = null;
+            pendingMediaReplay = null;
             clearTimeout(timer);
             finalResult.value = null;
             state.value = data.run?.schema_conflict ? 'conflict' : 'synced';
@@ -906,8 +911,8 @@ async function flush() {
         return flush();
     }
     if (inFlight) return inFlight;
-    if (pendingAttachReplay) {
-        if (!(await reconcilePendingAttachment())) return false;
+    if (pendingMediaReplay) {
+        if (!(await reconcilePendingMedia())) return false;
         return flush();
     }
     if (!uncertainSnapshot && changeSerial === acknowledgedSerial) return true;
@@ -930,6 +935,7 @@ async function flush() {
             run.value = { ...run.value, ...result.run };
             uncertainSnapshot = null;
             acknowledgedSerial = Math.max(acknowledgedSerial, serial);
+            acknowledgedContent = recoveryContentStamp(body.setup, body.answers);
             state.value = changeSerial === acknowledgedSerial ? 'synced' : 'dirty';
             syncError.value = '';
             settleLocalSnapshot();
@@ -973,18 +979,19 @@ async function holdDraftMedia(action) {
     }
 }
 
-async function reconcilePendingAttachment() {
+async function reconcilePendingMedia() {
     if (attachInFlight) {
         await attachInFlight;
-        return reconcilePendingAttachment();
+        return reconcilePendingMedia();
     }
-    const pending = pendingAttachReplay;
+    const pending = pendingMediaReplay;
     if (!pending) return canEdit.value;
     if (!connectionOnline.value || !canEdit.value) return false;
     return holdDraftMedia(async () => {
         try {
             await pending.replay();
-            pendingAttachReplay = null;
+            if (pendingMediaReplay === pending) pendingMediaReplay = null;
+            if (!canEdit.value) return false;
             state.value = changeSerial === acknowledgedSerial ? 'synced' : 'dirty';
             syncError.value = '';
             return true;
@@ -992,10 +999,10 @@ async function reconcilePendingAttachment() {
             // A revision conflict after this replay is real. Do not adopt a
             // different snapshot or retry as if it were our own write.
             if (error.status === 409) {
-                pendingAttachReplay = null;
+                pendingMediaReplay = null;
                 state.value = 'conflict';
             } else state.value = 'error';
-            syncError.value = 'Не удалось сверить прикреплённый файл. Новые ответы остаются в этом черновике на устройстве.';
+            syncError.value = 'Не удалось сверить изменение вложения. Новые ответы остаются в этом черновике на устройстве.';
             return false;
         }
     });
@@ -1015,7 +1022,7 @@ async function saveMediaAttachment({ url, body, signal, notify, publish, afterRe
         await perform(signal);
     } catch (error) {
         if (isTransientFocusUploadError(error)) {
-            pendingAttachReplay = { uploadId, replay: async () => {
+            pendingMediaReplay = { uploadId, replay: async () => {
                 await perform();
                 await afterReplay?.();
             } };
@@ -1031,8 +1038,8 @@ async function writeDraftMedia(action) {
             await (attachInFlight || inFlight);
             continue;
         }
-        if (pendingAttachReplay) {
-            if (!(await reconcilePendingAttachment())) throw new Error(syncError.value || 'Файл ещё не подтверждён.');
+        if (pendingMediaReplay) {
+            if (!(await reconcilePendingMedia())) throw new Error(syncError.value || 'Файл ещё не подтверждён.');
             continue;
         }
         // A lost save acknowledgement may already have advanced the revision.
@@ -1640,15 +1647,11 @@ async function sendOne(item) {
                         const previous = files.find(file => file.upload_id === item.replaceUploadId);
                         if (previous) {
                             try {
-                                const removed = await focusMediaRequest(
-                                    props.mediaStartUrl + '/' + encodeURIComponent(previous.upload_id) + '/attached',
-                                    'DELETE', { expected_revision: run.value.revision }, csrf, controller.signal);
-                                run.value = { ...run.value, ...removed.run };
-                                media.value[item.room][item.question] = files.filter(file => file.upload_id !== previous.upload_id);
+                                await deleteDraftAttachment(item.room, item.question, previous.upload_id, controller.signal);
                             } catch (replaceError) {
                                 // Never discard either file when the final
                                 // delete acknowledgement is lost.
-                                mediaError.value = 'Новый файл сохранён, но старый не удалён. Удалите его вручную: '
+                                mediaError.value = 'Новый файл сохранён. Удаление старого пока не подтверждено: '
                                     + (replaceError.message || 'сервер не подтвердил замену');
                             }
                         }
@@ -1692,7 +1695,8 @@ async function finishUploadedItem(item) {
 }
 
 function retryFile(item) {
-    if (pendingAttachReplay?.uploadId === item.id) {
+    if (!item) return;
+    if (pendingMediaReplay?.uploadId === item.id) {
         void flush().then(() => pumpTransfers());
         return;
     }
@@ -1706,7 +1710,7 @@ function retryFile(item) {
 
 async function cancelFile(item) {
     if (item.cancelling || !['queued', 'uploading', 'error'].includes(item.status)) return;
-    if (pendingAttachReplay?.uploadId === item.id) {
+    if (pendingMediaReplay?.uploadId === item.id) {
         item.error = 'Сначала подтвердите состояние файла кнопкой «Повторить».';
         return;
     }
@@ -1800,6 +1804,76 @@ function removeTestMedia(room, question, file) {
     if (file.local && file.url) URL.revokeObjectURL(file.url);
     media.value[room][question] = media.value[room][question].filter(item => item !== file);
 }
+// Called while holding the draft revision lock. A DELETE that lost its
+// response might have erased its own upload row, so replay alone isn't safe.
+async function deleteDraftAttachment(room, question, uploadId, signal) {
+    const original = { ...run.value };
+    const baseContent = acknowledgedContent;
+    const url = props.mediaStartUrl + '/' + encodeURIComponent(uploadId) + '/attached';
+    const conflict = () => Object.assign(new Error('Черновик изменился во время удаления.'), { status: 409 });
+    const publish = async revision => {
+        run.value = { ...run.value, revision };
+        if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+        media.value[room][question] = media.value[room][question].filter(item => item.upload_id !== uploadId);
+        mediaError.value = '';
+        if (recoveryKey) {
+            try { await forgetCachedFocusPhoto(recoveryKey, uploadId); } catch (_) { /* Confirmed server state remains authoritative. */ }
+        }
+    };
+    const send = async currentSignal => {
+        const deleted = await focusMediaRequest(url, 'DELETE', { expected_revision: original.revision }, csrf, currentSignal);
+        if (!deleted.deleted || deleted.run?.draft_id !== original.draft_id
+            || deleted.run?.revision !== original.revision + 1) {
+            const error = new Error('Сервер не подтвердил удаление.');
+            error.name = 'TimeoutError';
+            throw error;
+        }
+        await publish(deleted.run.revision);
+    };
+    const inspect = async () => {
+        const server = await fetchJson(props.bootstrapUrl + (testMode.value ? '?test_mode=1' : ''));
+        if (server.run?.id !== original.id || server.run?.draft_id !== original.draft_id
+            || server.run.schema_conflict || server.control?.id !== control.value.id
+            || server.control?.schema_version !== control.value.schema_version
+            || Boolean(server.test_mode) !== testMode.value
+            || recoveryContentStamp(server.setup, server.answers) !== baseContent
+            || !Array.isArray(server.media?.[room]?.[question])) throw conflict();
+        const present = server.media[room][question].some(file => file.upload_id === uploadId);
+        if (!present && server.run.revision === original.revision + 1) {
+            await publish(server.run.revision);
+            return true;
+        }
+        if (!present || server.run.revision !== original.revision) throw conflict();
+        return false;
+    };
+    const replay = async () => {
+        if (await inspect()) return;
+        try {
+            await send();
+        } catch (error) {
+            if ((isTransientFocusUploadError(error) || error.status === 404 || error.status === 409) && await inspect()) return;
+            throw error;
+        }
+    };
+    try {
+        await send(signal);
+    } catch (error) {
+        if (!isTransientFocusUploadError(error) && error.status !== 404) throw error;
+        try {
+            await replay();
+        } catch (checkError) {
+            if (checkError.status === 409) {
+                state.value = 'conflict';
+                syncError.value = checkError.message;
+            } else {
+                pendingMediaReplay = { uploadId, replay };
+                state.value = 'error';
+            }
+            throw checkError;
+        }
+    }
+}
+
 async function removeSavedMedia(room, question, file) {
     if (!canEdit.value || !file) return;
     if (testMode.value && file.local) {
@@ -1811,12 +1885,9 @@ async function removeSavedMedia(room, question, file) {
     mediaError.value = '';
     try {
         await writeDraftMedia(async () => {
-            const data = await focusMediaRequest(props.mediaStartUrl + '/' + encodeURIComponent(file.upload_id) + '/attached',
-                'DELETE', { expected_revision: run.value.revision }, csrf);
-            run.value = { ...run.value, ...data.run };
-            if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
-            media.value[room][question] = media.value[room][question].filter(item => item !== file);
-            if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, file.upload_id).catch(() => {});
+            if (media.value[room]?.[question]?.some(item => item.upload_id === file.upload_id)) {
+                await deleteDraftAttachment(room, question, file.upload_id);
+            }
         });
     } catch (error) {
         mediaError.value = error.message || 'Не удалось удалить фото. Повторите попытку.';
@@ -1867,7 +1938,7 @@ function handleNetworkUpdate() {
     connectionOnline.value = navigator.onLine !== false;
     if (!connectionOnline.value) return;
     if (!wasOnline) {
-        if (pendingAttachReplay || ['dirty', 'error'].includes(state.value)) queueSave(200);
+        if (pendingMediaReplay || ['dirty', 'error'].includes(state.value)) queueSave(200);
         // Retry only errors caused by temporary transport failures;
         // permissions/invalid files must remain visible for manual action.
         for (const item of uploads.value) {
