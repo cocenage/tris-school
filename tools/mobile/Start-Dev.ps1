@@ -18,7 +18,7 @@ if (Test-Path 'public/hot') { throw 'Stop Vite dev server in this worktree befor
 # Remove inherited environment overrides, including prior in-memory test settings.
 # This script is intended to run in a child PowerShell process.
 Get-ChildItem Env: | Where-Object {
-    $_.Name -match '^(TRIS_PUSH_|APP_|DB_|SESSION_|CACHE_|QUEUE_|TELEGRAM_|STAFF_FORMS_|MOBILITY_|TRIS_MARE_|WEATHERAPI_|AWS_|REDIS_|MAIL_|BROADCAST_|FILESYSTEM_)'
+    $_.Name -match '^(TRIS_NATIVE_TELEGRAM_|TRIS_PUSH_|APP_|DB_|SESSION_|CACHE_|QUEUE_|TELEGRAM_|STAFF_FORMS_|MOBILITY_|TRIS_MARE_|WEATHERAPI_|AWS_|REDIS_|MAIL_|BROADCAST_|FILESYSTEM_)'
 } | ForEach-Object { Remove-Item ("Env:" + $_.Name) }
 
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
@@ -102,6 +102,52 @@ if ((Test-Path $firebase) -and (Test-Path $credentials)) {
     Write-Host 'PUSH 0.1 enabled for this isolated DEV project.'
 } else {
     Write-Host 'Push disabled: both DEV Firebase files are required.'
+}
+$telegramNativeConfig = Join-Path $directory 'telegram-login.json'
+$env:TRIS_NATIVE_TELEGRAM_ENABLED = 'false'
+if (Test-Path $telegramNativeConfig) {
+    $telegramNative = Get-Content $telegramNativeConfig -Raw | ConvertFrom-Json
+    $clientId = [string]$telegramNative.client_id
+    if ($clientId -notmatch '^[1-9][0-9]{0,19}
+
+# Temporarily configure the existing debug APK to open the local Laravel server.
+# Do not commit this cleartext server URL or use it in release builds.
+$original = [IO.File]::ReadAllBytes($configFile)
+try {
+    $config = Get-Content $configFile -Raw | ConvertFrom-Json
+    if ($config.appId -ne 'eu.trisservice.academy.dev') {
+        throw 'Refusing to modify a non-DEV app ID.'
+    }
+    $config | Add-Member -NotePropertyName server -NotePropertyValue ([pscustomobject]@{
+        url = 'http://127.0.0.1:8765'
+        cleartext = $true
+    }) -Force
+    [IO.File]::WriteAllText($configFile, ($config | ConvertTo-Json -Depth 30), $utf8)
+    Set-Location $mobile
+    Run { npx.cmd cap sync android }
+    Set-Location (Join-Path $mobile 'android')
+    Run { .\gradlew.bat assembleDebug }
+    Run { adb reverse tcp:8765 tcp:8765 }
+    Run { adb install -r .\app\build\outputs\apk\debug\app-debug.apk }
+} finally {
+    [IO.File]::WriteAllBytes($configFile, $original)
+    Set-Location $root
+}
+
+Write-Host 'Open TRIS DEV on the connected phone after Laravel starts.'
+Write-Host 'In the PC browser, sign into the QA admin at http://127.0.0.1:8765/admin/login.'
+Write-Host 'The phone can connect with the printed TRIS ID; approve it at /profile/devices.'
+Write-Host 'USB-only HTTP debug build. Never distribute this APK. Ctrl+C stops Laravel.'
+try {
+    Run { php artisan serve --host=127.0.0.1 --port=8765 --no-reload --env=mobiledev }
+} finally {
+    adb reverse --remove tcp:8765
+}
+) { throw 'Invalid DEV Telegram client ID.' }
+    $env:TRIS_NATIVE_TELEGRAM_CLIENT_ID = $clientId
+    Run { composer install --working-dir=tools/mobile/telegram-auth --no-interaction }
+    $env:TRIS_NATIVE_TELEGRAM_ENABLED = 'true'
+    Write-Host 'Native Telegram DEV backend enabled. Android SDK bridge must be integrated separately.'
 }
 Run { npm.cmd ci }
 Run { npm.cmd run build }
