@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     FOCUS_RECOVERY_MAX_AGE_MS, VIDEO_RECOVERY_MAX_BYTES, canCacheFocusMedia, chooseLocalRecovery,
-    createLocalRecoveryQueue, recoveryContentStamp, recoveryScope,
+    createLocalRecoveryQueue, mergeDraftEdits, recoveryContentStamp, recoveryScope,
 } from '../../resources/js/focus-v2/local-recovery.js';
 
 const version = 'a'.repeat(64);
@@ -95,4 +95,22 @@ test('keeps same-draft recovery available when a photo advances a server-trimmed
     assert.equal(chooseLocalRecovery(offline, newer, savedAt + 100), 'safe');
     assert.equal(chooseLocalRecovery(offline, { ...newer, answers: answer('stain on floor') }, savedAt + 100), 'conflict');
     assert.equal(chooseLocalRecovery(offline, { ...newer, run: { ...newer.run, id: 'different' } }, savedAt + 100), 'conflict');
+});
+test('merges different questions in the same draft but never picks a side on the same question or setup', () => {
+    const a = selected => ({ selected, custom: '', corrective: { action: '', repeats: null, recheck: null } });
+    const original = [[a('yes'), a('yes')]];
+    const localEdit = [[a('no'), a('yes')]];
+    const serverEdit = [[a('yes'), a('other')]];
+    const base = recoveryContentStamp(setup, original);
+    const local = { setup, answers: localEdit };
+    const server = { setup, answers: serverEdit };
+    assert.deepEqual(mergeDraftEdits(base, local, server), { setup, answers: [[a('no'), a('other')]] });
+    const overlap = { setup, answers: [[a('other'), a('other')]] };
+    assert.equal(mergeDraftEdits(base, local, overlap), null);
+    assert.deepEqual(mergeDraftEdits(base, local, overlap, 'local').answers, [[a('no'), a('other')]]);
+    assert.deepEqual(mergeDraftEdits(base, local, overlap, 'server').answers, [[a('other'), a('other')]]);
+    assert.equal(mergeDraftEdits(base, { ...local, setup: { ...setup, comment: 'local' } },
+        { ...server, setup: { ...setup, apartment_id: 10 } }), null);
+    assert.equal(mergeDraftEdits(base, local, { setup, answers: [[a('yes')]] }), null);
+    assert.equal(mergeDraftEdits('invalid', local, server), null);
 });

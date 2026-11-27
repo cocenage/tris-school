@@ -119,6 +119,10 @@ class FakeFocusBackend {
                     return reply(this.bootstrap(sandbox));
                 }
                 if (path === '/focus-api/draft') {
+                    if (this.failDraftWrites > 0) {
+                        this.failDraftWrites--;
+                        return reply({ message: 'Временный сбой сохранения' }, 503);
+                    }
                     const snapshot = json();
                     const sandbox = snapshot.test_mode === true;
                     const state = sandbox ? this.test : this;
@@ -379,7 +383,7 @@ async function main() {
             console.log('PASS mobile UI: lost delete receipt reconciles and does not block answers');
             await context.close();
         }
-        // A media-only revision change can be safely reconciled after reopen, a real answer change cannot.
+        // Reopening preserves local edits, and overlapping edits require a deliberate choice.
         for (const changedServerAnswer of [false,true]) {
             const backend=new FakeFocusBackend();
             backend.draftId=51; backend.revision=1; backend.dropAttachAcks=3;
@@ -402,9 +406,14 @@ async function main() {
             }
             const {page:reopened,errors:reopenErrors}=await pageFor(context,backend);
             if(changedServerAnswer) {
-                await reopened.getByText('Показать локальные ответы для копирования').waitFor();
+                await reopened.getByText('Что различается', { exact: true }).click();
+                await reopened.getByText('На сервере: Нет', { exact: true }).waitFor();
                 assert.equal(backend.answers[0][0].selected,'no');
                 assert.equal(await reopened.getByRole('button',{name:'Восстановить локальные ответы'}).count(),0);
+                await reopened.getByRole('button', { name: 'В спорных местах оставить серверные' }).click();
+                await reopened.getByText('Сохранено', { exact: true }).waitFor();
+                assert.equal(backend.answers[0][0].selected, 'no');
+                assert.equal(backend.media[0][0].length, 1);
             } else {
                 await reopened.getByRole('button',{name:'Восстановить локальные ответы'}).click({timeout:7000});
                 for(let i=0;backend.answers[0][0].selected!=='yes'&&i<45;i++) await delay(100);
@@ -1126,6 +1135,58 @@ async function main() {
             console.log('PASS mobile UI: failed network upload resumes cached photo with identical server ID');
             await context.close();
         }
+        // Wi-Fi may stay connected while only the draft endpoint fails.
+        {
+            const backend = new FakeFocusBackend();
+            backend.rooms = structuredClone(rooms);
+            backend.rooms[0].items.push({ ...backend.rooms[0].items[0], question: 'Второй вопрос' });
+            backend.answers[0].push(structuredClone(backend.answers[0][0]));
+            backend.media[0].push([]);
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам', exact: true }).click();
+            const first = page.locator('#focus-question-0-0');
+            const second = page.locator('#focus-question-0-1');
+            backend.failDraftWrites = 1;
+            await first.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Временный сбой сохранения', { exact: false }).waitFor();
+            assert.equal(await page.evaluate(() => navigator.onLine), true);
+            await page.getByText('Сохранено', { exact: true }).waitFor({ timeout: 7000 });
+            assert.equal(backend.realWrites, 1);
+            const originalRun = backend.runId;
+            const originalDraft = backend.draftId;
+
+            // Another session answers question 2; this screen changes question 1.
+            backend.answers[0][1].selected = 'yes';
+            backend.revision++;
+            await first.getByRole('button', { name: 'Нет', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor({ timeout: 7000 });
+            assert.equal(await second.getByRole('button', { name: 'Да', exact: true }).getAttribute('aria-pressed'), 'true');
+            assert.deepEqual(backend.answers[0].map(a => a.selected), ['no', 'yes']);
+            assert.equal(backend.runId, originalRun);
+            assert.equal(backend.draftId, originalDraft);
+
+            // Different changes to the same question must not be overwritten.
+            backend.answers[0][0].selected = 'yes';
+            backend.answers[0][0].custom = 'server changed this question';
+            backend.revision++;
+            await first.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Конфликт черновика', { exact: true }).waitFor();
+            assert.equal(backend.answers[0][0].custom, 'server changed this question');
+            assert.equal(await page.getByRole('button', { name: 'Начать новую проверку', exact: true }).count(), 0);
+            await page.getByRole('button', { name: 'В спорных местах оставить мои' }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor({ timeout: 7000 });
+            assert.equal(backend.answers[0][0].custom, '');
+            assert.deepEqual(backend.answers[0].map(a => a.selected), ['yes', 'yes']);
+            await page.getByRole('button', { name: 'К сводке' }).click();
+            await page.getByRole('button', { name: 'Отправить контроль' }).click();
+            await page.getByRole('link', { name: 'Результат', exact: true }).waitFor();
+            assert.equal(backend.draftId, originalDraft);
+            assert.equal(backend.runId, originalRun);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: automatic retry, independent edit merge and explicit overlap resolution without reset');
+            await context.close();
+        }
         // Saving answers must not wait for any individual photo receipt.
         {
             const backend = new FakeFocusBackend();
@@ -1269,16 +1330,16 @@ async function main() {
             await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
             await page.getByRole('button', { name: 'Да', exact: true }).click();
             await page.getByText('Сохранено', { exact: true }).waitFor();
+            const originalRun = backend.runId;
             backend.answers[0][0].custom = 'Другое изменение на сервере';
             backend.revision++;
+            backend.runId = '00000000-0000-4000-8000-000000000099';
             await page.getByRole('button', { name: 'Нет', exact: true }).click();
             await page.getByText('Конфликт черновика', { exact: true }).waitFor();
             const restart = page.getByRole('button', { name: 'Начать новую проверку', exact: true });
             page.once('dialog', dialog => dialog.dismiss());
             await restart.click({ timeout: 4000 });
             assert.equal(backend.resetRequests ?? 0, 0, 'Cancelling confirmation must not reset the draft.');
-            const originalRun = backend.runId;
-            backend.runId = '00000000-0000-4000-8000-000000000099';
             page.once('dialog', dialog => dialog.accept());
             await restart.click();
             await page.getByText('На сервере уже другой черновик. Ничего не сброшено.', { exact: false }).waitFor();

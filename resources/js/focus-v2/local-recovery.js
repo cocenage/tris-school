@@ -42,6 +42,38 @@ function matchesStoredBase(base, serverContent) {
 }
 
 
+// Merge only independent questions. Keep setup and each entire question
+// atomic: an option, its comment and corrective fields must stay together.
+export function mergeDraftEdits(baseStamp, local, server, preferOverlap = null) {
+    let base;
+    try { base = JSON.parse(baseStamp); } catch { return null; }
+    const object = value => value && typeof value === 'object' && !Array.isArray(value);
+    if (![base, local, server].every(v => object(v) && object(v.setup) && Array.isArray(v.answers))) return null;
+    if (base.answers.length !== local.answers.length || base.answers.length !== server.answers.length) return null;
+    const same = (a, b) => recoveryContentStamp(a, []) === recoveryContentStamp(b, []);
+    const pick = (before, ours, theirs) => {
+        if (![before, ours, theirs].every(object)) return null;
+        if (same(ours, before)) return theirs;
+        if (same(theirs, before) || same(ours, theirs)) return ours;
+        // An overlap is never resolved this way on an automatic path.
+        if (preferOverlap === 'local') return ours;
+        if (preferOverlap === 'server') return theirs;
+        return null;
+    };
+    const setup = pick(base.setup, local.setup, server.setup);
+    if (!setup) return null;
+    const answers = [];
+    for (let room = 0; room < base.answers.length; room++) {
+        const [before, ours, theirs] = [base.answers[room], local.answers[room], server.answers[room]];
+        if (![before, ours, theirs].every(Array.isArray)
+            || before.length !== ours.length || before.length !== theirs.length) return null;
+        const merged = before.map((answer, question) => pick(answer, ours[question], theirs[question]));
+        if (merged.some(answer => answer === null)) return null;
+        answers.push(merged);
+    }
+    return JSON.parse(JSON.stringify({ setup, answers }));
+}
+
 export function chooseLocalRecovery(record, server, now = Date.now()) {
     if (!record || record.scope !== server.scope
         || !Number.isFinite(record.saved_at) || record.saved_at > now + 60000
