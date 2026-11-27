@@ -136,7 +136,7 @@ final class FocusV2MediaController extends Controller
                 'total_chunks' => $totalChunks,
                 'status' => 'pending',
             ]);
-        });
+        }, 5);
 
         return $this->describe($upload);
     }
@@ -175,7 +175,7 @@ final class FocusV2MediaController extends Controller
             $locked->touch();
 
             return response()->json(['index' => $index, 'replayed' => false]);
-        })->header('Cache-Control', 'private, no-store');
+        }, 5)->header('Cache-Control', 'private, no-store');
     }
 
     public function complete(Request $request, RolePreviewContext $preview, string $upload): JsonResponse
@@ -250,7 +250,7 @@ final class FocusV2MediaController extends Controller
                 'status' => 'ready', 'stored_path' => $finalPath, 'actual_mime' => $actualMime,
             ])->save();
             return $this->describe($upload);
-        });
+        }, 5);
 
         // Clean chunks only after the database confirms the ready file. If a
         // transaction fails, the parts remain available for safe retry.
@@ -341,7 +341,7 @@ final class FocusV2MediaController extends Controller
                     'thumbnail_url' => route('page-checks.control.draft-media', [...$parameters, 'thumbnail' => 1]),
                 ],
             ])->header('Cache-Control', 'private, no-store');
-        });
+        }, 5);
     }
 
     /**
@@ -385,7 +385,7 @@ final class FocusV2MediaController extends Controller
             $locked->delete();
 
             return ['revision' => $draft->revision, 'path' => $safeToDelete ? $path : null];
-        });
+        }, 5);
         // Database commit takes precedence; a failed unlink can be cleaned
         // separately without leaving the response pointing to a missing file.
         if ($data['path'] !== null) {
@@ -401,19 +401,23 @@ final class FocusV2MediaController extends Controller
     {
         $record = $this->ownedUpload($request, $preview, $upload);
 
-        return DB::transaction(function () use ($record): JsonResponse {
+        $cancelled = DB::transaction(function () use ($record): FocusV2MediaUpload {
             $record = FocusV2MediaUpload::query()->whereKey($record->id)->lockForUpdate()->firstOrFail();
             abort_if($record->status === 'attached', 409, 'Прикреплённый файл нельзя отменить.');
             if ($record->status !== 'cancelled') {
                 $record->status = 'cancelled';
                 $record->save();
-                Storage::disk('local')->deleteDirectory($this->tempDirectory($record));
-                if ($record->stored_path) {
-                    Storage::disk('local')->delete($record->stored_path);
-                }
             }
-            return response()->json(['cancelled' => true])->header('Cache-Control', 'private, no-store');
-        });
+            return $record;
+        }, 5);
+
+        // Never remove the only copy before the cancellation commits.
+        Storage::disk('local')->deleteDirectory($this->tempDirectory($cancelled));
+        if ($cancelled->stored_path) {
+            Storage::disk('local')->delete($cancelled->stored_path);
+        }
+
+        return response()->json(['cancelled' => true])->header('Cache-Control', 'private, no-store');
     }
 
     /**
@@ -476,7 +480,7 @@ final class FocusV2MediaController extends Controller
                     'thumbnail_url' => route('page-checks.control.result-media', [...$params, 'thumbnail' => 1]),
                 ],
             ]];
-        });
+        }, 5);
 
         [$result, $body] = $response;
         $progress = app(\App\Services\Controls\FocusV2MediaProgress::class)->forResponse($result, false);
