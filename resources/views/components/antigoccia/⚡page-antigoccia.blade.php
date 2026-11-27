@@ -110,7 +110,8 @@ new class extends Component {
 
     public function getApplicationProperty(): ?AntigocciaApplication
     {
-        if (! $this->apartment) {
+        if (! $this->apartment || ! preg_match('/^(\d{4})-(\d{2})-(\d{2})$/D', $this->cleaningDate, $date)
+            || ! checkdate((int) $date[2], (int) $date[3], (int) $date[1])) {
             return null;
         }
 
