@@ -150,12 +150,12 @@ it('registers entry, history, create, and detail routes for coaching', function 
         ->and(Route::has('page-coachings.show'))->toBeTrue();
 });
 
-it('links the existing coaching tile to the working list', function () {
+it('keeps the coaching workflow accessible without a tile on the Controls page', function () {
     $user = coachingWorkflowUser('Cleaner', 'cleaner');
 
     Livewire::actingAs($user)
         ->test('page-checks')
-        ->assertSee(route('page-coachings'), false);
+        ->assertDontSee(route('page-coachings'), false);
 });
 
 it('opens the creation form directly for managers and history for cleaners', function (string $role) {
