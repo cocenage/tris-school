@@ -5,7 +5,7 @@ import FocusSearchSelect from './FocusSearchSelect.vue';
 import FocusMediaViewer from './FocusMediaViewer.vue';
 import FocusVideoThumb from './FocusVideoThumb.vue';
 import { allowedFocusFile, attachFocusFile, canRetryFocusFile, focusFileMime, focusMediaRequest, isTransientFocusUploadError, transferFocusFile } from './media-upload';
-import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, recoveryContentStamp, recoveryScope, writeLocalRecovery } from './local-recovery';
+import { cacheFocusPhoto, canCacheFocusMedia, chooseLocalRecovery, createLocalRecoveryQueue, deleteLocalRecovery, forgetCachedFocusPhoto, readCachedFocusPhotos, readLocalRecovery, mergeDraftEdits, recoveryContentStamp, recoveryScope, writeLocalRecovery } from './local-recovery';
 
 const props = defineProps({
     bootstrapUrl: { type: String, required: true },
@@ -61,6 +61,7 @@ const galleryViewer = ref(null);
 const cacheWarning = ref('');
 const recoveringPhotos = ref(false);
 const recoveryRecord = ref(null);
+const conflictChoices = ref(null);
 const recoveryMode = ref('');
 const recoveryBusy = ref(false);
 const recoveryError = ref('');
@@ -121,6 +122,50 @@ async function keepServerVersion() {
         recoveryBusy.value = false;
     }
 }
+function prepareConflictChoices(base, local, latest) {
+    const ours = mergeDraftEdits(base, local, latest, 'local');
+    const theirs = mergeDraftEdits(base, local, latest, 'server');
+    if (!ours || !theirs) return;
+    const same = (a, b) => recoveryContentStamp(a, []) === recoveryContentStamp(b, []);
+    const questions = [];
+    ours.answers.forEach((room, roomIndex) => room.forEach((answer, questionIndex) => {
+        const other = theirs.answers[roomIndex][questionIndex];
+        if (same(answer, other)) return;
+        const question = rooms.value[roomIndex]?.items?.[questionIndex];
+        const describe = value => [
+            question?.answer_options_scored?.find((option, index) => optionValue(option, index) === value.selected)?.label
+                || value.selected,
+            value.custom,
+            value.corrective?.action,
+        ].filter(Boolean).join(' · ') || 'Без ответа';
+        questions.push({
+            key: roomIndex + ':' + questionIndex,
+            title: question?.question || 'Вопрос ' + (questionIndex + 1),
+            local: describe(answer),
+            server: describe(other),
+        });
+    }));
+    conflictChoices.value = { local: ours, server: theirs, latest, questions, setupDiffers: !same(ours.setup, theirs.setup) };
+}
+
+function resolveConflictingAnswers(preference) {
+    const choices = conflictChoices.value;
+    if (!choices || !['local', 'server'].includes(preference)
+        || choices.latest.run.id !== run.value?.id || choices.latest.run.draft_id !== run.value?.draft_id) return;
+    const selected = choices[preference];
+    applyNewerDraft(choices.latest);
+    acknowledgedContent = recoveryContentStamp(choices.latest.setup, choices.latest.answers);
+    uncertainSnapshot = null;
+    setup.value = selected.setup;
+    answers.value = selected.answers;
+    recoveryRecord.value = null;
+    conflictChoices.value = null;
+    recoveryMode.value = '';
+    state.value = 'dirty';
+    touch();
+    void restoreDraftMedia();
+}
+
 function restoreLocalVersion() {
     if (recoveryMode.value !== 'safe' || !recoveryRecord.value) return;
     const saved = recoveryRecord.value;
@@ -149,7 +194,10 @@ let timer = null;
 let inFlight = null;
 let uncertainSnapshot = null;
 let pendingMediaReplay = null;
+let independentMedia = false;
 let acknowledgedContent = null;
+let answerRetryAttempt = 0;
+const answerRetryBackoff = [1500, 4000, 10000, 25000];
 
 const statusLabel = computed(() => testMode.value && state.value === 'synced' ? 'Тестовый черновик сохранён' : ({
     idle: 'Готово',
@@ -227,7 +275,9 @@ async function fetchJson(url, options = {}) {
             return {};
         });
     } catch (error) {
-        if (timeoutFired) throw new Error('Соединение зависло. При восстановлении повторим сохранение без потери ответов.');
+        if (timeoutFired) {
+            throw Object.assign(new Error('Соединение зависло. При восстановлении повторим сохранение без потери ответов.'), { name: 'TimeoutError' });
+        }
         throw error;
     } finally {
         clearTimeout(timeout);
@@ -257,6 +307,8 @@ async function initialize(sandbox = false) {
     uncertainSnapshot = null;
     pendingMediaReplay = null;
     acknowledgedContent = null;
+    answerRetryAttempt = 0;
+    conflictChoices.value = null;
     recoveryRecord.value = null;
     recoveryMode.value = '';
     recoveryKey = null;
@@ -293,6 +345,7 @@ async function initialize(sandbox = false) {
         if (sandbox && (!data.test_mode || data.viewer?.role !== 'admin')) {
             throw new Error('Сервер не подтвердил безопасный тестовый режим.');
         }
+        independentMedia = data.media_revision_scope === 'answers';
         viewerRole.value = data.viewer?.role ?? '';
         viewerId.value = data.viewer?.id ?? null;
         interruptedUploads.value = data.pending_uploads ?? [];
@@ -326,8 +379,14 @@ async function initialize(sandbox = false) {
                         })
                         : 'none';
                     if (decision === 'safe' || decision === 'conflict') {
-                        recoveryRecord.value = saved;
-                        recoveryMode.value = decision;
+                        // A different run or schema must never receive these local answers.
+                        const sameDraftConflict = decision === 'conflict' && saved.draft_id != null
+                            && saved.run_id === data.run?.id && saved.draft_id === data.run?.draft_id
+                            && saved.base_revision < data.run.revision;
+                        const combined = sameDraftConflict ? mergeDraftEdits(saved.base_content, saved, data) : null;
+                        if (sameDraftConflict && !combined) prepareConflictChoices(saved.base_content, saved, data);
+                        recoveryRecord.value = combined ? { ...saved, ...combined } : saved;
+                        recoveryMode.value = combined ? 'safe' : decision;
                     } else if (saved && (decision === 'synced' || decision === 'expired')) {
                         await queueLocalWrite({ type: 'delete', scope: recoveryKey });
                     }
@@ -769,8 +828,10 @@ async function attachReadyDraft(record) {
                 throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
             }
             const publish = attached => {
-                run.value = { ...run.value, ...attached.run };
-                if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                if (attached.run) {
+                    run.value = { ...run.value, ...attached.run };
+                    if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                }
                 const files = media.value[record.room_index][record.question_index];
                 if (!files.some(file => file.upload_id === attached.media_item.upload_id)) files.push(attached.media_item);
                 interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
@@ -893,6 +954,12 @@ function queueSave(delay = 800) {
     timer = setTimeout(() => { void flush(); }, delay);
 }
 
+function retryAnswerSave() {
+    if (!canEdit.value) return;
+    answerRetryAttempt = 0;
+    void flush();
+}
+
 function takeSnapshot() {
     return {
         control_id: control.value.id,
@@ -908,8 +975,8 @@ function takeSnapshot() {
 
 // A photo advances the same revision counter as the form. Only adopt a
 // newer server revision when the run and its confirmed form content match.
-async function readNewerDraft(base, allowedContent) {
-    if (!base?.draft_id || !allowedContent.some(Boolean)) return null;
+async function readDraftAtNewRevision(base) {
+    if (!base?.draft_id) return null;
     const latest = await fetchJson(props.bootstrapUrl + (testMode.value ? '?test_mode=1' : ''));
     const server = latest.run;
     if (latest.viewer?.id !== viewerId.value || latest.control?.id !== control.value?.id
@@ -919,6 +986,13 @@ async function readNewerDraft(base, allowedContent) {
         || !Number.isInteger(server.revision) || server.revision <= base.revision
         || !Array.isArray(latest.media) || !Array.isArray(latest.pending_uploads)
         || run.value?.id !== base.id || run.value.draft_id !== base.draft_id) return null;
+    return latest;
+}
+
+async function readNewerDraft(base, allowedContent) {
+    if (!allowedContent.some(Boolean)) return null;
+    const latest = await readDraftAtNewRevision(base);
+    if (!latest) return null;
     const content = recoveryContentStamp(latest.setup, latest.answers);
     return allowedContent.includes(content) ? { latest, content } : null;
 }
@@ -941,19 +1015,19 @@ async function flush() {
             : 'Нет интернета и локальная копия недоступна. Не закрывайте Telegram до восстановления связи.';
         return false;
     }
-    if (attachInFlight) {
+    if (!independentMedia && attachInFlight) {
         await attachInFlight;
         return flush();
     }
     if (inFlight) return inFlight;
-    if (pendingMediaReplay) {
+    if (!independentMedia && pendingMediaReplay) {
         if (!(await reconcilePendingMedia())) return false;
         return flush();
     }
     if (!uncertainSnapshot && changeSerial === acknowledgedSerial) return true;
 
     const snapshot = uncertainSnapshot ?? takeSnapshot();
-    const serial = uncertainSnapshot ? uncertainSnapshot.serial : changeSerial;
+    let serial = uncertainSnapshot ? uncertainSnapshot.serial : changeSerial;
     let body = uncertainSnapshot ? uncertainSnapshot.body : snapshot;
     state.value = 'saving';
 
@@ -969,17 +1043,35 @@ async function flush() {
             } catch (error) {
                 if (error.status !== 409 || error.code !== 'revision_conflict') throw error;
                 const content = recoveryContentStamp(body.setup, body.answers);
-                const matching = await readNewerDraft(
+                const latest = await readDraftAtNewRevision(
                     { id: body.run_id, draft_id: body.draft_id, revision: body.expected_revision },
-                    [acknowledgedContent, content],
                 );
-                if (!matching) throw error;
-                applyNewerDraft(matching.latest);
-                body = { ...body, expected_revision: matching.latest.run.revision };
-                if (matching.content === content) {
+                if (!latest) throw error;
+                const serverContent = recoveryContentStamp(latest.setup, latest.answers);
+                if (serverContent === acknowledgedContent || serverContent === content) {
+                    applyNewerDraft(latest);
+                    body = { ...body, expected_revision: latest.run.revision };
                     // A previous write may already have reached the server.
-                    result = { run: matching.latest.run };
+                    result = serverContent === content ? { run: latest.run } : await save();
                 } else {
+                    // Use the current local form, including edits entered while loading the server version.
+                    const local = takeSnapshot();
+                    const combined = mergeDraftEdits(acknowledgedContent, local, latest);
+                    if (!combined) {
+                        prepareConflictChoices(acknowledgedContent, local, latest);
+                        if (conflictChoices.value) {
+                            recoveryRecord.value = local;
+                            recoveryMode.value = 'conflict';
+                        }
+                        throw error;
+                    }
+                    applyNewerDraft(latest);
+                    acknowledgedContent = serverContent;
+                    setup.value = combined.setup;
+                    answers.value = combined.answers;
+                    serial = changeSerial;
+                    body = takeSnapshot();
+                    saveLocalSnapshot();
                     result = await save();
                 }
             }
@@ -989,6 +1081,7 @@ async function flush() {
             }
             run.value = { ...run.value, ...result.run };
             uncertainSnapshot = null;
+            answerRetryAttempt = 0;
             acknowledgedSerial = Math.max(acknowledgedSerial, serial);
             acknowledgedContent = recoveryContentStamp(body.setup, body.answers);
             state.value = changeSerial === acknowledgedSerial ? 'synced' : 'dirty';
@@ -1001,6 +1094,9 @@ async function flush() {
             uncertainSnapshot = error.status === 422 ? null : { body, serial };
             state.value = error.status === 409 ? 'conflict' : 'error';
             syncError.value = error.message || 'Не удалось сохранить изменения.';
+            if (isTransientFocusUploadError(error) && answerRetryAttempt < answerRetryBackoff.length) {
+                queueSave(answerRetryBackoff[answerRetryAttempt++]);
+            }
             return false;
         } finally {
             inFlight = null;
@@ -1065,6 +1161,18 @@ async function reconcilePendingMedia() {
 
 async function saveMediaAttachment({ url, body, signal, notify, publish, afterReplay, uploadId, alreadyAttached = false }) {
     const base = { ...run.value };
+    if (independentMedia) {
+        const result = await attachFocusFile(url, { ...body, revision_scope: 'answers' }, csrf, signal, notify);
+        if (result.media_revision_scope !== 'answers' || result.run?.draft_id !== base.draft_id
+            || result.media_item?.upload_id !== uploadId || run.value?.id !== base.id
+            || run.value?.draft_id !== base.draft_id) {
+            throw new Error('Сервер не подтвердил прикрепление файла к этой проверке.');
+        }
+        // The server's answer revision in this response may be older than a
+        // just-completed save. Attachment receipts never change client revision.
+        await publish({ media_item: result.media_item });
+        return;
+    }
     let requestBody = body;
     const perform = async currentSignal => {
         const attach = async () => {
@@ -1111,7 +1219,7 @@ async function saveMediaAttachment({ url, body, signal, notify, publish, afterRe
 async function writeDraftMedia(action) {
     while (true) {
         if (!canEdit.value) throw new Error(syncError.value || 'Черновик сейчас недоступен.');
-        if (attachInFlight || inFlight) {
+        if (attachInFlight || (!independentMedia && inFlight)) {
             await (attachInFlight || inFlight);
             continue;
         }
@@ -1121,7 +1229,7 @@ async function writeDraftMedia(action) {
         }
         // A lost save acknowledgement may already have advanced the revision.
         // Reconcile it before sending an attachment or a deletion.
-        if (uncertainSnapshot) {
+        if (!independentMedia && uncertainSnapshot) {
             if (!(await flush())) throw new Error(syncError.value || 'Сервер не подтвердил состояние черновика.');
             continue;
         }
@@ -1463,6 +1571,7 @@ async function submitControl() {
             throw new Error('Черновик ещё не сохранён.');
         }
         await attachQueue;
+        await attachInFlight;
         if (!canSubmitMedia.value) {
             throw new Error('Не все фото и видео подтверждены сервером.');
         }
@@ -1763,8 +1872,10 @@ async function sendOne(item) {
                     return;
                 }
                 const publish = async attached => {
-                    run.value = { ...run.value, ...attached.run };
-                    if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                    if (attached.run) {
+                        run.value = { ...run.value, ...attached.run };
+                        if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                    }
                     const arr = media.value[item.room] ?? (media.value[item.room] = []);
                     const files = arr[item.question] ?? (arr[item.question] = []);
                     if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
@@ -1806,7 +1917,7 @@ async function sendOne(item) {
         item.retryable = isTransientFocusUploadError(error);
         item.error = error.message || 'Не удалось загрузить файл.';
         schedulePhotoRetry(item);
-        if (error.status === 409 && item.progress === 100) {
+        if (!independentMedia && error.status === 409 && item.progress === 100) {
             syncError.value = 'Не удалось прикрепить файл из-за изменения черновика. Проверьте ответы перед повтором.';
         }
     }
@@ -1972,8 +2083,10 @@ async function deleteDraftAttachment(room, question, uploadId, signal) {
     const url = props.mediaStartUrl + '/' + encodeURIComponent(uploadId) + '/attached';
     const conflict = () => Object.assign(new Error('Черновик изменился во время удаления.'), { status: 409 });
     const publish = async revision => {
-        run.value = { ...run.value, revision };
-        if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+        if (!independentMedia) {
+            run.value = { ...run.value, revision };
+            if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+        }
         media.value[room][question] = media.value[room][question].filter(item => item.upload_id !== uploadId);
         mediaError.value = '';
         if (recoveryKey) {
@@ -1981,9 +2094,10 @@ async function deleteDraftAttachment(room, question, uploadId, signal) {
         }
     };
     const send = async currentSignal => {
-        const deleted = await focusMediaRequest(url, 'DELETE', { expected_revision: original.revision }, csrf, currentSignal);
+        const body = { expected_revision: original.revision, ...(independentMedia ? { revision_scope: 'answers' } : {}) };
+        const deleted = await focusMediaRequest(url, 'DELETE', body, csrf, currentSignal);
         if (!deleted.deleted || deleted.run?.draft_id !== original.draft_id
-            || deleted.run?.revision !== original.revision + 1) {
+            || (independentMedia ? deleted.media_revision_scope !== 'answers' : deleted.run.revision !== original.revision + 1)) {
             const error = new Error('Сервер не подтвердил удаление.');
             error.name = 'TimeoutError';
             throw error;
@@ -1992,18 +2106,19 @@ async function deleteDraftAttachment(room, question, uploadId, signal) {
     };
     const inspect = async () => {
         const server = await fetchJson(props.bootstrapUrl + (testMode.value ? '?test_mode=1' : ''));
-        if (server.run?.id !== original.id || server.run?.draft_id !== original.draft_id
+        if (server.viewer?.id !== viewerId.value || server.run?.id !== original.id || server.run?.draft_id !== original.draft_id
             || server.run.schema_conflict || server.control?.id !== control.value.id
             || server.control?.schema_version !== control.value.schema_version
             || Boolean(server.test_mode) !== testMode.value
-            || recoveryContentStamp(server.setup, server.answers) !== baseContent
+            || (independentMedia ? server.media_revision_scope !== 'answers'
+                : recoveryContentStamp(server.setup, server.answers) !== baseContent)
             || !Array.isArray(server.media?.[room]?.[question])) throw conflict();
         const present = server.media[room][question].some(file => file.upload_id === uploadId);
-        if (!present && server.run.revision === original.revision + 1) {
+        if (!present && (independentMedia || server.run.revision === original.revision + 1)) {
             await publish(server.run.revision);
             return true;
         }
-        if (!present || server.run.revision !== original.revision) throw conflict();
+        if (!independentMedia && (!present || server.run.revision !== original.revision)) throw conflict();
         return false;
     };
     const replay = async () => {
@@ -2022,6 +2137,7 @@ async function deleteDraftAttachment(room, question, uploadId, signal) {
         try {
             await replay();
         } catch (checkError) {
+            if (independentMedia) throw checkError;
             if (checkError.status === 409) {
                 state.value = 'conflict';
                 syncError.value = checkError.message;
@@ -2352,12 +2468,24 @@ onBeforeUnmount(() => {
                     <p v-if="recoveryMode === 'safe'" class="mt-2">
                         Эти изменения могли не успеть сохраниться на сервере. Выберите, какую версию продолжить.
                     </p>
+                    <p v-else-if="conflictChoices" class="mt-2">
+                        Один и тот же ответ или данные проверки менялись в двух местах. Выберите, что оставить там, где версии разошлись. Остальные ответы сохранятся с обеих сторон.
+                    </p>
                     <p v-else class="mt-2">
                         Серверный черновик изменился после создания локальной копии либо принадлежит другому запуску.
                         Чтобы не перезаписать более свежие ответы, автоматическое восстановление заблокировано.
                         Можно просмотреть локальную копию и перенести нужные ответы вручную.
                     </p>
-                    <details v-if="recoveryMode === 'conflict'" class="mt-3 rounded-lg border border-amber-200 bg-white p-3">
+                    <details v-if="conflictChoices" class="mt-3 rounded-lg border border-amber-200 bg-white p-3">
+                        <summary class="cursor-pointer font-semibold">Что различается</summary>
+                        <p v-if="conflictChoices.setupDiffers" class="mt-2">Различаются данные проверки.</p>
+                        <div v-for="question in conflictChoices.questions" :key="question.key" class="mt-2">
+                            <strong>{{ question.title }}</strong>
+                            <p>Мой ответ: {{ question.local }}</p>
+                            <p>На сервере: {{ question.server }}</p>
+                        </div>
+                    </details>
+                    <details v-else-if="recoveryMode === 'conflict'" class="mt-3 rounded-lg border border-amber-200 bg-white p-3">
                         <summary class="cursor-pointer font-semibold">Показать локальные ответы для копирования</summary>
                         <textarea readonly :value="JSON.stringify({ setup: recoveryRecord.setup, answers: recoveryRecord.answers }, null, 2)"
                             rows="8" class="mt-2 w-full rounded-lg border border-slate-200 p-2 font-mono text-xs"></textarea>
@@ -2367,7 +2495,13 @@ onBeforeUnmount(() => {
                         <button v-if="recoveryMode === 'safe'" type="button" :disabled="recoveryBusy"
                             class="rounded-xl bg-blue-600 px-4 py-3 font-bold text-white disabled:opacity-50"
                             @click="restoreLocalVersion">Восстановить локальные ответы</button>
-                        <button type="button" :disabled="recoveryBusy" class="rounded-xl border border-amber-300 bg-white px-4 py-3 font-bold disabled:opacity-50"
+                        <template v-if="conflictChoices">
+                            <button type="button" class="rounded-xl bg-blue-600 px-4 py-3 font-bold text-white"
+                                @click="resolveConflictingAnswers('local')">В спорных местах оставить мои</button>
+                            <button type="button" class="rounded-xl border border-amber-300 bg-white px-4 py-3 font-bold"
+                                @click="resolveConflictingAnswers('server')">В спорных местах оставить серверные</button>
+                        </template>
+                        <button v-else type="button" :disabled="recoveryBusy" class="rounded-xl border border-amber-300 bg-white px-4 py-3 font-bold disabled:opacity-50"
                             @click="keepServerVersion">Оставить серверную версию</button>
                     </div>
                 </section>
@@ -2401,10 +2535,13 @@ onBeforeUnmount(() => {
 
                 <div v-if="syncError" role="alert" class="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
                     {{ syncError }}
+                    <button v-if="state === 'error' && canEdit" type="button"
+                        class="mt-2 block rounded-lg border border-red-300 bg-white px-3 py-2 font-semibold"
+                        @click="retryAnswerSave">Повторить сохранение ответов</button>
                     <p v-if="state === 'conflict'" class="mt-2 font-semibold">Не перезагружайте страницу, если есть несохранённые ответы. Для восстановления сначала разберите конфликт черновика.</p>
                 </div>
 
-                <button v-if="resetUrl && resetAfterConflict && stage !== 'done'"
+                <button v-if="resetUrl && resetAfterConflict && !conflictChoices && stage !== 'done'"
                     type="button" :disabled="resetting || submitting || recoveringPhotos"
                     class="mb-4 min-h-11 rounded-lg border border-red-300 bg-white px-4 text-sm font-semibold text-red-800 disabled:opacity-50"
                     @click="resetControl">{{ resetting ? 'Сбрасываем…' : 'Начать новую проверку' }}</button>

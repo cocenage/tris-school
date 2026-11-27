@@ -40,7 +40,21 @@ class ControlMediaController
 
         $draft = $draftQuery->firstOrFail();
 
-        $file = $draft->responses[$room][$question]['media'][$media] ?? null;
+        $files = $draft->responses[$room][$question]['media'] ?? [];
+        $file = $files[$media] ?? null;
+        if ($request->query->has('upload_id')) {
+            // Vue references a stable upload ID. Removing a sibling file can
+            // shift its index, but must never send a different photo in its place.
+            $uploadId = $request->query('upload_id');
+            abort_unless(is_string($uploadId) && $uploadId !== '', 404);
+            $file = null;
+            foreach ($files as $candidate) {
+                if (is_array($candidate) && ($candidate['upload_id'] ?? null) === $uploadId) {
+                    $file = $candidate;
+                    break;
+                }
+            }
+        }
 
         return $this->serve($file, $control->id, $request->user()->id, $request->boolean('download'), $request->boolean('thumbnail'),
             $sandbox ? $draft->run_id : null);

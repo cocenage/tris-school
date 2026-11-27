@@ -691,6 +691,12 @@ it('runs a genuine admin sandbox upload without creating responses, activity, re
     ])->assertOk()->assertJsonPath('run.revision', 2);
     $sandbox->refresh();
 
+    $restoredPhoto = $this->getJson(route('page-checks.control.focus-v2.bootstrap').'?test_mode=1')
+        ->assertOk()->assertJsonPath('media.0.0.0.upload_id', $upload['upload_id'])
+        ->json('media.0.0.0.url');
+    $this->get($restoredPhoto)->assertOk();
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertOk()->assertJsonMissingPath('media.0.0.0');
+
     $fileUrl = route('page-checks.control.draft-media', [
         $control, 0, 0, 0, 'draft_id' => $sandbox->id, 'test_mode' => 1,
     ]);
@@ -819,6 +825,88 @@ it('uploads Focus V2 evidence in chunks, resumes and attaches it exactly once', 
     $this->postJson(route('page-checks.control.focus-v2.draft'), $payload)
         ->assertOk()->assertJsonPath('run.revision', 3);
     expect(ControlResponseDraft::query()->sole()->responses[0][0]['media'])->toHaveCount(1);
+});
+
+it('isolates evidence uploads from answer revisions and submits the original draft', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft, $payload] = focusV2MediaFixture();
+    $file = focusV2SamplePng();
+    $ready = function () use ($control, $draft, $file): string {
+        $init = focusV2MediaStartPayload($control, $draft, $file);
+        $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+        focusV2PutChunk($init['upload_id'], $file)->assertOk();
+        $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))->assertOk();
+        return $init['upload_id'];
+    };
+    $first = $ready();
+    $second = $ready();
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()->assertJsonPath('media_revision_scope', 'answers');
+    $payload['draft_id'] = $draft->id;
+    $payload['expected_revision'] = 1;
+    $saveUrl = route('page-checks.control.focus-v2.draft');
+    $attach = fn (string $id) => $this->postJson(route('page-checks.control.focus-v2.media.attach', $id), [
+        'draft_id' => $draft->id, 'expected_revision' => 1, 'revision_scope' => 'answers',
+    ]);
+
+    $firstUrl = $attach($first)->assertOk()->assertJsonPath('media_revision_scope', 'answers')
+        ->assertJsonPath('run.revision', 1)->json('media_item.url');
+    $payload['answers'][0][0]['selected'] = 'no';
+    $this->postJson($saveUrl, $payload)->assertOk()->assertJsonPath('run.revision', 2);
+    $secondUrl = $attach($second)->assertOk()->assertJsonPath('run.revision', 2)->json('media_item.url');
+    $attach($second)->assertOk()->assertJsonPath('run.revision', 2);
+    $this->postJson($saveUrl, $payload)->assertOk()->assertJsonPath('replayed', true);
+    expect($draft->refresh()->responses[0][0]['media'])->toHaveCount(2);
+
+    $this->deleteJson(route('page-checks.control.focus-v2.media.remove-attached', $first), [
+        'expected_revision' => 1, 'revision_scope' => 'answers',
+    ])->assertOk()->assertJsonPath('media_revision_scope', 'answers')->assertJsonPath('run.revision', 2);
+    $this->get($firstUrl)->assertNotFound();
+    $this->get($secondUrl)->assertOk();
+    $this->getJson(route('page-checks.control.focus-v2.bootstrap'))
+        ->assertOk()->assertJsonPath('media.0.0.0.upload_id', $second);
+    $payload['answers'][0][0]['selected'] = 'yes';
+    $this->postJson($saveUrl, $payload)->assertStatus(409)->assertJsonPath('error', 'revision_conflict');
+    $payload['expected_revision'] = 2;
+    $this->postJson($saveUrl, $payload)->assertOk()->assertJsonPath('run.revision', 3);
+    $this->postJson(route('page-checks.control.focus-v2.submit'), focusV2FinalPayload($draft->refresh()))->assertOk();
+    $saved = ControlResponse::query()->sole();
+    expect($saved->submission_token)->toBe($draft->run_id)
+        ->and($saved->responses[0][0]['selected'])->toBe('yes')
+        ->and($saved->responses[0][0]['media'])->toHaveCount(1)
+        ->and($saved->responses[0][0]['media'][0]['upload_id'])->toBe($second);
+});
+
+
+it('preserves only the latest evidence when an answer save was prepared before a media write', function (): void {
+    Storage::fake('local');
+    [, , $control, $draft] = focusV2MediaFixture();
+    $staleAnswers = $draft->responses;
+    $staleAnswers[0][0]['selected'] = 'no';
+    $file = focusV2SamplePng();
+    $init = focusV2MediaStartPayload($control, $draft, $file);
+    $this->postJson(route('page-checks.control.focus-v2.media.start'), $init)->assertOk();
+    focusV2PutChunk($init['upload_id'], $file)->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.complete', $init['upload_id']))->assertOk();
+    $this->postJson(route('page-checks.control.focus-v2.media.attach', $init['upload_id']), [
+        'draft_id' => $draft->id, 'expected_revision' => 1, 'revision_scope' => 'answers',
+    ])->assertOk();
+    $save = fn (array $answers, int $revision) => app(ControlRunManager::class)->saveDraft(
+        controlId: $control->id, supervisorId: $draft->supervisor_id, runId: $draft->run_id,
+        expectedRevision: $revision, draftId: $draft->id, schemaVersion: $draft->schema_version,
+        attributes: ['responses' => $answers], preserveLatestEvidence: true,
+    );
+    $saved = $save($staleAnswers, 1);
+    expect($saved->responses[0][0]['selected'])->toBe('no')
+        ->and($saved->responses[0][0]['media'][0]['upload_id'])->toBe($init['upload_id']);
+    $oldEvidence = $saved->responses;
+    $oldEvidence[0][0]['selected'] = 'yes';
+    $this->deleteJson(route('page-checks.control.focus-v2.media.remove-attached', $init['upload_id']), [
+        'expected_revision' => 1, 'revision_scope' => 'answers',
+    ])->assertOk();
+    $saved = $save($oldEvidence, 2);
+    expect($saved->responses[0][0]['selected'])->toBe('yes')
+        ->and($saved->responses[0][0]['media'])->toBe([]);
 });
 
 it('restores attached photo IDs after restart and lets only the owner delete unsubmitted media', function (): void {

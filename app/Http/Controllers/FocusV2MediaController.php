@@ -274,6 +274,7 @@ final class FocusV2MediaController extends Controller
         $input = $request->validate([
             'draft_id' => ['required', 'integer', 'min:1'],
             'expected_revision' => ['required', 'integer', 'min:0'],
+            'revision_scope' => ['sometimes', 'in:answers'],
         ]);
         $record = $this->ownedUpload($request, $preview, $upload);
         abort_unless($record->draft_id === (int) $input['draft_id'], 409);
@@ -282,7 +283,10 @@ final class FocusV2MediaController extends Controller
             return $this->attachToResult($record);
         }
 
-        return DB::transaction(function () use ($record, $input, $request): JsonResponse {
+        // Old clients keep the shared revision protocol until re-opened.
+        $answersOnly = ($input['revision_scope'] ?? null) === 'answers';
+
+        return DB::transaction(function () use ($record, $input, $request, $answersOnly): JsonResponse {
             $draft = ControlResponseDraft::query()->whereKey($record->draft_id)->lockForUpdate()->firstOrFail();
             $locked = FocusV2MediaUpload::query()->whereKey($record->id)->lockForUpdate()->firstOrFail();
             abort_unless(in_array($draft->state, ['active', 'sandbox'], true)
@@ -305,7 +309,7 @@ final class FocusV2MediaController extends Controller
 
             if ($existingIndex === null) {
                 abort_unless($locked->status === 'ready', 409);
-                abort_unless((int) $draft->revision === (int) $input['expected_revision'], 409, 'Черновик изменился. Повторите сохранение.');
+                abort_unless($answersOnly || (int) $draft->revision === (int) $input['expected_revision'], 409, 'Черновик изменился. Повторите сохранение.');
                 abort_unless(count($files) < self::MAX_MEDIA_PER_QUESTION, 422, 'Превышен лимит медиа.');
                 abort_unless($locked->stored_path && Storage::disk('local')->exists($locked->stored_path), 409);
 
@@ -318,19 +322,22 @@ final class FocusV2MediaController extends Controller
                 $existingIndex = count($files) - 1;
                 $responses[$room][$question]['media'] = $files;
                 $draft->responses = $responses;
-                $draft->revision = (int) $draft->revision + 1;
+                if (! $answersOnly) {
+                    $draft->revision = (int) $draft->revision + 1;
+                }
                 $draft->save();
                 $locked->status = 'attached';
                 $locked->save();
             }
 
-            $parameters = [$locked->control_id, $room, $question, $existingIndex, 'draft_id' => $draft->id];
+            $parameters = [$locked->control_id, $room, $question, $existingIndex, 'draft_id' => $draft->id, 'upload_id' => $locked->id];
             if ($draft->state === 'sandbox') {
                 $parameters['test_mode'] = 1;
             }
 
             return response()->json([
                 'run' => ['draft_id' => $draft->id, 'revision' => (int) $draft->revision],
+                ...($answersOnly ? ['media_revision_scope' => 'answers'] : []),
                 'room_index' => $room,
                 'question_index' => $question,
                 'media_item' => [
@@ -350,19 +357,24 @@ final class FocusV2MediaController extends Controller
      */
     public function removeAttached(Request $request, RolePreviewContext $preview, string $upload): JsonResponse
     {
-        $input = $request->validate(['expected_revision' => ['required', 'integer', 'min:1']]);
+        $input = $request->validate([
+            'expected_revision' => ['required', 'integer', 'min:1'],
+            'revision_scope' => ['sometimes', 'in:answers'],
+        ]);
+        $answersOnly = ($input['revision_scope'] ?? null) === 'answers';
         $record = $this->ownedUpload($request, $preview, $upload);
         abort_unless($record->control_response_id === null, 409, 'Завершённый контроль нельзя изменить.');
 
-        $data = DB::transaction(function () use ($record, $input): array {
+        $data = DB::transaction(function () use ($record, $input, $answersOnly): array {
             $draft = ControlResponseDraft::query()
                 ->whereKey($record->draft_id)->whereIn('state', ['active', 'sandbox'])
                 ->lockForUpdate()->firstOrFail();
             $locked = FocusV2MediaUpload::query()->whereKey($record->id)->lockForUpdate()->firstOrFail();
             abort_unless($locked->status === 'attached' && $locked->control_response_id === null
                 && $locked->run_id === $draft->run_id
+                && $locked->schema_version === $draft->schema_version
                 && (int) $locked->supervisor_id === (int) $draft->supervisor_id, 409);
-            abort_unless((int) $draft->revision === (int) $input['expected_revision'],
+            abort_unless($answersOnly || (int) $draft->revision === (int) $input['expected_revision'],
                 409, 'Черновик изменился. Обновите страницу.');
 
             $responses = is_array($draft->responses) ? $draft->responses : [];
@@ -373,7 +385,9 @@ final class FocusV2MediaController extends Controller
 
             $responses[$locked->room_index][$locked->question_index]['media'] = $kept;
             $draft->responses = $responses;
-            $draft->revision = (int) $draft->revision + 1;
+            if (! $answersOnly) {
+                $draft->revision = (int) $draft->revision + 1;
+            }
             $draft->save();
 
             $path = (string) $locked->stored_path;
@@ -392,9 +406,11 @@ final class FocusV2MediaController extends Controller
             Storage::disk('local')->delete($data['path']);
         }
 
-        return response()->json(['deleted' => true, 'run' => [
-            'draft_id' => $record->draft_id, 'revision' => $data['revision'],
-        ]])->header('Cache-Control', 'private, no-store');
+        return response()->json([
+            'deleted' => true,
+            ...($answersOnly ? ['media_revision_scope' => 'answers'] : []),
+            'run' => ['draft_id' => $record->draft_id, 'revision' => $data['revision']],
+        ])->header('Cache-Control', 'private, no-store');
     }
 
     public function cancel(Request $request, RolePreviewContext $preview, string $upload): JsonResponse
