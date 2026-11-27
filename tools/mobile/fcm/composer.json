@@ -1,0 +1,10 @@
+{
+  "name": "tris/mobile-dev-fcm",
+  "description": "Isolated DEV-only Google Auth dependency",
+  "require": {
+    "google/auth": "^1.45"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}

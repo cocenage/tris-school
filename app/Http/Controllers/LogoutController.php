@@ -10,6 +10,7 @@ class LogoutController extends Controller
 {
     public function __invoke(Request $request): RedirectResponse
     {
+        app(\App\Services\MobilePush\PushService::class)->revoke($request);
         Auth::logout();
 
         $request->session()->invalidate();

@@ -54,6 +54,15 @@ Route::controller(\App\Http\Controllers\DeviceLinkController::class)->group(func
     });
 });
 
+Route::middleware(['auth'])->controller(\App\Http\Controllers\MobilePushController::class)->group(function () {
+    Route::get('/profile/push', 'index')->name('mobile.push');
+    Route::post('/profile/push/register', 'register')->middleware('throttle:30,1')->name('mobile.push.register');
+    Route::post('/profile/push/revoke', 'revoke')->middleware('throttle:15,1')->name('mobile.push.revoke');
+    Route::post('/profile/push/event', 'event')->middleware('throttle:60,1')->name('mobile.push.event');
+    Route::get('/admin/mobile-push', 'admin')->name('mobile.push.admin');
+    Route::post('/admin/mobile-push', 'send')->middleware('throttle:5,1')->name('mobile.push.send');
+});
+
 Route::post('/telegram/auth', TelegramAuthController::class)
     ->name('telegram.auth');
 
