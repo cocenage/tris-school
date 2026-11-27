@@ -4,6 +4,7 @@ use App\Models\AntigocciaApplication;
 use App\Models\AntigocciaReport;
 use App\Models\Apartment;
 use App\Services\Antigoccia\AntigocciaAssessment;
+use App\Services\Antigoccia\AntigocciaCleaningStatistics;
 use App\Services\Antigoccia\DeleteOwnAntigocciaReport;
 use App\Services\Apartments\ApartmentAccessService;
 use Illuminate\Support\Facades\DB;
@@ -20,7 +21,6 @@ new class extends Component {
     public string $apartmentId = '';
     public string $apartmentSearch = '';
     public string $cleaningDate = '';
-    public string $daysSincePreviousCleaning = '';
     public string $submissionUuid = '';
     public array $answers = [];
     public array $photos = [];
@@ -41,7 +41,6 @@ new class extends Component {
     public function newForm(): void
     {
         $this->cleaningDate = now('Europe/Rome')->toDateString();
-        $this->daysSincePreviousCleaning = '';
         $this->answers = AntigocciaAssessment::blankAnswers();
         $this->photos = [];
         $this->submissionUuid = (string) Str::uuid();
@@ -235,7 +234,7 @@ new class extends Component {
         } catch (ValidationException $exception) {
             $this->setErrorBag($exception->validator->errors());
             $keys = array_keys($exception->errors());
-            $order = ['apartmentId', 'cleaningDate', 'daysSincePreviousCleaning'];
+            $order = ['apartmentId', 'cleaningDate'];
             foreach (AntigocciaAssessment::SURFACES as $surface => $label) {
                 array_push($order, "answers.$surface.dirt", "answers.$surface.removal", "answers.$surface.remaining", "photos.$surface");
             }
@@ -253,7 +252,6 @@ new class extends Component {
         $this->validate([
             'apartmentId' => ['required', 'integer'],
             'cleaningDate' => ['required', 'date_format:Y-m-d', 'before_or_equal:'.now('Europe/Rome')->toDateString()],
-            'daysSincePreviousCleaning' => ['required', 'integer', 'min:0', 'max:36500'],
             'submissionUuid' => ['required', 'uuid'],
         ]);
 
@@ -291,7 +289,8 @@ new class extends Component {
                     'user_id' => auth()->id(),
                     'cleaner_name' => auth()->user()->name ?: auth()->user()->telegram_username ?: 'Не указано',
                     'cleaning_date' => $this->cleaningDate,
-                    'days_since_previous_cleaning' => (int) $this->daysSincePreviousCleaning,
+                    'days_since_previous_cleaning' => app(AntigocciaCleaningStatistics::class)
+                        ->daysSincePreviousRecordedCleaning((int) $apartment->id, $this->cleaningDate),
                     'answers' => $answers,
                     'photos' => $files,
                     'remaining' => collect($answers)->contains(fn (array $answer): bool => $answer['remaining'] === 'yes'),
@@ -399,19 +398,11 @@ new class extends Component {
                     @endif
                 @endif
 
-                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div>
-                        <label for="antigoccia-date" class="mb-2 block text-[13px] font-semibold text-[#344460]">Дата уборки <span class="text-[#C84C46]">*</span></label>
-                        <input id="antigoccia-date" data-antigoccia-field="cleaningDate" type="date" wire:model.live="cleaningDate"
-                            max="{{ now('Europe/Rome')->toDateString() }}" @disabled($saved) class="min-h-[52px] w-full rounded-xl border border-[#E0E6ED] bg-[#F7F9FB] px-4 text-[14px] text-[#253854] focus:border-[#3181BB] focus:ring-[#3181BB]/20 disabled:opacity-60">
-                        @error('cleaningDate') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
-                    </div>
-                    <div>
-                        <label for="antigoccia-last-cleaning" class="mb-2 block text-[13px] font-semibold text-[#344460]">Дней с прошлой уборки <span class="text-[#C84C46]">*</span></label>
-                        <input id="antigoccia-last-cleaning" data-antigoccia-field="daysSincePreviousCleaning" type="number" min="0" max="36500" step="1" inputmode="numeric"
-                            wire:model="daysSincePreviousCleaning" placeholder="Например, 7" @disabled($saved) class="min-h-[52px] w-full rounded-xl border border-[#E0E6ED] bg-[#F7F9FB] px-4 text-[14px] text-[#253854] outline-none placeholder:text-[#A1ADBA] focus:border-[#3181BB] focus:ring-2 focus:ring-[#3181BB]/20 disabled:opacity-60">
-                        @error('daysSincePreviousCleaning') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
-                    </div>
+                <div>
+                    <label for="antigoccia-date" class="mb-2 block text-[13px] font-semibold text-[#344460]">Дата уборки <span class="text-[#C84C46]">*</span></label>
+                    <input id="antigoccia-date" data-antigoccia-field="cleaningDate" type="date" wire:model.live="cleaningDate"
+                        max="{{ now('Europe/Rome')->toDateString() }}" @disabled($saved) class="min-h-[52px] w-full rounded-xl border border-[#E0E6ED] bg-[#F7F9FB] px-4 text-[14px] text-[#253854] focus:border-[#3181BB] focus:ring-[#3181BB]/20 disabled:opacity-60">
+                    @error('cleaningDate') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
                 </div>
                 <div class="flex items-center gap-2 border-t border-[#EEF1F5] pt-3 text-[12px] text-[#77859A]">
                     <x-heroicon-o-user-circle class="size-4" />
