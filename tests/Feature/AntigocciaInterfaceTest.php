@@ -2,7 +2,7 @@
 
 use App\Services\Antigoccia\AntigocciaAssessment;
 
-it('links the Antigoccia form from the Controls page without replacing other controls', function (): void {
+it('shows only Antigoccia and the Focus entry on the Controls page', function (): void {
     $checks = file_get_contents(base_path('resources/views/components/⚡page-checks.blade.php'));
 
     expect($checks)
@@ -11,8 +11,11 @@ it('links the Antigoccia form from the Controls page without replacing other con
         ->toContain('Контроль покрытия')
         ->toContain('focus-visible:outline')
         ->not->toContain('wire:click="submitAntigoccia"')
-        ->toContain("route('page-checks.control')")
-        ->toContain("route('page-coachings')");
+        ->toContain("route('page-checks.control.focus-v2')")
+        ->not->toContain("route('page-checks.control')")
+        ->not->toContain("route('page-coachings')")
+        ->not->toContain("route('page-profile.checks')")
+        ->not->toContain("route('page-profile.all-checks')");
 });
 
 it('provides progress, severity, photo and saved states without changing independent answers', function (): void {
