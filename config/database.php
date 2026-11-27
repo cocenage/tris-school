@@ -62,6 +62,15 @@ return [
             'transaction_mode' => 'IMMEDIATE',
         ]),
 
+        // Optional isolated SQLite cache for request throttling. Never
+        // inherit the primary URL or database path for this connection.
+        'sqlite_rate_limiter' => array_merge($sqliteConnection, [
+            'url' => null,
+            'database' => env('DB_RATE_LIMIT_DATABASE', database_path('rate_limiter.sqlite')),
+            'busy_timeout' => (int) env('DB_RATE_LIMIT_BUSY_TIMEOUT', 5000),
+            'transaction_mode' => 'IMMEDIATE',
+        ]),
+
         'mysql' => [
             'driver' => 'mysql',
             'url' => env('DB_MYSQL_URL', env('DB_URL')),
