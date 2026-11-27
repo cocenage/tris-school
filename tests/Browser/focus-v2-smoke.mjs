@@ -23,7 +23,7 @@ const rooms = [{
     }],
 }];
 const initialSetup = () => ({
-    cleaner_id: null, apartment_id: null, cleaning_date: '2026-11-24',
+    cleaner_id: 8, apartment_id: 10, cleaning_date: '2026-11-24',
     inspection_date: '2026-11-24', is_assigned: false, previous_cleaner: '', comment: '',
 });
 const initialAnswers = () => [[{
@@ -317,6 +317,69 @@ async function main() {
         browser = await (process.env.FOCUS_BROWSER === 'webkit' ? webkit : chromium).launch({
             headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }),
         });
+
+        // Setup validation, room chrome, and review share the real workflow.
+        {
+            const backend = new FakeFocusBackend();
+            backend.setup.cleaner_id = null;
+            backend.setup.apartment_id = null;
+            const bootstrap = backend.bootstrap.bind(backend);
+            backend.bootstrap = () => {
+                const data = bootstrap();
+                data.rooms = [{...rooms[0],items:[rooms[0].items[0],{...rooms[0].items[0],is_optional:true,question:'Необязательное наблюдение'}]}];
+                data.answers = [data.answers[0].length===2 ? data.answers[0] : [data.answers[0][0], initialAnswers()[0][0]]];
+                data.media = [[data.media[0][0], data.media[0][1] ?? []]];
+                return data;
+            };
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const {page, errors} = await pageFor(context, backend);
+            const next = page.getByRole('button',{name:'К вопросам'});
+            await next.click();
+            assert.equal(await page.getByRole('heading',{name:'Данные проверки'}).isVisible(), true, 'Missing setup allowed starting the inspection');
+            await page.waitForFunction(() => document.activeElement?.id === 'focus-cleaner');
+            const cleaner = page.locator('#focus-cleaner');
+            await cleaner.fill('Настоящий');
+            const option = page.locator('#focus-cleaner-options').getByRole('option').first();
+            assert.ok(await option.getAttribute('id'));
+            assert.equal(await cleaner.getAttribute('aria-activedescendant'), await option.getAttribute('id'));
+            await cleaner.press('Enter');
+            await next.click();
+            await page.waitForFunction(() => document.activeElement?.id === 'focus-apartment');
+            await page.locator('#focus-apartment').fill('10');
+            await page.locator('#focus-apartment-options').getByRole('option').first().click();
+            const inspection = page.getByLabel('Дата проверки');
+            await inspection.fill('2026-11-23');
+            await next.click();
+            assert.equal(await inspection.getAttribute('aria-invalid'), 'true');
+            await inspection.fill('2026-11-24');
+            await next.click();
+            const main = page.locator('#focus-question-0-0');
+            await main.getByRole('button',{name:'Да',exact:true}).click();
+            await page.locator('#focus-question-0-1').getByRole('button',{name:'Нет',exact:true}).click();
+            assert.equal(await page.getByText('Кухня',{exact:true}).count(),1);
+            await main.getByRole('button',{name:'Добавить',exact:true}).click();
+            await page.getByRole('dialog',{name:'Добавить фото или видео'}).locator('input[type=file]')
+                .setInputFiles({ name:'evidence.png', mimeType:'image/png', buffer:image });
+            await page.getByRole('button',{name:'Добавить 1'}).click();
+            await main.getByRole('button',{name:'Удалить',exact:true}).waitFor();
+            await page.getByRole('button',{name:'К сводке'}).click();
+            await page.getByRole('heading',{name:'Проверьте данные контроля'}).waitFor();
+            assert.equal(await page.getByRole('button',{name:/Открыть замечание Необязательное наблюдение/}).count(),0);
+            await page.getByRole('button',{name:'Изменить данные'}).click();
+            await page.getByRole('heading',{name:'Данные проверки'}).waitFor();
+            await inspection.fill('2026-11-25');
+            await page.getByRole('button',{name:'Вернуться к сводке'}).click();
+            await page.getByRole('heading',{name:'Проверьте данные контроля'}).waitFor();
+            assert.equal(await page.getByText('2026-11-24 / 2026-11-25').count(),1);
+            await page.getByRole('button',{name:'Отправить контроль'}).click();
+            await page.getByRole('heading',{name:'Контроль завершён'}).waitFor();
+            assert.equal(backend.answers[0][0].selected,'yes');
+            assert.equal(backend.answers[0][1].selected,'no');
+            assert.equal(backend.media[0][0][0].name,'evidence.png');
+            assert.deepEqual(errors,[]);
+            console.log('PASS mobile UI: validate setup before rooms, align optional findings, edit setup from review, and preserve answers');
+            await context.close();
+        }
 
         // Attachment is idempotent even if the server's first receipt never reaches the phone.
         {

@@ -36,6 +36,8 @@ const highlightedReviewQuestion = ref(null);
 const submitting = ref(false);
 const resetting = ref(false);
 const submitError = ref('');
+const setupIssue = ref(null);
+const editingReviewSetup = ref(false);
 const finalResult = ref(null);
 const uploads = ref([]);
 const interruptedUploads = ref([]);
@@ -227,6 +229,7 @@ async function fetchJson(url, options = {}) {
             ? 'Сессия истекла. Войдите снова.' : 'Сервер не ответил.'));
         exception.status = response.status;
         exception.code = data.error;
+        exception.fields = data.errors;
         throw exception;
     }
     return data;
@@ -244,6 +247,8 @@ async function initialize() {
     recoveryMode.value = '';
     recoveryKey = null;
     resumePosition.value = null;
+    setupIssue.value = null;
+    editingReviewSetup.value = false;
     loading.value = true;
     loadError.value = '';
     testMode.value = false;
@@ -611,11 +616,13 @@ async function choosePerson(id) {
     }
     if (testMode.value) return;
     setup.value.cleaner_id = id;
+    clearSetupIssue('cleaner_id');
     touch();
 }
 function chooseApartment(id) {
     if (!canEdit.value) return;
     setup.value.apartment_id = id;
+    clearSetupIssue('apartment_id');
     touch();
 }
 function choosePreviousCleaner(name) {
@@ -771,11 +778,13 @@ function roomRequired(index) {
 
 function isNegative(question, selected) {
     const options = question?.answer_options_scored ?? [];
-    if (!selected || !['options', 'both'].includes(question.answer_type ?? 'options') || !options.length) return false;
-    const maximum = Math.max(0, ...options.map(option => Number(option.points ?? 0)));
+    if (!['options', 'both'].includes(question.answer_type ?? 'options') || !options.length) return false;
+    const value = String(selected ?? '').trim();
+    const score = option => Math.trunc(Number(option.points ?? 0)) || 0;
+    const maximum = Math.max(0, ...options.map(score));
     const points = options.reduce((result, option, index) => {
         const matches = [option.value ?? option.label ?? '', option.label ?? '', 'option_' + index];
-        return matches.map(String).includes(String(selected).trim()) ? Number(option.points ?? 0) : result;
+        return value && matches.some(match => String(match).trim() === value) ? score(option) : result;
     }, 0);
     return maximum > 0 && points < maximum;
 }
@@ -788,7 +797,9 @@ const reviewApartmentName = computed(() => apartments.value
 const reviewFindings = computed(() => {
     const findings = [];
     rooms.value.forEach((room, roomIndex) => {
+        if (room.is_optional) return;
         (room.items ?? []).forEach((question, questionIndex) => {
+            if (question.is_optional) return;
             const answer = answers.value[roomIndex]?.[questionIndex];
             if (!isNegative(question, answer?.selected)) return;
             const options = question.answer_options_scored ?? [];
@@ -798,7 +809,7 @@ const reviewFindings = computed(() => {
                 key: roomIndex + ':' + questionIndex, roomIndex, questionIndex,
                 roomTitle: room.title || 'Комната ' + (roomIndex + 1),
                 title: question.question || 'Вопрос ' + (questionIndex + 1),
-                answer: selectedOption?.label || answer?.selected || 'Замечание',
+                answer: selectedOption?.label || answer?.selected || answer?.custom || 'Замечание',
                 mediaCount: mediaCountAt(roomIndex, questionIndex),
             });
         });
@@ -992,7 +1003,61 @@ function clearResumePosition() {
     }
     resumePosition.value = null;
 }
+const setupFieldIds = {
+    cleaner_id: 'focus-cleaner',
+    apartment_id: 'focus-apartment',
+    cleaning_date: 'focus-cleaning-date',
+    inspection_date: 'focus-inspection-date',
+};
+
+function showSetupIssue(field, message) {
+    setupIssue.value = { field, message };
+    void nextTick().then(() => {
+        const input = document.getElementById(setupFieldIds[field]);
+        input?.scrollIntoView({ block: 'center' });
+        input?.focus({ preventScroll: true });
+    });
+}
+
+function validateSetup() {
+    const data = setup.value;
+    const validDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '');
+    let issue = null;
+    if (!testMode.value && !people.value.some(person => String(person.id) === String(data.cleaner_id))) {
+        issue = ['cleaner_id', 'Выберите сотрудника.'];
+    } else if (!apartments.value.some(apartment => String(apartment.id) === String(data.apartment_id))) {
+        issue = ['apartment_id', 'Выберите квартиру.'];
+    } else if (!validDate(data.cleaning_date)) {
+        issue = ['cleaning_date', 'Укажите дату уборки.'];
+    } else if (!validDate(data.inspection_date)) {
+        issue = ['inspection_date', 'Укажите дату проверки.'];
+    } else if (data.inspection_date < data.cleaning_date) {
+        issue = ['inspection_date', 'Дата проверки не может быть раньше даты уборки.'];
+    }
+    if (issue) { showSetupIssue(...issue); return false; }
+    setupIssue.value = null;
+    return true;
+}
+
+function clearSetupIssue(field) {
+    if (setupIssue.value?.field === field) setupIssue.value = null;
+}
+
+function editReviewSetup() {
+    editingReviewSetup.value = true;
+    stage.value = 'setup';
+    window.scrollTo({ top: 0, behavior: 'instant' });
+}
+
 function startQuestions() {
+    if (!validateSetup()) return;
+    if (editingReviewSetup.value) {
+        editingReviewSetup.value = false;
+        openReview();
+        void nextTick().then(() => document.getElementById('focus-review-heading')?.focus({ preventScroll: true }));
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        return;
+    }
     const position = resumePosition.value;
     if (position) {
         const earlier = firstMissing(position.room - 1);
@@ -1265,6 +1330,12 @@ async function submitControl() {
         state.value = 'synced';
         if (recoveryKey) void queueLocalWrite({ type: 'delete', scope: recoveryKey });
     } catch (error) {
+        const invalidSetup = error.status === 422 && Object.keys(setupFieldIds).find(field => error.fields?.[field]?.length);
+        if (invalidSetup) {
+            editReviewSetup();
+            showSetupIssue(invalidSetup, error.fields[invalidSetup][0]);
+            return;
+        }
         submitError.value = error.message || 'Не удалось завершить контроль. Повторите отправку.';
         if (error.status === 409 && error.code !== 'submission_in_progress') {
             state.value = 'conflict';
@@ -1862,8 +1933,7 @@ onBeforeUnmount(() => {
                     <button v-if="stage === 'questions'" ref="roomPickerTrigger" type="button" aria-haspopup="dialog" :aria-expanded="roomPickerShown"
                         class="flex min-h-11 w-full items-center justify-between gap-3 rounded-xl bg-slate-100 px-3 text-left text-sm font-semibold text-slate-800"
                         @click="showRooms">
-                        <span class="min-w-0 truncate">{{ currentRoom.title || 'Комната ' + (activeRoom + 1) }}</span>
-                        <span class="shrink-0 text-xs">Комнаты · {{ activeRoom + 1 }}/{{ rooms.length }} ▾</span>
+                        <span>Комнаты · {{ activeRoom + 1 }}/{{ rooms.length }} ▾</span>
                     </button>
                 </div>
 
@@ -1945,18 +2015,30 @@ onBeforeUnmount(() => {
                         </div>
                         <FocusSearchSelect id="focus-cleaner" :items="peopleOptions" :model-value="setup.cleaner_id"
                             label="Сотрудник" placeholder="Найти сотрудника по имени" :disabled="!canEdit"
+                            :error="setupIssue?.field === 'cleaner_id' ? setupIssue.message : ''"
                             @select="choosePerson" />
                         <FocusSearchSelect id="focus-apartment" :items="apartments" :model-value="setup.apartment_id"
                             label="Квартира" placeholder="Найти квартиру по названию" :disabled="!canEdit"
+                            :error="setupIssue?.field === 'apartment_id' ? setupIssue.message : ''"
                             @select="chooseApartment" />
  
 
                         <div class="grid grid-cols-2 gap-3">
                             <label class="text-sm font-semibold">Дата уборки
-                                <input v-model="setup.cleaning_date" type="date" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base" @change="touch">
+                                <input id="focus-cleaning-date" v-model="setup.cleaning_date" type="date" :disabled="!canEdit"
+                                    :aria-invalid="setupIssue?.field === 'cleaning_date' || undefined"
+                                    :aria-describedby="setupIssue?.field === 'cleaning_date' ? 'focus-cleaning-date-error' : undefined"
+                                    class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base"
+                                    @change="clearSetupIssue('cleaning_date'); touch()">
+                                <span v-if="setupIssue?.field === 'cleaning_date'" id="focus-cleaning-date-error" role="alert" class="mt-1 block text-xs text-red-700">{{ setupIssue.message }}</span>
                             </label>
                             <label class="text-sm font-semibold">Дата проверки
-                                <input v-model="setup.inspection_date" type="date" :disabled="!canEdit" class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base" @change="touch">
+                                <input id="focus-inspection-date" v-model="setup.inspection_date" type="date" :disabled="!canEdit"
+                                    :aria-invalid="setupIssue?.field === 'inspection_date' || undefined"
+                                    :aria-describedby="setupIssue?.field === 'inspection_date' ? 'focus-inspection-date-error' : undefined"
+                                    class="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 text-base"
+                                    @change="clearSetupIssue('inspection_date'); touch()">
+                                <span v-if="setupIssue?.field === 'inspection_date'" id="focus-inspection-date-error" role="alert" class="mt-1 block text-xs text-red-700">{{ setupIssue.message }}</span>
                             </label>
                         </div>
                         <label class="flex items-center gap-3 rounded-xl bg-slate-50 p-3 text-sm font-medium">
@@ -1969,7 +2051,7 @@ onBeforeUnmount(() => {
                             :disabled="!canEdit" @select="choosePreviousCleaner" />
 
                         <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="startQuestions">
-                            {{ resumePosition || (run?.draft_id && completedRequired > 0 && firstMissing()) ? 'Продолжить контроль' : 'К вопросам' }}
+                            {{ editingReviewSetup ? 'Вернуться к сводке' : resumePosition || (run?.draft_id && completedRequired > 0 && firstMissing()) ? 'Продолжить контроль' : 'К вопросам' }}
                         </button>
                     </section>
                 </template>
@@ -1986,8 +2068,7 @@ onBeforeUnmount(() => {
                     </section>
 
                     <div class="mb-4 flex items-start justify-between gap-2 px-1">
-                        <h2 id="focus-room-heading" tabindex="-1" class="text-xl font-semibold">{{ currentRoom.title }}</h2>
-                        <span class="whitespace-nowrap text-xs font-semibold text-slate-500">{{ activeRoom + 1 }}/{{ rooms.length }}</span>
+                        <h2 id="focus-room-heading" tabindex="-1" class="text-xl font-semibold">{{ currentRoom.title || 'Комната ' + (activeRoom + 1) }}</h2>
                     </div>
 
                     <div class="space-y-3">
@@ -2149,7 +2230,7 @@ onBeforeUnmount(() => {
                 <template v-else-if="stage === 'review'">
                     <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
                         <p class="text-xs font-bold uppercase tracking-wider text-slate-500">Перед отправкой</p>
-                        <h2 class="text-xl font-semibold">Проверьте данные контроля</h2>
+                        <h2 id="focus-review-heading" tabindex="-1" class="text-xl font-semibold">Проверьте данные контроля</h2>
                         <div class="space-y-2 rounded-2xl bg-slate-50 p-4 text-sm">
                             <div class="flex items-start justify-between gap-3">
                                 <span class="text-slate-500">Квартира</span><strong class="max-w-[65%] text-right">{{ reviewApartmentName }}</strong>
@@ -2165,6 +2246,9 @@ onBeforeUnmount(() => {
                                 <strong class="text-right">{{ setup.cleaning_date || '—' }} / {{ setup.inspection_date || '—' }}</strong>
                             </div>
                         </div>
+                        <button type="button" :disabled="!canEdit || submitting"
+                            class="rounded-lg bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-800 disabled:opacity-50"
+                            @click="editReviewSetup">Изменить данные</button>
                         <p v-if="setup.comment?.trim()" class="whitespace-pre-wrap break-words text-sm text-slate-700">{{ setup.comment }}</p>
                         <div class="grid grid-cols-3 gap-2 text-center text-xs">
                             <div class="rounded-xl bg-blue-50 p-3"><strong class="block text-lg text-blue-800">{{ completedRequired }}/{{ totalRequired }}</strong>Ответы</div>
