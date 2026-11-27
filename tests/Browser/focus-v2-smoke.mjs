@@ -118,6 +118,10 @@ class FakeFocusBackend {
                     return reply(this.bootstrap(sandbox));
                 }
                 if (path === '/focus-api/draft') {
+                    if (this.throttleNextDraft) {
+                        this.throttleNextDraft = false;
+                        return route.fulfill({ status: 429, contentType: 'application/json', headers: { 'Retry-After': '1' }, body: JSON.stringify({ message: 'Too Many Attempts.' }) });
+                    }
                     const snapshot = json();
                     const sandbox = snapshot.test_mode === true;
                     const state = sandbox ? this.test : this;
@@ -1241,6 +1245,25 @@ async function main() {
             assert.equal(backend.sessions.size, 1);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: reachable TRIS saves, attaches and submits despite the offline flag');
+            await context.close();
+        }
+        // A server throttle must preserve the user's exact pending answers.
+        {
+            const backend = new FakeFocusBackend();
+            backend.throttleNextDraft = true;
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByLabel('Назначенная уборка').check();
+            await page.getByText('Сервер занят. Подождите, не закрывая контроль.', { exact: true }).waitFor();
+            assert.equal(await page.getByText('Too Many Attempts.').count(), 0);
+            await page.getByText('Сохранено', { exact: true }).waitFor({ timeout: 15000 });
+            assert.equal(backend.setup.is_assigned, true);
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
+            await page.getByRole('button', { name: 'Назад', exact: true }).click();
+            await page.getByRole('heading', { name: 'Данные проверки' }).waitFor();
+            assert.equal(backend.setup.is_assigned, true);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: throttled autosave resumes and back preserves the draft');
             await context.close();
         }
         // Small videos use the same best-effort IndexedDB recovery as photos.
