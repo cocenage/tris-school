@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import FocusCamera from './FocusCamera.vue';
 import FocusSearchSelect from './FocusSearchSelect.vue';
 import FocusMediaViewer from './FocusMediaViewer.vue';
 import FocusVideoThumb from './FocusVideoThumb.vue';
@@ -13,7 +14,6 @@ const props = defineProps({
     submitUrl: { type: String, required: true },
     reviewStatusUrl: { type: String, default: '' },
     mediaStartUrl: { type: String, required: true },
-    classicUrl: { type: String, required: true },
 });
 
 const loading = ref(true);
@@ -30,6 +30,7 @@ const answers = ref([]);
 const media = ref([]);
 const stage = ref('setup');
 const activeRoom = ref(0);
+const resumePosition = ref(null);
 const blockedQuestion = ref(null);
 const highlightedReviewQuestion = ref(null);
 const submitting = ref(false);
@@ -42,6 +43,12 @@ const viewerRole = ref('');
 const viewerId = ref(null);
 const testMode = ref(false);
 const pickerFor = ref(null);
+const camera = ref(null);
+const roomPickerShown = ref(false);
+const roomPicker = ref(null);
+const roomPickerTrigger = ref(null);
+const recoveryAction = ref(null);
+const recoveryFileError = ref(null);
 const mediaError = ref('');
 const photoCapture = ref(null);
 const batchPreview = ref(null);
@@ -102,7 +109,7 @@ async function keepServerVersion() {
         await queueLocalWrite({ type: 'delete', scope: recoveryKey });
         recoveryRecord.value = null;
         recoveryMode.value = '';
-        void restoreCachedPhotos();
+        void restoreDraftMedia();
     } catch (error) {
         recoveryError.value = 'Не удалось удалить локальную копию. Проверьте разрешения браузера.';
     } finally {
@@ -117,13 +124,15 @@ function restoreLocalVersion() {
     }
     setup.value = JSON.parse(JSON.stringify(saved.setup));
     answers.value = JSON.parse(JSON.stringify(saved.answers));
+    readResumePosition();
     recoveryRecord.value = null;
     recoveryMode.value = '';
     touch();
-    void restoreCachedPhotos();
+    void restoreDraftMedia();
 }
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
+let recoveringDraftMedia = false;
 let attachInFlight = false;
 let attachQueue = Promise.resolve();
 
@@ -249,11 +258,15 @@ async function initialize() {
     recoveryRecord.value = null;
     recoveryMode.value = '';
     recoveryKey = null;
+    resumePosition.value = null;
     loading.value = true;
     loadError.value = '';
     testMode.value = false;
     interruptedUploads.value = [];
     pickerFor.value = null;
+    camera.value = null;
+    roomPickerShown.value = false;
+    recoveryFileError.value = null;
     mediaError.value = '';
     cacheWarning.value = '';
     closePhotoCapture();
@@ -288,6 +301,7 @@ async function initialize() {
         } else {
             state.value = 'idle';
             recoveryKey = recoveryScope(data.viewer?.id, data.control?.id, data.control?.schema_version);
+            readResumePosition();
             if (recoveryKey) {
                 try {
                     const saved = await readLocalRecovery(recoveryKey);
@@ -315,13 +329,25 @@ async function initialize() {
         }
         stage.value = 'setup';
         if (recoveryKey && !recoveryMode.value && !data.run?.schema_conflict) {
-            await autoAttachReadyDraftFiles();
-            await restoreCachedPhotos();
+            await restoreDraftMedia();
         }
     } catch (error) {
         loadError.value = error.message || 'Не удалось загрузить контроль.';
     } finally {
         loading.value = false;
+    }
+}
+
+async function restoreDraftMedia() {
+    if (!canEdit.value || recoveringDraftMedia) return;
+    recoveringDraftMedia = true;
+    try {
+        // Ready files are already on the server and may have no local Blob.
+        // Finalize them first, before cached transfers start competing for revisions.
+        await autoAttachReadyDraftFiles();
+        if (canEdit.value) await restoreCachedPhotos();
+    } finally {
+        recoveringDraftMedia = false;
     }
 }
 
@@ -360,12 +386,20 @@ async function restoreCachedPhotos() {
     }
 }
 
-function takePhoto(event, room, question) { takeCapture(event, room, question, 'image'); }
-function takeVideo(event, room, question) { takeCapture(event, room, question, 'video'); }
-function takeCapture(event, room, question, kind) {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    beginCapture(file, room, question, kind);
+function openCamera(room, question, kind) {
+    if (!canEdit.value || mediaCountAt(room, question) >= 12) return;
+    pickerFor.value = null;
+    camera.value = { room, question, kind };
+}
+function onCameraCapture(file) {
+    const target = camera.value;
+    camera.value = null;
+    if (target) beginCapture(file, target.room, target.question, target.kind);
+}
+function onCameraGallery(files) {
+    const target = camera.value;
+    camera.value = null;
+    if (target && files.length) beginBatchPreview(files, target.room, target.question);
 }
 function beginCapture(file, room, question, kind) {
     pickerFor.value = null;
@@ -388,9 +422,11 @@ function closePhotoCapture() {
 function retakePhoto() {
     const current = photoCapture.value;
     if (!current || current.saving) return;
-    const input = document.getElementById((current.kind === 'video' ? 'focus-video-' : 'focus-camera-') + current.room + '-' + current.question);
     closePhotoCapture();
-    input?.click();
+    if (current.replaceUploadId) {
+        document.getElementById('focus-replace-' + current.replaceUploadId)?.click();
+    }
+    else openCamera(current.room, current.question, current.kind);
 }
 async function confirmPhoto() {
     const current = photoCapture.value;
@@ -532,7 +568,7 @@ async function choosePerson(id) {
     if (!canEdit.value) return;
     if (id === '__test__') {
         if (viewerRole.value !== 'admin' || testMode.value) return;
-        if (busyUploads.value) {
+        if (busyUploads.value || recoveringDraftMedia || attachInFlight || recoveryAction.value) {
             syncError.value = 'Завершите или отмените реальные загрузки перед переходом в тест.';
             return;
         }
@@ -563,6 +599,7 @@ async function choosePerson(id) {
             interruptedUploads.value = data.pending_uploads ?? [];
             run.value = data.run;
             recoveryKey = recoveryScope(data.viewer.id, data.control.id, data.control.schema_version) + ':sandbox';
+            readResumePosition();
             changeSerial = 0;
             acknowledgedSerial = 0;
             uncertainSnapshot = null;
@@ -572,8 +609,7 @@ async function choosePerson(id) {
             syncError.value = data.run?.schema_conflict ? 'Тестовый шаблон изменился. Завершите старый тест отдельно.' : '';
             stage.value = 'setup';
             if (!data.run?.schema_conflict) {
-                await autoAttachReadyDraftFiles();
-                await restoreCachedPhotos();
+                await restoreDraftMedia();
                 if (!data.run?.draft_id) touch();
             }
         } catch (error) {
@@ -599,7 +635,7 @@ async function exitTestMode() {
     if (!testMode.value) return;
     // Never switch the active Vue run while a test upload/save callback is
     // in flight: that could otherwise write to the newly bootstrapped real run.
-    if (busyUploads.value || attachInFlight || inFlight || submitting.value) {
+    if (busyUploads.value || recoveringDraftMedia || attachInFlight || recoveryAction.value || inFlight || submitting.value) {
         syncError.value = 'Сначала завершите или отмените тестовые загрузки и дождитесь сохранения ответов.';
         return;
     }
@@ -616,37 +652,67 @@ async function startNewSandboxTest() {
     await initialize();
     if (!loadError.value) await choosePerson('__test__');
 }
-function resumeDraftFiles(event) {
-    const selected = Array.from(event.target.files ?? []);
+function resumeDraftFile(event, record) {
+    const file = event.target.files?.[0];
     event.target.value = '';
-    mediaError.value = '';
-    if (!canEdit.value) return;
-    let restored = 0;
-    for (const file of selected) {
-        const record = interruptedUploads.value.find(item =>
-            item.status === 'pending'
-            && item.original_name === file.name && Number(item.size) === file.size
-            && item.mime === focusFileMime(file)
-            && !uploads.value.some(upload => upload.id === item.upload_id &&
-                ['queued', 'uploading', 'attaching'].includes(upload.status)));
-        if (!record) continue;
-        const error = allowedFocusFile(file);
-        if (error) { mediaError.value = error; continue; }
-        const previous = uploads.value.find(upload => upload.id === record.upload_id);
-        const data = {
-            id: record.upload_id, file, record, room: record.room_index,
-            question: record.question_index, status: 'queued', progress: 0,
-            error: '', controller: null, info: null, preview_url: URL.createObjectURL(file),
-        };
-        if (previous) {
-            if (previous.preview_url) URL.revokeObjectURL(previous.preview_url);
-            Object.assign(previous, data);
-        } else uploads.value.push(data);
-        restored++;
+    if (!file || !canEdit.value || recoveryAction.value || record.run_id !== run.value.id) return;
+    recoveryFileError.value = null;
+    if (file.name !== record.original_name || file.size !== Number(record.size) || focusFileMime(file) !== record.mime) {
+        recoveryFileError.value = { id: record.upload_id, message: 'Это другой файл. Выберите оригинал или переснимите материал.' };
+        return;
     }
-    if (restored) pumpTransfers();
-    if (restored !== selected.length) {
-        mediaError.value = 'Не все файлы совпали с прерванными загрузками. Выберите оригиналы с тем же названием, размером и форматом.';
+    const error = allowedFocusFile(file);
+    if (error) { recoveryFileError.value = { id: record.upload_id, message: error }; return; }
+    const previous = uploads.value.find(item => item.id === record.upload_id);
+    if (previous && ['queued', 'uploading', 'attaching'].includes(previous.status)) return;
+    const data = {
+        id: record.upload_id, file, record, room: record.room_index,
+        question: record.question_index, status: 'queued', progress: 0, error: '',
+        controller: null, info: null, preview_url: URL.createObjectURL(file),
+    };
+    if (previous) {
+        if (previous.preview_url) URL.revokeObjectURL(previous.preview_url);
+        Object.assign(previous, data);
+    } else uploads.value.push(data);
+    pumpTransfers();
+}
+function openRecoveryQuestion(record, showPicker = false) {
+    if (!rooms.value[record.room_index]?.items?.[record.question_index]) return;
+    goRoom(record.room_index);
+    highlightedReviewQuestion.value = record.question_index;
+    void nextTick().then(() => {
+        if (activeRoom.value !== record.room_index || stage.value !== 'questions') return;
+        document.getElementById('focus-question-' + record.room_index + '-' + record.question_index)?.scrollIntoView({ block: 'start' });
+        if (showPicker) pickerFor.value = pickerKey(record.room_index, record.question_index);
+    });
+}
+async function discardInterruptedDraft(record, replaceFile = false) {
+    if (!canEdit.value || recoveryAction.value || record.status !== 'pending' || record.run_id !== run.value.id) return;
+    if (uploads.value.some(item => item.id === record.upload_id && ['queued', 'uploading', 'attaching'].includes(item.status))) return;
+    if (!window.confirm(replaceFile
+        ? 'Прервать старую загрузку и добавить новый материал к этому вопросу?'
+        : 'Убрать эту незавершённую загрузку из контроля? Ответы и другие вложения останутся.')) return;
+    recoveryAction.value = record.upload_id;
+    recoveryFileError.value = null;
+    try {
+        const current = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
+        if (current.status === 'ready' || current.status === 'attached') {
+            record.status = 'ready';
+            await attachReadyDraft(record);
+            return;
+        }
+        if (current.status !== 'cancelled') await focusMediaRequest(current.urls.cancel, 'DELETE', undefined, csrf);
+        interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
+        const local = uploads.value.find(item => item.id === record.upload_id);
+        if (local?.preview_url) URL.revokeObjectURL(local.preview_url);
+        uploads.value = uploads.value.filter(item => item.id !== record.upload_id);
+        if (local?.cachePromise) await local.cachePromise;
+        if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
+        if (replaceFile) openRecoveryQuestion(record, true);
+    } catch (error) {
+        recoveryFileError.value = { id: record.upload_id, message: error.message || 'Не удалось отменить загрузку. Попробуйте ещё раз.' };
+    } finally {
+        recoveryAction.value = null;
     }
 }
 async function autoAttachReadyDraftFiles() {
@@ -660,15 +726,20 @@ async function autoAttachReadyDraftFiles() {
 }
 
 async function attachReadyDraft(record) {
-    if (!canEdit.value || record.status !== 'ready') return;
+    if (!canEdit.value || record.status !== 'ready' || record.run_id !== run.value.id) return;
     if (activeTransfers || attachInFlight) {
         mediaError.value = 'Подождите завершения текущих загрузок.';
         return;
     }
     mediaError.value = '';
+    let locked = false;
     try {
         if (!(await ensureSynced())) throw new Error('Не удалось сохранить ответы.');
+        if (!canEdit.value || record.run_id !== run.value.id
+            || !interruptedUploads.value.some(item => item.upload_id === record.upload_id)
+            || attachInFlight || activeTransfers) return;
         attachInFlight = true;
+        locked = true;
         const info = await focusMediaRequest(record.status_url, 'GET', undefined, csrf);
         if (info.status !== 'ready' && info.status !== 'attached') {
             throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
@@ -686,7 +757,7 @@ async function attachReadyDraft(record) {
     } catch (error) {
         mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
     } finally {
-        attachInFlight = false;
+        if (locked) attachInFlight = false;
     }
 }
 
@@ -864,6 +935,84 @@ async function ensureSynced() {
     return false;
 }
 
+function positionKey() {
+    return recoveryKey ? recoveryKey + ':position' : null;
+}
+function readResumePosition() {
+    resumePosition.value = null;
+    const key = positionKey();
+    if (!key || !run.value?.id) return;
+    try {
+        const point = JSON.parse(localStorage.getItem(key));
+        if (point?.runId !== run.value.id || !Number.isInteger(point.room) || !rooms.value[point.room]) return;
+        const question = Number.isInteger(point.question) && rooms.value[point.room].items?.[point.question]
+            ? point.question : null;
+        resumePosition.value = { room: point.room, question };
+    } catch (_) { /* Position is a convenience; access to answers is unaffected. */ }
+}
+function rememberPosition(room, question = null) {
+    if (!canEdit.value || stage.value !== 'questions' || room !== activeRoom.value || !rooms.value[room]) return;
+    const point = { room, question };
+    if (resumePosition.value?.room === room && resumePosition.value?.question === question) return;
+    resumePosition.value = point;
+    const key = positionKey();
+    if (!key) return;
+    try {
+        localStorage.setItem(key, JSON.stringify({ ...point, runId: run.value.id }));
+    } catch (_) { /* Best effort, including private WebViews. */ }
+}
+function clearResumePosition() {
+    const key = positionKey();
+    if (key) {
+        try { localStorage.removeItem(key); } catch (_) { /* A new run also ignores the old position. */ }
+    }
+    resumePosition.value = null;
+}
+function startQuestions() {
+    const position = resumePosition.value;
+    if (position) {
+        if (position.question == null) goRoom(position.room);
+        else jumpToQuestion(position.room, position.question, 'resume');
+        return;
+    }
+    // Older drafts and browsers without local storage can still start at the first gap.
+    if (run.value?.draft_id && completedRequired.value > 0 && firstMissing()) {
+        jumpToMissing();
+        return;
+    }
+    goRoom(0);
+}
+function jumpToQuestion(room, question, reason) {
+    if (!rooms.value[room]?.items?.[question]) return;
+    goRoom(room);
+    rememberPosition(room, question);
+    if (reason === 'missing') blockedQuestion.value = question;
+    else highlightedReviewQuestion.value = question;
+    void nextTick().then(() => {
+        if (activeRoom.value !== room || stage.value !== 'questions') return;
+        const element = document.getElementById('focus-question-' + room + '-' + question);
+        element?.scrollIntoView({ block: 'start' });
+        element?.focus({ preventScroll: true });
+    });
+}
+function jumpToMissing() {
+    const missing = firstMissing();
+    if (missing) jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
+}
+function jumpToPendingMedia() {
+    const record = recoveryNeedingInput.value[0];
+    if (record) {
+        // The recovery card holds the actions; each card already links back to its question.
+        void nextTick().then(() => {
+            const element = document.getElementById('focus-recovery-' + record.upload_id);
+            element?.scrollIntoView({ block: 'start' });
+            element?.focus({ preventScroll: true });
+        });
+        return;
+    }
+    const upload = failedMediaTransfers.value[0] ?? currentMediaTransfers.value[0];
+    if (upload) jumpToQuestion(upload.room, upload.question, 'media');
+}
 function firstMissing() {
     for (let roomIndex = 0; roomIndex < rooms.value.length; roomIndex++) {
         const room = rooms.value[roomIndex];
@@ -876,13 +1025,27 @@ function firstMissing() {
     return null;
 }
 
+async function showRooms() {
+    roomPickerShown.value = true;
+    await nextTick();
+    roomPicker.value?.querySelector('[aria-current="step"]')?.focus();
+}
+function closeRooms(restoreFocus = true) {
+    roomPickerShown.value = false;
+    if (restoreFocus) void nextTick().then(() => roomPickerTrigger.value?.focus());
+}
 function goRoom(index) {
     if (index >= 0 && index < rooms.value.length) {
+        pickerFor.value = null;
+        const wasPicking = roomPickerShown.value;
+        closeRooms(false);
         activeRoom.value = index;
         blockedQuestion.value = null;
         highlightedReviewQuestion.value = null;
         stage.value = 'questions';
+        rememberPosition(index);
         window.scrollTo({ top: 0, behavior: 'instant' });
+        if (wasPicking) void nextTick().then(() => document.getElementById('focus-room-heading')?.focus({ preventScroll: true }));
     }
 }
 
@@ -897,8 +1060,7 @@ function nextRoom() {
 function openReview() {
     const missing = firstMissing();
     if (missing) {
-        goRoom(missing.roomIndex);
-        blockedQuestion.value = missing.questionIndex;
+        jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
         return;
     }
     stage.value = 'review';
@@ -1020,8 +1182,7 @@ async function submitControl() {
     if (submitting.value || stage.value !== 'review' || !canEdit.value) return;
     const missing = firstMissing();
     if (missing) {
-        goRoom(missing.roomIndex);
-        blockedQuestion.value = missing.questionIndex;
+        jumpToQuestion(missing.roomIndex, missing.questionIndex, 'missing');
         return;
     }
     submitting.value = true;
@@ -1059,6 +1220,7 @@ async function submitControl() {
             throw new Error('Сервер не подтвердил завершение проверки.');
         }
         finalResult.value = result;
+        clearResumePosition();
         stage.value = 'done';
         state.value = 'synced';
         if (recoveryKey) void queueLocalWrite({ type: 'delete', scope: recoveryKey });
@@ -1074,7 +1236,7 @@ async function submitControl() {
 
 async function resetControl() {
     if (!props.resetUrl || !run.value || testMode.value || stage.value === 'done' || resetting.value) return;
-    if (busyUploads.value || recoveringPhotos.value || attachInFlight || inFlight || submitting.value || uncertainSnapshot) {
+    if (busyUploads.value || recoveringDraftMedia || attachInFlight || recoveryAction.value || inFlight || submitting.value || uncertainSnapshot) {
         syncError.value = 'Дождитесь сохранения или отмените загрузки перед сбросом.';
         return;
     }
@@ -1101,6 +1263,7 @@ async function resetControl() {
                 }
             }
         }
+        clearResumePosition();
         finalResult.value = null;
         await initialize();
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1110,29 +1273,6 @@ async function resetControl() {
         resetting.value = false;
     }
 }
-
-async function openClassic() {
-    if (submitting.value || stage.value === 'done') return;
-    if (testMode.value) {
-        exitTestMode();
-        return;
-    }
-    if (recoveryMode.value) {
-        syncError.value = 'Сначала выберите, какую версию черновика оставить.';
-        return;
-    }
-    if (busyUploads.value) {
-        syncError.value = 'Дождитесь завершения загрузки файлов или отмените их.';
-        return;
-    }
-    if (!run.value || state.value === 'conflict') {
-        window.location.assign(props.classicUrl);
-        return;
-    }
-    const ok = await ensureSynced();
-    if (ok) window.location.assign(props.classicUrl);
-}
-
 
 function pendingAt(room, question) {
     return uploads.value.filter(item => item.room === room && item.question === question
@@ -1152,22 +1292,11 @@ function mediaCountAt(room, question) {
     return ids.size;
 }
 
-async function addFiles(event, room, question) {
+function addFiles(event, room, question) {
     const selected = Array.from(event.target.files ?? []);
     event.target.value = '';
     pickerFor.value = null;
-    if (selected.length === 1) {
-        const mime = focusFileMime(selected[0]);
-        if (mime.startsWith('image/') || mime.startsWith('video/')) {
-            beginCapture(selected[0], room, question, mime.startsWith('image/') ? 'image' : 'video');
-            return;
-        }
-    }
-    if (selected.length > 1) {
-        beginBatchPreview(selected, room, question);
-        return;
-    }
-    await queueSelectedFiles(selected, room, question);
+    if (selected.length) beginBatchPreview(selected, room, question);
 }
 
 async function queueSelectedFiles(selected, room, question, options = {}) {
@@ -1537,8 +1666,10 @@ onMounted(() => {
     window.addEventListener('beforeunload', warnBeforeUnload);
     window.addEventListener('online', handleNetworkUpdate);
     window.addEventListener('offline', handleNetworkUpdate);
+    window.addEventListener('pagehide', stopPageCamera);
     void initialize();
 });
+function stopPageCamera() { camera.value = null; }
 onBeforeUnmount(() => {
     closePhotoCapture();
     closeBatchPreview();
@@ -1550,11 +1681,31 @@ onBeforeUnmount(() => {
     window.removeEventListener('beforeunload', warnBeforeUnload);
     window.removeEventListener('online', handleNetworkUpdate);
     window.removeEventListener('offline', handleNetworkUpdate);
+    window.removeEventListener('pagehide', stopPageCamera);
 });
 </script>
 
 <template>
     <div class="min-h-screen bg-slate-50 text-slate-900">
+        <FocusCamera v-if="camera" :kind="camera.kind" @close="camera = null" @capture="onCameraCapture" @gallery="onCameraGallery" />
+        <div v-if="roomPickerShown" ref="roomPicker" class="fixed inset-0 z-40 flex items-end justify-center bg-slate-950/50 p-3 sm:items-center"
+            role="dialog" aria-modal="true" aria-label="Комнаты проверки" @click.self="closeRooms()" @keydown.esc.stop="closeRooms()">
+            <section class="max-h-[80dvh] w-full max-w-lg overflow-auto rounded-2xl bg-white p-4">
+                <div class="mb-3 flex items-center justify-between">
+                    <h2 class="text-lg font-semibold">Комнаты</h2>
+                    <button type="button" aria-label="Закрыть список комнат" class="grid size-11 place-items-center rounded-full bg-slate-100" @click="closeRooms()">✕</button>
+                </div>
+                <nav aria-label="Комнаты" class="space-y-1">
+                    <button v-for="(room, index) in rooms" :key="index" type="button"
+                        class="flex min-h-12 w-full items-center justify-between gap-3 rounded-xl px-3 text-left text-sm"
+                        :class="index === activeRoom ? 'bg-blue-50 font-bold text-blue-800' : 'hover:bg-slate-50'"
+                        :aria-current="index === activeRoom ? 'step' : undefined" @click="goRoom(index)">
+                        <span>{{ room.title || 'Комната ' + (index + 1) }}</span>
+                        <span class="shrink-0 text-xs">{{ room.is_optional ? 'Необязательно' : roomCompleted(index) + '/' + roomRequired(index) }}</span>
+                    </button>
+                </nav>
+            </section>
+        </div>
         <div v-if="photoCapture" class="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/85 p-3 sm:items-center"
             role="dialog" aria-modal="true" :aria-label="photoCapture.kind === 'video' ? 'Подтвердить видео' : 'Подтвердить фотографию'" @keydown.esc="closePhotoCapture">
             <div class="w-full max-w-lg overflow-hidden rounded-3xl bg-white shadow-2xl">
@@ -1637,7 +1788,6 @@ onBeforeUnmount(() => {
         <div class="mx-auto min-h-screen max-w-2xl px-4 pb-24 pt-4 sm:px-6">
             <header class="mb-4 flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
                 <div>
-                    <p class="text-xs font-medium text-slate-500">TRIS Academy · Focus Control</p>
                     <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
                 <button v-if="resetUrl && run && !testMode && stage !== 'done' && !run.schema_conflict && !loading && !loadError"
@@ -1647,8 +1797,7 @@ onBeforeUnmount(() => {
                 <button v-if="testMode" type="button" :disabled="busyUploads || submitting || state === 'saving'"
                     class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 disabled:opacity-50"
                     @click="exitTestMode">Выйти из теста</button>
-                <a v-else-if="stage !== 'done'" :href="classicUrl" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700" @click.prevent="openClassic">Старый Focus</a>
-                <a v-else-if="finalResult?.result_url" :href="finalResult.result_url" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700">Результат</a>
+                <a v-else-if="stage === 'done' && finalResult?.result_url" :href="finalResult.result_url" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700">Результат</a>
             </header>
 
             <div v-if="loading" role="status" class="rounded-xl bg-white p-7 text-center text-sm">Загружаем вопросы…</div>
@@ -1668,6 +1817,14 @@ onBeforeUnmount(() => {
                             {{ state === 'error' ? 'Повторить' : 'Сохранить' }}
                         </button>
                     </div>
+                    <button v-if="stage === 'questions'" ref="roomPickerTrigger" type="button" aria-haspopup="dialog" :aria-expanded="roomPickerShown"
+                        class="flex min-h-11 w-full items-center justify-between gap-3 rounded-xl bg-slate-100 px-3 text-left text-sm font-semibold text-slate-800"
+                        @click="showRooms">
+                        <span class="min-w-0 truncate">{{ currentRoom.title || 'Комната ' + (activeRoom + 1) }}</span>
+                        <span class="shrink-0 text-xs">Комнаты · {{ activeRoom + 1 }}/{{ rooms.length }} ▾</span>
+                    </button>
+                    <button v-if="stage === 'questions' && completedRequired < totalRequired" type="button"
+                        class="min-h-10 rounded-lg px-2 text-left text-xs font-semibold text-blue-800" @click="jumpToMissing">К первому пропуску ↓</button>
                     <div v-if="outstandingMedia > 0" class="space-y-2" role="status" aria-live="polite">
                         <div class="flex items-start justify-between gap-2 text-xs">
                             <span class="font-semibold" :class="failedMediaTransfers.length ? 'text-red-800' : 'text-blue-800'">
@@ -1691,7 +1848,10 @@ onBeforeUnmount(() => {
                                         ? 'Можете отвечать дальше. Не закрывайте Telegram до подтверждения загрузки.'
                                         : 'Откройте восстановление файлов ниже. Отправка пока недоступна.' }}
                             </p>
-                            <button v-if="failedMediaTransfers.length" type="button" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
+                            <button v-if="stage !== 'done' && (recoveryNeedingInput.length || failedMediaTransfers.length || currentMediaTransfers.length)"
+                                type="button" class="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800"
+                                @click="jumpToPendingMedia">К вложению</button>
+                            <button v-if="failedMediaTransfers.length && stage === 'done'" type="button" class="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white"
                                 @click="retryFailedFiles">Повторить</button>
                         </div>
                     </div>
@@ -1734,16 +1894,28 @@ onBeforeUnmount(() => {
                             @click="keepServerVersion">Оставить серверную версию</button>
                     </div>
                 </section>
-                <section v-if="recoveryNeedingInput.length" class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
-                    <h2 class="font-bold">Восстановим материалы · {{ recoveryNeedingInput.length }}</h2>
-                    <p class="mt-2">Снимки уже есть на сервере частично или полностью, но им нужно завершить сохранение. Выберите исходные файлы, если автоматическое восстановление не сработало.</p>
-                    <label v-if="interruptedUploads.some(item => item.status === 'pending')" class="mt-3 inline-flex cursor-pointer rounded-xl bg-blue-700 px-4 py-3 font-semibold text-white">
-                        Выбрать исходные фото и видео
-                        <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only" @change="resumeDraftFiles">
-                    </label>
-                    <div v-for="record in recoveryNeedingInput" :key="record.upload_id" class="mt-3 flex items-center justify-between gap-2 rounded-lg bg-white p-3">
-                        <span class="min-w-0 truncate text-xs font-semibold">{{ record.original_name }} · {{ record.status === 'ready' ? 'Получено сервером' : 'Нужно продолжить' }}</span>
-                        <button v-if="record.status === 'ready'" type="button" class="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800" @click="attachReadyDraft(record)">Прикрепить</button>
+                <section v-if="recoveryNeedingInput.length" class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                    <h2 class="font-bold">Незавершённые вложения · {{ recoveryNeedingInput.length }}</h2>
+                    <p class="mt-1 text-xs">Полностью полученные файлы прикрепятся без повторной загрузки. Если файл не дошёл, выберите оригинал или добавьте новый у нужного вопроса.</p>
+                    <div v-for="record in recoveryNeedingInput" :id="'focus-recovery-' + record.upload_id" :key="record.upload_id" tabindex="-1" class="mt-3 scroll-mt-64 rounded-xl bg-white p-3">
+                        <button type="button" class="text-left font-semibold text-blue-800" @click="openRecoveryQuestion(record)">
+                            {{ rooms[record.room_index]?.title || 'Комната ' + (record.room_index + 1) }} · вопрос {{ record.question_index + 1 }} →
+                        </button>
+                        <p class="mt-1 break-words text-xs text-slate-700">{{ rooms[record.room_index]?.items?.[record.question_index]?.question }}</p>
+                        <p class="mt-1 break-all text-xs text-slate-600">{{ record.mime?.startsWith('video/') ? 'Видео' : 'Фото' }} · {{ record.original_name }} · {{ Math.ceil(Number(record.size) / 1024) }} КБ</p>
+                        <p v-if="recoveryFileError?.id === record.upload_id" class="mt-2 text-xs font-semibold text-red-700" role="alert">{{ recoveryFileError.message }}</p>
+                        <div v-if="record.status === 'pending'" class="mt-2 flex flex-wrap items-center gap-2">
+                            <label class="inline-flex min-h-11 cursor-pointer items-center rounded-lg bg-blue-50 px-3 text-xs font-bold text-blue-800 focus-within:ring-2 focus-within:ring-blue-600">
+                                Выбрать оригинал
+                                <input type="file" aria-label="Выбрать оригинал" class="sr-only" :accept="record.mime"
+                                    :disabled="!canEdit || !!recoveryAction" @change="resumeDraftFile($event, record)">
+                            </label>
+                            <button type="button" :disabled="!canEdit || !!recoveryAction" class="min-h-11 rounded-lg bg-slate-100 px-3 text-xs font-bold disabled:opacity-50"
+                                @click="discardInterruptedDraft(record, true)">{{ recoveryAction === record.upload_id ? 'Отменяем загрузку…' : 'Снять или выбрать заново' }}</button>
+                            <button type="button" :disabled="!canEdit || !!recoveryAction" class="min-h-11 rounded-lg px-3 text-xs font-semibold text-red-700 disabled:opacity-50"
+                                @click="discardInterruptedDraft(record)">Убрать</button>
+                        </div>
+                        <button v-else type="button" :disabled="!canEdit || !!recoveryAction" class="mt-2 min-h-11 rounded-lg bg-blue-50 px-3 text-xs font-bold text-blue-800 disabled:opacity-50" @click="attachReadyDraft(record)">Прикрепить готовый файл</button>
                     </div>
                 </section>
                 <div v-if="mediaError" class="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">{{ mediaError }}</div>
@@ -1761,15 +1933,6 @@ onBeforeUnmount(() => {
                             <h2 class="text-xl font-bold">Данные проверки</h2>
                             <p class="mt-1 text-sm text-slate-500">{{ control?.name }}</p>
                         </div>
-                        <label for="focus-inspection-comment" class="block rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm font-semibold text-slate-900">
-                            Комментарий к проверке
-                            <span class="mt-1 block text-xs font-normal text-slate-600">Общие замечания по всей проверке — сохраняются в черновике и итоговом результате.</span>
-                            <textarea id="focus-inspection-comment" v-model="setup.comment" rows="3" maxlength="2000"
-                                placeholder="Например: квартира передана позже, уборка не закончена…"
-                                :disabled="!canEdit" class="mt-2 w-full rounded-xl border border-blue-200 bg-white p-3 text-base font-normal disabled:opacity-50"
-                                @input="touch"></textarea>
-                        </label>
-
                         <FocusSearchSelect id="focus-cleaner" :items="peopleOptions" :model-value="setup.cleaner_id"
                             label="Сотрудник" placeholder="Найти сотрудника по имени" :disabled="!canEdit"
                             @select="choosePerson" />
@@ -1795,8 +1958,8 @@ onBeforeUnmount(() => {
                             placeholder="Найти по имени или оставить пустым"
                             :disabled="!canEdit" @select="choosePreviousCleaner" />
 
-                        <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="goRoom(0)">
-                            К вопросам
+                        <button type="button" :disabled="!canEdit" class="w-full rounded-xl bg-blue-600 p-4 text-base font-bold text-white disabled:opacity-50" @click="startQuestions">
+                            {{ resumePosition || (run?.draft_id && completedRequired > 0 && firstMissing()) ? 'Продолжить контроль' : 'К вопросам' }}
                         </button>
                     </section>
                 </template>
@@ -1810,21 +1973,18 @@ onBeforeUnmount(() => {
                         <div class="h-2 overflow-hidden rounded-full bg-slate-200" role="progressbar" :aria-valuenow="completedRequired" :aria-valuemax="totalRequired" aria-valuemin="0">
                             <div class="h-full rounded-full bg-blue-600 transition-all" :style="{ width: (totalRequired ? completedRequired / totalRequired * 100 : 100) + '%' }"></div>
                         </div>
-                        <nav class="mt-4 flex gap-2 overflow-x-auto pb-1" aria-label="Комнаты">
-                            <button v-for="(room, index) in rooms" :key="index" type="button" class="shrink-0 rounded-xl px-3 py-2 text-xs font-semibold" :class="activeRoom === index ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'" :aria-current="activeRoom === index ? 'step' : undefined" @click="goRoom(index)">
-                                {{ room.title || 'Комната ' + (index + 1) }} · {{ roomCompleted(index) }}/{{ roomRequired(index) }}
-                            </button>
-                        </nav>
                     </section>
 
                     <div class="mb-4 flex items-start justify-between gap-2 px-1">
-                        <h2 class="text-xl font-semibold">{{ currentRoom.title }}</h2>
+                        <h2 id="focus-room-heading" tabindex="-1" class="text-xl font-semibold">{{ currentRoom.title }}</h2>
                         <span class="whitespace-nowrap text-xs font-semibold text-slate-500">{{ activeRoom + 1 }}/{{ rooms.length }}</span>
                     </div>
 
                     <div class="space-y-3">
                         <article v-for="(question, questionIndex) in currentRoom.items" :id="'focus-question-' + activeRoom + '-' + questionIndex"
-                            :key="activeRoom + '-' + questionIndex" class="scroll-mt-32 rounded-xl border bg-white p-4"
+                            :key="activeRoom + '-' + questionIndex" tabindex="-1"
+                            class="scroll-mt-64 rounded-xl border bg-white p-4"
+                            @focusin="rememberPosition(activeRoom, questionIndex)" @click.capture="rememberPosition(activeRoom, questionIndex)"
                             :class="blockedQuestion === questionIndex ? 'border-red-400' : highlightedReviewQuestion === questionIndex ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'">
                             <div class="flex justify-between gap-3">
                                 <h3 class="text-base font-bold leading-snug">{{ question.question || 'Вопрос' }}</h3>
@@ -1882,34 +2042,21 @@ onBeforeUnmount(() => {
                                                     <button type="button" class="grid size-11 shrink-0 place-items-center rounded-full bg-slate-100 text-lg text-slate-600"
                                                         aria-label="Закрыть выбор медиа" @click="pickerFor = null">✕</button>
                                                 </div>
-                                                <label :for="'focus-camera-' + activeRoom + '-' + questionIndex"
-                                                    class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-blue-50 px-4 py-3 font-semibold text-blue-900">
-                                                    <span aria-hidden="true">📷</span> Сделать фото
-                                                </label>
-                                                <label :for="'focus-video-' + activeRoom + '-' + questionIndex"
-                                                    class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 font-semibold text-slate-900">
-                                                    <span aria-hidden="true">🎬</span> Снять видео
-                                                </label>
+                                                <button type="button" class="flex min-h-14 w-full items-center rounded-2xl bg-blue-50 px-4 py-3 text-left font-semibold text-blue-900"
+                                                    @click="openCamera(activeRoom, questionIndex, 'image')">Сделать фото</button>
+                                                <button type="button" class="flex min-h-14 w-full items-center rounded-2xl bg-slate-50 px-4 py-3 text-left font-semibold text-slate-900"
+                                                    @click="openCamera(activeRoom, questionIndex, 'video')">Снять видео</button>
                                                 <label class="flex min-h-14 cursor-pointer items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 font-semibold text-slate-900">
                                                     <span aria-hidden="true">▦</span> Выбрать из галереи
                                                     <input type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm" class="sr-only"
                                                         :disabled="!canEdit" @change="addFiles($event, activeRoom, questionIndex)">
                                                 </label>
                                                 <p class="px-1 pt-2 text-xs text-slate-500">
-                                                    Если Telegram не открывает камеру, используйте галерею. Можно добавить несколько файлов за раз.
+                                                    В галерее можно выбрать несколько файлов.
                                                 </p>
                                             </div>
                                         </div>
                                     </div>
-                                    <!-- capture=environment is advisory in Telegram; gallery remains an accessible fallback. -->
-                                    <input :id="'focus-camera-' + activeRoom + '-' + questionIndex" type="file"
-                                        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-                                        capture="environment" class="sr-only" :disabled="!canEdit"
-                                        @change="takePhoto($event, activeRoom, questionIndex)">
-                                    <input :id="'focus-video-' + activeRoom + '-' + questionIndex" type="file"
-                                        accept="video/mp4,video/quicktime,video/webm"
-                                        capture="environment" class="sr-only" :disabled="!canEdit"
-                                        @change="takeVideo($event, activeRoom, questionIndex)">
                                 </div>
 
                                 <div v-if="visibleMediaAt(activeRoom, questionIndex).length"
@@ -1961,7 +2108,7 @@ onBeforeUnmount(() => {
                                                 Заменить
                                                 <input type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime,video/webm"
                                                     class="sr-only" :disabled="!canEdit"
-                                                    @change="beginSavedReplacement($event, activeRoom, questionIndex, item.source)">
+                                                    :id="'focus-replace-' + item.source.upload_id" @change="beginSavedReplacement($event, activeRoom, questionIndex, item.source)">
                                             </label>
                                             <button v-if="testMode || item.source.upload_id" type="button"
                                                 class="rounded-lg px-2 py-1.5 text-[11px] font-semibold text-slate-600"
@@ -1982,9 +2129,9 @@ onBeforeUnmount(() => {
                     </div>
 
                     <div class="sticky bottom-3 z-10 mt-4 grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
-                        <button type="button" class="rounded-xl bg-slate-100 p-3 text-sm font-bold text-slate-700" @click="activeRoom === 0 ? stage = 'setup' : goRoom(activeRoom - 1)">Назад</button>
+                        <button type="button" class="rounded-xl bg-slate-100 p-3 text-sm font-bold text-slate-700" @click="activeRoom === 0 ? stage = 'setup' : goRoom(activeRoom - 1)">{{ activeRoom ? 'Предыдущая комната' : 'К данным' }}</button>
                         <button type="button" class="rounded-xl bg-blue-600 p-3 text-sm font-bold text-white" @click="nextRoom">
-                            {{ activeRoom === rooms.length - 1 ? 'К сводке' : 'Далее' }}
+                            {{ activeRoom === rooms.length - 1 ? 'К сводке' : 'Следующая комната' }}
                         </button>
                     </div>
                 </template>
@@ -2008,13 +2155,7 @@ onBeforeUnmount(() => {
                                 <strong class="text-right">{{ setup.cleaning_date || '—' }} / {{ setup.inspection_date || '—' }}</strong>
                             </div>
                         </div>
-                        <div class="rounded-2xl border border-slate-200 p-4">
-                            <div class="mb-2 flex items-center justify-between">
-                                <h3 class="text-sm font-bold">Комментарий к проверке</h3>
-                                <button type="button" class="rounded-lg bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700" @click="stage = 'setup'">Изменить</button>
-                            </div>
-                            <p class="whitespace-pre-wrap break-words text-sm text-slate-700">{{ setup.comment?.trim() || 'Комментарий не указан' }}</p>
-                        </div>
+                        <p v-if="setup.comment?.trim()" class="whitespace-pre-wrap break-words text-sm text-slate-700">{{ setup.comment }}</p>
                         <div class="grid grid-cols-3 gap-2 text-center text-xs">
                             <div class="rounded-xl bg-blue-50 p-3"><strong class="block text-lg text-blue-800">{{ completedRequired }}/{{ totalRequired }}</strong>Ответы</div>
                             <div class="rounded-xl bg-amber-50 p-3"><strong class="block text-lg text-amber-800">{{ reviewFindings.length }}</strong>Замечания</div>
@@ -2048,7 +2189,8 @@ onBeforeUnmount(() => {
                             </div>
                         </details>
                         <div v-if="!canSubmitMedia" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900" role="alert">
-                            Остались файлы без подтверждения · {{ outstandingMedia }}. Дождитесь завершения загрузки, повторите ошибочные файлы или восстановите их после закрытия Telegram. До этого отправка недоступна.
+                            Остались файлы без подтверждения · {{ outstandingMedia }}. Отправка станет доступна после их сохранения или отмены.
+                            <button type="button" class="mt-2 block min-h-10 rounded-lg bg-white px-3 font-bold text-blue-800" @click="jumpToPendingMedia">К незагруженному вложению</button>
                         </div>
                         <p v-else-if="testMode" class="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">
                             Тест проходит настоящий серверный цикл, но не попадает в рабочие результаты, статистику, награды и Telegram.
@@ -2058,9 +2200,6 @@ onBeforeUnmount(() => {
                         </div>
                         <button type="button" :disabled="!canEdit || submitting || !canSubmitMedia" class="w-full rounded-xl bg-blue-600 p-4 text-sm font-bold text-white disabled:opacity-50" @click="submitControl">
                             {{ submitting ? 'Завершаем…' : testMode ? 'Завершить тест без статистики' : 'Отправить контроль' }}
-                        </button>
-                        <button type="button" :disabled="submitting || busyUploads" class="w-full rounded-xl bg-blue-50 p-3 text-sm font-bold text-blue-700 disabled:opacity-50" @click="openClassic">
-                            Продолжить в старом Focus
                         </button>
                         <button type="button" :disabled="submitting" class="w-full rounded-xl bg-slate-100 p-3 text-sm font-bold disabled:opacity-50" @click="goRoom(rooms.length - 1)">Вернуться к вопросам</button>
                     </section>
