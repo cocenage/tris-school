@@ -93,4 +93,80 @@ class AntigocciaOverview
             ];
         })->all();
     }
+    /**
+     * Activity counts actual submissions, not the number of cleaning visits.
+     * Coverage is calculated against the current recorded treatment cycle.
+     */
+    public function activity(int $days = 7): array
+    {
+        $days = in_array($days, [7, 30, 90], true) ? $days : 7;
+        $today = CarbonImmutable::now('Europe/Rome')->startOfDay();
+        $start = $today->subDays($days - 1);
+        $daily = [];
+        for ($day = $start; $day <= $today; $day = $day->addDay()) {
+            $daily[$day->toDateString()] = 0;
+        }
+
+        $latest = AntigocciaApplication::query()
+            ->whereDate('applied_on', '<=', $today->toDateString())
+            ->select('apartment_id')->selectRaw('MAX(applied_on) as applied_on')
+            ->groupBy('apartment_id')->pluck('applied_on', 'apartment_id');
+
+        $apartmentStats = [];
+        $staff = [];
+        $covered = [];
+        $total = 0;
+        $reports = AntigocciaReport::query()
+            ->where('created_at', '>=', $start)
+            ->where('created_at', '<', $today->addDay())
+            ->select(['id', 'apartment_id', 'user_id', 'cleaner_name', 'created_at', 'cleaning_date']);
+
+        foreach ($reports->lazyById(500) as $report) {
+            $total++;
+            $submitted = $report->created_at->toDateString();
+            $daily[$submitted] = ($daily[$submitted] ?? 0) + 1;
+            $date = $report->cleaning_date->toDateString();
+            $id = $report->apartment_id;
+            $apartmentStats[$id] ??= ['count' => 0, 'dates' => [], 'last' => null];
+            $apartmentStats[$id]['count']++;
+            $apartmentStats[$id]['dates'][$date] = true;
+            $apartmentStats[$id]['last'] = max($apartmentStats[$id]['last'] ?? '', $date);
+            if (isset($latest[$id]) && $date >= $latest[$id]) {
+                $covered[$id] = true;
+            }
+            $key = $report->user_id === null ? 'deleted:'.$report->cleaner_name : 'user:'.$report->user_id;
+            $staff[$key] ??= ['name' => $report->cleaner_name, 'count' => 0, 'last' => null];
+            $staff[$key]['count']++;
+            $staff[$key]['last'] = max($staff[$key]['last'] ?? '', $submitted);
+        }
+
+        $ids = array_unique(array_merge($latest->keys()->all(), array_keys($apartmentStats)));
+        $rows = Apartment::query()->whereIn('id', $ids)->orderBy('name')->get(['id', 'name'])
+            ->map(function (Apartment $apartment) use ($apartmentStats, $latest, $covered): array {
+                $stats = $apartmentStats[$apartment->id] ?? ['count' => 0, 'dates' => [], 'last' => null];
+                $dates = array_keys($stats['dates']);
+                sort($dates);
+                $interval = count($dates) > 1
+                    ? round(CarbonImmutable::parse($dates[0])->diffInDays(CarbonImmutable::parse(end($dates))) / (count($dates) - 1), 1)
+                    : null;
+                return [
+                    'name' => $apartment->name,
+                    'applied_on' => $latest[$apartment->id] ?? null,
+                    'count' => $stats['count'],
+                    'last' => $stats['last'],
+                    'mean_interval' => $interval,
+                    'covered' => isset($covered[$apartment->id]),
+                ];
+            })->all();
+
+        usort($staff, fn (array $a, array $b): int => $b['count'] <=> $a['count']);
+
+        return [
+            'days' => $days, 'reports' => $total, 'daily' => $daily,
+            'treated' => $latest->count(), 'covered' => count($covered),
+            'uncovered' => $latest->count() - count($covered),
+            'staff_count' => count($staff), 'staff' => $staff, 'apartments' => $rows,
+        ];
+    }
+
 }
