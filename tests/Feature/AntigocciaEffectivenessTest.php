@@ -103,10 +103,6 @@ it('measures post-treatment outcomes without counting an unsoiled surface as eas
         ->and($overall['inconsistent'])->toBe(1)
         ->and($report['ages']['first_week']['reports'])->toBe(3)
         ->and($report['ages']['first_month']['reports'])->toBe(1)
-        ->and($report['gaps']['short']['reports'])->toBe(1)
-        ->and($report['gaps']['medium']['reports'])->toBe(1)
-        ->and($report['gaps']['long']['reports'])->toBe(1)
-        ->and($report['gaps']['unknown']['reports'])->toBe(1)
         ->and($report['surfaces']['mirrors']['residual_rate'])->toBe(50)
         ->and($report['surfaces']['mirrors']['easy_rate'])->toBe(67);
 
@@ -126,8 +122,7 @@ it('shows unavailable rates instead of invented zero-percent results', function 
         ->and($result['overall']['residual_rate'])->toBeNull()
         ->and($result['overall']['easy_rate'])->toBeNull()
         ->and($result['overall']['difficult_rate'])->toBeNull()
-        ->and($result['ages']['later']['residual_rate'])->toBeNull()
-        ->and($result['gaps']['unknown']['residual_rate'])->toBeNull();
+        ->and($result['ages']['later']['residual_rate'])->toBeNull();
 
     DB::table('antigoccia_applications')->insert(['apartment_id' => 20, 'applied_on' => '2026-11-10']);
     reportForEffectiveness(20, '2026-11-11', 1, [

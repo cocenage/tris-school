@@ -35,7 +35,7 @@ beforeEach(function (): void {
         $table->unsignedBigInteger('user_id');
         $table->string('cleaner_name');
         $table->date('cleaning_date');
-        $table->unsignedInteger('days_since_previous_cleaning');
+        $table->unsignedInteger('days_since_previous_cleaning')->nullable();
         $table->json('answers');
         $table->json('photos')->nullable();
         $table->boolean('remaining')->default(false);
@@ -45,7 +45,7 @@ beforeEach(function (): void {
 
     $actor = new User([
         'name' => 'Администратор',
-        'role' => 'admin',
+        'role' => 'cleaner',
         'status' => 'approved',
         'is_active' => true,
     ]);
@@ -83,6 +83,11 @@ it('selects an apartment without losing previously established surface logic', f
         'name' => 'Тестовая квартира', 'address' => 'Via Esempio 1', 'created_at' => now(), 'updated_at' => now(),
     ]);
 
+    \Illuminate\Support\Facades\DB::table('antigoccia_applications')->insert([
+        'apartment_id' => $id, 'applied_on' => now('Europe/Rome')->subDay()->toDateString(),
+        'created_by' => 51, 'created_at' => now(), 'updated_at' => now(),
+    ]);
+
     $component = Livewire::test('antigoccia.page-antigoccia')
         ->call('selectApartment', $id)
         ->assertSee('Тестовая квартира')
@@ -104,9 +109,12 @@ it('dispatches the first invalid field on submit instead of losing the scroll po
     $id = \Illuminate\Support\Facades\DB::table('apartments')->insertGetId([
         'name' => 'Тестовая квартира', 'created_at' => now(), 'updated_at' => now(),
     ]);
+    \Illuminate\Support\Facades\DB::table('antigoccia_applications')->insert([
+        'apartment_id' => $id, 'applied_on' => now('Europe/Rome')->subDay()->toDateString(),
+        'created_by' => 51, 'created_at' => now(), 'updated_at' => now(),
+    ]);
+
     $component->call('selectApartment', $id)
-        ->set('daysSincePreviousCleaning', '2')
-        ->set('coatingDate', now('Europe/Rome')->subDay()->toDateString())
         ->call('submit')->assertHasErrors(['answers.mirrors.dirt'])
         ->assertDispatched('antigoccia-invalid', field: 'answers.mirrors.dirt');
 });

@@ -3,12 +3,15 @@
 namespace App\Filament\Resources\Apartments\Pages;
 
 use App\Filament\Resources\Apartments\ApartmentResource;
+use App\Models\AntigocciaApplication;
 use App\Models\Apartment;
 use App\Services\Apartments\ApartmentAccessService;
 use App\Services\Apartments\TelegramApartmentImportService;
+use Carbon\CarbonImmutable;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\Checkbox;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Placeholder;
 use Filament\Notifications\Notification;
@@ -26,6 +29,51 @@ class ViewApartment extends ViewRecord
     {
         return [
             EditAction::make(),
+            Action::make('antigocciaTreatmentDate')
+                ->label(function (Apartment $record): string {
+                    $date = AntigocciaApplication::query()
+                        ->where('apartment_id', $record->getKey())
+                        ->orderByDesc('applied_on')
+                        ->orderByDesc('id')
+                        ->value('applied_on');
+
+                    return $date
+                        ? 'Антикапля · '.CarbonImmutable::parse($date, 'Europe/Rome')->format('d.m.Y')
+                        : 'Указать дату обработки';
+                })
+                ->icon('heroicon-o-sparkles')
+                ->visible(fn (): bool => app(ApartmentAccessService::class)->canManage(auth()->user()))
+                ->modalHeading('Дата обработки «Антикапля»')
+                ->modalSubmitActionLabel('Сохранить дату')
+                ->fillForm(fn (Apartment $record): array => [
+                    'applied_on' => AntigocciaApplication::query()
+                        ->where('apartment_id', $record->getKey())
+                        ->orderByDesc('applied_on')
+                        ->orderByDesc('id')
+                        ->value('applied_on'),
+                ])
+                ->schema([
+                    DatePicker::make('applied_on')
+                        ->label('Последняя дата обработки')
+                        ->maxDate(now('Europe/Rome')->toDateString())
+                        ->required(),
+                ])
+                ->action(function (Apartment $record, array $data): void {
+                    abort_unless(app(ApartmentAccessService::class)->canManage(auth()->user()), 403);
+
+                    AntigocciaApplication::query()->firstOrCreate(
+                        [
+                            'apartment_id' => $record->getKey(),
+                            'applied_on' => $data['applied_on'],
+                        ],
+                        ['created_by' => auth()->id()],
+                    );
+
+                    Notification::make()
+                        ->title('Дата обработки сохранена')
+                        ->success()
+                        ->send();
+                }),
             Action::make('importTelegram')
                 ->label('Импорт из Telegram')
                 ->icon('heroicon-o-arrow-up-tray')

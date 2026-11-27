@@ -67,7 +67,7 @@
 
                 <p class="mt-2 text-xs text-gray-500">Без грязи: {{ $outcomes['without_visible_dirt'] }} · Противоречия: {{ $outcomes['inconsistent'] }} @if($outcomes['evaluable_removal'] < 20) · Малая выборка @endif</p>
 
-                <div class="mt-6 grid gap-6 xl:grid-cols-2">
+                <div class="mt-6">
                     <div>
                         <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Срок после нанесения</h3>
                         <div class="mt-3 space-y-3">
@@ -88,23 +88,6 @@
                                             · малая выборка
                                         @endif
                                     </p>
-                                </div>
-                            @endforeach
-                        </div>
-                    </div>
-                    <div>
-                        <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Интервал между уборками</h3>
-                        <div class="mt-3 space-y-3">
-                            @foreach($effectiveness['gaps'] as $cohort)
-                                <div class="flex items-center justify-between gap-3 rounded-xl border border-gray-200 px-3 py-3 dark:border-gray-700">
-                                    <div class="min-w-0">
-                                        <p class="text-sm font-medium">{{ $cohort['label'] }}</p>
-                                        <p class="mt-1 text-xs text-gray-500">{{ $cohort['reports'] }} анкет · {{ $cohort['residual_observations'] }} ответов</p>
-                                    </div>
-                                    <div class="shrink-0 text-right">
-                                        <p class="text-sm font-semibold tabular-nums">{{ $cohort['residual_rate'] === null ? '—' : $cohort['residual_rate'].'%' }} остатков</p>
-                                        <p class="text-xs text-gray-500">{{ $cohort['easy_rate'] === null ? '—' : $cohort['easy_rate'].'%' }} легко · n={{ $cohort['evaluable_removal'] }}</p>
-                                    </div>
                                 </div>
                             @endforeach
                         </div>
@@ -217,7 +200,7 @@
                     @forelse($this->history as $report)
                         <details class="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
                             <summary class="cursor-pointer font-semibold">{{ $report->cleaning_date->format('d.m.Y') }} · {{ $report->cleaner_name }}</summary>
-                            <p class="mt-2 text-sm text-gray-500">Отправлено {{ $report->created_at->format('d.m.Y H:i') }} · С прошлой уборки: {{ $report->days_since_previous_cleaning === null ? '—' : $report->days_since_previous_cleaning.' дн.' }}</p>
+                            <p class="mt-2 text-sm text-gray-500">Отправлено {{ $report->created_at->format('d.m.Y H:i') }}</p>
                             @foreach(\App\Services\Antigoccia\AntigocciaAssessment::SURFACES as $key => $label)
                                 @php
     $answer = $report->answers[$key] ?? [];

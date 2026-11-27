@@ -20,21 +20,19 @@ new class extends Component {
     public string $apartmentId = '';
     public string $apartmentSearch = '';
     public string $cleaningDate = '';
-    public string $daysSincePreviousCleaning = '';
     public string $submissionUuid = '';
     public array $answers = [];
     public array $photos = [];
     public bool $saved = false;
     public bool $showMyReports = false;
     public ?int $deleteCandidateId = null;
-    public string $coatingDate = '';
 
     public function mount(): void
     {
         $this->newForm();
         $suggested = request()->query('apartment');
         if (ctype_digit((string) $suggested)
-            && app(ApartmentAccessService::class)->visibleQuery(auth()->user())->whereKey((int) $suggested)->exists()) {
+            && $this->antigocciaApartmentQuery()->whereKey((int) $suggested)->exists()) {
             $this->selectApartment((int) $suggested);
         }
     }
@@ -42,8 +40,6 @@ new class extends Component {
     public function newForm(): void
     {
         $this->cleaningDate = now('Europe/Rome')->toDateString();
-        $this->daysSincePreviousCleaning = '';
-        $this->coatingDate = '';
         $this->answers = AntigocciaAssessment::blankAnswers();
         $this->photos = [];
         $this->submissionUuid = (string) Str::uuid();
@@ -53,7 +49,7 @@ new class extends Component {
 
     public function selectApartment(int $id): void
     {
-        $apartment = app(ApartmentAccessService::class)->visibleQuery(auth()->user())
+        $apartment = $this->antigocciaApartmentQuery()
             ->whereKey($id)->first();
 
         abort_unless($apartment, 403);
@@ -73,7 +69,7 @@ new class extends Component {
     public function getApartmentMatchesProperty()
     {
         $search = mb_strtolower(trim($this->apartmentSearch));
-        return app(ApartmentAccessService::class)->visibleQuery(auth()->user())
+        return $this->antigocciaApartmentQuery()
             ->when($search !== '', fn ($query) => $query->where(function ($query) use ($search) {
                 $query->whereRaw('LOWER(name) LIKE ?', ['%'.$search.'%'])
                     ->orWhereRaw("LOWER(COALESCE(address, '')) LIKE ?", ['%'.$search.'%']);
@@ -106,7 +102,7 @@ new class extends Component {
             return null;
         }
 
-        return app(ApartmentAccessService::class)->visibleQuery(auth()->user())
+        return $this->antigocciaApartmentQuery()
             ->find((int) $this->apartmentId);
     }
 
@@ -118,6 +114,16 @@ new class extends Component {
 
         return AntigocciaApplication::query()->where('apartment_id', $this->apartment->id)
             ->orderByDesc('applied_on')->orderByDesc('id')->first();
+    }
+
+    private function antigocciaApartmentQuery()
+    {
+        $user = auth()->user();
+        $query = $user?->role === 'cleaner' && $user->isApproved() && $user->is_active
+            ? Apartment::query()->where('is_active', true)->where('information_status', 'published')
+            : app(ApartmentAccessService::class)->visibleQuery($user);
+
+        return $query->whereIn('id', AntigocciaApplication::query()->select('apartment_id'));
     }
 
     /**
@@ -235,7 +241,7 @@ new class extends Component {
         } catch (ValidationException $exception) {
             $this->setErrorBag($exception->validator->errors());
             $keys = array_keys($exception->errors());
-            $order = ['apartmentId', 'coatingDate', 'cleaningDate', 'daysSincePreviousCleaning'];
+            $order = ['apartmentId', 'cleaningDate'];
             foreach (AntigocciaAssessment::SURFACES as $surface => $label) {
                 array_push($order, "answers.$surface.dirt", "answers.$surface.removal", "answers.$surface.remaining", "photos.$surface");
             }
@@ -253,7 +259,6 @@ new class extends Component {
         $this->validate([
             'apartmentId' => ['required', 'integer'],
             'cleaningDate' => ['required', 'date_format:Y-m-d', 'before_or_equal:'.now('Europe/Rome')->toDateString()],
-            'daysSincePreviousCleaning' => ['required', 'integer', 'min:0', 'max:36500'],
             'submissionUuid' => ['required', 'uuid'],
         ]);
 
@@ -270,10 +275,12 @@ new class extends Component {
         $existingApplication = AntigocciaApplication::query()->where('apartment_id', $apartment->id)
             ->orderByDesc('applied_on')->first();
         if (! $existingApplication) {
-            $this->validate([
-                'coatingDate' => ['required', 'date_format:Y-m-d', 'before_or_equal:'.$this->cleaningDate],
+            throw ValidationException::withMessages([
+                'apartmentId' => 'Сначала укажите дату обработки в карточке квартиры.',
             ]);
-        } elseif ($existingApplication->applied_on->toDateString() > $this->cleaningDate) {
+        }
+
+        if ($existingApplication->applied_on->toDateString() > $this->cleaningDate) {
             throw ValidationException::withMessages(['cleaningDate' => 'Дата уборки не может быть раньше обработки.']);
         }
 
@@ -302,10 +309,8 @@ new class extends Component {
                 $application = AntigocciaApplication::query()->where('apartment_id', $apartment->id)
                     ->orderByDesc('applied_on')->first();
                 if (! $application) {
-                    $application = AntigocciaApplication::create([
-                        'apartment_id' => $apartment->id,
-                        'applied_on' => $this->coatingDate,
-                        'created_by' => auth()->id(),
+                    throw ValidationException::withMessages([
+                        'apartmentId' => 'Сначала укажите дату обработки в карточке квартиры.',
                     ]);
                 }
                 if ($application->applied_on->toDateString() > $this->cleaningDate) {
@@ -319,7 +324,6 @@ new class extends Component {
                     'user_id' => auth()->id(),
                     'cleaner_name' => auth()->user()->name ?: auth()->user()->telegram_username ?: 'Не указано',
                     'cleaning_date' => $this->cleaningDate,
-                    'days_since_previous_cleaning' => (int) $this->daysSincePreviousCleaning,
                     'answers' => $answers,
                     'photos' => $files,
                     'remaining' => collect($answers)->contains(fn (array $answer): bool => $answer['remaining'] === 'yes'),
@@ -407,43 +411,33 @@ new class extends Component {
                                     <x-heroicon-o-chevron-right class="size-4 shrink-0 text-[#A0AAB7]" />
                                 </button>
                             @empty
-                                <p class="px-3 py-4 text-center text-[13px] text-[#7D8AA0]">Ничего не найдено. Попробуйте другой адрес.</p>
+                                <p class="px-3 py-4 text-center text-[13px] text-[#7D8AA0]">
+                                    @if(trim($apartmentSearch) === '')
+                                        Квартиры с указанной датой обработки не найдены. Попросите администратора внести её в карточке квартиры.
+                                    @else
+                                        Ничего не найдено. Попробуйте другой адрес.
+                                    @endif
+                                </p>
                             @endforelse
                         </div>
                     @endif
                     @error('apartmentId') <p role="alert" class="mt-2 text-[12px] font-medium text-red-700">{{ $message }}</p> @enderror
                 </div>
 
-                @if($this->apartment)
-                    @if($this->application)
-                        <div class="flex items-center justify-between gap-3 rounded-xl bg-[#F4F8FC] px-4 py-3">
-                            <span class="text-[13px] text-[#64758D]">Покрытие нанесено</span>
-                            <span class="text-[13px] font-bold text-[#20386B]">{{ $this->application->applied_on->format('d.m.Y') }}</span>
-                        </div>
-                    @else
-                        <div>
-                            <label for="antigoccia-coating-date" class="mb-2 block text-[13px] font-semibold text-[#344460]">Дата обработки <span class="text-[#C84C46]">*</span></label>
-                            <input id="antigoccia-coating-date" data-antigoccia-field="coatingDate" type="date" wire:model="coatingDate" max="{{ $cleaningDate }}"
-                                @disabled($saved) class="min-h-[52px] w-full rounded-xl border border-[#E0E6ED] bg-[#F7F9FB] px-4 text-[14px] text-[#253854] focus:border-[#3181BB] focus:ring-[#3181BB]/20 disabled:opacity-60">
-                            @error('coatingDate') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
-                        </div>
-                    @endif
+                @if($this->apartment && $this->application)
+                    <div class="flex items-center justify-between gap-3 rounded-xl bg-[#F4F8FC] px-4 py-3">
+                        <span class="text-[13px] text-[#64758D]">Дата обработки</span>
+                        <span class="text-[13px] font-bold text-[#20386B]">{{ $this->application->applied_on->format('d.m.Y') }}</span>
+                    </div>
                 @endif
 
-                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div>
-                        <label for="antigoccia-date" class="mb-2 block text-[13px] font-semibold text-[#344460]">Дата уборки <span class="text-[#C84C46]">*</span></label>
-                        <input id="antigoccia-date" data-antigoccia-field="cleaningDate" type="date" wire:model.live="cleaningDate"
-                            max="{{ now('Europe/Rome')->toDateString() }}" @disabled($saved) class="min-h-[52px] w-full rounded-xl border border-[#E0E6ED] bg-[#F7F9FB] px-4 text-[14px] text-[#253854] focus:border-[#3181BB] focus:ring-[#3181BB]/20 disabled:opacity-60">
-                        @error('cleaningDate') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
-                    </div>
-                    <div>
-                        <label for="antigoccia-last-cleaning" class="mb-2 block text-[13px] font-semibold text-[#344460]">Дней с прошлой уборки <span class="text-[#C84C46]">*</span></label>
-                        <input id="antigoccia-last-cleaning" data-antigoccia-field="daysSincePreviousCleaning" type="number" min="0" max="36500" step="1" inputmode="numeric"
-                            wire:model="daysSincePreviousCleaning" placeholder="Например, 7" @disabled($saved) class="min-h-[52px] w-full rounded-xl border border-[#E0E6ED] bg-[#F7F9FB] px-4 text-[14px] text-[#253854] outline-none placeholder:text-[#A1ADBA] focus:border-[#3181BB] focus:ring-2 focus:ring-[#3181BB]/20 disabled:opacity-60">
-                        @error('daysSincePreviousCleaning') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
-                    </div>
+                <div>
+                    <label for="antigoccia-date" class="mb-2 block text-[13px] font-semibold text-[#344460]">Дата уборки <span class="text-[#C84C46]">*</span></label>
+                    <input id="antigoccia-date" data-antigoccia-field="cleaningDate" type="date" wire:model.live="cleaningDate"
+                        max="{{ now('Europe/Rome')->toDateString() }}" @disabled($saved) class="min-h-[52px] w-full rounded-xl border border-[#E0E6ED] bg-[#F7F9FB] px-4 text-[14px] text-[#253854] focus:border-[#3181BB] focus:ring-[#3181BB]/20 disabled:opacity-60">
+                    @error('cleaningDate') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
                 </div>
+
                 <div class="flex items-center gap-2 border-t border-[#EEF1F5] pt-3 text-[12px] text-[#77859A]">
                     <x-heroicon-o-user-circle class="size-4" />
                     <span>Проверяет: <span class="font-semibold text-[#334562]">{{ auth()->user()->name ?: auth()->user()->telegram_username ?: 'Не указано' }}</span></span>

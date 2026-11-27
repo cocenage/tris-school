@@ -39,12 +39,6 @@ class AntigocciaEffectiveness
             'second_month' => $this->blank('31–60 дней'),
             'later' => $this->blank('Более 60 дней'),
         ];
-        $gaps = [
-            'short' => $this->blank('0–2 дня'),
-            'medium' => $this->blank('3–7 дней'),
-            'long' => $this->blank('8+ дней'),
-            'unknown' => $this->blank('Интервал неизвестен'),
-        ];
         $surfaces = [];
         foreach (AntigocciaAssessment::SURFACES as $key => $label) {
             $surfaces[$key] = $this->blank($label);
@@ -58,7 +52,7 @@ class AntigocciaEffectiveness
             ->when($apartmentId !== null, fn ($query) => $query->where('apartment_id', $apartmentId))
             ->when($startDate !== null, fn ($query) => $query->whereDate('cleaning_date', '>=', $startDate))
             ->whereDate('cleaning_date', '<=', $today->toDateString())
-            ->select(['id', 'apartment_id', 'cleaning_date', 'days_since_previous_cleaning', 'answers']);
+            ->select(['id', 'apartment_id', 'cleaning_date', 'answers']);
 
         foreach ($reports->lazyById(300) as $report) {
             if ($report->cleaning_date === null) {
@@ -91,17 +85,8 @@ class AntigocciaEffectiveness
                 default => 'later',
             };
 
-            $daysSincePrevious = $report->days_since_previous_cleaning;
-            $gapKey = match (true) {
-                $daysSincePrevious === null => 'unknown',
-                $daysSincePrevious <= 2 => 'short',
-                $daysSincePrevious <= 7 => 'medium',
-                default => 'long',
-            };
-
             $overall['reports']++;
             $age[$ageKey]['reports']++;
-            $gaps[$gapKey]['reports']++;
 
             foreach (AntigocciaAssessment::SURFACES as $surface => $label) {
                 $answer = $report->answers[$surface] ?? null;
@@ -111,7 +96,7 @@ class AntigocciaEffectiveness
 
                 $this->addObservation($overall, $answer);
                 $this->addObservation($age[$ageKey], $answer);
-                $this->addObservation($gaps[$gapKey], $answer);
+
                 $this->addObservation($surfaces[$surface], $answer);
                 $surfaces[$surface]['reports']++;
             }
@@ -123,7 +108,6 @@ class AntigocciaEffectiveness
             'unlinked_reports' => $unlinked,
             'overall' => $this->withRates($overall),
             'ages' => array_map($this->withRates(...), $age),
-            'gaps' => array_map($this->withRates(...), $gaps),
             'surfaces' => array_map($this->withRates(...), $surfaces),
         ];
     }
