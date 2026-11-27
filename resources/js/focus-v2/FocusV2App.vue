@@ -143,6 +143,7 @@ let acknowledgedSerial = 0;
 let timer = null;
 let inFlight = null;
 let uncertainSnapshot = null;
+let pendingAttachReplay = null;
 
 const statusLabel = computed(() => testMode.value && state.value === 'synced' ? 'Тестовый черновик сохранён' : ({
     idle: 'Готово',
@@ -203,7 +204,7 @@ async function fetchJson(url, options = {}) {
     options.signal?.addEventListener('abort', abort, { once: true });
     let timeoutFired = false;
     const timeout = setTimeout(() => { timeoutFired = true; controller.abort(); }, 25_000);
-    let response;
+    let response, data;
     try {
         response = await fetch(url, {
             credentials: 'same-origin',
@@ -215,6 +216,10 @@ async function fetchJson(url, options = {}) {
             ...options,
             signal: controller.signal,
         });
+        data = await response.json().catch(error => {
+            if (error?.name === 'AbortError' || error instanceof TypeError) throw error;
+            return {};
+        });
     } catch (error) {
         if (timeoutFired) throw new Error('Соединение зависло. При восстановлении повторим сохранение без потери ответов.');
         throw error;
@@ -222,7 +227,6 @@ async function fetchJson(url, options = {}) {
         clearTimeout(timeout);
         options.signal?.removeEventListener('abort', abort);
     }
-    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
         const firstError = Object.values(data.errors ?? {}).flat().find(message => typeof message === 'string');
         const exception = new Error(firstError || data.message || (response.status === 419
@@ -243,6 +247,7 @@ async function initialize() {
     changeSerial = 0;
     acknowledgedSerial = 0;
     uncertainSnapshot = null;
+    pendingAttachReplay = null;
     recoveryRecord.value = null;
     recoveryMode.value = '';
     recoveryKey = null;
@@ -378,6 +383,7 @@ async function restoreCachedPhotos() {
                 record: record || null, status: 'queued', progress: 0, error: '',
                 info: null, controller: null, preview_url: URL.createObjectURL(file),
                 cached: true,
+                reservationAttempted: !!record || run.value.draft_id != null,
             });
         }
         pumpTransfers();
@@ -600,6 +606,7 @@ async function choosePerson(id) {
             changeSerial = 0;
             acknowledgedSerial = 0;
             uncertainSnapshot = null;
+            pendingAttachReplay = null;
             clearTimeout(timer);
             finalResult.value = null;
             state.value = data.run?.schema_conflict ? 'conflict' : 'synced';
@@ -744,17 +751,19 @@ async function attachReadyDraft(record) {
             if (info.status !== 'ready' && info.status !== 'attached') {
                 throw new Error('Файл ещё не готов. Выберите исходный файл для возобновления.');
             }
-            const attached = await attachFocusFile(info.urls.attach, {
-                draft_id: run.value.draft_id, expected_revision: run.value.revision,
-            }, csrf);
-            run.value = { ...run.value, ...attached.run };
-            if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
-            const files = media.value[record.room_index][record.question_index];
-            if (!files.some(file => file.upload_id === attached.media_item.upload_id)) {
-                files.push(attached.media_item);
-            }
-            interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
-            if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
+            const publish = attached => {
+                run.value = { ...run.value, ...attached.run };
+                if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
+                const files = media.value[record.room_index][record.question_index];
+                if (!files.some(file => file.upload_id === attached.media_item.upload_id)) files.push(attached.media_item);
+                interruptedUploads.value = interruptedUploads.value.filter(item => item.upload_id !== record.upload_id);
+                if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
+            };
+            const body = { draft_id: run.value.draft_id, expected_revision: run.value.revision };
+            // Already attached on bootstrap means a previous request was confirmed
+            // by the server snapshot, not a new revision-changing write.
+            if (info.status === 'attached') publish(await attachFocusFile(info.urls.attach, body, csrf));
+            else await saveMediaAttachment({ url: info.urls.attach, body, publish, uploadId: record.upload_id });
         });
     } catch (error) {
         mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
@@ -897,6 +906,10 @@ async function flush() {
         return flush();
     }
     if (inFlight) return inFlight;
+    if (pendingAttachReplay) {
+        if (!(await reconcilePendingAttachment())) return false;
+        return flush();
+    }
     if (!uncertainSnapshot && changeSerial === acknowledgedSerial) return true;
 
     const snapshot = uncertainSnapshot ?? takeSnapshot();
@@ -910,6 +923,10 @@ async function flush() {
                 method: 'POST',
                 body: JSON.stringify(body),
             });
+            if (result.run?.id !== body.run_id || !(result.run?.draft_id > 0)
+                || !Number.isInteger(result.run?.revision) || result.run.revision < Math.max(1, body.expected_revision)) {
+                throw new Error('Сервер не подтвердил сохранение черновика.');
+            }
             run.value = { ...run.value, ...result.run };
             uncertainSnapshot = null;
             acknowledgedSerial = Math.max(acknowledgedSerial, serial);
@@ -944,11 +961,78 @@ async function ensureSynced() {
 
 // Only revision-changing requests are serialized. Chunks and their
 // reservations do not depend on the latest answers or draft revision.
+async function holdDraftMedia(action) {
+    let unlock;
+    attachInFlight = new Promise(resolve => { unlock = resolve; });
+    try {
+        return await action();
+    } finally {
+        attachInFlight = null;
+        unlock();
+        if (state.value === 'dirty' && changeSerial !== acknowledgedSerial) queueSave(0);
+    }
+}
+
+async function reconcilePendingAttachment() {
+    if (attachInFlight) {
+        await attachInFlight;
+        return reconcilePendingAttachment();
+    }
+    const pending = pendingAttachReplay;
+    if (!pending) return canEdit.value;
+    if (!connectionOnline.value || !canEdit.value) return false;
+    return holdDraftMedia(async () => {
+        try {
+            await pending.replay();
+            pendingAttachReplay = null;
+            state.value = changeSerial === acknowledgedSerial ? 'synced' : 'dirty';
+            syncError.value = '';
+            return true;
+        } catch (error) {
+            // A revision conflict after this replay is real. Do not adopt a
+            // different snapshot or retry as if it were our own write.
+            if (error.status === 409) {
+                pendingAttachReplay = null;
+                state.value = 'conflict';
+            } else state.value = 'error';
+            syncError.value = 'Не удалось сверить прикреплённый файл. Новые ответы остаются в этом черновике на устройстве.';
+            return false;
+        }
+    });
+}
+
+async function saveMediaAttachment({ url, body, signal, notify, publish, afterReplay, uploadId }) {
+    const perform = async currentSignal => {
+        const result = await attachFocusFile(url, body, csrf, currentSignal, notify);
+        if (result.run?.revision !== body.expected_revision + 1) {
+            const error = new Error('Черновик изменился после прикрепления файла.');
+            error.status = 409;
+            throw error;
+        }
+        await publish(result);
+    };
+    try {
+        await perform(signal);
+    } catch (error) {
+        if (isTransientFocusUploadError(error)) {
+            pendingAttachReplay = { uploadId, replay: async () => {
+                await perform();
+                await afterReplay?.();
+            } };
+        }
+        throw error;
+    }
+}
+
 async function writeDraftMedia(action) {
     while (true) {
         if (!canEdit.value) throw new Error(syncError.value || 'Черновик сейчас недоступен.');
         if (attachInFlight || inFlight) {
             await (attachInFlight || inFlight);
+            continue;
+        }
+        if (pendingAttachReplay) {
+            if (!(await reconcilePendingAttachment())) throw new Error(syncError.value || 'Файл ещё не подтверждён.');
             continue;
         }
         // A lost save acknowledgement may already have advanced the revision.
@@ -959,15 +1043,7 @@ async function writeDraftMedia(action) {
         }
         break;
     }
-    let unlock;
-    attachInFlight = new Promise(resolve => { unlock = resolve; });
-    try {
-        return await action();
-    } finally {
-        attachInFlight = null;
-        unlock();
-        if (state.value === 'dirty' && changeSerial !== acknowledgedSerial) queueSave(0);
-    }
+    return holdDraftMedia(action);
 }
 
 function positionKey() {
@@ -1469,7 +1545,7 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
 function pumpTransfers() {
     if (!connectionOnline.value) return;
     while (activeTransfers < 2 && (canEdit.value || stage.value === 'done')) {
-        const next = uploads.value.find(item => item.status === 'queued');
+        const next = uploads.value.find(item => item.status === 'queued' && !item.cancelling);
         if (!next) break;
         next.status = 'uploading';
         activeTransfers++;
@@ -1515,6 +1591,7 @@ async function sendOne(item) {
                 test_mode: testMode.value,
             };
 
+        item.reservationAttempted = true;
         const result = await transferFocusFile({
             startUrl: props.mediaStartUrl,
             file: item.file,
@@ -1539,15 +1616,16 @@ async function sendOne(item) {
         const task = attachQueue.catch(() => {}).then(async () => {
             const attach = async () => {
                 if (controller.signal.aborted) return;
-                const attached = await attachFocusFile(result.urls.attach, {
-                    draft_id: context.draft_id,
-                    expected_revision: finalResult.value ? 0 : run.value.revision,
-                }, csrf, controller.signal, notice => {
+                const body = { draft_id: context.draft_id, expected_revision: finalResult.value ? 0 : run.value.revision };
+                const notify = notice => {
                     item.retryHint = notice.label + ': восстанавливаем соединение (' + notice.attempt + '/2)';
-                });
+                };
                 if (finalResult.value) {
+                    await attachFocusFile(result.urls.attach, body, csrf, controller.signal, notify);
                     await refreshMediaReview();
-                } else {
+                    return;
+                }
+                const publish = async attached => {
                     run.value = { ...run.value, ...attached.run };
                     if (changeSerial !== acknowledgedSerial) saveLocalSnapshot();
                     const arr = media.value[item.room] ?? (media.value[item.room] = []);
@@ -1575,27 +1653,24 @@ async function sendOne(item) {
                             }
                         }
                     }
+                };
+                if (result.status === 'attached') {
+                    const confirmed = await attachFocusFile(result.urls.attach, body, csrf, controller.signal, notify);
+                    await publish(confirmed);
+                } else {
+                    await saveMediaAttachment({ url: result.urls.attach, body, signal: controller.signal, notify,
+                        publish, afterReplay: () => finishUploadedItem(item), uploadId: item.id });
                 }
             };
             return finalResult.value ? attach() : writeDraftMedia(attach);
         });
         attachQueue = task.catch(() => {});
         await task;
-        interruptedUploads.value = interruptedUploads.value.filter(other => other.upload_id !== item.id);
-        if (item.cached && recoveryKey) {
-            try {
-                await forgetCachedFocusPhoto(recoveryKey, item.id);
-            } catch (_) {
-                // The next bootstrap detects the already-attached upload ID
-                // and clears its stale local copy without sending it again.
-            }
-        }
-        if (item.preview_url) URL.revokeObjectURL(item.preview_url);
-        uploads.value = uploads.value.filter(other => other.id !== item.id);
+        await finishUploadedItem(item);
     } catch (error) {
         if (controller.signal.aborted) {
             // Cancellation may still be awaiting its own server confirmation.
-            if (item.status !== 'error') item.status = 'cancelled';
+            if (!item.cancelling && item.status !== 'error') item.status = 'cancelled';
             return;
         }
         item.status = 'error';
@@ -1607,7 +1682,20 @@ async function sendOne(item) {
     }
 }
 
+async function finishUploadedItem(item) {
+    interruptedUploads.value = interruptedUploads.value.filter(other => other.upload_id !== item.id);
+    if (item.cached && recoveryKey) {
+        try { await forgetCachedFocusPhoto(recoveryKey, item.id); } catch (_) { /* Bootstrap will clear the confirmed copy. */ }
+    }
+    if (item.preview_url) URL.revokeObjectURL(item.preview_url);
+    uploads.value = uploads.value.filter(other => other.id !== item.id);
+}
+
 function retryFile(item) {
+    if (pendingAttachReplay?.uploadId === item.id) {
+        void flush().then(() => pumpTransfers());
+        return;
+    }
     if (!canRetryFocusFile(item, canEdit.value, finalResult.value?.response_id)) return;
     item.status = 'queued';
     item.error = '';
@@ -1617,7 +1705,28 @@ function retryFile(item) {
 }
 
 async function cancelFile(item) {
-    if (!['queued', 'uploading', 'error'].includes(item.status)) return;
+    if (item.cancelling || !['queued', 'uploading', 'error'].includes(item.status)) return;
+    if (pendingAttachReplay?.uploadId === item.id) {
+        item.error = 'Сначала подтвердите состояние файла кнопкой «Повторить».';
+        return;
+    }
+    if (!item.reservationAttempted && !item.info && !item.record) {
+        // No POST /media/start ever left this client. No server draft or
+        // reservation is needed to remove a local-only file.
+        item.cancelling = true;
+        item.controller?.abort();
+        try {
+            if (item.cachePromise) await item.cachePromise;
+            if (item.cached && recoveryKey) await forgetCachedFocusPhoto(recoveryKey, item.id);
+            if (item.preview_url) URL.revokeObjectURL(item.preview_url);
+            uploads.value = uploads.value.filter(other => other.id !== item.id);
+        } catch (_) {
+            item.status = 'error';
+            item.retryable = false;
+            item.error = 'Не удалось удалить локальную копию. Нажмите «Убрать» ещё раз.';
+        } finally { item.cancelling = false; }
+        return;
+    }
 
     // If attach succeeded but its response was lost, deleting from the
     // client must not falsely claim that the evidence was removed.
@@ -1758,7 +1867,7 @@ function handleNetworkUpdate() {
     connectionOnline.value = navigator.onLine !== false;
     if (!connectionOnline.value) return;
     if (!wasOnline) {
-        if (['dirty', 'error'].includes(state.value)) queueSave(200);
+        if (pendingAttachReplay || ['dirty', 'error'].includes(state.value)) queueSave(200);
         // Retry only errors caused by temporary transport failures;
         // permissions/invalid files must remain visible for manual action.
         for (const item of uploads.value) {

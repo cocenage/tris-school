@@ -39,7 +39,7 @@ export function allowedFocusFile(file) {
     return '';
 }
 
-export async function focusMediaRequest(url, method, body, csrf, signal, timeoutMs = 0) {
+export async function focusMediaRequest(url, method, body, csrf, signal, timeoutMs = 45_000) {
     const bounded = timeoutMs > 0 ? new AbortController() : null;
     if (signal?.aborted) throw new DOMException('Отменено', 'AbortError');
     const abortFromUser = () => bounded?.abort();
@@ -74,7 +74,7 @@ export async function focusMediaRequest(url, method, body, csrf, signal, timeout
         return result;
     } catch (error) {
         if (timedOut && !signal?.aborted) {
-            const timeoutError = new Error('Сервер не подтвердил прикрепление. Повторите попытку.');
+            const timeoutError = new Error('Сервер не ответил вовремя. Проверьте соединение.');
             timeoutError.name = 'TimeoutError';
             throw timeoutError;
         }
@@ -188,7 +188,7 @@ export async function transferFocusFile({ startUrl, file, uploadId, draft, room,
         original_name: file.name,
         mime: focusFileMime(file),
         size: file.size,
-    }, csrf, signal), signal, onRetry, 'Подключение');
+    }, csrf, signal, 15_000), signal, onRetry, 'Подключение');
 
     onInit(info);
     if (info.status === 'attached' || info.status === 'ready') {

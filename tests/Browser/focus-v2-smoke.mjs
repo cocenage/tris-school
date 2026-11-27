@@ -153,6 +153,8 @@ class FakeFocusBackend {
                     const sandbox = payload.test_mode === true;
                     const state = sandbox ? this.test : this;
                     this.startRequests += 1;
+                    if (this.beforeStart) await this.beforeStart();
+                    if (!payload.draft_id) return reply({message: "Draft ID required"}, 422);
                     if (payload.run_id !== (state.runId || runId) || payload.draft_id !== state.draftId) {
                         return reply({ message: 'Wrong draft or run' }, 409);
                     }
@@ -205,6 +207,10 @@ class FakeFocusBackend {
                             });
                             session.status = 'attached';
                             state.revision++;
+                        }
+                        if (this.dropAttachAcks > 0) {
+                            this.dropAttachAcks--;
+                            return route.abort("failed");
                         }
                         if (this.dropAttachAck) {
                             this.dropAttachAck = false;
@@ -317,6 +323,78 @@ async function main() {
         browser = await (process.env.FOCUS_BROWSER === 'webkit' ? webkit : chromium).launch({
             headless: true, ...(process.env.FOCUS_BROWSER === 'webkit' ? {} : { args: ['--no-sandbox', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] }),
         });
+
+        // Offline removal must be durable, and never reserve an unsent file.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name:'К вопросам' }).click();
+            await page.evaluate(() => {
+                Object.defineProperty(navigator, 'onLine', { configurable:true, get:()=>false });
+                window.dispatchEvent(new Event('offline'));
+            });
+            await addPhoto(page);
+            await page.getByText('На устройстве', { exact:true }).waitFor();
+            await page.getByRole('button', { name:'Убрать', exact:true }).click();
+            await page.getByRole('button', { name:'Открыть фото photo.png' }).waitFor({ state:'hidden', timeout:6000 });
+            assert.equal(backend.startRequests, 0);
+            await page.close();
+            const { page:reopened, errors:reopenErrors } = await pageFor(context, backend);
+            await reopened.getByRole('button', { name:/^(К вопросам|Продолжить контроль)$/ }).click();
+            assert.equal(await reopened.getByRole('button', { name:'Открыть фото photo.png' }).count(), 0);
+            assert.equal(backend.startRequests, 0);
+            assert.deepEqual([...errors,...reopenErrors], []);
+            console.log('PASS mobile UI: offline-only removal survives reopening without a server reservation');
+            await context.close();
+        }
+        // After all attach replies are lost once, a subsequent answer must reconcile the media revision.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId=51; backend.revision=1; backend.dropAttachAcks=3;
+            const context=await browser.newContext({ viewport:{ width:390,height:844 } });
+            const {page,errors}=await pageFor(context,backend);
+            await page.getByRole('button',{name:'К вопросам'}).click();
+            await addPhoto(page);
+            await page.getByText('Ошибка загрузки',{exact:true}).waitFor({timeout:7000});
+            await page.getByRole('button',{name:'Да',exact:true}).click();
+            for(let i=0;backend.answers[0][0].selected!=='yes'&&i<45;i++) await delay(100);
+            assert.equal(backend.answers[0][0].selected,'yes','Autosave used a stale revision after a lost attach receipt');
+            assert.equal(await page.getByText('Конфликт черновика',{exact:true}).count(),0);
+            assert.equal(backend.media[0][0].length,1);
+            assert.equal(backend.chunkRequests,1);
+            await page.getByRole('button',{name:'К сводке'}).click();
+            await page.getByRole('button',{name:'Отправить контроль'}).click();
+            await page.getByRole('heading',{name:'Контроль завершён'}).waitFor();
+            assert.deepEqual(errors,[]);
+            console.log('PASS mobile UI: reconciles lost attachment before answer save and final submission');
+            await context.close();
+        }
+        // A stalled reservation must time out and replay the same upload ID.
+        {
+            const backend = new FakeFocusBackend();
+            backend.draftId=51; backend.revision=1;
+            let releaseStart;
+            const firstStart=new Promise(resolve=>{releaseStart=resolve;});
+            backend.beforeStart=async()=>{ if(backend.startRequests===1) await firstStart; };
+            const context=await browser.newContext({ viewport:{ width:390,height:844 } });
+            const {page,errors}=await pageFor(context,backend);
+            await page.clock.install();
+            await page.getByRole('button',{name:'К вопросам'}).click();
+            await addPhoto(page);
+            try {
+                for(let i=0;backend.startRequests<1&&i<40;i++) await delay(50);
+                assert.equal(backend.startRequests,1);
+                await page.clock.fastForward(120000);
+                for(let i=0;backend.media[0][0].length<1&&i<45;i++) await delay(100);
+                assert.equal(backend.startRequests,2);
+                assert.equal(backend.media[0][0].length,1);
+                assert.equal(backend.sessions.size,1);
+                assert.deepEqual(errors,[]);
+            } finally { releaseStart(); }
+            console.log('PASS mobile UI: stalled upload start times out and retries without duplicate');
+            await context.close();
+        }
 
         // Setup validation, room chrome, and review share the real workflow.
         {
