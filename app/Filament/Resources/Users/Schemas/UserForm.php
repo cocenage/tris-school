@@ -59,6 +59,10 @@ class UserForm
 
                 Section::make('Личная информация')
                     ->schema([
+                        Placeholder::make('tris_id_display')
+                            ->label('TRIS ID')
+                            ->content(fn (?User $record): string => $record?->tris_id ?? 'Присваивается автоматически'),
+
                         TextInput::make('name')
                             ->label('ФИО')
                             ->required()

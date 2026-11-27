@@ -128,6 +128,7 @@ class TelegramAuthController extends Controller
             'redirect' => $redirect,
             'user' => [
                 'id' => $user->id,
+                'tris_id' => $user->tris_id,
                 'telegram_id' => $user->telegram_id,
                 'status' => $user->status,
             ],

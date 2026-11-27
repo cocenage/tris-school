@@ -15,6 +15,19 @@ class User extends Authenticatable implements FilamentUser
 {
     use HasFactory, Notifiable;
 
+    protected static function booted(): void
+    {
+        static::creating(function (User $user): void {
+            $user->tris_id = \App\Services\TrisIdGenerator::generate();
+        });
+
+        static::updating(function (User $user): void {
+            if ($user->isDirty('tris_id') && $user->getRawOriginal('tris_id') !== null) {
+                throw new \LogicException('TRIS ID cannot be changed.');
+            }
+        });
+    }
+
     protected $fillable = [
         'telegram_id',
         'telegram_username',
