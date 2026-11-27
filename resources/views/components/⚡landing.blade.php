@@ -58,6 +58,17 @@ new class extends Component {
                     </div>
                 </div>
 
+                @if(app()->environment('mobiledev') && config('native_telegram.enabled') && !auth()->check())
+                    <section id="tris-native-telegram" hidden class="rounded-[30px] border border-[#E7E7E7] bg-white p-[20px]">
+                        <p class="text-sm text-black/50">TRIS DEV</p>
+                        <h1 class="mt-2 text-[28px] font-semibold">Вход в приложение</h1>
+                        <p class="mt-3 text-[15px] text-black/55">Подтвердите вход через Telegram.</p>
+                        <button type="button" class="mt-5 w-full rounded-[20px] bg-[#213259] px-5 py-4 text-white disabled:opacity-50">Войти через Telegram</button>
+                        <p role="status" class="mt-3 text-sm text-black/55" aria-live="polite"></p>
+                    </section>
+                    <script src="{{ asset('js/tris-native-telegram.js') }}" defer></script>
+                @endif
+
                 <div id="browser-login" class="hidden">
                     <div class="rounded-[30px] border border-[#E7E7E7] bg-[#F8F8F8] p-[20px]">
                         <div class="mb-[22px] flex h-[68px] w-[68px] items-center justify-center rounded-[26px] bg-white border border-[#E7E7E7] text-[#213259]">

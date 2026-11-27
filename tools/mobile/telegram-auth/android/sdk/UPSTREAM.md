@@ -1,0 +1,1 @@
+Unmodified Telegram Android SDK source from https://github.com/TelegramMessenger/telegram-login-android/tree/f9d5ec36ba2433bc5f103b5cd8289f43a05f9336 (SDK 1.0.0). See LICENSE. Local build wrapper uses the existing Capacitor AGP and Kotlin 2.3.0, rather than the upstream standalone Gradle build. No GitHub Packages credentials required.

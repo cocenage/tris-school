@@ -1,0 +1,70 @@
+# Idempotent patch for the generated Capacitor DEV Android project.
+param([Parameter(Mandatory=$true)][string]$AndroidRoot)
+$ErrorActionPreference = 'Stop'
+$source = Join-Path $PSScriptRoot 'android'
+$android = (Resolve-Path $AndroidRoot).Path
+$java = Join-Path $android 'app\src\main\java\eu\trisservice\academy\dev'
+$main = Join-Path $java 'MainActivity.java'
+$manifest = Join-Path $android 'app\src\main\AndroidManifest.xml'
+$settings = Join-Path $android 'settings.gradle'
+$appGradle = Join-Path $android 'app\build.gradle'
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+foreach ($path in @($main,$manifest,$settings,$appGradle)) {
+    if (!(Test-Path $path)) { throw "Expected Capacitor file is missing: $path" }
+}
+$old = [IO.File]::ReadAllText($main)
+if ($old -notmatch 'TRIS DEV NATIVE TELEGRAM BRIDGE' -and $old -notmatch '(?s)^\s*package\s+eu\.trisservice\.academy\.dev\s*;\s*import\s+com\.getcapacitor\.BridgeActivity\s*;\s*public\s+class\s+MainActivity\s+extends\s+BridgeActivity\s*\{\s*\}\s*$') {
+    throw 'MainActivity is customized. Refusing to overwrite it automatically.'
+}
+$gradle = [IO.File]::ReadAllText($appGradle)
+if ($gradle -notmatch 'applicationId\s+["'']eu\.trisservice\.academy\.dev["'']') {
+    throw 'Refusing to patch a non-DEV Android package.'
+}
+$xml = New-Object System.Xml.XmlDocument
+$xml.PreserveWhitespace = $true
+$xml.Load($manifest)
+$ns = 'http://schemas.android.com/apk/res/android'
+$manager = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+$manager.AddNamespace('android',$ns)
+$activity = $xml.SelectSingleNode('/manifest/application/activity[@android:name=".MainActivity" or @android:name="eu.trisservice.academy.dev.MainActivity"]',$manager)
+if (!$activity) { throw 'MainActivity manifest entry not found.' }
+if ($activity.GetAttribute('launchMode',$ns) -ne 'singleTask') { throw 'Expected MainActivity singleTask mode.' }
+$existing = $activity.SelectSingleNode('intent-filter/data[@android:host="app8262627457-login.tg.dev"]',$manager)
+if (!$existing) {
+    $fragment = $xml.CreateDocumentFragment()
+    $fragment.InnerXml = @'
+<intent-filter xmlns:android="http://schemas.android.com/apk/res/android" android:autoVerify="true">
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="https" android:host="app8262627457-login.tg.dev" android:path="/tglogin" />
+</intent-filter>
+'@
+    [void]$activity.AppendChild($fragment)
+}
+
+function Append-Once([string]$path,[string]$marker,[string]$content) {
+    $current = [IO.File]::ReadAllText($path)
+    if (!$current.Contains($marker)) {
+        [IO.File]::WriteAllText($path, $current + [Environment]::NewLine + $content + [Environment]::NewLine, $utf8)
+    }
+}
+$module = Join-Path $android 'tris-telegram-sdk'
+if ((Test-Path $module) -and !(Test-Path (Join-Path $module 'UPSTREAM.md'))) { throw 'Unexpected existing SDK directory.' }
+New-Item -ItemType Directory -Path $module -Force | Out-Null
+Copy-Item (Join-Path $source 'sdk\*') -Destination $module -Recurse -Force
+Copy-Item (Join-Path $source 'MainActivity.java') -Destination $main -Force
+Copy-Item (Join-Path $source 'TrisTelegramLoginPlugin.java') -Destination $java -Force
+$xml.Save($manifest)
+Append-Once $settings '// TRIS DEV TELEGRAM SDK' @'
+// TRIS DEV TELEGRAM SDK
+include ':tris-telegram-sdk'
+'@
+Append-Once $appGradle '// TRIS DEV TELEGRAM SDK' @'
+// TRIS DEV TELEGRAM SDK
+dependencies {
+    implementation project(':tris-telegram-sdk')
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.3.0'
+}
+'@
+Write-Host 'Native Telegram SDK and verified callback configured for DEV.'

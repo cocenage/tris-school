@@ -41,3 +41,5 @@ Thumbs.db
 /tools/mobile/fcm/vendor/
 
 /tools/mobile/telegram-auth/vendor/
+
+/mobile/android/tris-telegram-sdk/
