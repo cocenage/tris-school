@@ -27,7 +27,6 @@ new class extends Component {
     public bool $saved = false;
     public bool $showMyReports = false;
     public ?int $deleteCandidateId = null;
-    public string $coatingDate = '';
 
     public function mount(): void
     {
@@ -43,7 +42,6 @@ new class extends Component {
     {
         $this->cleaningDate = now('Europe/Rome')->toDateString();
         $this->daysSincePreviousCleaning = '';
-        $this->coatingDate = '';
         $this->answers = AntigocciaAssessment::blankAnswers();
         $this->photos = [];
         $this->submissionUuid = (string) Str::uuid();
@@ -117,6 +115,7 @@ new class extends Component {
         }
 
         return AntigocciaApplication::query()->where('apartment_id', $this->apartment->id)
+            ->whereDate('applied_on', '<=', $this->cleaningDate)
             ->orderByDesc('applied_on')->orderByDesc('id')->first();
     }
 
@@ -235,7 +234,7 @@ new class extends Component {
         } catch (ValidationException $exception) {
             $this->setErrorBag($exception->validator->errors());
             $keys = array_keys($exception->errors());
-            $order = ['apartmentId', 'coatingDate', 'cleaningDate', 'daysSincePreviousCleaning'];
+            $order = ['apartmentId', 'cleaningDate', 'daysSincePreviousCleaning'];
             foreach (AntigocciaAssessment::SURFACES as $surface => $label) {
                 array_push($order, "answers.$surface.dirt", "answers.$surface.removal", "answers.$surface.remaining", "photos.$surface");
             }
@@ -267,16 +266,6 @@ new class extends Component {
             return;
         }
 
-        $existingApplication = AntigocciaApplication::query()->where('apartment_id', $apartment->id)
-            ->orderByDesc('applied_on')->first();
-        if (! $existingApplication) {
-            $this->validate([
-                'coatingDate' => ['required', 'date_format:Y-m-d', 'before_or_equal:'.$this->cleaningDate],
-            ]);
-        } elseif ($existingApplication->applied_on->toDateString() > $this->cleaningDate) {
-            throw ValidationException::withMessages(['cleaningDate' => 'Дата уборки не может быть раньше обработки.']);
-        }
-
         $answers = $assessment->validate($this->answers, $this->photos);
         $files = [];
         $uploadAttempt = (string) Str::uuid();
@@ -296,24 +285,6 @@ new class extends Component {
             }
 
             DB::transaction(function () use ($apartment, $answers, $files): void {
-                // Serialize the first coating date for a given apartment. Later
-                // forms cannot overwrite it, even when the client is tampered with.
-                Apartment::query()->whereKey($apartment->id)->lockForUpdate()->firstOrFail();
-                $application = AntigocciaApplication::query()->where('apartment_id', $apartment->id)
-                    ->orderByDesc('applied_on')->first();
-                if (! $application) {
-                    $application = AntigocciaApplication::create([
-                        'apartment_id' => $apartment->id,
-                        'applied_on' => $this->coatingDate,
-                        'created_by' => auth()->id(),
-                    ]);
-                }
-                if ($application->applied_on->toDateString() > $this->cleaningDate) {
-                    throw ValidationException::withMessages([
-                        'cleaningDate' => 'Дата уборки не может быть раньше обработки.',
-                    ]);
-                }
-
                 AntigocciaReport::create([
                     'apartment_id' => $apartment->id,
                     'user_id' => auth()->id(),
@@ -416,17 +387,14 @@ new class extends Component {
 
                 @if($this->apartment)
                     @if($this->application)
-                        <div class="flex items-center justify-between gap-3 rounded-xl bg-[#F4F8FC] px-4 py-3">
-                            <span class="text-[13px] text-[#64758D]">Покрытие нанесено</span>
-                            <span class="text-[13px] font-bold text-[#20386B]">{{ $this->application->applied_on->format('d.m.Y') }}</span>
+                        <div class="rounded-xl bg-[#F4F8FC] px-4 py-3 text-[13px] text-[#344460]">
+                            Антикапля нанесена <strong>{{ $this->application->applied_on->format('d.m.Y') }}</strong>.
+                            Проверьте эффективность покрытия.
                         </div>
                     @else
-                        <div>
-                            <label for="antigoccia-coating-date" class="mb-2 block text-[13px] font-semibold text-[#344460]">Дата обработки <span class="text-[#C84C46]">*</span></label>
-                            <input id="antigoccia-coating-date" data-antigoccia-field="coatingDate" type="date" wire:model="coatingDate" max="{{ $cleaningDate }}"
-                                @disabled($saved) class="min-h-[52px] w-full rounded-xl border border-[#E0E6ED] bg-[#F7F9FB] px-4 text-[14px] text-[#253854] focus:border-[#3181BB] focus:ring-[#3181BB]/20 disabled:opacity-60">
-                            @error('coatingDate') <p role="alert" class="mt-2 text-[12px] text-red-700">{{ $message }}</p> @enderror
-                        </div>
+                        <p class="rounded-xl bg-[#F4F8FC] px-4 py-3 text-[13px] text-[#64758D]">
+                            На дату уборки обработка не зарегистрирована. Анкету можно заполнить, но срок действия покрытия неизвестен.
+                        </p>
                     @endif
                 @endif
 
