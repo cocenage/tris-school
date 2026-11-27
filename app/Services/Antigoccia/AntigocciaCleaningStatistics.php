@@ -11,6 +11,33 @@ use Carbon\CarbonImmutable;
 class AntigocciaCleaningStatistics
 {
     /**
+     * Gap to the previous distinct recorded cleaning date. Inspections
+     * and Antigoccia reports are evidence of cleaning, not a complete
+     * cleaning schedule. No earlier record means an unknown interval.
+     */
+    public function daysSincePreviousRecordedCleaning(int $apartmentId, string $cleaningDate): ?int
+    {
+        $controlDate = ControlResponse::query()
+            ->where('apartment_id', $apartmentId)
+            ->where('status', ControlResponse::STATUS_SENT)
+            ->whereDate('cleaning_date', '<', $cleaningDate)
+            ->max('cleaning_date');
+
+        $reportDate = AntigocciaReport::query()
+            ->where('apartment_id', $apartmentId)
+            ->whereDate('cleaning_date', '<', $cleaningDate)
+            ->max('cleaning_date');
+
+        $previous = max($controlDate ?? '', $reportDate ?? '');
+        if ($previous === '') {
+            return null;
+        }
+
+        return (int) CarbonImmutable::parse($previous, 'Europe/Rome')->startOfDay()
+            ->diffInDays(CarbonImmutable::parse($cleaningDate, 'Europe/Rome')->startOfDay());
+    }
+
+    /**
      * Count distinct dates supported by cleaning inspection records or ANTIGOCCIA
      * reports. This is a LOWER BOUND, not a guaranteed total of all cleanings.
      * Multiple cleanings on one day cannot be distinguished from these sources.
