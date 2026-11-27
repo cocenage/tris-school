@@ -6,6 +6,8 @@ import {
     readCachedFocusPhotos, recoveryScope,
 } from '../../resources/js/focus-v2/local-recovery.js';
 
+let rejectBlobWrites = false;
+
 function fakeIndexedDatabase() {
     const tables = new Map();
     function requestFor(tx, valueFactory) {
@@ -33,12 +35,18 @@ function fakeIndexedDatabase() {
             const table = tables.get(name);
             const tx = { oncomplete: null, onerror: null, onabort: null };
             tx.objectStore = () => ({
-                put: record => requestFor(tx, () => { table.set(record.key || record.scope, record); return record.key; }),
+                put: record => requestFor(tx, () => {
+                    if (rejectBlobWrites && record.blob instanceof Blob) {
+                        throw new DOMException('Blob storage unavailable', 'UnknownError');
+                    }
+                    table.set(record.key || record.scope, structuredClone(record));
+                    return record.key;
+                }),
                 delete: key => requestFor(tx, () => { table.delete(key); return undefined; }),
                 get: key => requestFor(tx, () => table.get(key)),
                 index: () => ({
                     getAll: scope => requestFor(tx, () => Array.from(table.values())
-                        .filter(item => item.scope === scope)),
+                        .filter(item => item.scope === scope).map(item => structuredClone(item))),
                 }),
             });
             return tx;
@@ -108,4 +116,21 @@ test('expires stale photo backups after the configured retention', async () => {
     const expired = await readCachedFocusPhotos(scopeA, saved.saved_at + FOCUS_RECOVERY_MAX_AGE_MS + 1);
     assert.deepEqual(expired, []);
     assert.deepEqual(await readCachedFocusPhotos(scopeA), []);
+});
+
+test('stores and restores identical photo bytes when IndexedDB rejects Blob writes', async () => {
+    rejectBlobWrites = true;
+    try {
+        await cacheFocusPhoto({ scope: scopeA, uploadId: uploadA, runId: 'run-a',
+            file, room: 0, question: 2, beforeDraft: true });
+        const [saved] = await readCachedFocusPhotos(scopeA);
+        assert.equal(saved.before_draft, true);
+        assert.equal(saved.question, 2);
+        assert.equal(saved.blob.type, file.type);
+        assert.deepEqual(new Uint8Array(await saved.blob.arrayBuffer()), new Uint8Array(await file.arrayBuffer()));
+        await forgetCachedFocusPhoto(scopeA, uploadA);
+        assert.deepEqual(await readCachedFocusPhotos(scopeA), []);
+    } finally {
+        rejectBlobWrites = false;
+    }
 });

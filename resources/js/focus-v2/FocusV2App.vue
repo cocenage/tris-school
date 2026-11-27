@@ -66,6 +66,8 @@ const recoveryBusy = ref(false);
 const recoveryError = ref('');
 const localStorageAvailable = ref(true);
 const connectionOnline = ref(navigator.onLine !== false);
+let reachabilityTimer = null;
+let reachabilityRequest = null;
 let recoveryKey = null;
 const localWriter = createLocalRecoveryQueue(async operation => {
     if (operation.type === 'delete') {
@@ -135,6 +137,8 @@ function restoreLocalVersion() {
 }
 const busyUploads = computed(() => uploads.value.some(item => ['queued', 'uploading', 'attaching', 'error'].includes(item.status)));
 let activeTransfers = 0;
+const photoRetryTimers = new Map();
+const photoRetryDelays = [4_000, 15_000, 45_000];
 let recoveringDraftMedia = false;
 let attachInFlight = null;
 let attachQueue = Promise.resolve();
@@ -241,7 +245,9 @@ async function fetchJson(url, options = {}) {
     return data;
 }
 
-async function initialize() {
+async function initialize(sandbox = false) {
+    cancelReachabilityCheck();
+    sandbox = sandbox === true;
     // The same component can switch between real and test runs.
     // Never retain draft revisions, recovery prompts or old-run timers.
     clearTimeout(timer);
@@ -259,7 +265,9 @@ async function initialize() {
     editingReviewSetup.value = false;
     loading.value = true;
     loadError.value = '';
-    testMode.value = false;
+    syncError.value = '';
+    submitError.value = '';
+    testMode.value = sandbox;
     interruptedUploads.value = [];
     pickerFor.value = null;
     camera.value = null;
@@ -281,7 +289,10 @@ async function initialize() {
             state.value = 'synced';
             return;
         }
-        const data = await fetchJson(props.bootstrapUrl);
+        const data = await fetchJson(props.bootstrapUrl + (sandbox ? '?test_mode=1' : ''));
+        if (sandbox && (!data.test_mode || data.viewer?.role !== 'admin')) {
+            throw new Error('Сервер не подтвердил безопасный тестовый режим.');
+        }
         viewerRole.value = data.viewer?.role ?? '';
         viewerId.value = data.viewer?.id ?? null;
         interruptedUploads.value = data.pending_uploads ?? [];
@@ -299,7 +310,8 @@ async function initialize() {
             syncError.value = 'У найденного черновика другая схема вопросов. Старая версия сохранена отдельно; изменения заблокированы.';
         } else {
             state.value = 'idle';
-            recoveryKey = recoveryScope(data.viewer?.id, data.control?.id, data.control?.schema_version);
+            const scope = recoveryScope(data.viewer?.id, data.control?.id, data.control?.schema_version);
+            recoveryKey = scope && sandbox ? scope + ':sandbox' : scope;
             readResumePosition();
             if (recoveryKey) {
                 try {
@@ -765,10 +777,8 @@ async function attachReadyDraft(record) {
                 if (recoveryKey) void forgetCachedFocusPhoto(recoveryKey, record.upload_id).catch(() => {});
             };
             const body = { draft_id: run.value.draft_id, expected_revision: run.value.revision };
-            // Already attached on bootstrap means a previous request was confirmed
-            // by the server snapshot, not a new revision-changing write.
-            if (info.status === 'attached') publish(await attachFocusFile(info.urls.attach, body, csrf));
-            else await saveMediaAttachment({ url: info.urls.attach, body, publish, uploadId: record.upload_id });
+            await saveMediaAttachment({ url: info.urls.attach, body, publish,
+                uploadId: record.upload_id, alreadyAttached: info.status === 'attached' });
         });
     } catch (error) {
         mediaError.value = error.message || 'Не удалось прикрепить готовый файл.';
@@ -875,6 +885,7 @@ function touch() {
 function queueSave(delay = 800) {
     clearTimeout(timer);
     if (!connectionOnline.value) {
+        scheduleReachabilityCheck();
         // Local recovery snapshots still continue to be queued in IndexedDB.
         state.value = 'dirty';
         return;
@@ -895,11 +906,35 @@ function takeSnapshot() {
     };
 }
 
+// A photo advances the same revision counter as the form. Only adopt a
+// newer server revision when the run and its confirmed form content match.
+async function readNewerDraft(base, allowedContent) {
+    if (!base?.draft_id || !allowedContent.some(Boolean)) return null;
+    const latest = await fetchJson(props.bootstrapUrl + (testMode.value ? '?test_mode=1' : ''));
+    const server = latest.run;
+    if (latest.viewer?.id !== viewerId.value || latest.control?.id !== control.value?.id
+        || latest.control?.schema_version !== control.value?.schema_version
+        || Boolean(latest.test_mode) !== testMode.value || server?.schema_conflict
+        || server?.id !== base.id || server.draft_id !== base.draft_id
+        || !Number.isInteger(server.revision) || server.revision <= base.revision
+        || !Array.isArray(latest.media) || !Array.isArray(latest.pending_uploads)
+        || run.value?.id !== base.id || run.value.draft_id !== base.draft_id) return null;
+    const content = recoveryContentStamp(latest.setup, latest.answers);
+    return allowedContent.includes(content) ? { latest, content } : null;
+}
+
+function applyNewerDraft(latest) {
+    run.value = { ...run.value, ...latest.run };
+    media.value = latest.media;
+    interruptedUploads.value = latest.pending_uploads;
+}
+
 async function flush() {
     clearTimeout(timer);
     timer = null;
     if (!canEdit.value) return false;
     if (!connectionOnline.value) {
+        scheduleReachabilityCheck();
         state.value = 'dirty';
         syncError.value = localStorageAvailable.value
             ? 'Нет интернета. Изменения остаются на этом устройстве, сервер ещё не подтвердил их.'
@@ -919,15 +954,35 @@ async function flush() {
 
     const snapshot = uncertainSnapshot ?? takeSnapshot();
     const serial = uncertainSnapshot ? uncertainSnapshot.serial : changeSerial;
-    const body = uncertainSnapshot ? uncertainSnapshot.body : snapshot;
+    let body = uncertainSnapshot ? uncertainSnapshot.body : snapshot;
     state.value = 'saving';
 
     inFlight = (async () => {
         try {
-            const result = await fetchJson(props.draftUrl, {
+            const save = () => fetchJson(props.draftUrl, {
                 method: 'POST',
                 body: JSON.stringify(body),
             });
+            let result;
+            try {
+                result = await save();
+            } catch (error) {
+                if (error.status !== 409 || error.code !== 'revision_conflict') throw error;
+                const content = recoveryContentStamp(body.setup, body.answers);
+                const matching = await readNewerDraft(
+                    { id: body.run_id, draft_id: body.draft_id, revision: body.expected_revision },
+                    [acknowledgedContent, content],
+                );
+                if (!matching) throw error;
+                applyNewerDraft(matching.latest);
+                body = { ...body, expected_revision: matching.latest.run.revision };
+                if (matching.content === content) {
+                    // A previous write may already have reached the server.
+                    result = { run: matching.latest.run };
+                } else {
+                    result = await save();
+                }
+            }
             if (result.run?.id !== body.run_id || !(result.run?.draft_id > 0)
                 || !Number.isInteger(result.run?.revision) || result.run.revision < Math.max(1, body.expected_revision)) {
                 throw new Error('Сервер не подтвердил сохранение черновика.');
@@ -1008,13 +1063,35 @@ async function reconcilePendingMedia() {
     });
 }
 
-async function saveMediaAttachment({ url, body, signal, notify, publish, afterReplay, uploadId }) {
+async function saveMediaAttachment({ url, body, signal, notify, publish, afterReplay, uploadId, alreadyAttached = false }) {
+    const base = { ...run.value };
+    let requestBody = body;
     const perform = async currentSignal => {
-        const result = await attachFocusFile(url, body, csrf, currentSignal, notify);
-        if (result.run?.revision !== body.expected_revision + 1) {
-            const error = new Error('Черновик изменился после прикрепления файла.');
-            error.status = 409;
-            throw error;
+        const attach = async () => {
+            const result = await attachFocusFile(url, requestBody, csrf, currentSignal, notify);
+            if (result.run?.draft_id !== base.draft_id || result.media_item?.upload_id !== uploadId
+                || (result.run.revision !== requestBody.expected_revision + 1
+                    && !(alreadyAttached && result.run.revision === requestBody.expected_revision))) {
+                const error = new Error('Черновик изменился после прикрепления файла.');
+                error.status = 409;
+                throw error;
+            }
+            return result;
+        };
+        let result;
+        try {
+            result = await attach();
+        } catch (error) {
+            if (error.status !== 409 || currentSignal?.aborted) throw error;
+            const matching = await readNewerDraft(
+                { ...base, revision: requestBody.expected_revision }, [acknowledgedContent],
+            );
+            if (!matching || currentSignal?.aborted) throw error;
+            const latest = matching.latest;
+            const confirmed = latest.media.flat(2).find(file => file?.upload_id === uploadId);
+            applyNewerDraft(latest);
+            requestBody = { ...requestBody, expected_revision: latest.run.revision };
+            result = confirmed ? { run: latest.run, media_item: confirmed } : await attach();
         }
         await publish(result);
     };
@@ -1392,7 +1469,7 @@ async function submitControl() {
         if (!(await ensureSynced())) {
             throw new Error(syncError.value || 'Не удалось синхронизировать ответы.');
         }
-        const result = await fetchJson(props.submitUrl, {
+        const send = () => fetchJson(props.submitUrl, {
             method: 'POST',
             body: JSON.stringify({
                 control_id: control.value.id,
@@ -1403,6 +1480,19 @@ async function submitControl() {
                 test_mode: testMode.value,
             }),
         });
+        let result;
+        try {
+            result = await send();
+        } catch (error) {
+            if (error.status !== 409 || error.code === 'submission_in_progress') throw error;
+            const matching = await readNewerDraft(run.value, [acknowledgedContent]);
+            if (!matching) throw error;
+            applyNewerDraft(matching.latest);
+            if (!canSubmitMedia.value) {
+                throw new Error('Сервер подтвердил ответы. Перед отправкой завершите или отмените оставшиеся вложения.');
+            }
+            result = await send();
+        }
         if (!result.submitted || (!testMode.value && !result.result_url)
             || (testMode.value && !result.test_mode)) {
             throw new Error('Сервер не подтвердил завершение проверки.');
@@ -1428,9 +1518,17 @@ async function submitControl() {
     }
 }
 
+const resetAfterConflict = computed(() => !run.value?.schema_conflict
+    && (state.value === 'conflict'
+        || (recoveryMode.value === 'conflict' && recoveryRecord.value?.run_id === run.value?.id)));
+
 async function resetControl() {
-    if (!props.resetUrl || !run.value || testMode.value || stage.value === 'done' || resetting.value) return;
-    if (busyUploads.value || recoveringDraftMedia || attachInFlight || recoveryAction.value || inFlight || submitting.value || uncertainSnapshot) {
+    if (!props.resetUrl || !run.value || run.value.schema_conflict || stage.value === 'done' || resetting.value) return;
+    const conflict = resetAfterConflict.value;
+    const sandbox = testMode.value;
+    if (activeTransfers || uploads.value.some(item => item.cancelling) || recoveringDraftMedia
+        || attachInFlight || recoveryAction.value || recoveryBusy.value || inFlight || submitting.value
+        || (!conflict && (busyUploads.value || uncertainSnapshot))) {
         syncError.value = 'Дождитесь сохранения или отмените загрузки перед сбросом.';
         return;
     }
@@ -1440,26 +1538,55 @@ async function resetControl() {
     clearTimeout(timer);
     timer = null;
     try {
-        await fetchJson(props.resetUrl, {
-            method: 'POST',
-            body: JSON.stringify({
-                control_id: control.value.id,
-                run_id: run.value.id,
-                draft_id: run.value.draft_id,
-                expected_revision: run.value.revision,
-            }),
-        });
-        if (recoveryKey) {
-            await queueLocalWrite({ type: 'delete', scope: recoveryKey });
-            for (const photo of await readCachedFocusPhotos(recoveryKey)) {
-                if (photo.run_id === run.value.id || photo.run_id === recoveryRecord.value?.run_id) {
-                    await forgetCachedFocusPhoto(recoveryKey, photo.upload_id);
-                }
+        let target = run.value;
+        if (conflict) {
+            const latest = await fetchJson(props.bootstrapUrl + (sandbox ? '?test_mode=1' : ''));
+            if (latest.viewer?.id !== viewerId.value || latest.control?.id !== control.value.id
+                || latest.control?.schema_version !== control.value.schema_version
+                || Boolean(latest.test_mode) !== sandbox || latest.run?.schema_conflict) {
+                throw new Error('Проверка изменилась. Ничего не сброшено.');
             }
+            if (latest.run?.id !== target.id || (target.draft_id != null && latest.run?.draft_id !== target.draft_id)) {
+                // Never discard a different draft that another tab opened.
+                if (latest.run?.draft_id != null || latest.run?.revision !== 0) {
+                    throw new Error('На сервере уже другой черновик. Ничего не сброшено.');
+                }
+                target = null;
+            } else {
+                target = latest.run;
+            }
+        }
+        if (target) {
+            const result = await fetchJson(props.resetUrl, {
+                method: 'POST',
+                body: JSON.stringify({
+                    control_id: control.value.id,
+                    run_id: target.id,
+                    draft_id: target.draft_id,
+                    expected_revision: target.revision,
+                    test_mode: sandbox,
+                }),
+            });
+            if (result.reset !== true) throw new Error('Сервер не подтвердил сброс черновика.');
+        }
+        if (recoveryKey) {
+            const scope = recoveryKey;
+            const discardedRun = run.value.id;
+            const recoveryRun = recoveryRecord.value?.run_id;
+            const pendingCaches = uploads.value.map(item => item.cachePromise);
+            await Promise.allSettled(pendingCaches);
+            try {
+                await queueLocalWrite({ type: 'delete', scope });
+                for (const photo of await readCachedFocusPhotos(scope)) {
+                    if (photo.run_id === discardedRun || photo.run_id === recoveryRun) {
+                        await forgetCachedFocusPhoto(scope, photo.upload_id);
+                    }
+                }
+            } catch (_) { localStorageAvailable.value = false; }
         }
         clearResumePosition();
         finalResult.value = null;
-        await initialize();
+        await initialize(sandbox);
         window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (error) {
         syncError.value = error.message || 'Не удалось сбросить контроль.';
@@ -1550,7 +1677,10 @@ async function queueSelectedFiles(selected, room, question, options = {}) {
 }
 
 function pumpTransfers() {
-    if (!connectionOnline.value) return;
+    if (!connectionOnline.value) {
+        if (outstandingMedia.value > 0) scheduleReachabilityCheck();
+        return;
+    }
     while (activeTransfers < 2 && (canEdit.value || stage.value === 'done')) {
         const next = uploads.value.find(item => item.status === 'queued' && !item.cancelling);
         if (!next) break;
@@ -1657,13 +1787,9 @@ async function sendOne(item) {
                         }
                     }
                 };
-                if (result.status === 'attached') {
-                    const confirmed = await attachFocusFile(result.urls.attach, body, csrf, controller.signal, notify);
-                    await publish(confirmed);
-                } else {
-                    await saveMediaAttachment({ url: result.urls.attach, body, signal: controller.signal, notify,
-                        publish, afterReplay: () => finishUploadedItem(item), uploadId: item.id });
-                }
+                await saveMediaAttachment({ url: result.urls.attach, body, signal: controller.signal, notify,
+                    publish, afterReplay: () => finishUploadedItem(item), uploadId: item.id,
+                    alreadyAttached: result.status === 'attached' });
             };
             return finalResult.value ? attach() : writeDraftMedia(attach);
         });
@@ -1679,13 +1805,39 @@ async function sendOne(item) {
         item.status = 'error';
         item.retryable = isTransientFocusUploadError(error);
         item.error = error.message || 'Не удалось загрузить файл.';
+        schedulePhotoRetry(item);
         if (error.status === 409 && item.progress === 100) {
             syncError.value = 'Не удалось прикрепить файл из-за изменения черновика. Проверьте ответы перед повтором.';
         }
     }
 }
 
+function clearPhotoRetry(id) {
+    clearTimeout(photoRetryTimers.get(id));
+    photoRetryTimers.delete(id);
+}
+
+function schedulePhotoRetry(item) {
+    const delay = photoRetryDelays[item.autoRetries ?? 0];
+    if (delay === undefined || !focusFileMime(item.file).startsWith('image/')
+        || item.status !== 'error' || !item.retryable || item.cancelling
+        || photoRetryTimers.has(item.id)
+        || !canRetryFocusFile(item, canEdit.value, finalResult.value?.response_id)) return;
+    item.retryHint = connectionOnline.value ? 'Повторим загрузку автоматически' : 'Продолжим, когда вернётся связь';
+    if (!connectionOnline.value) return;
+
+    photoRetryTimers.set(item.id, setTimeout(() => {
+        photoRetryTimers.delete(item.id);
+        if (!uploads.value.some(current => current.id === item.id)
+            || item.status !== 'error' || !item.retryable || item.cancelling) return;
+        if (!connectionOnline.value) { schedulePhotoRetry(item); return; }
+        item.autoRetries = (item.autoRetries ?? 0) + 1;
+        retryFile(item, true);
+    }, delay));
+}
+
 async function finishUploadedItem(item) {
+    clearPhotoRetry(item.id);
     interruptedUploads.value = interruptedUploads.value.filter(other => other.upload_id !== item.id);
     if (item.cached && recoveryKey) {
         try { await forgetCachedFocusPhoto(recoveryKey, item.id); } catch (_) { /* Bootstrap will clear the confirmed copy. */ }
@@ -1694,10 +1846,15 @@ async function finishUploadedItem(item) {
     uploads.value = uploads.value.filter(other => other.id !== item.id);
 }
 
-function retryFile(item) {
-    if (!item) return;
+function retryFile(item, automatic = false) {
+    if (!item || item.cancelling) return;
+    clearPhotoRetry(item.id);
+    if (!automatic) item.autoRetries = 0;
     if (pendingMediaReplay?.uploadId === item.id) {
-        void flush().then(() => pumpTransfers());
+        void flush().then(ok => {
+            if (!ok) schedulePhotoRetry(item);
+            pumpTransfers();
+        });
         return;
     }
     if (!canRetryFocusFile(item, canEdit.value, finalResult.value?.response_id)) return;
@@ -1714,6 +1871,8 @@ async function cancelFile(item) {
         item.error = 'Сначала подтвердите состояние файла кнопкой «Повторить».';
         return;
     }
+    clearPhotoRetry(item.id);
+    item.retryHint = '';
     if (!item.reservationAttempted && !item.info && !item.record) {
         // No POST /media/start ever left this client. No server draft or
         // reservation is needed to remove a local-only file.
@@ -1794,6 +1953,7 @@ function dismissFile(item) {
     uploads.value = uploads.value.filter(other => other.id !== item.id);
 }
 function cleanupPreviews() {
+    for (const id of photoRetryTimers.keys()) clearPhotoRetry(id);
     uploads.value.forEach(item => { if (item.preview_url) URL.revokeObjectURL(item.preview_url); });
     media.value.flat().flat().forEach(file => {
         if (file.local && file.url) URL.revokeObjectURL(file.url);
@@ -1933,10 +2093,66 @@ function mediaPreview(file) {
     return file.preview_url || file.thumbnail_url || file.url || '';
 }
 
+// The WebView hint is not proof that our origin is unreachable. Use
+// a bounded, same-origin, authenticated read and never probe while idle.
+function hasOfflineWork() {
+    return changeSerial !== acknowledgedSerial || Boolean(pendingMediaReplay) || outstandingMedia.value > 0;
+}
+
+function cancelReachabilityCheck() {
+    clearTimeout(reachabilityTimer);
+    reachabilityTimer = null;
+    reachabilityRequest?.abort();
+    reachabilityRequest = null;
+}
+
+function scheduleReachabilityCheck(delay = 0) {
+    if (connectionOnline.value || loading.value || !props.bootstrapUrl
+        || reachabilityTimer !== null || reachabilityRequest) return;
+    reachabilityTimer = setTimeout(async () => {
+        reachabilityTimer = null;
+        if (connectionOnline.value || loading.value) return;
+        const request = new AbortController();
+        reachabilityRequest = request;
+        const timeout = setTimeout(() => request.abort(), 3000);
+        try {
+            const response = await fetch(props.bootstrapUrl, {
+                method: 'HEAD', credentials: 'same-origin', cache: 'no-store',
+                redirect: 'error', signal: request.signal, headers: { Accept: 'application/json' },
+            });
+            if (reachabilityRequest === request && response.ok
+                && response.headers.get('content-type')?.includes('application/json')) {
+                applyConnectionState(true);
+            }
+        } catch (_) {
+            // Continue using the local queue. An unreachable origin must not
+            // discard media, advance draft revisions, or claim saved answers.
+        } finally {
+            clearTimeout(timeout);
+            if (reachabilityRequest === request) {
+                reachabilityRequest = null;
+                if (!connectionOnline.value && hasOfflineWork()) scheduleReachabilityCheck(8000);
+            }
+        }
+    }, delay);
+}
+
 function handleNetworkUpdate() {
+    applyConnectionState(navigator.onLine !== false);
+}
+
+function applyConnectionState(online) {
     const wasOnline = connectionOnline.value;
-    connectionOnline.value = navigator.onLine !== false;
-    if (!connectionOnline.value) return;
+    connectionOnline.value = online;
+    if (online) cancelReachabilityCheck();
+    if (!connectionOnline.value) {
+        for (const item of uploads.value) {
+            clearPhotoRetry(item.id);
+            schedulePhotoRetry(item);
+        }
+        if (hasOfflineWork()) scheduleReachabilityCheck();
+        return;
+    }
     if (!wasOnline) {
         if (pendingMediaReplay || ['dirty', 'error'].includes(state.value)) queueSave(200);
         // Retry only errors caused by temporary transport failures;
@@ -1963,6 +2179,7 @@ onMounted(() => {
 });
 function stopPageCamera() { camera.value = null; }
 onBeforeUnmount(() => {
+    cancelReachabilityCheck();
     closePhotoCapture();
     closeBatchPreview();
     closeLightbox();
@@ -2083,7 +2300,7 @@ onBeforeUnmount(() => {
                 <div>
                     <h1 class="mt-1 text-xl font-semibold tracking-tight">Контроль качества</h1>
                 </div>
-                <button v-if="resetUrl && run && !testMode && stage !== 'done' && !run.schema_conflict && !loading && !loadError"
+                <button v-if="resetUrl && run && !testMode && stage !== 'done' && !run.schema_conflict && !resetAfterConflict && !loading && !loadError"
                     type="button" :disabled="resetting || busyUploads || submitting || recoveringPhotos || state === 'saving'"
                     class="ml-auto rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50"
                     @click="resetControl">{{ resetting ? 'Сброс…' : 'Сбросить контроль' }}</button>
@@ -2186,6 +2403,11 @@ onBeforeUnmount(() => {
                     {{ syncError }}
                     <p v-if="state === 'conflict'" class="mt-2 font-semibold">Не перезагружайте страницу, если есть несохранённые ответы. Для восстановления сначала разберите конфликт черновика.</p>
                 </div>
+
+                <button v-if="resetUrl && resetAfterConflict && stage !== 'done'"
+                    type="button" :disabled="resetting || submitting || recoveringPhotos"
+                    class="mb-4 min-h-11 rounded-lg border border-red-300 bg-white px-4 text-sm font-semibold text-red-800 disabled:opacity-50"
+                    @click="resetControl">{{ resetting ? 'Сбрасываем…' : 'Начать новую проверку' }}</button>
 
                 <template v-if="stage === 'setup'">
                     <section class="space-y-4 rounded-xl border border-slate-200 bg-white p-5">

@@ -111,6 +111,9 @@ class FakeFocusBackend {
             });
             try {
                 if (path === '/focus-api/bootstrap') {
+                    if (req.method() === 'HEAD') return route.fulfill({
+                        status: this.probeReachable ? 200 : 503, contentType: 'application/json',
+                    });
                     const sandbox = new URL(req.url()).searchParams.get('test_mode') === '1';
                     return reply(this.bootstrap(sandbox));
                 }
@@ -133,9 +136,28 @@ class FakeFocusBackend {
                         draft_id: state.draftId, revision: state.revision,
                     } });
                 }
+                if (path === '/focus-api/reset') {
+                    const request = json();
+                    this.resetRequests = (this.resetRequests ?? 0) + 1;
+                    if (request.run_id !== this.runId || request.draft_id !== this.draftId || request.expected_revision !== this.revision) {
+                        return reply({ message: 'Reset conflict' }, 409);
+                    }
+                    this.draftId = null;
+                    this.revision = 0;
+                    this.runId = '00000000-0000-4000-8000-000000000010';
+                    this.setup = initialSetup();
+                    this.answers = initialAnswers();
+                    this.media = [[[]]];
+                    this.sessions.clear();
+                    return reply({ reset: true });
+                }
                 if (path === '/focus-api/submit') {
-                    const sandbox = json().test_mode === true;
+                    const request = json();
+                    const sandbox = request.test_mode === true;
                     const state = sandbox ? this.test : this;
+                    if (request.expected_revision !== state.revision) {
+                        return reply({ message: 'Submit revision changed' }, 409);
+                    }
                     if ([...state.sessions.values()].some(s => s.status !== 'attached' && s.status !== 'cancelled')) {
                         return reply({ message: 'Incomplete upload' }, 422);
                     }
@@ -1020,6 +1042,8 @@ async function main() {
             for (let i = 0; backend.media[0][0].length === 0 && i < 60; i++) await delay(100);
             assert.equal(backend.media[0][0].length, 1, 'Ready file did not attach after resolving local recovery.');
             assert.equal(backend.media[0][0][0].upload_id, uploadId);
+            // Attachment can finish just before the deferred answer write.
+            if (restore) await reopened.getByText('Сохранено', { exact: true }).waitFor();
             assert.equal(backend.setup.is_assigned, restore);
             assert.equal(backend.startRequests, 0, 'Ready file should not restart the upload.');
             assert.deepEqual([...errors, ...reopenErrors], []);
@@ -1086,6 +1110,137 @@ async function main() {
             assert.equal(backend.media[0][0].length, 1);
             assert.deepEqual(errors, []);
             console.log('PASS mobile UI: failed network upload resumes cached photo with identical server ID');
+            await context.close();
+        }
+        // A photo can move the server revision even when every answer there is unchanged.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor();
+            const originalRun = backend.runId;
+            backend.media[0][0].push({
+                upload_id: 'server-photo', name: 'server-photo.png', mime: 'image/png', size: image.length,
+                url: dataUrl, thumbnail_url: dataUrl,
+            });
+            backend.revision++;
+            await page.getByRole('button', { name: 'Нет', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor({ timeout: 5000 });
+            assert.equal(backend.answers[0][0].selected, 'no');
+            assert.equal(backend.runId, originalRun);
+            assert.equal(backend.media[0][0].length, 1);
+            await page.getByRole('button', { name: 'Открыть фото server-photo.png' }).waitFor();
+            backend.beforeAttach = async () => {
+                backend.beforeAttach = null;
+                backend.revision++;
+            };
+            await addPhoto(page);
+            await expectPhoto(page);
+            assert.equal(backend.media[0][0].length, 2);
+            backend.failChunksRemaining = 3;
+            await addGalleryFile(page, { name: 'failed.png', mimeType: 'image/png', buffer: image });
+            await page.getByText('Temporary network error').waitFor({ timeout: 15000 });
+            const failed = [...backend.sessions.values()].find(session => session.name === 'failed.png');
+            assert.ok(failed);
+            await page.getByRole('button', { name: 'Убрать', exact: true }).click();
+            await page.getByText('Temporary network error').waitFor({ state: 'hidden' });
+            assert.equal(failed.status, 'cancelled');
+            assert.deepEqual(errors, []);
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor();
+            await page.getByRole('button', { name: 'К сводке' }).click();
+            backend.revision++;
+            await page.getByRole('button', { name: 'Отправить контроль' }).click();
+            await page.getByRole('link', { name: 'Результат', exact: true }).waitFor();
+            assert.equal(backend.runId, originalRun);
+            assert.equal(backend.answers[0][0].selected, 'yes');
+            assert.equal(backend.media[0][0].length, 2);
+            console.log('PASS mobile UI: attach/save/submit reconcile photo revisions; a failed file can be removed without losing the draft');
+            await context.close();
+        }
+        // A stale form must not be a dead end, even with a failed save in memory.
+        {
+            const backend = new FakeFocusBackend();
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor();
+            backend.answers[0][0].custom = 'Другое изменение на сервере';
+            backend.revision++;
+            await page.getByRole('button', { name: 'Нет', exact: true }).click();
+            await page.getByText('Конфликт черновика', { exact: true }).waitFor();
+            const restart = page.getByRole('button', { name: 'Начать новую проверку', exact: true });
+            page.once('dialog', dialog => dialog.dismiss());
+            await restart.click({ timeout: 4000 });
+            assert.equal(backend.resetRequests ?? 0, 0, 'Cancelling confirmation must not reset the draft.');
+            const originalRun = backend.runId;
+            backend.runId = '00000000-0000-4000-8000-000000000099';
+            page.once('dialog', dialog => dialog.accept());
+            await restart.click();
+            await page.getByText('На сервере уже другой черновик. Ничего не сброшено.', { exact: false }).waitFor();
+            assert.equal(backend.resetRequests ?? 0, 0, 'The fresh revision must never be used to reset a different run.');
+            backend.runId = originalRun;
+            page.once('dialog', dialog => dialog.accept());
+            await restart.click();
+            await page.getByRole('heading', { name: 'Данные проверки' }).waitFor();
+            assert.equal(backend.resetRequests, 1);
+            assert.equal(backend.draftId, null);
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor();
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: conflicted draft can be discarded without reloading');
+            await context.close();
+        }
+        // A short service outage does not necessarily flip navigator.onLine.
+        {
+            const backend = new FakeFocusBackend();
+            backend.failChunksRemaining = 3;
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: /^(К вопросам|Продолжить контроль)$/ }).click();
+            assert.equal(await page.evaluate(() => navigator.onLine), true);
+            await addPhoto(page);
+            await page.getByText('Temporary network error').waitFor({ timeout: 10000 });
+            const id = [...backend.sessions.keys()][0];
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            await page.getByText('Сохранено', { exact: true }).waitFor();
+            for (let count = 0; count < 80 && !backend.media[0][0].length; count++) await delay(100);
+            assert.equal(backend.sessions.size, 1);
+            assert.equal(backend.media[0][0][0]?.upload_id, id, 'Photo was never auto-retried and attached.');
+            assert.equal(backend.answers[0][0].selected, 'yes');
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: a transient photo failure self-recovers without network events or repeat selection');
+            await context.close();
+        }
+        // A WebView reporting offline is not authoritative if TRIS still answers.
+        {
+            const backend = new FakeFocusBackend();
+            backend.probeReachable = true;
+            const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+            const { page, errors } = await pageFor(context, backend);
+            await page.getByRole('button', { name: 'К вопросам', exact: true }).click();
+            await page.evaluate(() => {
+                Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+                window.dispatchEvent(new Event('offline'));
+            });
+            await addPhoto(page);
+            await page.getByRole('button', { name: 'Да', exact: true }).click();
+            for (let i = 0; i < 80 && !backend.media[0][0].length; i++) await delay(100);
+            assert.equal(backend.media[0][0].length, 1, 'Reachable server must accept photo despite the offline flag.');
+            await page.getByText('Сохранено', { exact: true }).waitFor();
+            assert.equal(await page.evaluate(() => navigator.onLine), false);
+            await page.getByRole('button', { name: 'К сводке' }).click();
+            await page.getByRole('button', { name: 'Отправить контроль' }).click();
+            await page.getByRole('link', { name: 'Результат', exact: true }).waitFor();
+            assert.equal(backend.runId, runId);
+            assert.equal(backend.answers[0][0].selected, 'yes');
+            assert.equal(backend.sessions.size, 1);
+            assert.deepEqual(errors, []);
+            console.log('PASS mobile UI: reachable TRIS saves, attaches and submits despite the offline flag');
             await context.close();
         }
         // Small videos use the same best-effort IndexedDB recovery as photos.
