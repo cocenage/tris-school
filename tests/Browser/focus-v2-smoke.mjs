@@ -917,7 +917,7 @@ async function main() {
             const { page, errors } = await pageFor(context, backend);
             await context.setOffline(true);
             await page.evaluate(() => window.dispatchEvent(new Event('offline')));
-            await page.getByText('Нет интернета', { exact: true }).waitFor();
+            await page.getByText('Нет связи. Можно продолжать отвечать. Не закрывайте контроль до сохранения.', { exact: true }).waitFor();
             await page.getByLabel('Назначенная уборка').check();
             assert.equal(backend.realWrites, 0, 'Offline edit unexpectedly wrote server draft');
             assert.equal(await page.getByText('Сохранено', { exact: true }).count(), 0);
@@ -1017,7 +1017,7 @@ async function main() {
             const { page, errors } = await pageFor(context, backend);
             await context.setOffline(true);
             await page.evaluate(() => window.dispatchEvent(new Event('offline')));
-            await page.getByText('Нет интернета', { exact: true }).waitFor();
+            await page.getByText('Нет связи. Можно продолжать отвечать. Не закрывайте контроль до сохранения.', { exact: true }).waitFor();
             await page.getByLabel('Назначенная уборка').check();
             await page.waitForFunction(async () => {
                 const { readLocalRecovery, recoveryScope } = await import('/resources/js/focus-v2/local-recovery.js');
