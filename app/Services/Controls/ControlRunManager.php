@@ -92,9 +92,13 @@ final class ControlRunManager
                     'revision' => 1,
                     'state' => $state,
                 ]);
-            });
+            }, 5);
         } catch (QueryException $exception) {
-            if (ControlResponseDraft::query()->where('run_id', $runId)->exists()) {
+            // Only a uniqueness violation can mean a competing first save.
+            // A busy SQLite writer (or another infrastructure failure) is
+            // not evidence of a newer revision and must not become a 409.
+            if ($exception instanceof \Illuminate\Database\UniqueConstraintViolationException
+                && ControlResponseDraft::query()->where('run_id', $runId)->exists()) {
                 throw ValidationException::withMessages([
                     'draft' => 'Черновик уже сохранён более новой версией. Перезагрузите контроль перед продолжением.',
                 ]);

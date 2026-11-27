@@ -101,3 +101,19 @@ it('rejects unknown option values while preserving required and optional complet
         ->and($schema->attachQuestionIds($answers)[0][0]['question_id'])->toBe($schema->questionIds()[0][0])
         ->and($schema->validateAnswers($invalidAnswers, requireComplete: true))->toHaveKey('answers.0.0');
 });
+
+it('accepts normalized configured values and labels without accepting unrelated options', function () {
+    $question = controlSchemaQuestion('Проверка?');
+    $question['answer_options_scored'] = [
+        ['value' => ' yes ', 'label' => ' Да ', 'points' => 1],
+        ['value' => ' no ', 'label' => ' Нет ', 'points' => 0],
+    ];
+    $schema = controlSchemaFixture([['title' => 'Вход', 'items' => [$question]]]);
+
+    foreach (['yes', 'Да', ' no ', 'Нет', 'option_0'] as $selected) {
+        expect($schema->validateAnswers([[['selected' => $selected]]], requireComplete: true))->toBe([]);
+    }
+
+    expect($schema->validateAnswers([[['selected' => 'unknown']]], requireComplete: true))
+        ->toHaveKey('answers.0.0');
+});

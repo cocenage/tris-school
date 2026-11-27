@@ -3373,3 +3373,41 @@ it('answers the authenticated Focus V2 reachability HEAD request without creatin
         ->assertHeader('Content-Type', 'application/json');
     expect(ControlResponseDraft::count())->toBe(0);
 });
+
+it('does not misreport a database lock as a stale revision for an existing Focus run', function () {
+    [, , , $control] = mountControlWorkflow();
+    $runId = (string) Str::uuid();
+    $version = (new ControlSchema((int) $control->id, $control->main))->version();
+    $manager = app(ControlRunManager::class);
+    $draft = $manager->saveDraft(
+        controlId: (int) $control->id,
+        supervisorId: (int) auth()->id(),
+        runId: $runId,
+        expectedRevision: 0,
+        draftId: null,
+        schemaVersion: $version,
+        attributes: ['responses' => [], 'schema_snapshot' => $control->main],
+    );
+
+    $database = DB::getFacadeRoot();
+    $failure = new \Illuminate\Database\QueryException(
+        'sqlite', 'update control_response_drafts', [], new \PDOException('database is locked'),
+    );
+    $mock = \Mockery::mock($database);
+    $mock->shouldReceive('transaction')->once()->with(\Mockery::type(\Closure::class), 5)->andThrow($failure);
+    DB::swap($mock);
+    try {
+        expect(fn () => $manager->saveDraft(
+            controlId: (int) $control->id,
+            supervisorId: (int) auth()->id(),
+            runId: $runId,
+            expectedRevision: 1,
+            draftId: $draft->id,
+            schemaVersion: $version,
+            attributes: ['responses' => []],
+        ))->toThrow(\Illuminate\Database\QueryException::class, 'database is locked');
+    } finally {
+        DB::swap($database);
+    }
+    expect($draft->fresh()->revision)->toBe(1);
+});
