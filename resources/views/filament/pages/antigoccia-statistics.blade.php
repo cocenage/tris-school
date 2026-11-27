@@ -165,6 +165,7 @@
                     </div>
                     <div>
                         <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Интервал между уборками</h3>
+                        <p class="mt-1 text-xs text-gray-500">Новые анкеты: до предыдущей зарегистрированной даты уборки. Исторические анкеты: ранее указанные сотрудниками интервалы. Незарегистрированные уборки не учитываются.</p>
                         <div class="mt-3 space-y-3">
                             @foreach($effectiveness['gaps'] as $cohort)
                                 <div class="flex items-center justify-between gap-3 rounded-xl border border-gray-200 px-3 py-3 dark:border-gray-700">
@@ -288,7 +289,7 @@
                     @forelse($this->history as $report)
                         <details class="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
                             <summary class="cursor-pointer font-semibold">{{ $report->cleaning_date->format('d.m.Y') }} · {{ $report->cleaner_name }}</summary>
-                            <p class="mt-2 text-sm text-gray-500">Отправлено {{ $report->created_at->format('d.m.Y H:i') }} · С прошлой уборки: {{ $report->days_since_previous_cleaning === null ? '—' : $report->days_since_previous_cleaning.' дн.' }}</p>
+                            <p class="mt-2 text-sm text-gray-500">Отправлено {{ $report->created_at->format('d.m.Y H:i') }} · Интервал уборки: {{ $report->days_since_previous_cleaning === null ? '—' : $report->days_since_previous_cleaning.' дн.' }}</p>
                             @foreach(\App\Services\Antigoccia\AntigocciaAssessment::SURFACES as $key => $label)
                                 @php
     $answer = $report->answers[$key] ?? [];
