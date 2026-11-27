@@ -10,12 +10,9 @@ new class extends Component {
             return;
         }
 
-        if (auth()->user()->status !== 'rejected') {
-            $this->redirectRoute(match (auth()->user()->status) {
-                'approved' => 'page-home',
-                'pending' => 'access.pending',
-                default => 'landing.page',
-            }, navigate: true);
+        if (auth()->user()->accessRouteName() !== 'access.rejected') {
+            $this->redirectRoute(auth()->user()->accessRouteName(), navigate: true);
+        }, navigate: true);
         }
     }
 };
@@ -53,11 +50,11 @@ new class extends Component {
                     </div>
 
                     <h1 class="text-[28px] font-semibold leading-[1.1] tracking-[-0.03em] text-[#111111]">
-                        Доступ отклонён
+                        Доступ закрыт
                     </h1>
 
                     <p class="mt-[14px] text-[15px] leading-[1.5] text-black/55">
-                        Администратор отклонил доступ к приложению. Если это ошибка — свяжитесь с ответственным администратором.
+                        Доступ к рабочим функциям закрыт. Если это ошибка — свяжитесь с ответственным администратором.
                     </p>
                 </div>
 

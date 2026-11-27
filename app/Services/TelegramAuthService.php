@@ -36,7 +36,7 @@ class TelegramAuthService
 
         $user->save();
 
-        if ($user->status === 'pending') {
+        if ($user->is_active && $user->status === 'pending') {
             $notifications = app(TelegramUserNotificationService::class);
 
             $notifications->accessRequested($user);
@@ -59,11 +59,6 @@ class TelegramAuthService
 
     public function redirectRouteFor(User $user): string
     {
-        return match ($user->status) {
-            'approved' => route('page-home'),
-            'pending' => route('access.pending'),
-            'rejected' => route('access.rejected'),
-            default => route('landing.page'),
-        };
+        return route($user->accessRouteName());
     }
 }

@@ -39,12 +39,7 @@ Route::get('/', function () {
         return redirect()->route('landing.page', $previewParameters);
     }
 
-    return redirect()->route(match (auth()->user()->status) {
-        'approved' => 'page-home',
-        'pending' => 'access.pending',
-        'rejected' => 'access.rejected',
-        default => 'landing.page',
-    }, $previewParameters);
+    return redirect()->route(auth()->user()->accessRouteName(), $previewParameters);
 })->name('landing');
 
 Route::livewire('/login', 'landing')->name('landing.page');
@@ -297,11 +292,6 @@ Route::fallback(function () {
         return redirect()->route('landing.page');
     }
 
-    return redirect()->route(match (Auth::user()->status) {
-        'approved' => 'page-home',
-        'pending' => 'access.pending',
-        'rejected' => 'access.rejected',
-        default => 'landing.page',
-    });
+    return redirect()->route(Auth::user()->accessRouteName());
 
 });

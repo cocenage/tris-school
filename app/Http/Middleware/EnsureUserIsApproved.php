@@ -16,12 +16,8 @@ class EnsureUserIsApproved
             return redirect()->route('landing.page');
         }
 
-        if ($user->status !== 'approved') {
-            return redirect()->route(match ($user->status) {
-                'pending' => 'access.pending',
-                'rejected' => 'access.rejected',
-                default => 'landing.page',
-            });
+        if (! $user->isApproved()) {
+            return redirect()->route($user->accessRouteName());
         }
 
         return $next($request);

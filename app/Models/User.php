@@ -94,7 +94,7 @@ class User extends Authenticatable implements FilamentUser
 
     public function canAccessPanel(Panel $panel): bool
     {
-        if ($this->status !== 'approved') {
+        if (! $this->isApproved()) {
             return false;
         }
 
@@ -185,7 +185,21 @@ class User extends Authenticatable implements FilamentUser
 
     public function isApproved(): bool
     {
-        return $this->status === 'approved';
+        return $this->status === 'approved' && $this->is_active === true;
+    }
+
+    public function accessRouteName(): string
+    {
+        if (! $this->is_active) {
+            return 'access.rejected';
+        }
+
+        return match ($this->status) {
+            'approved' => 'page-home',
+            'pending' => 'access.pending',
+            'rejected' => 'access.rejected',
+            default => 'landing.page',
+        };
     }
 
     public function hasTelegramWriteAccess(): bool

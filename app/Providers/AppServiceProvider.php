@@ -45,6 +45,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Livewire::addPersistentMiddleware([
+            \App\Http\Middleware\EnsureUserIsApproved::class,
+        ]);
+
         Livewire::setUpdateRoute(function ($handle, $path) {
             return Route::post($path, $handle)
                 ->middleware(BlockRolePreviewWrites::class)

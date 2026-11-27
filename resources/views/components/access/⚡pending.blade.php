@@ -12,13 +12,8 @@ new class extends Component {
             return;
         }
 
-        if (auth()->user()->status === 'approved') {
-            $this->redirectRoute('page-home', navigate: true);
-            return;
-        }
-
-        if (auth()->user()->status === 'rejected') {
-            $this->redirectRoute('access.rejected', navigate: true);
+        if (auth()->user()->accessRouteName() !== 'access.pending') {
+            $this->redirectRoute(auth()->user()->accessRouteName(), navigate: true);
             return;
         }
 
