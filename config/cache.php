@@ -17,6 +17,10 @@ return [
 
     'default' => env('CACHE_STORE', 'database'),
 
+    // Keep request counters out of the primary application database when
+    // the isolated limiter database has been provisioned.
+    'limiter' => env('CACHE_LIMITER_STORE', env('CACHE_STORE', 'database')),
+
     /*
     |--------------------------------------------------------------------------
     | Cache Stores
@@ -45,6 +49,14 @@ return [
             'table' => env('DB_CACHE_TABLE', 'cache'),
             'lock_connection' => env('DB_CACHE_LOCK_CONNECTION'),
             'lock_table' => env('DB_CACHE_LOCK_TABLE'),
+        ],
+
+        'rate_limiter' => [
+            'driver' => 'database',
+            'connection' => 'sqlite_rate_limiter',
+            'table' => 'cache',
+            'lock_connection' => 'sqlite_rate_limiter',
+            'lock_table' => 'cache_locks',
         ],
 
         'file' => [
