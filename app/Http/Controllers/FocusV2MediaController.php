@@ -567,11 +567,11 @@ final class FocusV2MediaController extends Controller
             'total_chunks' => $upload->total_chunks,
             'received' => $received,
             'urls' => [
-                'status' => route('page-checks.control.focus-v2.media.status', $upload->id),
-                'chunk_base' => route('page-checks.control.focus-v2.media.status', $upload->id).'/chunks',
-                'complete' => route('page-checks.control.focus-v2.media.complete', $upload->id),
-                'attach' => route('page-checks.control.focus-v2.media.attach', $upload->id),
-                'cancel' => route('page-checks.control.focus-v2.media.cancel', $upload->id),
+                'status' => route('page-checks.control.focus-v2.media.status', $upload->id, false),
+                'chunk_base' => route('page-checks.control.focus-v2.media.status', $upload->id, false).'/chunks',
+                'complete' => route('page-checks.control.focus-v2.media.complete', $upload->id, false),
+                'attach' => route('page-checks.control.focus-v2.media.attach', $upload->id, false),
+                'cancel' => route('page-checks.control.focus-v2.media.cancel', $upload->id, false),
             ],
         ])->header('Cache-Control', 'private, no-store');
     }
