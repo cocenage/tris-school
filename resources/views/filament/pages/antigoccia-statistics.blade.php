@@ -3,6 +3,8 @@
         $totals = $this->overviewTotals;
         $effectiveness = $this->effectiveness;
         $outcomes = $effectiveness['overall'];
+        $activity = $this->activity;
+        $maxDaily = max(1, ...array_values($activity['daily']));
     @endphp
     <div class="min-w-0 space-y-4">
         <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -19,7 +21,6 @@
             @endforeach
         </div>
 
-        @php($activity = $this->activity)
         <x-filament::section>
             <div class="flex flex-wrap items-center justify-between gap-3">
                 <h2 class="text-lg font-semibold">Активность Антикапли</h2>
@@ -45,7 +46,6 @@
             <p class="mt-3 text-xs text-gray-500">По дате отправки анкеты. Не является количеством фактических уборок.</p>
             <h3 class="mt-5 text-sm font-semibold">Анкеты по дням</h3>
             <div class="mt-3 max-h-64 space-y-2 overflow-y-auto">
-                @php($maxDaily = max(1, ...array_values($activity['daily'])))
                 @foreach($activity['daily'] as $date => $count)
                     <div class="flex items-center gap-3 text-xs">
                         <span class="w-20 shrink-0">{{ \Carbon\CarbonImmutable::parse($date)->format('d.m') }}</span>
