@@ -35,6 +35,13 @@ class AntigocciaStatistics extends Page
 
     public string $effectivenessPeriod = '90';
 
+    public string $activityPeriod = '7';
+
+    public function getActivityProperty(): array
+    {
+        return app(AntigocciaOverview::class)->activity((int) $this->activityPeriod);
+    }
+
     public static function canAccess(): bool
     {
         return Filament::getCurrentPanel()?->getId() === 'admin'
