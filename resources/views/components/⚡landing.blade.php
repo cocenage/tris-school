@@ -122,6 +122,11 @@ new class extends Component {
                     </div>
                 </div>
 
+                <div class="mt-[14px]">
+                    <x-ui.button variant="secondary" href="{{ route('access.connect') }}">
+                        Подключить аккаунт по TRIS ID
+                    </x-ui.button>
+                </div>
                 <pre id="debug" class="mt-[14px] hidden whitespace-pre-wrap rounded-[23px] border border-[#F5C2C2] bg-[#FDF2F2] px-[16px] py-[14px] text-[12px] leading-[1.45] text-[#9B1C1C]"></pre>
             </div>
         </div>

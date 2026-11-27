@@ -44,6 +44,16 @@ Route::get('/', function () {
 
 Route::livewire('/login', 'landing')->name('landing.page');
 
+Route::controller(\App\Http\Controllers\DeviceLinkController::class)->group(function () {
+    Route::get('/access/connect', 'show')->name('access.connect');
+    Route::post('/access/connect', 'start')->middleware('throttle:5,1')->name('access.connect.start');
+    Route::post('/access/connect/claim', 'claim')->middleware('throttle:30,1')->name('access.connect.claim');
+    Route::middleware(['auth', 'approved', SafeguardRolePreviewData::class])->group(function () {
+        Route::get('/profile/devices', 'requests')->name('profile.devices');
+        Route::post('/profile/devices/{link}/decision', 'decide')->middleware('throttle:15,1')->name('profile.devices.decision');
+    });
+});
+
 Route::post('/telegram/auth', TelegramAuthController::class)
     ->name('telegram.auth');
 

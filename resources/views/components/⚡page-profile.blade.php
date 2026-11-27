@@ -370,6 +370,9 @@ $this->profileRequired = false;
         </section>
     @endif
 
+    @if(!app(\App\Services\RolePreviewContext::class)->isActive())
+        <div class="mb-[10px]"><a href="{{ route('profile.devices') }}">TRIS ID: {{ $user->tris_id }} · Подключение устройств</a></div>
+    @endif
     <div class="mb-[10px]">
         <span class="text-[16px] opacity-50">
             Рабочие инструменты

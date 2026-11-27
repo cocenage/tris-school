@@ -7,6 +7,11 @@ new class extends Component {
 
     public function mount(): void
     {
+        $this->refreshAccess();
+    }
+
+    public function refreshAccess(): void
+    {
         if (! auth()->check()) {
             $this->redirectRoute('landing.page', navigate: true);
             return;
@@ -43,7 +48,7 @@ new class extends Component {
     </div>
 </x-slot:header>
 
-<div class="flex h-full min-h-0 flex-col bg-[#F4F7FB]">
+<div wire:poll.5s="refreshAccess" class="flex h-full min-h-0 flex-col bg-[#F4F7FB]">
     <div class="flex-1 min-h-0 overflow-y-auto">
         <div class="min-h-full rounded-t-[38px] bg-white">
             <div class="p-[20px] pb-[28px]">
