@@ -72,3 +72,24 @@ it('shows unavailable rather than inventing a count without a coating or previou
     expect(app(AntigocciaCleaningStatistics::class)->forApartment($apartment, null))
         ->toBe(['recorded_cleaning_days' => null, 'last_control_date' => null]);
 });
+
+
+it('finds the latest earlier recorded cleaning day across both sources and never invents a gap', function (): void {
+    DB::table('control_responses')->insert([
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-10', 'status' => 'sent'],
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-16', 'status' => 'draft'],
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-20', 'status' => 'sent'],
+        ['apartment_id' => 11, 'cleaning_date' => '2026-11-14', 'status' => 'sent'],
+    ]);
+    DB::table('antigoccia_reports')->insert([
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-13'],
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-17'],
+        ['apartment_id' => 10, 'cleaning_date' => '2026-11-17'],
+    ]);
+
+    $statistics = app(AntigocciaCleaningStatistics::class);
+    expect($statistics->daysSincePreviousRecordedCleaning(10, '2026-11-17'))->toBe(4)
+        ->and($statistics->daysSincePreviousRecordedCleaning(10, '2026-11-12'))->toBe(2)
+        ->and($statistics->daysSincePreviousRecordedCleaning(10, '2026-11-10'))->toBeNull()
+        ->and($statistics->daysSincePreviousRecordedCleaning(12, '2026-11-17'))->toBeNull();
+});
