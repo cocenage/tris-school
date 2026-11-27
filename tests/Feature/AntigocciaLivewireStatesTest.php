@@ -8,9 +8,16 @@ use Livewire\Livewire;
 beforeEach(function (): void {
     $this->withoutVite();
 
-    foreach (['antigoccia_reports', 'antigoccia_applications', 'apartments'] as $table) {
+    foreach (['antigoccia_reports', 'antigoccia_applications', 'apartments', 'control_responses'] as $table) {
         Schema::dropIfExists($table);
     }
+
+    Schema::create('control_responses', function (Blueprint $table): void {
+        $table->id();
+        $table->unsignedBigInteger('apartment_id');
+        $table->date('cleaning_date')->nullable();
+        $table->string('status');
+    });
 
     Schema::create('apartments', function (Blueprint $table): void {
         $table->id();
@@ -35,7 +42,7 @@ beforeEach(function (): void {
         $table->unsignedBigInteger('user_id');
         $table->string('cleaner_name');
         $table->date('cleaning_date');
-        $table->unsignedInteger('days_since_previous_cleaning');
+        $table->unsignedInteger('days_since_previous_cleaning')->nullable();
         $table->json('answers');
         $table->json('photos')->nullable();
         $table->boolean('remaining')->default(false);
@@ -54,7 +61,7 @@ beforeEach(function (): void {
 });
 
 afterEach(function (): void {
-    foreach (['antigoccia_reports', 'antigoccia_applications', 'apartments'] as $table) {
+    foreach (['antigoccia_reports', 'antigoccia_applications', 'apartments', 'control_responses'] as $table) {
         Schema::dropIfExists($table);
     }
 });
@@ -62,6 +69,7 @@ afterEach(function (): void {
 it('renders the form and switches from empty through missing photo to complete', function (): void {
     $component = Livewire::test('antigoccia.page-antigoccia')
         ->assertSee('Данные уборки')
+        ->assertDontSee('Дней с прошлой уборки')
         ->assertSee('Не начато')
         ->assertSee('Проверка поверхностей');
 
@@ -105,7 +113,6 @@ it('dispatches the first invalid field on submit instead of losing the scroll po
         'name' => 'Тестовая квартира', 'created_at' => now(), 'updated_at' => now(),
     ]);
     $component->call('selectApartment', $id)
-        ->set('daysSincePreviousCleaning', '2')
         ->call('submit')->assertHasErrors(['answers.mirrors.dirt'])
         ->assertDispatched('antigoccia-invalid', field: 'answers.mirrors.dirt');
 });
@@ -136,4 +143,26 @@ it('lets approved cleaners select active apartments without individual grants', 
         ->assertSet('apartmentId', (string) $id);
 
     $component->call('selectApartment', $inactive)->assertForbidden();
+});
+
+it('submits without a manual cleaning interval and calculates only recorded previous dates', function (): void {
+    $id = \Illuminate\Support\Facades\DB::table('apartments')->insertGetId([
+        'name' => 'Тестовая квартира',
+    ]);
+    $date = now('Europe/Rome')->startOfDay();
+    \Illuminate\Support\Facades\DB::table('control_responses')->insert([
+        'apartment_id' => $id,
+        'cleaning_date' => $date->copy()->subDays(3)->toDateString(),
+        'status' => 'sent',
+    ]);
+
+    $component = Livewire::test('antigoccia.page-antigoccia')
+        ->call('selectApartment', $id);
+    foreach (\App\Services\Antigoccia\AntigocciaAssessment::SURFACES as $surface => $label) {
+        $component->call('setDirt', $surface, 0)
+            ->call('setRemoval', $surface, 'no_dirt')
+            ->set('answers.'.$surface.'.remaining', 'no');
+    }
+    $component->call('submit')->assertHasNoErrors()->assertSet('saved', true);
+    expect(\App\Models\AntigocciaReport::query()->sole()->days_since_previous_cleaning)->toBe(3);
 });
