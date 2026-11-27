@@ -3337,3 +3337,39 @@ it('resets only the current owned Focus V2 draft and rejects stale writes', func
     $this->getJson(route('page-checks.control.focus-v2.bootstrap'))->assertOk()
         ->assertJsonPath('run.draft_id', null)->assertJsonPath('answers.0.0.selected', '');
 });
+
+it('discards only the selected sandbox draft and keeps the real draft active', function (): void {
+    [$supervisor, $cleaner, $apartment, $control] = mountControlWorkflow();
+    $admin = User::create(['name' => 'Admin', 'role' => 'admin', 'status' => 'approved', 'is_active' => true]);
+    $this->actingAs($admin);
+    $draftUrl = route('page-checks.control.focus-v2.draft');
+    $real = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $this->postJson($draftUrl, $real)->assertOk();
+    $sandbox = focusV2DraftSavePayload($control, $cleaner, $apartment);
+    $sandbox['test_mode'] = true;
+    $sandbox['setup']['cleaner_id'] = '__test__';
+    $this->postJson($draftUrl, $sandbox)->assertOk();
+    $draft = ControlResponseDraft::query()->where('state', 'sandbox')->sole();
+    $payload = [
+        'control_id' => $control->id,
+        'run_id' => $draft->run_id,
+        'draft_id' => $draft->id,
+        'expected_revision' => $draft->revision,
+    ];
+    $reset = route('page-checks.control.focus-v2.reset');
+    $this->postJson($reset, $payload)->assertConflict();
+    $this->actingAs($supervisor)->postJson($reset, [...$payload, 'test_mode' => true])->assertForbidden();
+    $this->actingAs($admin)->postJson($reset, [...$payload, 'test_mode' => true])->assertOk();
+    expect($draft->fresh()->state)->toBe('discarded')
+        ->and(ControlResponseDraft::query()->where('state', 'active')->count())->toBe(1)
+        ->and(ControlResponse::count())->toBe(0);
+});
+
+it('answers the authenticated Focus V2 reachability HEAD request without creating a draft', function (): void {
+    [$supervisor, $cleaner] = mountControlWorkflow();
+    $url = route('page-checks.control.focus-v2.bootstrap');
+    $this->actingAs($cleaner)->json('HEAD', $url)->assertForbidden();
+    $this->actingAs($supervisor)->json('HEAD', $url)->assertOk()
+        ->assertHeader('Content-Type', 'application/json');
+    expect(ControlResponseDraft::count())->toBe(0);
+});

@@ -103,7 +103,7 @@ async function transaction(mode, operation, storeName = STORE) {
         let value;
         request.onsuccess = () => { value = request.result; };
         tx.oncomplete = () => resolve(value);
-        tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+        tx.onerror = event => reject(event?.target?.error || tx.error || new Error('IndexedDB transaction failed'));
         tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
     });
 }
@@ -168,7 +168,16 @@ export async function cacheFocusPhoto({ scope, uploadId, runId, file, room, ques
         // the same bytes and preserve name/MIME separately for restoration.
         blob: file.slice(0, file.size, file.type),
     };
-    await transaction('readwrite', store => store.put(record), PHOTO_STORE);
+    try {
+        await transaction('readwrite', store => store.put(record), PHOTO_STORE);
+    } catch (error) {
+        // Some WebKit stores reject even a plain Blob. The same bounded
+        // file bytes can be persisted as an ArrayBuffer without encoding.
+        if (!['UnknownError', 'DataCloneError'].includes(error?.name)) throw error;
+        const { blob, ...metadata } = record;
+        const bytes = await blob.arrayBuffer();
+        await transaction('readwrite', store => store.put({ ...metadata, bytes }), PHOTO_STORE);
+    }
     return record;
 }
 
@@ -178,6 +187,10 @@ export async function readCachedFocusPhotos(scope, now = Date.now()) {
         store.index('by_scope').getAll(scope), PHOTO_STORE);
     const valid = [];
     for (const record of records ?? []) {
+        if (record?.bytes instanceof ArrayBuffer && record.bytes.byteLength === record.size) {
+            record.blob = new Blob([record.bytes], { type: record.mime });
+            delete record.bytes;
+        }
         if (!record || !record.blob || record.blob.size !== record.size
             || !Number.isFinite(record.saved_at)
             || record.saved_at > now + 60000

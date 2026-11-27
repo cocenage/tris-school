@@ -22,9 +22,14 @@ final class FocusV2ResetController extends Controller
             'run_id' => ['required', 'uuid'],
             'draft_id' => ['present', 'nullable', 'integer', 'min:1'],
             'expected_revision' => ['required', 'integer', 'min:0'],
+            'test_mode' => ['sometimes', 'boolean'],
         ]);
 
-        DB::transaction(function () use ($input, $user): void {
+        $sandbox = $request->boolean('test_mode');
+        abort_if($sandbox && $user->role !== 'admin', 403);
+        $activeState = $sandbox ? 'sandbox' : 'active';
+
+        DB::transaction(function () use ($input, $user, $activeState): void {
             $owned = ControlResponseDraft::query()
                 ->where('control_id', $input['control_id'])
                 ->where('supervisor_id', $user->id);
@@ -33,7 +38,7 @@ final class FocusV2ResetController extends Controller
 
             if ($input['draft_id'] === null) {
                 abort_unless((int) $input['expected_revision'] === 0
-                    && ! (clone $owned)->where('state', 'active')->exists(), 409, 'Черновик изменился. Обновите страницу.');
+                    && ! (clone $owned)->where('state', $activeState)->exists(), 409, 'Черновик изменился. Обновите страницу.');
 
                 return;
             }
@@ -46,7 +51,7 @@ final class FocusV2ResetController extends Controller
                 return; // Retry after a lost acknowledgement.
             }
 
-            abort_unless($draft->state === 'active'
+            abort_unless($draft->state === $activeState
                 && (int) $draft->revision === (int) $input['expected_revision'], 409, 'Черновик изменился. Обновите страницу.');
 
             // Preserve a tombstone and its files so that old requests cannot
