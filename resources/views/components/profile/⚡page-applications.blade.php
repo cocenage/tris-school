@@ -15,8 +15,6 @@ new class extends Component
     public string $search = '';
     public string $tab = 'all';
     public array $categories = [];
-    public string $statusFilter = 'all';
-    public string $sort = 'new';
 
     public function mount(): void
     {
@@ -361,27 +359,30 @@ new class extends Component
         return false;
     }
 
-    public function filterStatusLabels(): array
+    public function toggleCategory(string $category): void
     {
-        return [
-            'all' => 'Все статусы', 'pending' => 'На рассмотрении',
-            'in_progress' => 'В работе', 'approved' => 'Одобрено',
-            'partial' => 'Частично', 'rejected' => 'Отказано / отклонено',
-            'issued' => 'Выдано', 'reviewed' => 'Рассмотрено',
-            'cancelled' => 'Отменено', 'closed' => 'Закрыто',
-        ];
+        if (! array_key_exists($category, $this->categoryLabels())) {
+            return;
+        }
+
+        $selected = array_values(array_intersect(array_keys($this->categoryLabels()), $this->categories));
+        $this->categories = in_array($category, $selected, true)
+            ? array_values(array_diff($selected, [$category]))
+            : [...$selected, $category];
+
+        if (count($this->categories) === count($this->categoryLabels())) {
+            $this->categories = [];
+        }
     }
 
-    public function applyFilters(array $categories, string $status, string $sort): void
+    public function resetCategories(): void
     {
-        $this->categories = array_values(array_intersect(array_keys($this->categoryLabels()), array_filter($categories, 'is_string')));
-        $this->statusFilter = array_key_exists($status, $this->filterStatusLabels()) ? $status : 'all';
-        $this->sort = in_array($sort, ['new', 'old', 'updated'], true) ? $sort : 'new';
+        $this->reset('categories');
     }
 
     public function resetListFilters(): void
     {
-        $this->reset('search', 'tab', 'categories', 'statusFilter', 'sort');
+        $this->reset('search', 'categories');
     }
 
     public function searchText(object $request): string
@@ -414,7 +415,6 @@ new class extends Component
             if ($this->tab === 'active' && ! $this->isActive($request)) return false;
             if ($this->tab === 'completed' && $this->isActive($request)) return false;
             if ($this->categories && ! in_array($request->request_type, $this->categories, true)) return false;
-            if ($this->statusFilter !== 'all' && $this->statusGroup($request->status) !== $this->statusFilter) return false;
             if (! $words) return true;
             $haystack = $this->searchText($request);
             foreach ($words as $word) {
@@ -423,11 +423,7 @@ new class extends Component
             return true;
         });
 
-        return match ($this->sort) {
-            'old' => $items->sortBy(fn ($item) => $item->created_at)->values(),
-            'updated' => $items->sortByDesc(fn ($item) => $item->updated_at ?? $item->created_at)->values(),
-            default => $items->values(),
-        };
+        return $items->values();
     }
 };
 ?>
@@ -438,26 +434,11 @@ new class extends Component
     $requests = $this->requests;
     $visible = $this->filteredRequests($requests);
     $activeCount = $requests->filter(fn ($request) => $this->isActive($request))->count();
-    $filterCount = count($categories) + (int) ($statusFilter !== 'all') + (int) ($sort !== 'new');
+    $filterCount = count($categories);
 @endphp
 
 <div class="tris-mobile-requests min-h-full bg-[#F5F5F5] px-5 pt-[42px] pb-8 text-[#171717]"
-    x-data="{
-        draftCategories: [],
-        draftStatus: 'all',
-        draftSort: 'new',
-        openFilters() {
-            this.draftCategories = [...$wire.categories];
-            this.draftStatus = $wire.statusFilter;
-            this.draftSort = $wire.sort;
-            this.$refs.requestFilters.showModal();
-        },
-        async apply() {
-            await $wire.applyFilters(this.draftCategories, this.draftStatus, this.draftSort);
-            this.$refs.requestFilters.close();
-        },
-        resetDraft() { this.draftCategories = []; this.draftStatus = 'all'; this.draftSort = 'new'; }
-    }">
+    x-data="{ openFilters() { this.$refs.requestFilters.showModal(); } }">
     @php
         $total = $requests->count();
         $totalLabel = $total.' '.match(true) {
@@ -469,7 +450,7 @@ new class extends Component
     <x-mobile.page-header title="Заявки" :subtitle="$totalLabel" class="mb-5" />
     <div class="flex items-center gap-2.5">
         <x-mobile.search-bar wire:model.live.debounce.250ms="search" placeholder="Поиск заявок" />
-        <x-mobile.filter-button x-on:click="openFilters()" :count="$filterCount" label="Фильтры заявок" />
+        <x-mobile.filter-button x-on:click="openFilters()" :count="$filterCount" label="Категории заявок" />
     </div>
     <x-mobile.segmented-tabs :options="['all' => 'Все', 'active' => 'Активные '.$activeCount, 'completed' => 'Завершённые']"
         :selected="$tab" model="tab" label="Раздел заявок" class="mt-[15px] mb-[26px]" />
@@ -540,45 +521,7 @@ new class extends Component
         @endforelse
     </div>
 
-    <x-mobile.bottom-sheet title="Фильтры" ref="requestFilters" wire:ignore.self>
-        <x-slot:actions>
-            <button type="button" @click="resetDraft()" class="ml-auto text-sm text-[#737373]">Сбросить</button>
-        </x-slot:actions>
-        <form id="request-filter-form" @submit.prevent="apply()" class="space-y-6">
-            <fieldset>
-                <legend class="mb-3 font-medium">Категория</legend>
-                <div class="flex flex-wrap gap-2">
-                    @foreach($this->categoryLabels() as $value => $label)
-                        <label class="cursor-pointer">
-                            <input type="checkbox" value="{{ $value }}" x-model="draftCategories" class="peer sr-only" />
-                            <span class="inline-flex rounded-full bg-[#F2F2F2] px-3 py-2 text-sm text-[#444444] peer-checked:bg-[#2A1F1A] peer-checked:text-white peer-focus-visible:outline-2">{{ $label }}</span>
-                        </label>
-                    @endforeach
-                </div>
-            </fieldset>
-            <fieldset>
-                <legend class="mb-3 font-medium">Статус</legend>
-                <div class="flex flex-wrap gap-2">
-                    @foreach($this->filterStatusLabels() as $value => $label)
-                        <label class="cursor-pointer">
-                            <input type="radio" name="request-status" value="{{ $value }}" x-model="draftStatus" class="peer sr-only" />
-                            <span class="inline-flex rounded-full bg-[#F2F2F2] px-3 py-2 text-sm text-[#444444] peer-checked:bg-[#2A1F1A] peer-checked:text-white peer-focus-visible:outline-2">{{ $label }}</span>
-                        </label>
-                    @endforeach
-                </div>
-            </fieldset>
-            <fieldset class="space-y-3 border-t border-[#EEEEEE] pt-4">
-                <legend class="font-medium">Сортировка</legend>
-                @foreach(['new'=>'Сначала новые','old'=>'Сначала старые','updated'=>'Недавно обновлённые'] as $value => $label)
-                    <label class="flex cursor-pointer items-center gap-3 text-sm">
-                        <input type="radio" name="request-sort" value="{{ $value }}" x-model="draftSort" class="size-4 accent-[#2A1F1A]" />{{ $label }}
-                    </label>
-                @endforeach
-            </fieldset>
-        </form>
-        <x-slot:footer>
-            <button type="submit" form="request-filter-form" wire:loading.attr="disabled" wire:target="applyFilters"
-                class="w-full rounded-2xl bg-[#2A1F1A] px-4 py-3.5 text-sm font-medium text-white disabled:opacity-60">Показать заявки</button>
-        </x-slot:footer>
+    <x-mobile.bottom-sheet title="Категории" ref="requestFilters" wire:ignore.self>
+        <x-mobile.category-filter :options="$this->categoryLabels()" :selected="$categories" class="pb-[max(12px,env(safe-area-inset-bottom))]" />
     </x-mobile.bottom-sheet>
 </div>
