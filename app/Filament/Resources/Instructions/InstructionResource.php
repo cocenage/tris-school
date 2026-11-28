@@ -16,6 +16,8 @@ use Filament\Tables\Table;
 
 class InstructionResource extends Resource
 {
+    protected static string|\UnitEnum|null $navigationGroup = 'База знаний';
+
     protected static ?string $model = Instruction::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedBookOpen;
