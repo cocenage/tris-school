@@ -281,3 +281,36 @@ p {
     .tris-mobile-card-press { transition: none; }
     .tris-mobile-card-press:has(> .tris-mobile-card-trigger:active) { transform: none; }
 }
+
+
+/* Mobile filters and native-dialog transitions. */
+.tris-mobile-filter-button:active,
+.tris-mobile-filter-button[aria-expanded="true"],
+.tris-mobile-filter-button.tris-mobile-filter-selected { color: #2A1F1A; }
+.tris-mobile-bottom-sheet {
+    transform: translateY(100%);
+    transition: transform 280ms cubic-bezier(.22,.61,.36,1);
+    overscroll-behavior: contain;
+}
+.tris-mobile-bottom-sheet[data-state="open"],
+.tris-mobile-bottom-sheet[data-state="dragging"] {
+    transform: translateY(var(--sheet-offset, 0px));
+}
+.tris-mobile-bottom-sheet[data-state="dragging"] { transition: none; }
+.tris-mobile-bottom-sheet::backdrop {
+    background: rgba(0,0,0,.35);
+    opacity: 0;
+    transition: opacity 280ms ease;
+}
+.tris-mobile-bottom-sheet[data-state="open"]::backdrop,
+.tris-mobile-bottom-sheet[data-state="dragging"]::backdrop { opacity: 1; }
+.tris-media-viewer[open] { animation: tris-media-in 180ms ease both; }
+@keyframes tris-media-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .tris-mobile-bottom-sheet,
+    .tris-mobile-bottom-sheet::backdrop { transition: none; }
+    .tris-media-viewer[open] { animation: none; }
+}
