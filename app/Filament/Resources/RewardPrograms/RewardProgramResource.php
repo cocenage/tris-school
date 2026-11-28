@@ -17,6 +17,8 @@ use Filament\Tables\Table;
 
 class RewardProgramResource extends Resource
 {
+    protected static string|\UnitEnum|null $navigationGroup = 'Команда';
+
     protected static ?string $model = RewardProgram::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedGift;
