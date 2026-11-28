@@ -15,7 +15,7 @@ import org.telegram.login.TelegramLogin;
 @CapacitorPlugin(name = "TrisTelegramLogin")
 public class TrisTelegramLoginPlugin extends Plugin {
     private static final String CLIENT_ID = "8262627457";
-    private static final String HOST = "app8262627457-login.tg.dev";
+    private static final String HOST = "app337549632-login.tg.dev";
     private static final String REDIRECT = "https://" + HOST + "/tglogin";
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static TrisTelegramLoginPlugin active;
