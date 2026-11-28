@@ -40,3 +40,13 @@ html:not(.dark) .fi-sidebar { background: var(--tris-surface); }
     }
     .fi-ta-text { overflow-wrap: anywhere; }
 }
+
+/* Restrained interaction feedback; respect reduced-motion preferences. */
+@media (prefers-reduced-motion: no-preference) {
+    .fi-btn, .fi-icon-btn, [data-tris-favorite], [data-tris-shortcuts] a {
+        transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
+    }
+}
+[data-tris-workspace] button[hidden], [data-tris-shortcuts][hidden], [data-tris-shortcuts] [hidden] {
+    display: none !important;
+}
