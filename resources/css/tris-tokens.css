@@ -1,0 +1,33 @@
+/* Shared TRIS design tokens — used by the site and Filament. */
+:root {
+    --tris-primary: #111111;
+    --tris-secondary: #7a7a7a;
+    --tris-background: #f5f5f5;
+    --tris-surface: #ffffff;
+    --tris-text: #2a1f1a;
+    --tris-font: "Akt", sans-serif;
+}
+
+@font-face {
+    font-family: "Akt";
+    src: url("/fonts/Akt-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+        font-display: swap;
+}
+
+@font-face {
+    font-family: "Akt";
+    src: url("/fonts/Akt-Normal.woff2") format("woff2");
+    font-weight: 500;
+    font-style: normal;
+        font-display: swap;
+}
+
+@font-face {
+    font-family: "Akt";
+    src: url("/fonts/Akt-Medium.woff2") format("woff2");
+    font-weight: 600;
+    font-style: normal;
+        font-display: swap;
+}
