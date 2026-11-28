@@ -22,7 +22,7 @@ class UsersTable
             ->persistFiltersInSession()
             ->persistSearchInSession()
             ->recordTitleAttribute('name')
-            ->recordUrl(fn ($record) => UserResource::getUrl('edit', ['record' => $record]))
+            ->recordUrl(fn ($record) => UserResource::getUrl('view', ['record' => $record]))
 
             ->columns([
                ImageColumn::make('avatar_url')->visibleFrom('md')
