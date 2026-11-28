@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
 @import "tailwindcss";
 @import "./knowledge.css";
 
@@ -169,3 +170,60 @@ p {
         transform: translateY(0);
     }
 }
+
+
+/* TRIS 1.0 mobile controls — scoped to the new mobile UI. */
+.tris-mobile-requests {
+    font-family: "Manrope", "Akt", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+}
+.tris-mobile-requests :is(button, input, select, textarea) {
+    font-family: inherit;
+}
+.tris-mobile-press {
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: transform 180ms cubic-bezier(.2,.8,.2,1), background-color 180ms ease, color 180ms ease;
+    transform-origin: center;
+}
+.tris-mobile-press:active { transform: scale(.96); }
+.tris-mobile-press:focus-visible { outline: 2px solid #8B817A; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+    .tris-mobile-press { transition: none; }
+    .tris-mobile-press:active { transform: none; }
+}
+.tris-mobile-search {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-width: 0;
+    height: 48px;
+    border-radius: 999px;
+    padding: 0 16px;
+    background: #fff;
+    overflow: hidden;
+    transition: box-shadow 160ms ease;
+}
+.tris-mobile-search:focus-within { box-shadow: 0 0 0 2px #d9d4d1; }
+.tris-mobile-search input {
+    -webkit-appearance: none;
+    appearance: none;
+    border: 0;
+    border-radius: 0;
+    outline: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+    height: 100%;
+    min-width: 0;
+    width: 100%;
+    flex: 1 1 0;
+    background: transparent;
+    color: #171717;
+    font-size: 14px;
+    font-weight: 500;
+}
+.tris-mobile-search input::placeholder { color: #777; opacity: 1; }
+.tris-mobile-search input::-webkit-search-decoration,
+.tris-mobile-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
