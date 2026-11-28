@@ -23,6 +23,13 @@ use Filament\Tables\Table;
 
 class KnowledgeEntityResource extends Resource
 {
+    protected static ?string $recordTitleAttribute = 'title';
+
+    public static function getGloballySearchableAttributes(): array
+    {
+        return ['title', 'slug'];
+    }
+
     protected static string|\UnitEnum|null $navigationGroup = 'База знаний';
 
     protected static ?string $model = KnowledgeEntity::class;
