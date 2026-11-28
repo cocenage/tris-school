@@ -6,6 +6,7 @@ use App\Filament\Pages\EmployeeWorkCalendarReport;
 use App\Filament\Pages\TelegramDeliveryReport;
 use App\Filament\Resources\Activities\ActivityResource;
 use App\Filament\Resources\Apartments\ApartmentResource;
+use App\Filament\Resources\CalendarEvents\CalendarEventResource;
 use App\Filament\Resources\ControlResponses\ControlResponseResource;
 use App\Filament\Resources\DayOffRequests\DayOffRequestResource;
 use App\Filament\Resources\FeedbackSuggestions\FeedbackSuggestionResource;
@@ -18,7 +19,9 @@ use App\Filament\Resources\VacationRequests\VacationRequestResource;
 use App\Models\ControlResponse;
 use App\Models\User;
 use App\Services\Authorization\SupervisorPanelAccess;
+use App\Services\Calendar\CalendarEventsService;
 use App\Services\Calendar\EmployeeWorkCalendarStatisticsService;
+use Carbon\Carbon;
 use App\Services\Telegram\TelegramDeliveryCenter;
 use Carbon\CarbonImmutable;
 use Filament\Facades\Filament;
@@ -49,7 +52,7 @@ class WorkspaceOverview extends Widget
         abort_unless(static::canView(), 403);
         $supervisor = Filament::getCurrentPanel()->getId() === 'education';
         $today = CarbonImmutable::now('Europe/Rome');
-        $attention = $metrics = $links = $activity = [];
+        $attention = $metrics = $links = $activity = $events = [];
         $requestCount = 0;
         $requestSources = 0;
 
@@ -70,7 +73,7 @@ class WorkspaceOverview extends Widget
             if (! $resource::canViewAny()) {
                 continue;
             }
-            $query = $resource::getEloquentQuery();
+            $query = $resource::getEloquentQuery()->reorder();
             $requestSources++;
             $requestCount += (clone $query)->whereDate('created_at', $today->toDateString())->count();
             $count = (clone $query)->where('status', 'pending')->count();
@@ -125,6 +128,9 @@ class WorkspaceOverview extends Widget
         if (ApartmentResource::canViewAny()) {
             $links[] = self::link('Квартиры', 'heroicon-o-building-office-2', ApartmentResource::getUrl());
         }
+        if ($supervisor && Route::has('page-tasks')) {
+            $links[] = self::link('Задачи', 'heroicon-o-clipboard-document-list', route('page-tasks'));
+        }
         if (Route::has('page-home.instructions')) {
             $links[] = self::link('Инструкции', 'heroicon-o-book-open', route('page-home.instructions'));
         }
@@ -146,6 +152,35 @@ class WorkspaceOverview extends Widget
             $links[] = self::link('Центр доставки', 'heroicon-o-paper-airplane', $url);
         }
 
+        $eventsUrl = null;
+        $eventsUnavailable = false;
+        if ($supervisor && CalendarEventResource::canViewAny()) {
+            $eventsUrl = CalendarEventResource::getUrl();
+            $links[] = self::link('Календарь', 'heroicon-o-calendar-days', $eventsUrl);
+            try {
+                $allowed = CalendarEventResource::getEloquentQuery()->where('is_active', true)->get()->keyBy('id');
+                $start = Carbon::instance($today)->startOfDay();
+                $end = $start->copy()->addDays(6)->endOfDay();
+                $events = app(CalendarEventsService::class)->getExpandedEvents($start, $end)
+                    ->filter(function (array $event) use ($allowed): bool {
+                        // Exclude generated personal events; only show permitted calendar records.
+                        $id = explode('_', (string) $event['id'], 2)[0];
+                        $record = ctype_digit($id) ? $allowed->get((int) $id) : null;
+                        return $record !== null && CalendarEventResource::canView($record);
+                    })
+                    ->sortBy('start')->take(5)
+                    ->map(fn (array $event) => [
+                        'label' => $event['title'],
+                        'time' => $event['start']->format('d.m'),
+                        'description' => \App\Models\CalendarEvent::typeOptions()[$event['type']] ?? '',
+                        'url' => CalendarEventResource::getUrl('view', ['record' => explode('_', (string) $event['id'], 2)[0]]),
+                    ])->values()->all();
+            } catch (\Throwable $exception) {
+                report($exception);
+                $eventsUnavailable = true;
+            }
+        }
+
         $activityUrl = null;
         if (! $supervisor && ActivityResource::canViewAny()) {
             $activityUrl = ActivityResource::getUrl();
@@ -158,7 +193,7 @@ class WorkspaceOverview extends Widget
                 ])->all();
         }
 
-        return compact('supervisor', 'today', 'attention', 'metrics', 'links', 'activity', 'activityUrl');
+        return compact('supervisor', 'today', 'attention', 'metrics', 'links', 'activity', 'activityUrl', 'events', 'eventsUrl', 'eventsUnavailable');
     }
 
     private static function filteredUrl(string $resource, string $filter, string $value): string
