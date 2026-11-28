@@ -24,6 +24,8 @@ class DayOffRequestsTable
     public static function configure(Table $table): Table
     {
         return $table
+            ->persistFiltersInSession()
+            ->persistSearchInSession()
             ->modifyQueryUsing(fn (Builder $query): Builder => $query->with(['user', 'days']))
             ->recordTitleAttribute('user_name')
             ->recordUrl(fn ($record) => Filament::getCurrentPanel()?->getId() === 'education'
@@ -34,12 +36,13 @@ class DayOffRequestsTable
             ->columns([
                 TextColumn::make('user.name')
                     ->label('Сотрудник')
+                    ->wrap()
                     ->searchable()
                     ->sortable()
                     ->weight('medium')
-                    ->description(fn (DayOffRequest $record): string => $record->created_at?->format('d.m.Y H:i') ?? '—'),
+                    ->description(fn (DayOffRequest $record): string => $record->days->sortBy('date')->map(fn ($day): string => Carbon::parse($day->date)->format('d.m'))->implode(', ') ?: 'Даты не указаны'),
 
-                TextColumn::make('dates')
+                TextColumn::make('dates')->visibleFrom('md')
                     ->label('Даты')
                     ->state(function (DayOffRequest $record): string {
                         if ($record->days->isEmpty()) {
@@ -53,7 +56,7 @@ class DayOffRequestsTable
                     })
                     ->wrap(),
 
-                TextColumn::make('days_count')
+                TextColumn::make('days_count')->visibleFrom('md')
                     ->label('Дней')
                     ->state(fn (DayOffRequest $record): int => $record->days->count())
                     ->badge()
@@ -66,14 +69,14 @@ class DayOffRequestsTable
                     ->color(fn (?string $state): string => self::statusColor($state))
                     ->sortable(),
 
-                TextColumn::make('reason')
+                TextColumn::make('reason')->visibleFrom('md')
                     ->label('Причина')
                     ->limit(70)
                     ->wrap()
                     ->placeholder('—')
                     ->searchable(),
 
-                TextColumn::make('admin_comment')
+                TextColumn::make('admin_comment')->visibleFrom('md')
                     ->label('Комментарий администратора')
                     ->limit(50)
                     ->placeholder('—')
