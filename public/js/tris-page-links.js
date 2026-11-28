@@ -20,7 +20,10 @@
         const button = event.target.closest?.('[data-tris-copy-page]');
         if (!button) return;
         // Never include query parameters, fragments, tokens or unsaved form state.
-        const url = new URL(location.pathname, location.origin).href;
+        const page = new URL(location.href);
+        page.search = '';
+        page.hash = '';
+        const url = page.href;
         try {
             if (navigator.clipboard?.writeText) {
                 await navigator.clipboard.writeText(url);
@@ -44,7 +47,9 @@
     const cap = window.Capacitor;
     if (!cap?.isNativePlatform?.()) return;
     const app = cap.Plugins?.App;
-    if (!app?.addListener || !app?.getLaunchUrl) return;
+    const listen = app?.addListener ? (name, callback) => app.addListener(name, callback) : (name, callback) => cap.addListener('App', name, callback);
+    const launch = app?.getLaunchUrl ? () => app.getLaunchUrl() : () => cap.nativePromise('App', 'getLaunchUrl', {});
+    if (!app && !(cap.isPluginAvailable?.('App') && cap.addListener && cap.nativePromise)) return;
 
     function targetOf(raw) {
         try {
@@ -70,6 +75,6 @@
         else location.assign(target);
     }
 
-    app.addListener('appUrlOpen', ({ url }) => open(url)).catch(() => {});
-    app.getLaunchUrl().then((result) => open(result?.url, true)).catch(() => {});
+    Promise.resolve(listen('appUrlOpen', ({ url }) => open(url))).catch(() => {});
+    Promise.resolve(launch()).then((result) => open(result?.url, true)).catch(() => {});
 })();
