@@ -22,7 +22,7 @@ class TelegramMessageResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = 'heroicon-o-chat-bubble-left-right';
 
-    protected static string|UnitEnum|null $navigationGroup = 'Аналитика';
+    protected static string|UnitEnum|null $navigationGroup = 'Коммуникации';
 
     protected static ?string $navigationLabel = 'Telegram сообщения';
 
