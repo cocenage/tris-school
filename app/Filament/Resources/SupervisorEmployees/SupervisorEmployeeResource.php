@@ -39,7 +39,7 @@ class SupervisorEmployeeResource extends Resource
 
     public static function getNavigationGroup(): ?string
     {
-        return 'Сотрудники и графики';
+        return 'Команда';
     }
 
     public static function canViewAny(): bool
