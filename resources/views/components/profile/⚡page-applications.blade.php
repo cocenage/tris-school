@@ -466,7 +466,13 @@ new class extends Component
             default => 'заявок',
         };
     @endphp
-    <x-mobile.page-header title="Заявки" :subtitle="$totalLabel" class="mb-5" />
+    <div class="mb-5 flex items-center justify-between gap-3">
+        <x-mobile.page-header title="Заявки" :subtitle="$totalLabel" />
+        <button type="button" x-on:click="$refs.requestCreate.showModal()" aria-label="Создать заявку" aria-haspopup="dialog"
+            class="tris-mobile-press grid size-11 shrink-0 place-items-center rounded-full bg-[#2A1F1A] text-white">
+            <x-heroicon-o-plus class="size-6" />
+        </button>
+    </div>
     <div class="flex items-center gap-2.5">
         <x-mobile.search-bar wire:model.live.debounce.250ms="search" placeholder="Поиск заявок" />
         <x-mobile.filter-button x-on:click="openFilters()" :count="$filterCount" label="Фильтры заявок" />
@@ -539,6 +545,27 @@ new class extends Component
             </x-mobile.empty-state>
         @endforelse
     </div>
+
+    <x-mobile.bottom-sheet title="Новая заявка" ref="requestCreate" wire:ignore.self>
+        <div class="divide-y divide-[#EAEAEA]">
+            @foreach([
+                ['inventory', 'page-applications.inventory', 'Запрос инвентаря'],
+                ['salary', 'page-applications.salary', 'Вопрос по зарплате'],
+                ['day_off', 'page-applications.weekend', 'Запрос выходного'],
+                ['vacation', 'page-applications.vacation', 'Заявка на отпуск'],
+                ['schedule', 'page-applications.schedule', 'Вопрос по графику работы'],
+                ['feedback', 'page-applications.feedback', 'Обратная связь'],
+            ] as [$type, $route, $label])
+                <a href="{{ route($route) }}" class="tris-mobile-press flex min-h-16 items-center gap-3 py-3 text-[#2A1F1A]">
+                    <span class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[#F5F5F5]">
+                        <x-mobile.request-icon :type="$type" />
+                    </span>
+                    <span class="flex-1 text-[15px] font-medium">{{ $label }}</span>
+                    <x-heroicon-o-chevron-right class="size-4 text-[#777777]" />
+                </a>
+            @endforeach
+        </div>
+    </x-mobile.bottom-sheet>
 
     <x-mobile.bottom-sheet title="Фильтры" ref="requestFilters" wire:ignore.self>
         <x-slot:actions>

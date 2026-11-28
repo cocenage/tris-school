@@ -94,11 +94,18 @@ new class extends Component {
 
 <a href="{{ route('page-applications') }}" class="group  flex flex-col items-center justify-center gap-[5px]">
 
+    <div class="relative">
     <x-heroicon-s-clipboard-document-list class="w-[20px] h-[20px] transition-all duration-300
         {{ request()->routeIs('page-applications*')
             ? '[&>*]:fill-[url(#nav-gradient)]'
             : 'text-zinc-400 group-hover:text-[#7D7D7D]'
         }}" />
+        @if($applicationsBadge)
+            <span class="absolute -top-[5px] -right-[10px] z-20 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF)] p-[5px] text-[10px] leading-none text-white border-1 border-white">
+                {{ $applicationsBadge }}
+            </span>
+        @endif
+    </div>
 
     <span class="text-[12px] font-medium transition-all duration-300
         {{ request()->routeIs('page-applications*')
@@ -128,11 +135,7 @@ new class extends Component {
                 : 'text-zinc-400 group-hover:text-[#7D7D7D]'
             }}" />
 
-        @if($applicationsBadge)
-            <span class="absolute -top-[5px] -right-[10px] z-20 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-[linear-gradient(135deg,#213259,#2D6494,#368DC4,#5BBEFF)] p-[5px] text-[10px] leading-none text-white border-1 border-white">
-                {{ $applicationsBadge }}
-            </span>
-        @endif
+
     </div>
 
     <span class="text-[12px] font-medium transition-all duration-300

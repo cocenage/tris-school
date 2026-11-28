@@ -255,7 +255,7 @@ Route::middleware(['auth', 'approved'])->group(function () {
         ->name('page-checks.control.focus-v2.media.remove-attached');
     });
 
-    Route::livewire('/applications', 'page-applications')->name('page-applications');
+    Route::livewire('/applications', 'profile.page-applications')->middleware(SafeguardRolePreviewData::class)->name('page-applications');
     Route::livewire('/applications/weekend', 'forms.page-weekend')->name('page-applications.weekend');
     Route::livewire('/applications/vacation', 'forms.page-vacation')->name('page-applications.vacation');
     Route::livewire('/applications/inventory', 'forms.page-inventory')->name('page-applications.inventory');
@@ -272,7 +272,7 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/profile/all-checks', 'profile.page-all-checks')->middleware(SafeguardRolePreviewData::class)->name('page-profile.all-checks');
     Route::livewire('/profile/employees/history', 'profile.page-staff-history')->middleware(SafeguardRolePreviewData::class)->name('page-profile.staff-history');
     Route::livewire('/profile/employees/{employee}/history', 'profile.page-employee-history')->middleware(SafeguardRolePreviewData::class)->whereNumber('employee')->name('page-profile.employee-history');
-    Route::livewire('/profile/applications', 'profile.page-applications')->middleware(SafeguardRolePreviewData::class)->name('page-profile.applications');
+    Route::get('/profile/applications', fn () => redirect()->route('page-applications'))->middleware(SafeguardRolePreviewData::class)->name('page-profile.applications');
 
     Route::livewire('/apartments', 'apartments.page-apartments')->name('page-apartments');
     Route::livewire('/antigoccia', 'antigoccia.page-antigoccia')->middleware(SafeguardRolePreviewData::class)->name('antigoccia.index');
