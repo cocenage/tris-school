@@ -30,7 +30,7 @@ class TelegramTopicResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = 'heroicon-o-hashtag';
 
-    protected static string|UnitEnum|null $navigationGroup = 'Аналитика';
+    protected static string|UnitEnum|null $navigationGroup = 'Коммуникации';
 
     protected static ?string $navigationLabel = 'Telegram топики';
 
