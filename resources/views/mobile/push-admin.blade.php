@@ -1,10 +1,12 @@
 <!doctype html>
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TRIS DEV — Push QA</title>
+<x-ui.page-link-runtime />
 <style>body{font:16px system-ui,sans-serif;max-width:960px;margin:auto;padding:24px;line-height:1.5}section{border-top:1px solid #ddd;padding:12px 0}button{font:inherit;padding:10px 16px;border:1px solid #aaa;border-radius:10px;background:white}small{color:#555}a{color:#274c9b}</style></head>
 <body>
     <a href="{{ url('/admin') }}">← Админ-панель</a>
     <h1>Устройства и уведомления</h1>
+    <button type="button" data-tris-copy-page>Скопировать ссылку</button>
     <p>TRIS DEV · Только тестовые уведомления. Статус «Принято Firebase» не гарантирует доставку.</p>
     @if(session('push_result'))<p role="status">{{ session('push_result') === 'accepted' ? 'Firebase принял сообщение' : 'Ошибка отправки. Смотрите историю.' }}</p>@endif
     <h2>Активные регистрации (за 24 часа)</h2>
