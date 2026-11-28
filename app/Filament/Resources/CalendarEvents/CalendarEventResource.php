@@ -37,9 +37,7 @@ class CalendarEventResource extends Resource
 
     public static function getNavigationGroup(): ?string
     {
-        return Filament::getCurrentPanel()?->getId() === 'education'
-            ? 'Рабочие инструменты'
-            : 'Контент';
+        return 'Операционная работа';
     }
 
     public static function getEloquentQuery(): Builder
