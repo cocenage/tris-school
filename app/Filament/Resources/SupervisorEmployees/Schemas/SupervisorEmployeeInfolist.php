@@ -12,6 +12,10 @@ class SupervisorEmployeeInfolist
     public static function configure(Schema $schema): Schema
     {
         return $schema->components([
+                Section::make('Связанные разделы')
+                    ->schema([
+                        TextEntry::make('tris_related')->hiddenLabel()->state(fn ($record) => \App\Filament\Support\RecordConnections::render($record))->html(),
+                    ])->columnSpanFull(),
             Section::make('Сотрудник')
                 ->columns(2)
                 ->schema([

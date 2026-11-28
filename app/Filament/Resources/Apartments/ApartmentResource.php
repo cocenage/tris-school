@@ -24,6 +24,12 @@ use Illuminate\Database\Eloquent\Builder;
 
 class ApartmentResource extends Resource
 {
+
+    public static function getGloballySearchableAttributes(): array
+    {
+        return ['name', 'code', 'address'];
+    }
+
     protected static ?string $model = Apartment::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedHomeModern;

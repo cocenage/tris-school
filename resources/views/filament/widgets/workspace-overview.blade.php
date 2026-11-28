@@ -50,6 +50,8 @@
             </section>
         @endif
 
+        @include('filament.shared.workspace-shortcuts')
+
         <div class="grid gap-6 lg:grid-cols-2">
             @if ($links)
                 <section class="min-w-0 space-y-3" aria-labelledby="workspace-links">
