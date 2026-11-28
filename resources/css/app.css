@@ -227,3 +227,32 @@ p {
 .tris-mobile-search input::placeholder { color: #777; opacity: 1; }
 .tris-mobile-search input::-webkit-search-decoration,
 .tris-mobile-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+
+/* Expand and collapse without jumping or clipping long request content. */
+.tris-mobile-card-panel {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    visibility: hidden;
+    transition: grid-template-rows 280ms cubic-bezier(.22,.61,.36,1),
+        opacity 200ms ease, visibility 0s linear 280ms;
+}
+.tris-mobile-card-panel[data-expanded="true"] {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    visibility: visible;
+    transition: grid-template-rows 280ms cubic-bezier(.22,.61,.36,1),
+        opacity 220ms ease, visibility 0s;
+}
+.tris-mobile-card-panel > div { min-height: 0; overflow: hidden; }
+.tris-mobile-tab-panel { animation: tris-mobile-tab-in 220ms cubic-bezier(.22,.61,.36,1) both; }
+@keyframes tris-mobile-tab-in {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .tris-mobile-card-panel,
+    .tris-mobile-card-panel[data-expanded="true"] { transition: none; }
+    .tris-mobile-tab-panel { animation: none; }
+}
