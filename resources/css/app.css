@@ -286,7 +286,15 @@ p {
 /* Mobile filters and native-dialog transitions. */
 .tris-mobile-filter-button:active,
 .tris-mobile-filter-button[aria-expanded="true"],
-.tris-mobile-filter-button.tris-mobile-filter-selected { color: #2A1F1A; }
+.tris-mobile-filter-button.tris-mobile-filter-selected {
+    background-color: #2A1F1A;
+    color: #FFFFFF;
+}
+.tris-mobile-filter-button.tris-mobile-filter-selected > span {
+    background-color: #FFFFFF;
+    color: #2A1F1A;
+    box-shadow: 0 0 0 2px #F5F5F5;
+}
 .tris-mobile-bottom-sheet {
     transform: translateY(100%);
     transition: transform 280ms cubic-bezier(.22,.61,.36,1);
