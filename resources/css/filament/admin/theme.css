@@ -1,4 +1,42 @@
 @import '../../../../vendor/filament/filament/resources/css/theme.css';
+@import '../../tris-tokens.css';
 
 @source '../../../../app/Filament/**/*';
 @source '../../../../resources/views/filament/**/*';
+
+@source '../../../../resources/views/components/**/*';
+
+.fi-body {
+    --font-family: var(--tris-font);
+    font-family: var(--tris-font);
+}
+
+html:not(.dark) .fi-body { background: var(--tris-background); }
+html:not(.dark) .fi-topbar,
+html:not(.dark) .fi-sidebar-header,
+html:not(.dark) .fi-sidebar { background: var(--tris-surface); }
+.fi-header-heading { font-weight: 600; letter-spacing: -0.025em; }
+.fi-btn, .fi-input-wrp, .fi-select-input { border-radius: 12px; }
+.fi-section, .fi-ta-ctn, .fi-wi-stats-overview-stat {
+    border-radius: 16px;
+    box-shadow: none;
+}
+.tris-resource-back { display: none; }
+
+@media (max-width: 767px) {
+    .fi-main { padding-inline: 16px; }
+    .fi-header-heading { font-size: 28px; line-height: 1.15; }
+    .fi-breadcrumbs { display: none; }
+    .fi-header, .fi-header-actions { min-width: 0; }
+    .fi-btn { min-height: 44px; }
+    .fi-icon-btn { min-width: 44px; min-height: 44px; }
+    .tris-resource-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 44px;
+        width: fit-content;
+        font-weight: 500;
+    }
+    .fi-ta-text { overflow-wrap: anywhere; }
+}
