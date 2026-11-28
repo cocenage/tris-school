@@ -124,6 +124,9 @@ Route::match(['GET', 'HEAD'], '/admin/education/{path?}', function (?string $pat
     return redirect()->to($target.($query ? '?'.$query : ''));
 })->where('path', '.*')->name('education.legacy-redirect');
 
+Route::get('/focus/pulse', \App\Http\Controllers\PulseController::class)
+    ->middleware(['auth', 'throttle:60,1'])->name('focus.pulse');
+
 Route::middleware(['auth', 'approved'])->group(function () {
     Route::get('/requests/salary/{salaryQuestion}/{action}', [TelegramSalaryDecisionController::class, 'show'])
         ->whereNumber('salaryQuestion')->where('action', 'approve|reject|work')->name('salary.decision.show');
