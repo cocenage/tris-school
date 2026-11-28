@@ -21,6 +21,10 @@ new class extends Component {
     <livewire:search.search-bar />
 </x-slot:header>
 <div class="">
+    @if(auth()->user()?->isApproved() && !app(\App\Services\RolePreviewContext::class)->isActive())
+        <div wire:ignore data-tris-pulse data-endpoint="{{ route('focus.pulse', [], false) }}"></div>
+    @endif
+
     <div class="flex gap-[10px] p-[20px] overflow-x-auto no-scrollbar">
 
         {{-- Все инструкции --}}
