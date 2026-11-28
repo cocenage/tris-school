@@ -22,7 +22,7 @@ final class SharedPanelStyle
             ])
             ->renderHook(
                 PanelsRenderHook::PAGE_START,
-                fn () => view('filament.shared.resource-back'),
+                fn (array $scopes) => view('filament.shared.resource-back', ['scopes' => $scopes]),
             );
     }
 }
