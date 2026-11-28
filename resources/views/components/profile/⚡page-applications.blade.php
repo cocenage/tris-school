@@ -12,6 +12,12 @@ use Livewire\Component;
 
 new class extends Component
 {
+    public string $search = '';
+    public string $tab = 'all';
+    public array $categories = [];
+    public string $statusFilter = 'all';
+    public string $sort = 'new';
+
     public function mount(): void
     {
         foreach ([
@@ -276,297 +282,308 @@ new class extends Component
 
         return $first->translatedFormat('d F') . ' – ' . $last->translatedFormat('d F');
     }
+    public function categoryLabels(): array
+    {
+        return [
+            'inventory' => 'Инвентарь',
+            'salary' => 'Зарплата',
+            'day_off' => 'Выходной',
+            'vacation' => 'Отпуск',
+            'schedule' => 'График',
+            'feedback' => 'Обратная связь',
+        ];
+    }
+
+    public function titleFor(string $type): string
+    {
+        return match ($type) {
+            'inventory' => 'Запрос инвентаря',
+            'salary' => 'Вопрос по зарплате',
+            'day_off' => 'Запрос выходного',
+            'vacation' => 'Заявка на отпуск',
+            'schedule' => 'Вопрос по графику работы',
+            'feedback' => 'Обратная связь',
+            default => 'Заявка',
+        };
+    }
+
+    public function subtitleFor(object $request): string
+    {
+        return match ($request->request_type) {
+            'inventory' => $request->lines->count().' '.$this->positionsWord($request->lines->count()),
+            'day_off', 'vacation' => $this->requestRange($request).' · '.$request->days->count().' '.$this->daysWord($request->days->count()),
+            default => $request->type ?: 'Без категории',
+        };
+    }
+
+    public function statusGroup(?string $status): string
+    {
+        return match ($status) {
+            'partially_approved', 'partially_issued' => 'partial',
+            'approved', 'issued', 'reviewed', 'rejected', 'cancelled', 'closed', 'in_progress' => $status,
+            default => 'pending',
+        };
+    }
+
+    public function tone(?string $status): string
+    {
+        return match ($this->statusGroup($status)) {
+            'approved', 'issued', 'reviewed' => 'green',
+            'rejected' => 'red',
+            'partial' => 'orange',
+            'cancelled', 'closed' => 'neutral',
+            default => 'blue',
+        };
+    }
+
+    public function label(string $value): string
+    {
+        return mb_strtoupper(mb_substr($value, 0, 1)).mb_substr($value, 1);
+    }
+
+    public function isActive(object $request): bool
+    {
+        $status = $this->statusGroup($request->status);
+        if (in_array($status, ['pending', 'in_progress'], true)) {
+            return true;
+        }
+
+        if ($status === 'partial') {
+            $items = match ($request->request_type) {
+                'inventory' => $request->lines,
+                'day_off', 'vacation' => $request->days,
+                default => collect(),
+            };
+
+            return $items->contains(fn ($item) => in_array($this->statusGroup($item->status), ['pending', 'in_progress'], true));
+        }
+
+        return false;
+    }
+
+    public function filterStatusLabels(): array
+    {
+        return [
+            'all' => 'Все статусы', 'pending' => 'На рассмотрении',
+            'in_progress' => 'В работе', 'approved' => 'Одобрено',
+            'partial' => 'Частично', 'rejected' => 'Отказано / отклонено',
+            'issued' => 'Выдано', 'reviewed' => 'Рассмотрено',
+            'cancelled' => 'Отменено', 'closed' => 'Закрыто',
+        ];
+    }
+
+    public function applyFilters(array $categories, string $status, string $sort): void
+    {
+        $this->categories = array_values(array_intersect(array_keys($this->categoryLabels()), $categories));
+        $this->statusFilter = array_key_exists($status, $this->filterStatusLabels()) ? $status : 'all';
+        $this->sort = in_array($sort, ['new', 'old', 'updated'], true) ? $sort : 'new';
+    }
+
+    public function resetListFilters(): void
+    {
+        $this->reset('search', 'tab', 'categories', 'statusFilter', 'sort');
+    }
+
+    public function searchText(object $request): string
+    {
+        $parts = [
+            $this->titleFor($request->request_type), $this->subtitleFor($request),
+            $this->statusLabel($request->status, $request->request_type),
+            $request->comment, $request->reason, $request->admin_comment,
+            $request->created_at?->translatedFormat('d F Y H:i'),
+            $request->created_at?->format('d.m.Y'),
+        ];
+
+        if ($request->request_type === 'inventory') {
+            foreach ($request->lines as $line) {
+                array_push($parts, $line->item_name, $line->variant_label, $line->admin_comment, $this->itemStatusLabel($line->status));
+            }
+        } elseif (in_array($request->request_type, ['day_off', 'vacation'], true)) {
+            foreach ($request->days as $day) {
+                array_push($parts, Carbon::parse($day->date)->translatedFormat('d F Y'), Carbon::parse($day->date)->format('d.m.Y'), $day->admin_comment, $this->dayStatusLabel($day->status));
+            }
+        }
+
+        return mb_strtolower(implode(' ', array_filter($parts, fn ($part) => is_scalar($part))));
+    }
+
+    public function filteredRequests(Collection $requests): Collection
+    {
+        $words = preg_split('/\s+/u', mb_strtolower(trim($this->search)), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $items = $requests->filter(function ($request) use ($words) {
+            if ($this->tab === 'active' && ! $this->isActive($request)) return false;
+            if ($this->tab === 'completed' && $this->isActive($request)) return false;
+            if ($this->categories && ! in_array($request->request_type, $this->categories, true)) return false;
+            if ($this->statusFilter !== 'all' && $this->statusGroup($request->status) !== $this->statusFilter) return false;
+            if (! $words) return true;
+            $haystack = $this->searchText($request);
+            foreach ($words as $word) {
+                if (! str_contains($haystack, $word)) return false;
+            }
+            return true;
+        });
+
+        return match ($this->sort) {
+            'old' => $items->sortBy(fn ($item) => $item->created_at)->values(),
+            'updated' => $items->sortByDesc(fn ($item) => $item->updated_at ?? $item->created_at)->values(),
+            default => $items->values(),
+        };
+    }
 };
 ?>
 
-<x-slot:header>
-    <div class="w-full h-[73px] flex items-center justify-between px-[15px]">
-     <button
-            type="button"
-            onclick="history.back()"
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
-                   bg-[#E1E1E1] backdrop-blur-md
-                   text-white
-                   transition-all duration-300
-                   hover:bg-[#7D7D7D]"
-        >
-            <x-heroicon-o-arrow-left
-                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
-            />
-        </button>
-        <span class="flex items-center justify-center text-[18px] leading-none">
-            Мои заявки
-        </span>
+<x-slot:header><div class="hidden"></div></x-slot:header>
 
-     <button
-            type="button"
-     
-            class="flex h-[40px] min-w-[40px] items-center justify-center rounded-full group cursor-pointer
-                   bg-[#E1E1E1] backdrop-blur-md
-                   text-white
-                   transition-all duration-300
-                   hover:bg-[#7D7D7D]"
-        >
-            <x-heroicon-o-magnifying-glass
-                class="h-[20px] w-[20px] stroke-[2.4] group-active:scale-[0.95]"
-            />
-        </button>
-    </div>
-</x-slot:header>
+@php
+    $requests = $this->requests;
+    $visible = $this->filteredRequests($requests);
+    $activeCount = $requests->filter(fn ($request) => $this->isActive($request))->count();
+    $filterCount = count($categories) + (int) ($statusFilter !== 'all') + (int) ($sort !== 'new');
+@endphp
 
-<div
+<div class="min-h-full bg-[#F2F2F2] px-5 pt-8 pb-8 text-[#171717]"
     x-data="{
-        tab: 'all',
-        matches(type) {
-            return this.tab === 'all' || this.tab === type
-        }
-    }"
-    class="flex h-full flex-col overflow-hidden"
->
-    <div class="shrink-0 px-[15px] pt-[20px] pb-[10px]">
-    
-
-        <div class="mt-[18px] flex gap-[8px] overflow-x-auto no-scrollbar">
-            @foreach ([
-                'all' => 'Все',
-                'day_off' => 'Выходные',
-                'vacation' => 'Отпуск',
-                'inventory' => 'Инвентарь',
-                'salary' => 'Зарплата',
-                'schedule' => 'График',
-                'feedback' => 'Отзывы',
-            ] as $value => $label)
-                <button
-                    type="button"
-                    @click="tab = '{{ $value }}'"
-                    :class="tab === '{{ $value }}'
-                        ? 'bg-[#111111] text-white'
-                        : 'bg-white text-[#777770]'"
-                    class="h-[36px] shrink-0 rounded-full px-[14px] text-[13px] font-medium shadow-[0_1px_0_rgba(0,0,0,0.04)] transition active:scale-[0.98]"
-                >
-                    {{ $label }}
-                </button>
-            @endforeach
-        </div>
+        draftCategories: [],
+        draftStatus: 'all',
+        draftSort: 'new',
+        openFilters() {
+            this.draftCategories = [...$wire.categories];
+            this.draftStatus = $wire.statusFilter;
+            this.draftSort = $wire.sort;
+            this.$refs.requestFilters.showModal();
+        },
+        async apply() {
+            await $wire.applyFilters(this.draftCategories, this.draftStatus, this.draftSort);
+            this.$refs.requestFilters.close();
+        },
+        resetDraft() { this.draftCategories = []; this.draftStatus = 'all'; this.draftSort = 'new'; }
+    }">
+    <div class="mb-5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h1 class="text-[32px] font-semibold leading-tight tracking-[-0.045em] text-[#2A1F1A]">Заявки</h1>
+        <span class="text-sm text-[#737373]">{{ $requests->count() }} {{ match(true) {
+            $requests->count() % 10 === 1 && $requests->count() % 100 !== 11 => 'заявка',
+            in_array($requests->count() % 10, [2,3,4]) && !in_array($requests->count() % 100, [12,13,14]) => 'заявки',
+            default => 'заявок',
+        } }}</span>
+    </div>
+    <div class="flex items-center gap-2.5">
+        <label class="flex min-w-0 flex-1 items-center gap-3 rounded-full bg-white px-4 py-3">
+            <x-heroicon-o-magnifying-glass class="size-5 shrink-0 text-[#777777]" />
+            <span class="sr-only">Поиск заявок</span>
+            <input type="search" wire:model.live.debounce.250ms="search" placeholder="Поиск заявок"
+                class="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[#777777]" />
+        </label>
+        <button type="button" @click="openFilters()" aria-label="Фильтры заявок"
+            class="relative grid size-12 shrink-0 place-items-center rounded-full bg-white text-[#777777]">
+            <x-heroicon-o-adjustments-horizontal class="size-5" />
+            @if($filterCount)<span class="absolute right-0 top-0 grid size-5 place-items-center rounded-full bg-[#2A1F1A] text-[10px] text-white">{{ $filterCount }}</span>@endif
+        </button>
+    </div>
+    <div class="mt-3.5 mb-6 flex flex-wrap gap-1.5" role="group" aria-label="Раздел заявок">
+        @foreach(['all' => 'Все', 'active' => 'Активные '.$activeCount, 'completed' => 'Завершённые'] as $value => $label)
+            <button type="button" wire:click="$set('tab', '{{ $value }}')" aria-pressed="{{ $tab === $value ? 'true' : 'false' }}"
+                @class(['rounded-full px-3.5 py-2 text-sm leading-5', 'bg-[#2A1F1A] text-white' => $tab === $value, 'bg-[#E7E7E7] text-[#606060]' => $tab !== $value])>{{ $label }}</button>
+        @endforeach
     </div>
 
-    <div class="flex-1 overflow-y-auto px-[18px] pb-[28px]">
-        @php
-            $requests = $this->requests;
+    <div class="space-y-3" aria-live="polite">
+        @forelse($visible as $request)
+            <x-mobile.expandable-card wire:key="request-{{ $request->request_type }}-{{ $request->id }}" wire:ignore.self
+                :title="$this->titleFor($request->request_type)" :subtitle="$this->subtitleFor($request)"
+                :status="$this->label($this->statusLabel($request->status, $request->request_type))"
+                :tone="$this->tone($request->status)" :date="$request->created_at?->translatedFormat('j M, H:i')">
+                <x-slot:icon><x-mobile.request-icon :type="$request->request_type" /></x-slot:icon>
+                @if($request->request_type === 'inventory')
+                    @if(filled($request->comment))
+                        <div class="text-sm"><div class="mb-1 text-xs text-[#737373]">Комментарий</div><div class="whitespace-pre-wrap break-words">{{ $request->comment }}</div></div>
+                    @endif
+                    <div class="divide-y divide-[#E5E5E5]">
+                        @foreach($request->lines as $item)
+                            <x-mobile.decision-row
+                                :title="$item->item_name.($item->variant_label ? ' · '.$item->variant_label : '')"
+                                :status="$this->label($this->itemStatusLabel($item->status))"
+                                :tone="$item->status === 'cancelled' ? 'red' : $this->tone($item->status)"
+                                :description="'Запрошено: '.$item->requested_qty.' · '.($request->telegram_review_version !== null ? 'Согласовано: '.($item->approved_qty ?? '—') : 'Выдано: '.$item->issued_qty)"
+                                :comment="$item->admin_comment" />
+                        @endforeach
+                    </div>
+                @elseif(in_array($request->request_type, ['day_off','vacation'], true))
+                    @if(filled($request->reason))
+                        <div class="text-sm"><div class="mb-1 text-xs text-[#737373]">Причина</div><div class="whitespace-pre-wrap break-words">{{ $request->reason }}</div></div>
+                    @endif
+                    <div class="divide-y divide-[#E5E5E5]">
+                        @foreach($request->days->sortBy('date') as $day)
+                            <x-mobile.decision-row
+                                :title="Carbon::parse($day->date)->translatedFormat('j F Y')"
+                                :status="$this->label($this->dayStatusLabel($day->status))"
+                                :tone="$this->tone($day->status)" :comment="$day->admin_comment" />
+                        @endforeach
+                    </div>
+                @else
+                    @if(filled($request->comment))
+                        <div class="text-sm"><div class="mb-1 text-xs text-[#737373]">Обращение</div><div class="whitespace-pre-wrap break-words leading-relaxed">{{ $request->comment }}</div></div>
+                    @endif
+                    @if(!empty($request->attachments))
+                        <div class="text-xs text-[#737373]">{{ count($request->attachments) }} {{ $this->filesWord(count($request->attachments)) }}</div>
+                    @endif
+                @endif
+                @if(filled($request->admin_comment))
+                    <x-mobile.response-block :comment="$request->admin_comment" :date="$this->decisionAt($request)?->translatedFormat('j F Y, H:i')" />
+                @elseif($this->decisionAt($request))
+                    <div class="text-xs text-[#737373]">Решение: {{ $this->decisionAt($request)->translatedFormat('j F Y, H:i') }}</div>
+                @endif
+            </x-mobile.expandable-card>
+        @empty
+            <div class="flex min-h-[280px] flex-col items-center justify-center gap-2 text-center">
+                <x-heroicon-o-inbox class="mb-2 size-9 text-[#A0A0A0]" />
+                <h2 class="font-medium">{{ $requests->isEmpty() ? 'Пока нет заявок' : 'Заявки не найдены' }}</h2>
+                <div class="max-w-[260px] text-sm text-[#737373]">{{ $requests->isEmpty() ? 'Отправленные заявки появятся здесь.' : 'Попробуйте изменить поиск или фильтры.' }}</div>
+                @if($requests->isNotEmpty())
+                    <button type="button" wire:click="resetListFilters" class="mt-2 rounded-full bg-white px-4 py-2 text-sm">Сбросить фильтры</button>
+                @endif
+            </div>
+        @endforelse
+    </div>
 
-            $hasRequests = $requests->isNotEmpty();
-
-            $counts = [
-                'day_off' => $requests->where('request_type', 'day_off')->count(),
-                'vacation' => $requests->where('request_type', 'vacation')->count(),
-                'inventory' => $requests->where('request_type', 'inventory')->count(),
-                'salary' => $requests->where('request_type', 'salary')->count(),
-                'schedule' => $requests->where('request_type', 'schedule')->count(),
-                'feedback' => $requests->where('request_type', 'feedback')->count(),
-            ];
-        @endphp
-
-        @if ($hasRequests)
-            <div class="space-y-[10px]">
-                @foreach ($requests as $request)
-                    <article
-                        x-show="matches('{{ $request->request_type }}')"
-                        x-transition.opacity.duration.150ms
-                        class="rounded-[26px] bg-zinc-50 p-[16px] shadow-[0_1px_0_rgba(0,0,0,0.04)]"
-                    >
-                        <div class="flex items-start justify-between gap-[14px]">
-                            <div class="min-w-0">
-                                <div class="flex items-center gap-[8px]">
-                                    <div class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-[#F4F4F1] text-[15px]">
-                                        {{ $this->typeIcon($request->request_type) }}
-                                    </div>
-
-                                    <div class="truncate text-[13px] font-medium text-[#8A8A84]">
-                                        {{ $this->typeLabel($request->request_type) }}
-                                    </div>
-                                </div>
-
-                                <div class="mt-[12px] text-[19px] font-semibold leading-[1.15] tracking-[-0.03em] text-[#111111]">
-                                    @if ($request->request_type === 'inventory')
-                                        Запрос инвентаря
-                                    @elseif (in_array($request->request_type, ['salary', 'schedule', 'feedback'], true))
-                                        {{ $request->request_type_label }}
-                                    @else
-                                        {{ $this->requestRange($request) }}
-                                    @endif
-                                </div>
-
-                                <div class="mt-[6px] text-[13px] leading-[1.4] text-[#8A8A84]">
-                                    @if ($request->request_type === 'inventory')
-                                        {{ $request->lines->count() }} {{ $this->positionsWord($request->lines->count()) }}
-                                    @elseif (in_array($request->request_type, ['salary', 'schedule', 'feedback'], true))
-                                        {{ $request->type ?: 'Без категории' }}
-                                    @else
-                                        {{ $request->days->count() }} {{ $this->daysWord($request->days->count()) }}
-                                    @endif
-
-                                    <span class="text-[#C2C2BC]">·</span>
-
-                                    {{ $request->created_at->translatedFormat('d F, H:i') }}
-                                </div>
-
-                                @if ($this->decisionAt($request))
-                                    <div class="mt-[4px] text-[12px] leading-[1.4] text-[#8A8A84]">
-                                        Решение: {{ $this->decisionAt($request)->translatedFormat('d F Y, H:i') }}
-                                    </div>
-                                @endif
-                            </div>
-
-                            <span class="inline-flex shrink-0 rounded-full px-[10px] py-[5px] text-[12px] font-medium {{ $this->statusBadgeClasses($request->status) }}">
-                                {{ $this->statusLabel($request->status, $request->request_type) }}
-                            </span>
-                        </div>
-
-                        @if ($request->request_type === 'inventory')
-                            @if ($request->lines->isNotEmpty())
-                                <div class="mt-[14px] space-y-[6px]">
-                                    @foreach ($request->lines as $item)
-                                        <div class="rounded-[18px] bg-[#F7F7F5] px-[13px] py-[11px]">
-                                            <div class="flex items-start justify-between gap-[12px]">
-                                                <div class="min-w-0">
-                                                    <div class="text-[14px] font-medium leading-[1.35] text-[#1A1A1A]">
-                                                        {{ $item->item_name }}
-
-                                                        @if ($item->variant_label)
-                                                            <span class="font-normal text-[#8A8A84]">
-                                                                · {{ $item->variant_label }}
-                                                            </span>
-                                                        @endif
-                                                    </div>
-
-                                                    <div class="mt-[4px] text-[12px] text-[#8A8A84]">
-                                                        Запрошено: {{ $item->requested_qty }}
-                                                        <span class="text-[#C2C2BC]">·</span>
-                                                        @if ($request->telegram_review_version !== null)
-                                                            Согласовано: {{ $item->approved_qty ?? '—' }}
-                                                        @else
-                                                            Выдано: {{ $item->issued_qty }}
-                                                        @endif
-                                                    </div>
-                                                </div>
-
-                                                <div class="shrink-0 text-[12px] font-medium {{ $this->itemStatusClasses($item->status) }}">
-                                                    {{ $this->itemStatusLabel($item->status) }}
-                                                </div>
-                                            </div>
-
-                                            @if ($item->admin_comment)
-                                                <div class="mt-[7px] text-[13px] leading-[1.45] text-[#6F6F69]">
-                                                    {{ $item->admin_comment }}
-                                                </div>
-                                            @endif
-                                        </div>
-                                    @endforeach
-                                </div>
-                            @endif
-                        @elseif (in_array($request->request_type, ['salary', 'schedule', 'feedback'], true))
-                            @if ($request->comment)
-                                <div class="mt-[14px] rounded-[18px] bg-[#F7F7F5] px-[13px] py-[11px] text-[14px] leading-[1.55] text-[#4F4F49]">
-                                    {{ $request->comment }}
-                                </div>
-                            @endif
-
-                            @if (! empty($request->attachments))
-                                <div class="mt-[10px] text-[13px] text-[#8A8A84]">
-                                    {{ count($request->attachments) }} {{ $this->filesWord(count($request->attachments)) }}
-                                </div>
-                            @endif
-                        @else
-                            @if ($request->reason)
-                                <div class="mt-[14px] rounded-[18px] bg-[#F7F7F5] px-[13px] py-[11px] text-[14px] leading-[1.55] text-[#4F4F49]">
-                                    <span class="text-[#8A8A84]">Причина:</span>
-                                    {{ $request->reason }}
-                                </div>
-                            @endif
-
-                            @if ($request->days->isNotEmpty())
-                                <div class="mt-[12px] divide-y divide-[#EFEFEB] overflow-hidden rounded-[18px] bg-[#F7F7F5]">
-                                    @foreach ($request->days->sortBy('date') as $day)
-                                        <div class="px-[13px] py-[10px]">
-                                            <div class="flex items-center justify-between gap-[12px]">
-                                                <div class="min-w-0 text-[14px] text-[#1A1A1A]">
-                                                    {{ Carbon::parse($day->date)->translatedFormat('d F Y') }}
-                                                </div>
-
-                                                <div class="shrink-0 text-[12px] font-medium {{ $this->dayStatusClasses($day->status) }}">
-                                                    {{ $this->dayStatusLabel($day->status) }}
-                                                </div>
-                                            </div>
-
-                                            @if ($day->admin_comment)
-                                                <div class="mt-[5px] text-[13px] leading-[1.45] text-[#6F6F69]">
-                                                    {{ $day->admin_comment }}
-                                                </div>
-                                            @endif
-                                        </div>
-                                    @endforeach
-                                </div>
-                            @endif
-                        @endif
-
-                        @if ($request->admin_comment)
-                            <div class="mt-[12px] rounded-[18px] bg-[#F1F1EE] px-[13px] py-[11px] text-[13px] leading-[1.5] text-[#5F5F59]">
-                                <div class="mb-[3px] text-[12px] font-medium text-[#8A8A84]">
-                                    Ответ администратора
-                                </div>
-
-                                {{ $request->admin_comment }}
-                            </div>
-                        @endif
-                    </article>
+    <x-mobile.bottom-sheet title="Фильтры" ref="requestFilters" wire:ignore.self>
+        <x-slot:actions>
+            <button type="button" @click="resetDraft()" class="ml-auto text-sm text-[#737373]">Сбросить</button>
+        </x-slot:actions>
+        <form id="request-filter-form" @submit.prevent="apply()" class="space-y-6">
+            <fieldset>
+                <legend class="mb-3 font-medium">Категория</legend>
+                <div class="flex flex-wrap gap-2">
+                    @foreach($this->categoryLabels() as $value => $label)
+                        <label class="cursor-pointer">
+                            <input type="checkbox" value="{{ $value }}" x-model="draftCategories" class="peer sr-only" />
+                            <span class="inline-flex rounded-full bg-[#F2F2F2] px-3 py-2 text-sm text-[#444444] peer-checked:bg-[#2A1F1A] peer-checked:text-white peer-focus-visible:outline-2">{{ $label }}</span>
+                        </label>
+                    @endforeach
+                </div>
+            </fieldset>
+            <fieldset>
+                <legend class="mb-3 font-medium">Статус</legend>
+                <div class="flex flex-wrap gap-2">
+                    @foreach($this->filterStatusLabels() as $value => $label)
+                        <label class="cursor-pointer">
+                            <input type="radio" name="request-status" value="{{ $value }}" x-model="draftStatus" class="peer sr-only" />
+                            <span class="inline-flex rounded-full bg-[#F2F2F2] px-3 py-2 text-sm text-[#444444] peer-checked:bg-[#2A1F1A] peer-checked:text-white peer-focus-visible:outline-2">{{ $label }}</span>
+                        </label>
+                    @endforeach
+                </div>
+            </fieldset>
+            <fieldset class="space-y-3 border-t border-[#EEEEEE] pt-4">
+                <legend class="font-medium">Сортировка</legend>
+                @foreach(['new'=>'Сначала новые','old'=>'Сначала старые','updated'=>'Недавно обновлённые'] as $value => $label)
+                    <label class="flex cursor-pointer items-center gap-3 text-sm">
+                        <input type="radio" name="request-sort" value="{{ $value }}" x-model="draftSort" class="size-4 accent-[#2A1F1A]" />{{ $label }}
+                    </label>
                 @endforeach
-            </div>
-
-            <div
-                x-show="
-                    (tab === 'day_off' && !{{ $counts['day_off'] }}) ||
-                    (tab === 'vacation' && !{{ $counts['vacation'] }}) ||
-                    (tab === 'inventory' && !{{ $counts['inventory'] }}) ||
-                    (tab === 'salary' && !{{ $counts['salary'] }}) ||
-                    (tab === 'schedule' && !{{ $counts['schedule'] }}) ||
-                    (tab === 'feedback' && !{{ $counts['feedback'] }})
-                "
-                x-transition.opacity.duration.150ms
-                class="flex min-h-[360px] flex-col items-center justify-center px-[20px] text-center"
-            >
-                <div class="mb-[14px] flex h-[64px] w-[64px] items-center justify-center rounded-full bg-white shadow-[0_1px_0_rgba(0,0,0,0.04)]">
-                    <x-heroicon-o-inbox class="h-[30px] w-[30px] text-[#A5A5A0]" />
-                </div>
-
-                <h2 class="text-[19px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Здесь пусто
-                </h2>
-
-                <p class="mt-[7px] max-w-[260px] text-[14px] leading-[1.5] text-[#8A8A84]">
-                    В этом разделе пока нет заявок.
-                </p>
-            </div>
-        @else
-            <div class="flex min-h-[520px] flex-col items-center justify-center px-[20px] text-center">
-                <div class="mb-[14px] flex h-[68px] w-[68px] items-center justify-center rounded-full bg-white shadow-[0_1px_0_rgba(0,0,0,0.04)]">
-                    <x-heroicon-o-inbox class="h-[32px] w-[32px] text-[#A5A5A0]" />
-                </div>
-
-                <h2 class="text-[20px] font-semibold tracking-[-0.02em] text-[#111111]">
-                    Пока нет заявок
-                </h2>
-
-                <p class="mt-[8px] max-w-[280px] text-[14px] leading-[1.5] text-[#8A8A84]">
-                    Когда вы отправите первую заявку, она появится здесь.
-                </p>
-
-                <a
-                    href="{{ $this->plusUrl() }}"
-                    class="mt-[18px] inline-flex h-[44px] items-center justify-center rounded-full bg-[#111111] px-[18px] text-[14px] font-semibold text-white transition active:scale-[0.97]"
-                >
-                    Создать заявку
-                </a>
-            </div>
-        @endif
-    </div>
+            </fieldset>
+        </form>
+        <x-slot:footer>
+            <button type="submit" form="request-filter-form" wire:loading.attr="disabled" wire:target="applyFilters"
+                class="w-full rounded-2xl bg-[#2A1F1A] px-4 py-3.5 text-sm font-medium text-white disabled:opacity-60">Показать заявки</button>
+        </x-slot:footer>
+    </x-mobile.bottom-sheet>
 </div>
