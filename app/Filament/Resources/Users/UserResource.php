@@ -33,7 +33,7 @@ class UserResource extends Resource
 
     protected static ?string $recordTitleAttribute = 'name';
 
-    protected static ?string $navigationLabel = 'Пользователи';
+    protected static ?string $navigationLabel = 'Сотрудники и доступы';
 
     protected static ?string $modelLabel = 'пользователь';
 
@@ -41,9 +41,7 @@ class UserResource extends Resource
 
     public static function getNavigationGroup(): ?string
     {
-        return Filament::getCurrentPanel()?->getId() === 'education'
-            ? 'Сотрудники и графики'
-            : 'Пользователи';
+        return 'Команда';
     }
 
     public static function canViewAny(): bool
