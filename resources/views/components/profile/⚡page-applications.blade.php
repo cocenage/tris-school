@@ -438,7 +438,7 @@ new class extends Component
 @endphp
 
 <div class="tris-mobile-requests min-h-full bg-[#F5F5F5] px-5 pt-[42px] pb-8 text-[#171717]"
-    x-data="{ filtersOpen: false, openFilters() { this.$refs.requestFilters.dispatchEvent(new Event('tris-sheet-open')); } }"
+    x-data="{ filtersOpen: false, openFilters() { this.$el.querySelector('[data-sheet-ref=requestFilters]')?.dispatchEvent(new Event('tris-sheet-open')); } }"
     x-on:tris-sheet-state="filtersOpen = $event.detail.open">
     @php
         $total = $requests->count();
