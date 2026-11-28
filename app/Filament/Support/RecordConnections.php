@@ -28,7 +28,8 @@ final class RecordConnections
     {
         $links = [];
         $panel = Filament::getCurrentPanel();
-        if (! auth()->user()?->isApproved() || ! $panel || ! auth()->user()->canAccessPanel($panel)) {
+        if (! auth()->user()?->isApproved() || ! $panel || ! auth()->user()->canAccessPanel($panel)
+            || ! in_array($panel->getId(), ['admin', 'education'], true)) {
             return new HtmlString('');
         }
 
@@ -67,7 +68,8 @@ final class RecordConnections
     {
         $events = [];
         $available = auth()->user()?->isAdmin() && Filament::getCurrentPanel()?->getId() === 'admin';
-        if ($available && Schema::connection((new Activity())->getConnectionName())->hasTable((new Activity())->getTable())) {
+        $available = $available && Schema::connection((new Activity())->getConnectionName())->hasTable((new Activity())->getTable());
+        if ($available) {
             $events = Activity::query()->where('subject_type', $record->getMorphClass())
                 ->where('subject_id', $record->getKey())->with('causer')->latest('id')->limit(12)->get()
                 ->map(fn (Activity $event) => [
