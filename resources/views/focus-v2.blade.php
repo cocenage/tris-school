@@ -6,9 +6,11 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <meta name="robots" content="noindex, nofollow">
     <title>Focus Control V2 · TRIS Academy</title>
+    <x-ui.page-link-runtime />
     @vite(['resources/css/app.css', 'resources/js/focus-v2/main.js'])
 </head>
 <body class="bg-[#EDF0F4]">
+    <div class="flex justify-end px-4"><x-ui.copy-page-link :compact="true" /></div>
     <div
         id="focus-v2-app"
         data-bootstrap-url="{{ route('page-checks.control.focus-v2.bootstrap') }}"
