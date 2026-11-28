@@ -16,9 +16,18 @@ class ControlResponsesTable
     public static function configure(Table $table): Table
     {
         return $table
+            ->persistFiltersInSession()
+            ->persistSearchInSession()
             ->columns([
                 TextColumn::make('cleaner.name')
-                    ->label('Имя')
+                    ->label('Сотрудник')
+                    ->weight('medium')
+                    ->wrap()
+                    ->description(fn (ControlResponse $record): string => implode(' · ', array_filter([
+                        $record->apartment?->name,
+                        $record->inspection_date ? \Carbon\Carbon::parse($record->inspection_date)->format('d.m.Y') : null,
+                        'Ошибок: ' . $record->errors_count,
+                    ])))
                     ->searchable()
                     ->sortable(),
 
@@ -27,47 +36,47 @@ class ControlResponsesTable
                     ->badge()
                     ->color(fn (ControlResponse $record): string => $record->result_zone_color),
 
-                TextColumn::make('errors_count')
+                TextColumn::make('errors_count')->visibleFrom('md')
                     ->label('Ошибки')
                     ->sortable()
                     ->alignCenter()
                     ->badge()
                     ->color(fn (ControlResponse $record): string => $record->errors_count > 0 ? 'danger' : 'success'),
 
-                TextColumn::make('penalty_points')
+                TextColumn::make('penalty_points')->visibleFrom('md')
                     ->label('Штраф')
                     ->sortable()
                     ->alignCenter()
                     ->badge()
                     ->color(fn (ControlResponse $record): string => $record->penalty_points > 0 ? 'danger' : 'success'),
 
-                TextColumn::make('result_zone_reason')
+                TextColumn::make('result_zone_reason')->visibleFrom('md')
                     ->label('Причина')
                     ->wrap()
                     ->toggleable(),
 
-                TextColumn::make('inspection_date')
+                TextColumn::make('inspection_date')->visibleFrom('md')
                     ->label('Дата контроля')
                     ->date('d.m.Y')
                     ->sortable(),
 
-                TextColumn::make('apartment.name')
+                TextColumn::make('apartment.name')->visibleFrom('md')
                     ->label('Квартира')
                     ->searchable()
                     ->sortable(),
 
-                TextColumn::make('supervisor.name')
+                TextColumn::make('supervisor.name')->visibleFrom('md')
                     ->label('Кто проверил')
                     ->searchable()
                     ->sortable(),
 
-                TextColumn::make('control.name')
+                TextColumn::make('control.name')->visibleFrom('md')
                     ->label('Форма')
                     ->searchable()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
 
-                TextColumn::make('sent_at')
+                TextColumn::make('sent_at')->visibleFrom('md')
                     ->label('Отправлено')
                     ->dateTime('d.m.Y H:i')
                     ->sortable()
