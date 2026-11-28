@@ -66,6 +66,29 @@
                     </div>
                 </section>
             @endif
+            @if ($eventsUrl)
+                <section class="min-w-0 space-y-3" aria-labelledby="workspace-events">
+                    <div class="flex items-center justify-between gap-3">
+                        <h2 id="workspace-events" class="text-lg font-semibold">Ближайшие события</h2>
+                        <a href="{{ $eventsUrl }}" class="text-sm text-gray-500 underline">Календарь</a>
+                    </div>
+                    <div class="divide-y divide-gray-100 overflow-hidden rounded-2xl bg-white dark:divide-gray-800 dark:bg-gray-900">
+                        @if ($eventsUnavailable)
+                            <p class="p-4 text-sm text-gray-500">Не удалось загрузить события</p>
+                        @else
+                            @forelse ($events as $item)
+                                <a href="{{ $item['url'] }}" class="flex min-w-0 items-center gap-3 p-4 hover:bg-gray-50 dark:hover:bg-gray-800">
+                                    <x-filament::icon icon="heroicon-o-calendar-days" class="h-5 w-5 shrink-0 text-gray-500" />
+                                    <span class="min-w-0 flex-1"><span class="block break-words font-medium">{{ $item['label'] }}</span><span class="block text-sm text-gray-500 dark:text-gray-400">{{ $item['description'] }}</span></span>
+                                    <span class="shrink-0 text-sm tabular-nums">{{ $item['time'] }}</span>
+                                </a>
+                            @empty
+                                <p class="p-4 text-sm text-gray-500">Нет доступных событий на ближайшие семь дней</p>
+                            @endforelse
+                        @endif
+                    </div>
+                </section>
+            @endif
             @if ($activityUrl)
                 <section class="min-w-0 space-y-3" aria-labelledby="workspace-activity">
                     <div class="flex items-center justify-between gap-3">
