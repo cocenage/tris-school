@@ -10,6 +10,7 @@
 
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     @livewireStyles
+    <x-ui.page-link-runtime />
     @include('mobile.push-bridge')
 
         <style>
@@ -64,7 +65,10 @@
 
     <div class="mx-auto flex h-[100dvh] w-full max-w-[768px] flex-col overflow-hidden bg-[#FAFAFA]">
 
-        <header class="shrink-0">
+        <header class="relative shrink-0">
+            @if(auth()->user()?->isApproved())
+                <div class="flex justify-end px-4"><x-ui.copy-page-link :compact="true" /></div>
+            @endif
             @includeIf('components.partials.⚡header', [
                 'header' => $header ?? null,
             ])
