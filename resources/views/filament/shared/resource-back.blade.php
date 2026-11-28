@@ -1,18 +1,31 @@
 @php
-    $routeName = request()->route()?->getName() ?? '';
-    $indexRoute = null;
+    $backUrl = null;
 
-    if (\Illuminate\Support\Str::is('filament.*.resources.*.*', $routeName)) {
-        $candidate = \Illuminate\Support\Str::beforeLast($routeName, '.') . '.index';
-
-        if ($candidate !== $routeName && \Illuminate\Support\Facades\Route::has($candidate)) {
-            $indexRoute = $candidate;
+    foreach ($scopes ?? [] as $scope) {
+        if (! is_a($scope, \Filament\Resources\Pages\CreateRecord::class, true)
+            && ! is_a($scope, \Filament\Resources\Pages\EditRecord::class, true)
+            && ! is_a($scope, \Filament\Resources\Pages\ViewRecord::class, true)
+            && ! is_a($scope, \Filament\Resources\Pages\ManageRelatedRecords::class, true)) {
+            continue;
         }
+
+        // This page already has its own explicit back action.
+        if ($scope === \App\Filament\Resources\DayOffRequests\Pages\ViewDayOffRequest::class) {
+            break;
+        }
+
+        $resource = $scope::getResource();
+
+        if (isset($resource::getPages()['index']) && $resource::canViewAny()) {
+            $backUrl = $resource::getUrl('index');
+        }
+
+        break;
     }
 @endphp
 
-@if ($indexRoute)
-    <a class="tris-resource-back" href="{{ route($indexRoute) }}">
+@if ($backUrl)
+    <a class="tris-resource-back" href="{{ $backUrl }}">
         <x-filament::icon icon="heroicon-o-arrow-left" class="h-5 w-5" />
         <span>Назад к списку</span>
     </a>
