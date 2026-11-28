@@ -16,6 +16,8 @@ use Filament\Tables\Table;
 
 class InstructionCategoryResource extends Resource
 {
+    protected static string|\UnitEnum|null $navigationGroup = 'База знаний';
+
     protected static ?string $model = InstructionCategory::class;
 
     protected static ?string $navigationLabel = 'Категории';
