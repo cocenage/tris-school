@@ -48,20 +48,22 @@ class EducationPanelProvider extends PanelProvider
                 EmployeeWorkCalendarReport::class,
             ])
             ->navigationGroups([
-                'Сотрудники и графики',
+                'Команда',
+                'Операционная работа',
                 'Заявки',
                 'Контроль качества',
-                'Рабочие инструменты',
+                'Объекты и ресурсы',
+                'База знаний',
             ])
             ->navigationItems([
                 NavigationItem::make('Задачи')
                     ->icon('heroicon-o-clipboard-document-list')
-                    ->group('Рабочие инструменты')
+                    ->group('Операционная работа')
                     ->url(fn (): string => route('page-tasks'))
                     ->visible(fn (): bool => app(SupervisorPanelAccess::class)->canUseSupervisorPanel(auth()->user())),
                 NavigationItem::make('Инструкции')
                     ->icon('heroicon-o-book-open')
-                    ->group('Рабочие инструменты')
+                    ->group('База знаний')
                     ->url(fn (): string => route('page-home.instructions'))
                     ->visible(fn (): bool => app(SupervisorPanelAccess::class)->canUseSupervisorPanel(auth()->user())),
             ])
