@@ -43,12 +43,11 @@ class AdminPanelProvider extends PanelProvider
                 'Аналитика',
                 'Коммуникации',
                 'Система',
-                'Пользователи',
-                'Формы контроля и коучинга',
-                'Инвентарь',
             ])
             ->navigationItems([
                 \Filament\Navigation\NavigationItem::make('Устройства и уведомления')
+                    ->group('Система')
+                    ->icon('heroicon-o-device-phone-mobile')
                     ->url(fn () => route('mobile.push.admin'))
                     ->visible(fn () => \App\Services\MobilePush\PushService::enabled() && auth()->user()?->isApproved() && auth()->user()?->role === 'admin')
                     ->sort(110),
