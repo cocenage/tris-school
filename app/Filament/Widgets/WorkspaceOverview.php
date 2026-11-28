@@ -102,10 +102,10 @@ class WorkspaceOverview extends Widget
             $query = ControlResponseResource::getEloquentQuery()
                 ->where('status', ControlResponse::STATUS_SENT)
                 ->whereDate('sent_at', $today->toDateString());
-            $metrics[] = self::item('Контролей сегодня', (clone $query)->count(), 'heroicon-o-clipboard-document-check', ControlResponseResource::getUrl());
+            $metrics[] = self::item('Контролей сегодня', (clone $query)->count(), 'heroicon-o-clipboard-document-check', self::filteredUrl(ControlResponseResource::class, 'sent_period', 'today'));
             $red = (clone $query)->where('result_zone', 'red')->count();
             if ($red > 0) {
-                $attention[] = self::item('Красная зона', $red, 'heroicon-o-exclamation-triangle', self::filteredUrl(ControlResponseResource::class, 'result_zone', 'red'), 'Контроли, отправленные сегодня', true);
+                $attention[] = self::item('Красная зона', $red, 'heroicon-o-exclamation-triangle', ControlResponseResource::getUrl('index', ['tableFilters' => ['result_zone' => ['value' => 'red'], 'sent_period' => ['value' => 'today']]]), 'Контроли, отправленные сегодня', true);
             }
             $links[] = self::link('Контроли', 'heroicon-o-clipboard-document-check', ControlResponseResource::getUrl());
         }
