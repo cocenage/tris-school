@@ -5,6 +5,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ $title }} · TRIS Knowledge</title>
+    <x-ui.page-link-runtime />
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 <body class="knowledge-shell">
@@ -17,6 +18,7 @@
             <a href="{{ route('page-home.instructions') }}">Инструкции</a>
             <a href="{{ route('page-home') }}">Академия ↗</a>
         </nav>
+        <x-ui.copy-page-link :compact="true" />
     </header>
     <main id="knowledge-content" class="knowledge-main">{{ $slot }}</main>
 </body>
