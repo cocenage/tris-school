@@ -14,7 +14,7 @@ use Filament\Http\Middleware\DispatchServingFilamentEvent;
 use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Filament\PanelProvider;
-use Filament\Support\Colors\Color;
+use App\Filament\Support\SharedPanelStyle;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
@@ -26,26 +26,34 @@ class AdminPanelProvider extends PanelProvider
 {
     public function panel(Panel $panel): Panel
     {
-        return $panel
+        return SharedPanelStyle::configure($panel)
             ->default()
             ->id('admin')
             ->path('admin')
             ->login()
-            ->viteTheme('resources/css/filament/admin/theme.css')
-            ->brandName('Админ-панель')
+
+            ->brandName('TRIS · Администрация')
+            ->navigationGroups([
+                'Команда',
+                'Операционная работа',
+                'Заявки',
+                'Контроль качества',
+                'Объекты и ресурсы',
+                'База знаний',
+                'Аналитика',
+                'Коммуникации',
+                'Система',
+                'Пользователи',
+                'Формы контроля и коучинга',
+                'Инвентарь',
+            ])
             ->navigationItems([
                 \Filament\Navigation\NavigationItem::make('Устройства и уведомления')
                     ->url(fn () => route('mobile.push.admin'))
                     ->visible(fn () => \App\Services\MobilePush\PushService::enabled() && auth()->user()?->isApproved() && auth()->user()?->role === 'admin')
                     ->sort(110),
             ])
-            ->colors([
-                'primary' => Color::Sky,
-                'gray' => Color::Slate,
-                'success' => Color::Emerald,
-                'warning' => Color::Amber,
-                'danger' => Color::Rose,
-            ])
+
             ->sidebarCollapsibleOnDesktop()
             ->globalSearchKeyBindings(['command+k', 'ctrl+k'])
             ->maxContentWidth('full')
