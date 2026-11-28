@@ -512,7 +512,7 @@ new class extends Component
                         <div class="text-sm"><div class="mb-1 text-xs text-[#737373]">Обращение</div><div class="whitespace-pre-wrap break-words leading-relaxed">{{ $request->comment }}</div></div>
                     @endif
                     @if(!empty($request->attachments))
-                        <div class="text-xs text-[#737373]">{{ count($request->attachments) }} {{ $this->filesWord(count($request->attachments)) }}</div>
+                        <x-mobile.request-attachments :kind="$request->request_type" :request-id="$request->id" :attachments="$request->attachments" />
                     @endif
                 @endif
                 @if(filled($request->admin_comment))
