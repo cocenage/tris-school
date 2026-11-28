@@ -3,6 +3,7 @@
 namespace App\Services\Telegram;
 
 use App\Jobs\DeliverScheduledTelegramMessage;
+use App\Jobs\RecoverOksDelivery;
 use App\Models\TelegramScheduledMessage;
 use App\Models\TelegramScheduledMessageDelivery;
 use Carbon\CarbonImmutable;
@@ -134,7 +135,47 @@ class TelegramScheduledMessageDeliveryService
             Log::error('Scheduled closing payment scheduling failed.', ['exception' => class_basename($exception)]);
         }
 
+        $this->queueRecoverableOks($now, $oksAnchor, $result);
+
         return $result;
+    }
+
+    private function queueRecoverableOks(CarbonImmutable $now, ?TelegramScheduledMessage $anchor, array &$result): void
+    {
+        if ($anchor === null || config('queue.connections.'.config('queue.default').'.driver') === 'sync') {
+            return;
+        }
+
+        $day = $now->setTimezone('Europe/Rome');
+        $deliveries = TelegramScheduledMessageDelivery::query()
+            ->where('scheduled_message_id', $anchor->id)
+            ->where('bot_type', 'work')
+            ->where('chat_id', (string) $anchor->telegramChat->telegram_chat_id)
+            ->where('message_thread_id', (string) $anchor->telegramTopic->telegram_thread_id)
+            ->whereIn('control_type', array_values(OksControlSchedule::TIMES))
+            ->where('status', 'skipped')
+            ->whereIn('failure_reason', ['oks_opening_unavailable', 'oks_no_active_districts'])
+            ->whereNull('telegram_message_id')
+            ->whereNull('sent_at')
+            ->where('scheduled_for', '>=', $day->startOfDay()->format('Y-m-d H:i:s'))
+            ->where('scheduled_for', '<=', $day->format('Y-m-d H:i:s'))
+            ->orderBy('scheduled_for')->get();
+
+        foreach ($deliveries as $delivery) {
+            try {
+                if (empty(app(TelegramShiftOpening::class)->assignmentsFor($delivery))) {
+                    continue;
+                }
+
+                RecoverOksDelivery::dispatch($delivery->id, $now->addHour());
+            } catch (Throwable $exception) {
+                $result['failed']++;
+                Log::warning('OKS recovery could not be queued.', [
+                    'delivery_id' => $delivery->id,
+                    'exception' => class_basename($exception),
+                ]);
+            }
+        }
     }
 
     public function currentOksAnchor(CarbonImmutable $now): ?TelegramScheduledMessage
