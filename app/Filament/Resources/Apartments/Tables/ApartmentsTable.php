@@ -17,28 +17,32 @@ class ApartmentsTable
     public static function configure(Table $table): Table
     {
         return $table
+            ->persistFiltersInSession()
+            ->persistSearchInSession()
             ->defaultSort('name')
             ->columns([
-                ImageColumn::make('image')->label('Фото')->square(),
+                ImageColumn::make('image')->visibleFrom('md')->label('Фото')->square(),
 
                 TextColumn::make('name')
                     ->label('Название')
+                    ->wrap()
+                    ->description(fn ($record): string => implode(' · ', array_filter([$record->code, $record->address, $record->is_active ? null : 'Неактивна'])))
                     ->searchable()
                     ->sortable()
                     ->weight('medium'),
 
-                TextColumn::make('code')
+                TextColumn::make('code')->visibleFrom('md')
                     ->label('Код')
                     ->searchable()
                     ->toggleable(),
 
-                TextColumn::make('address')
+                TextColumn::make('address')->visibleFrom('md')
                     ->label('Адрес')
                     ->limit(50)
                     ->searchable()
                     ->toggleable(),
 
-                IconColumn::make('is_active')
+                IconColumn::make('is_active')->visibleFrom('md')
                     ->label('Активна')
                     ->boolean()
                     ->sortable(),
@@ -58,7 +62,7 @@ class ApartmentsTable
                     })
                     ->sortable(),
 
-                TextColumn::make('updated_at')
+                TextColumn::make('updated_at')->visibleFrom('md')
                     ->label('Обновлено')
                     ->dateTime('d.m.Y H:i')
                     ->sortable()
