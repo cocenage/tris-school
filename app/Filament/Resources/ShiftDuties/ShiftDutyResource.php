@@ -19,6 +19,8 @@ use Illuminate\Validation\Rule;
 
 class ShiftDutyResource extends Resource
 {
+    protected static string|\UnitEnum|null $navigationGroup = 'Операционная работа';
+
     protected static ?string $model = ShiftDuty::class;
 
     protected static ?string $navigationLabel = 'Дежурные ОКС';
