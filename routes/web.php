@@ -29,6 +29,9 @@ use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
+Route::get('/.well-known/assetlinks.json', \App\Http\Controllers\AndroidAssetLinksController::class)
+    ->name('android.asset-links');
+
 Route::get('/', function () {
     $previewParameters = request()->query('loader_preview') === '1'
         ? ['loader_preview' => '1']
