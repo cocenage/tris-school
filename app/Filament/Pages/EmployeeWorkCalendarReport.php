@@ -38,9 +38,7 @@ class EmployeeWorkCalendarReport extends Page
 
     public static function getNavigationGroup(): ?string
     {
-        return Filament::getCurrentPanel()?->getId() === 'education'
-            ? 'Сотрудники и графики'
-            : 'Пользователи';
+        return 'Операционная работа';
     }
 
     public function mount(): void
