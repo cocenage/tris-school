@@ -18,7 +18,7 @@ use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
 use Filament\Http\Middleware\DispatchServingFilamentEvent;
 use Filament\Navigation\NavigationItem;
-use Filament\Pages\Dashboard;
+use App\Filament\Support\Dashboard;
 use Filament\Panel;
 use Filament\PanelProvider;
 use App\Filament\Support\SharedPanelStyle;
@@ -47,6 +47,7 @@ class EducationPanelProvider extends PanelProvider
                 Dashboard::class,
                 EmployeeWorkCalendarReport::class,
             ])
+            ->widgets([\App\Filament\Widgets\WorkspaceOverview::class])
             ->navigationGroups([
                 'Команда',
                 'Операционная работа',
