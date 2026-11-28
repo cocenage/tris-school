@@ -4,6 +4,7 @@ use App\Filament\Resources\TelegramScheduledMessages\Pages\CreateTelegramSchedul
 use App\Filament\Resources\TelegramScheduledMessages\TelegramScheduledMessageResource;
 use App\Jobs\DeliverScheduledControlFollowup;
 use App\Jobs\DeliverScheduledTelegramMessage;
+use App\Jobs\RecoverOksDelivery;
 use App\Jobs\RefreshTelegramOksCard;
 use App\Jobs\RefreshTelegramOksOpening;
 use App\Jobs\RefreshTelegramWorkControlMessage;
@@ -1346,4 +1347,135 @@ it('saves OKS callbacks before acknowledging and refreshes Telegram cards in bac
     );
     Http::assertSent(fn ($request): bool => str_ends_with($request->url(), '/editMessageText')
         && in_array((int) $request['message_id'], [501, 502, 503], true));
+});
+
+
+it('recovers the OKS opening after explicit absence confirmation and resumes skipped production cards', function (): void {
+    Schema::create('users', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+    });
+    config([
+        'services.telegram.oks_current_controls_enabled' => true,
+        'services.telegram.bot_token' => 'test-work',
+        'services.telegram.bot_username' => 'test_work_bot',
+        'cache.default' => 'array',
+    ]);
+    $anchor = makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    Queue::fake();
+    Carbon::setTestNow(Carbon::parse('2026-11-23 09:05:20', 'Europe/Rome'));
+
+    $opening = $anchor->deliveries()->create([
+        'control_type' => ScheduledControlTypes::SHIFT_OPENING,
+        'bot_type' => 'work', 'status' => 'pending',
+        'scheduled_for' => now()->setTime(9, 0),
+        'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => ['opening_quick' => true],
+    ]);
+    $attempts = 0;
+    Http::fake(function () use (&$attempts): never {
+        $attempts++;
+        throw new ConnectionException('No confirmation from Telegram');
+    });
+    $original = new DeliverScheduledTelegramMessage($opening->id, now()->toImmutable()->addHour());
+    $original->handle(app(TelegramBotService::class));
+    $original->handle(app(TelegramBotService::class));
+    expect($opening->refresh()->status)->toBe('uncertain')->and($attempts)->toBe(1);
+
+    Carbon::setTestNow(Carbon::parse('2026-11-23 09:35:20', 'Europe/Rome'));
+    $card = $anchor->deliveries()->create([
+        'control_type' => 'oks_schedule', 'bot_type' => 'work', 'status' => 'pending',
+        'scheduled_for' => now()->setTime(9, 30),
+        'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => [OksControlSchedule::COPY_VERSION => 2],
+    ]);
+    (new DeliverScheduledTelegramMessage($card->id, now()->toImmutable()->addHour()))->handle(app(TelegramBotService::class));
+    expect($card->refresh()->status)->toBe('skipped')
+        ->and($card->failure_reason)->toBe('oks_opening_unavailable');
+
+    Carbon::setTestNow(Carbon::parse('2026-11-23 10:40:20', 'Europe/Rome'));
+    $this->artisan('telegram:scheduled-messages-send')->assertSuccessful();
+    $this->artisan('telegram:oks-recover', ['delivery' => $opening->id])->assertExitCode(2);
+    Queue::assertNotPushed(RecoverOksDelivery::class);
+    $this->artisan('telegram:oks-recover', ['delivery' => $opening->id, '--confirmed-absent' => true])->assertSuccessful();
+    $recover = Queue::pushed(RecoverOksDelivery::class)->sole();
+
+    // Reset the HTTP factory so the successful response does not share the timeout stub.
+    Http::swap(new \Illuminate\Http\Client\Factory);
+    Http::preventStrayRequests();
+    Http::fake(['*' => Http::response(['ok' => true, 'result' => ['message_id' => 900]])]);
+    $recover->handle(app(TelegramBotService::class));
+    $recover->handle(app(TelegramBotService::class));
+    expect($opening->refresh()->status)->toBe('sent')->and($opening->telegram_message_id)->toBe(900);
+    Http::assertSentCount(1);
+
+    $this->artisan('telegram:scheduled-messages-send')->assertSuccessful();
+    Queue::assertPushed(RecoverOksDelivery::class, 1);
+
+    $opening->update(['sequence_context' => [...$opening->sequence_context, 'opening_draft' => ['navigli' => 11]]]);
+    $this->artisan('telegram:scheduled-messages-send')->assertSuccessful();
+    $this->artisan('telegram:scheduled-messages-send')->assertSuccessful();
+    Queue::assertPushed(RecoverOksDelivery::class, 2);
+    $recoverCard = Queue::pushed(RecoverOksDelivery::class, fn ($job) => $job->deliveryId === $card->id)->sole();
+    $recoverCard->handle(app(TelegramBotService::class));
+    $recoverCard->handle(app(TelegramBotService::class));
+    expect($card->refresh()->status)->toBe('sent')
+        ->and($card->sequence_context['oks_assignments'])->toBe(['navigli' => 11])
+        ->and($card->sequence_context[OksControlSchedule::COPY_VERSION])->toBe(2);
+    expect(TelegramScheduledMessageDelivery::query()->count())->toBe(2);
+    Http::assertSentCount(2);
+});
+
+it('does not reopen an uncertain OKS delivery twice when the manual recovery also times out', function (): void {
+    Schema::create('users', function (Blueprint $table): void {
+        $table->id();
+        $table->string('name');
+    });
+    config([
+        'services.telegram.oks_current_controls_enabled' => true,
+        'services.telegram.bot_token' => 'test-work',
+        'services.telegram.bot_username' => 'test_work_bot',
+    ]);
+    $anchor = makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    Carbon::setTestNow(Carbon::parse('2026-11-23 09:05:20', 'Europe/Rome'));
+    $opening = $anchor->deliveries()->create([
+        'control_type' => ScheduledControlTypes::SHIFT_OPENING, 'bot_type' => 'work',
+        'status' => 'uncertain', 'failure_reason' => 'opening_delivery_unconfirmed',
+        'scheduled_for' => now()->setTime(9, 0),
+        'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => ['opening_quick' => true],
+    ]);
+    Carbon::setTestNow(Carbon::parse('2026-11-23 10:40:20', 'Europe/Rome'));
+    $attempts = 0;
+    Http::fake(function () use (&$attempts): never {
+        $attempts++;
+        throw new ConnectionException('No confirmation from Telegram');
+    });
+    $job = new RecoverOksDelivery($opening->id, now()->toImmutable()->addHour(), (string) $opening->getRawOriginal('updated_at'));
+    $job->handle(app(TelegramBotService::class));
+    $job->handle(app(TelegramBotService::class));
+    expect($opening->refresh()->status)->toBe('uncertain')->and($attempts)->toBe(1);
+});
+
+it('does not automatically recover OKS cards for a day with no active districts', function (): void {
+    config(['services.telegram.oks_current_controls_enabled' => true, 'cache.default' => 'array']);
+    $anchor = makeScheduledTelegramMessage(['control_type' => 'schedule_checked', 'send_time' => '09:30:00']);
+    Carbon::setTestNow(Carbon::parse('2026-11-23 10:40:20', 'Europe/Rome'));
+    Queue::fake();
+    $anchor->deliveries()->create([
+        'control_type' => ScheduledControlTypes::SHIFT_OPENING, 'bot_type' => 'work',
+        'status' => 'sent', 'telegram_message_id' => 77, 'sent_at' => now(),
+        'scheduled_for' => now()->setTime(9, 0),
+        'chat_id' => '-100000000001', 'message_thread_id' => '42',
+        'sequence_context' => ['opening_quick' => true, 'opening_draft' => array_fill_keys(array_keys(ScheduledControlTypes::DISTRICTS), 0)],
+    ]);
+    $card = $anchor->deliveries()->create([
+        'control_type' => 'oks_schedule', 'bot_type' => 'work',
+        'status' => 'skipped', 'failure_reason' => 'oks_no_active_districts',
+        'scheduled_for' => now()->setTime(9, 30),
+        'chat_id' => '-100000000001', 'message_thread_id' => '42',
+    ]);
+    $this->artisan('telegram:scheduled-messages-send')->assertSuccessful();
+    Queue::assertNotPushed(RecoverOksDelivery::class);
+    expect($card->refresh()->status)->toBe('skipped');
 });
