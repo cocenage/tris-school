@@ -38,9 +38,7 @@ class ApartmentResource extends Resource
 
     public static function getNavigationGroup(): ?string
     {
-        return Filament::getCurrentPanel()?->getId() === 'education'
-            ? 'Рабочие инструменты'
-            : 'Формы контроля и коучинга';
+        return 'Объекты и ресурсы';
     }
 
     public static function form(Schema $schema): Schema
