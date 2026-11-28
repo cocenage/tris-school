@@ -51,7 +51,7 @@
             const url = new URL(raw);
             if (url.origin !== location.origin || url.protocol !== 'https:' || url.username || url.password) return null;
             // Only accept same-origin HTTPS links; Telegram login callback is a separate host.
-            return url.pathname + url.search + url.hash;
+            return url.href;
         } catch { return null; }
     }
 
@@ -65,7 +65,7 @@
                 sessionStorage.setItem(key, target);
             } catch { /* storage unavailable */ }
         }
-        if (target === location.pathname + location.search + location.hash) return;
+        if (target === location.href) return;
         if (cold) location.replace(target);
         else location.assign(target);
     }
