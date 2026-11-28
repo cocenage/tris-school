@@ -23,7 +23,7 @@ class AntigocciaStatistics extends Page
 
     protected static ?string $title = 'Антикапля · статистика';
 
-    protected static string|UnitEnum|null $navigationGroup = 'Аналитика';
+    protected static string|UnitEnum|null $navigationGroup = 'Контроль качества';
 
     protected static ?int $navigationSort = 10;
 
