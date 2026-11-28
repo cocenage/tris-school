@@ -1,7 +1,6 @@
 @props(['title', 'description' => null])
-<div {{ $attributes->class(['flex min-h-[280px] flex-col items-center justify-center gap-2 text-center']) }}>
-    <x-heroicon-o-inbox class="mb-2 size-9 text-[#A0A0A0]" />
-    <h2 class="font-medium">{{ $title }}</h2>
-    @if(filled($description))<div class="max-w-[260px] text-sm text-[#737373]">{{ $description }}</div>@endif
-    {{ $slot }}
-</div>
+<section {{ $attributes->class(['flex min-h-[220px] flex-col items-center justify-center gap-[6px] px-5 py-12 text-center']) }}>
+    <h2 class="text-[20px] font-semibold leading-[1.3] tracking-[-0.035em] text-[#2A1F1A]">{{ $title }}</h2>
+    @if(filled($description))<div class="max-w-[250px] text-[14px] leading-[1.6] text-[#777777]">{{ $description }}</div>@endif
+    @if($slot->isNotEmpty())<div class="mt-3">{{ $slot }}</div>@endif
+</section>

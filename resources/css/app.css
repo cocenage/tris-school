@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
 @import "tailwindcss";
 @import "./knowledge.css";
 @import "./tris-tokens.css";
@@ -147,4 +148,90 @@ p {
         opacity: 0.2;
         transform: translateY(0);
     }
+}
+
+
+/* TRIS 1.0 mobile controls — scoped to the new mobile UI. */
+.tris-mobile-requests {
+    font-family: "Manrope", "Akt", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+}
+.tris-mobile-requests :is(button, input, select, textarea) {
+    font-family: inherit;
+}
+.tris-mobile-press {
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: transform 180ms cubic-bezier(.2,.8,.2,1), background-color 180ms ease, color 180ms ease;
+    transform-origin: center;
+}
+.tris-mobile-press:active { transform: scale(.96); }
+.tris-mobile-press:focus-visible { outline: 2px solid #8B817A; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+    .tris-mobile-press { transition: none; }
+    .tris-mobile-press:active { transform: none; }
+}
+.tris-mobile-search {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-width: 0;
+    height: 48px;
+    border-radius: 999px;
+    padding: 0 16px;
+    background: #fff;
+    overflow: hidden;
+    transition: box-shadow 160ms ease;
+}
+.tris-mobile-search:focus-within { box-shadow: 0 0 0 2px #d9d4d1; }
+.tris-mobile-search input {
+    -webkit-appearance: none;
+    appearance: none;
+    border: 0;
+    border-radius: 0;
+    outline: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+    height: 100%;
+    min-width: 0;
+    width: 100%;
+    flex: 1 1 0;
+    background: transparent;
+    color: #171717;
+    font-size: 14px;
+    font-weight: 500;
+}
+.tris-mobile-search input::placeholder { color: #777; opacity: 1; }
+.tris-mobile-search input::-webkit-search-decoration,
+.tris-mobile-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+
+/* Expand and collapse without jumping or clipping long request content. */
+.tris-mobile-card-panel {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    visibility: hidden;
+    transition: grid-template-rows 280ms cubic-bezier(.22,.61,.36,1),
+        opacity 200ms ease, visibility 0s linear 280ms;
+}
+.tris-mobile-card-panel[data-expanded="true"] {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    visibility: visible;
+    transition: grid-template-rows 280ms cubic-bezier(.22,.61,.36,1),
+        opacity 220ms ease, visibility 0s;
+}
+.tris-mobile-card-panel > div { min-height: 0; overflow: hidden; }
+.tris-mobile-tab-panel { animation: tris-mobile-tab-in 220ms cubic-bezier(.22,.61,.36,1) both; }
+@keyframes tris-mobile-tab-in {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .tris-mobile-card-panel,
+    .tris-mobile-card-panel[data-expanded="true"] { transition: none; }
+    .tris-mobile-tab-panel { animation: none; }
 }

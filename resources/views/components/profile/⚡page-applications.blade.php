@@ -441,7 +441,7 @@ new class extends Component
     $filterCount = count($categories) + (int) ($statusFilter !== 'all') + (int) ($sort !== 'new');
 @endphp
 
-<div class="min-h-full bg-[#F2F2F2] px-5 pt-8 pb-8 text-[#171717]"
+<div class="tris-mobile-requests min-h-full bg-[#F5F5F5] px-5 pt-[42px] pb-8 text-[#171717]"
     x-data="{
         draftCategories: [],
         draftStatus: 'all',
@@ -472,11 +472,11 @@ new class extends Component
         <x-mobile.filter-button x-on:click="openFilters()" :count="$filterCount" label="Фильтры заявок" />
     </div>
     <x-mobile.segmented-tabs :options="['all' => 'Все', 'active' => 'Активные '.$activeCount, 'completed' => 'Завершённые']"
-        :selected="$tab" model="tab" label="Раздел заявок" class="mt-3.5 mb-6" />
+        :selected="$tab" model="tab" label="Раздел заявок" class="mt-[15px] mb-[26px]" />
 
-    <div class="space-y-3" aria-live="polite">
+    <div wire:key="request-tab-{{ $tab }}" class="tris-mobile-tab-panel space-y-[12px]" aria-live="polite">
         @forelse($visible as $request)
-            <x-mobile.expandable-card wire:key="request-{{ $request->request_type }}-{{ $request->id }}" wire:ignore.self
+            <x-mobile.expandable-card wire:key="request-{{ $request->request_type }}-{{ $request->id }}"
                 :title="$this->titleFor($request->request_type)" :subtitle="$this->subtitleFor($request)"
                 :status="$this->label($this->statusLabel($request->status, $request->request_type))"
                 :tone="$this->tone($request->status)" :date="$request->created_at?->translatedFormat('j M, H:i')">
@@ -485,7 +485,7 @@ new class extends Component
                     @if(filled($request->comment))
                         <div class="text-sm"><div class="mb-1 text-xs text-[#737373]">Комментарий</div><div class="whitespace-pre-wrap break-words">{{ $request->comment }}</div></div>
                     @endif
-                    <div class="divide-y divide-[#E5E5E5]">
+                    <div class="divide-y divide-[#EAEAEA]">
                         @foreach($request->lines as $item)
                             <x-mobile.decision-row
                                 :title="$item->item_name.($item->variant_label ? ' · '.$item->variant_label : '')"
@@ -499,7 +499,7 @@ new class extends Component
                     @if(filled($request->reason))
                         <div class="text-sm"><div class="mb-1 text-xs text-[#737373]">Причина</div><div class="whitespace-pre-wrap break-words">{{ $request->reason }}</div></div>
                     @endif
-                    <div class="divide-y divide-[#E5E5E5]">
+                    <div class="divide-y divide-[#EAEAEA]">
                         @foreach($request->days->sortBy('date') as $day)
                             <x-mobile.decision-row
                                 :title="Carbon::parse($day->date)->translatedFormat('j F Y')"
@@ -522,10 +522,19 @@ new class extends Component
                 @endif
             </x-mobile.expandable-card>
         @empty
-            <x-mobile.empty-state :title="$requests->isEmpty() ? 'Пока нет заявок' : 'Заявки не найдены'"
-                :description="$requests->isEmpty() ? 'Отправленные заявки появятся здесь.' : 'Попробуйте изменить поиск или фильтры.'">
-                @if($requests->isNotEmpty())
-                    <button type="button" wire:click="resetListFilters" class="mt-2 rounded-full bg-white px-4 py-2 text-sm">Сбросить фильтры</button>
+            @php
+                $hasFilters = filled(trim($search)) || $filterCount > 0;
+                [$emptyTitle, $emptyDescription] = match (true) {
+                    $requests->isEmpty() => ['Пока нет заявок', 'Здесь появится история ваших обращений.'],
+                    $hasFilters => ['Ничего не найдено', 'Попробуйте другой запрос или измените фильтры.'],
+                    $tab === 'active' => ['Всё рассмотрено', 'Новых заявок в работе пока нет.'],
+                    $tab === 'completed' => ['Пока без решений', 'Рассмотренные заявки появятся здесь.'],
+                    default => ['Ничего не найдено', 'Попробуйте изменить условия поиска.'],
+                };
+            @endphp
+            <x-mobile.empty-state :title="$emptyTitle" :description="$emptyDescription">
+                @if($requests->isNotEmpty() && $hasFilters)
+                    <button type="button" wire:click="resetListFilters" class="tris-mobile-press rounded-full bg-white px-4 py-2.5 text-[13px] font-semibold text-[#2A1F1A]">Сбросить фильтры</button>
                 @endif
             </x-mobile.empty-state>
         @endforelse
