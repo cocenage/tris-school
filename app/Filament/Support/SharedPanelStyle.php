@@ -21,6 +21,14 @@ final class SharedPanelStyle
                 'info' => Color::Sky,
             ])
             ->renderHook(
+                PanelsRenderHook::TOPBAR_END,
+                fn () => view('filament.shared.copy-page-link'),
+            )
+            ->renderHook(
+                PanelsRenderHook::BODY_END,
+                fn () => view('components.ui.page-link-runtime'),
+            )
+            ->renderHook(
                 PanelsRenderHook::PAGE_START,
                 fn (array $scopes) => view('filament.shared.resource-back', ['scopes' => $scopes]),
             );
