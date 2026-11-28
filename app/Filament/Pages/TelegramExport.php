@@ -21,7 +21,7 @@ class TelegramExport extends Page
 
     protected static ?string $title = 'Telegram выгрузка';
 
-    protected static string|UnitEnum|null $navigationGroup = 'Аналитика';
+    protected static string|UnitEnum|null $navigationGroup = 'Коммуникации';
 
     protected string $view = 'filament.pages.telegram-export';
 
