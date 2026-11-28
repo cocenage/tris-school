@@ -19,11 +19,13 @@ class UsersTable
     public static function configure(Table $table): Table
     {
         return $table
+            ->persistFiltersInSession()
+            ->persistSearchInSession()
             ->recordTitleAttribute('name')
             ->recordUrl(fn ($record) => UserResource::getUrl('edit', ['record' => $record]))
 
             ->columns([
-               ImageColumn::make('avatar_url')
+               ImageColumn::make('avatar_url')->visibleFrom('md')
     ->label('')
     ->circular()
     ->size(44)
@@ -34,23 +36,31 @@ class UsersTable
     ->grow(false),
 
                 TextColumn::make('name')
-                    ->label('Пользователь')
+                    ->label('Сотрудник')
+                    ->wrap()
                     ->searchable(['name', 'telegram_username', 'telegram_first_name', 'telegram_last_name', 'telegram_id'])
                     ->sortable()
                     ->weight('medium')
                     ->description(function ($record): string {
+                        $role = match ($record->role) {
+                            'admin' => 'Админ',
+                            'supervisor' => 'Супервайзер',
+                            'cleaner' => 'Клинер',
+                            default => '—',
+                        };
+                        $prefix = $role . ($record->is_active ? '' : ' · Неактивен') . ' · ';
                         if (filled($record->telegram_username)) {
-                            return '@' . ltrim($record->telegram_username, '@');
+                            return $prefix . '@' . ltrim($record->telegram_username, '@');
                         }
 
                         if (filled($record->telegram_first_name) || filled($record->telegram_last_name)) {
-                            return trim($record->telegram_first_name . ' ' . $record->telegram_last_name);
+                            return $prefix . trim($record->telegram_first_name . ' ' . $record->telegram_last_name);
                         }
 
-                        return 'Telegram не указан';
+                        return $prefix . 'Telegram не указан';
                     }),
 
-                TextColumn::make('role')
+                TextColumn::make('role')->visibleFrom('md')
                     ->label('Роль')
                     ->badge()
                     ->icon(fn (?string $state): string => match ($state) {
@@ -90,7 +100,7 @@ class UsersTable
                     })
                     ->sortable(),
 
-                TextColumn::make('dip')
+                TextColumn::make('dip')->visibleFrom('md')
                     ->label('DIP')
                     ->badge()
                     ->formatStateUsing(fn (?bool $state): string => $state ? 'DIP' : 'NO DIP')
@@ -98,7 +108,7 @@ class UsersTable
                     ->sortable()
                     ->toggleable(),
 
-                IconColumn::make('is_active')
+                IconColumn::make('is_active')->visibleFrom('md')
                     ->label('Активен')
                     ->boolean()
                     ->trueIcon('heroicon-m-check-circle')
@@ -107,27 +117,27 @@ class UsersTable
                     ->falseColor('danger')
                     ->sortable(),
 
-                TextColumn::make('work_started_at')
+                TextColumn::make('work_started_at')->visibleFrom('md')
                     ->label('Работает с')
                     ->date('d.m.Y')
                     ->placeholder('—')
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
 
-                TextColumn::make('birthday')
+                TextColumn::make('birthday')->visibleFrom('md')
                     ->label('ДР')
                     ->formatStateUsing(fn ($state) => $state?->translatedFormat('d F') ?? '—')
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
 
-                TextColumn::make('last_login_at')
+                TextColumn::make('last_login_at')->visibleFrom('md')
                     ->label('Последний вход')
                     ->since()
                     ->placeholder('—')
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
 
-                TextColumn::make('created_at')
+                TextColumn::make('created_at')->visibleFrom('md')
                     ->label('Создан')
                     ->dateTime('d.m.Y H:i')
                     ->sortable()
