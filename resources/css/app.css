@@ -256,3 +256,17 @@ p {
     .tris-mobile-card-panel[data-expanded="true"] { transition: none; }
     .tris-mobile-tab-panel { animation: none; }
 }
+
+
+/* Press the whole accordion rather than scaling its header independently. */
+.tris-mobile-card-press {
+    transform-origin: center;
+    transition: transform 180ms cubic-bezier(.2,.8,.2,1);
+}
+.tris-mobile-card-trigger { cursor: pointer; touch-action: manipulation; }
+.tris-mobile-card-trigger:focus-visible { outline: 2px solid #8B817A; outline-offset: 3px; border-radius: 12px; }
+.tris-mobile-card-press:has(> .tris-mobile-card-trigger:active) { transform: scale(.98); }
+@media (prefers-reduced-motion: reduce) {
+    .tris-mobile-card-press { transition: none; }
+    .tris-mobile-card-press:has(> .tris-mobile-card-trigger:active) { transform: none; }
+}
