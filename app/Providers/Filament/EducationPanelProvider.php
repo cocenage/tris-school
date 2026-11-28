@@ -21,7 +21,7 @@ use Filament\Navigation\NavigationItem;
 use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Filament\PanelProvider;
-use Filament\Support\Colors\Color;
+use App\Filament\Support\SharedPanelStyle;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
@@ -33,19 +33,12 @@ class EducationPanelProvider extends PanelProvider
 {
     public function panel(Panel $panel): Panel
     {
-        return $panel
+        return SharedPanelStyle::configure($panel)
             ->id('education')
             ->path('admin/supervisor')
             ->login()
-            ->brandName('Панель супервайзера')
-            ->colors([
-                'primary' => Color::Amber,
-                'gray' => Color::Zinc,
-                'success' => Color::Emerald,
-                'warning' => Color::Orange,
-                'danger' => Color::Rose,
-                'info' => Color::Sky,
-            ])
+            ->brandName('TRIS · Супервайзер')
+
             ->sidebarCollapsibleOnDesktop()
             ->globalSearchKeyBindings(['command+k', 'ctrl+k'])
             ->maxContentWidth('full')
