@@ -27,7 +27,7 @@ class InventoryItemResource extends Resource
     protected static ?string $navigationLabel = 'Товары';
     protected static ?string $modelLabel = 'Товар';
     protected static ?string $pluralModelLabel = 'Товары';
-    protected static string|\UnitEnum|null $navigationGroup = 'Инвентарь';
+    protected static string|\UnitEnum|null $navigationGroup = 'Объекты и ресурсы';
 
     public static function form(Schema $schema): Schema
     {
