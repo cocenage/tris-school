@@ -23,6 +23,8 @@ use Filament\Tables\Table;
 
 class KnowledgeEntityResource extends Resource
 {
+    protected static string|\UnitEnum|null $navigationGroup = 'База знаний';
+
     protected static ?string $model = KnowledgeEntity::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedBookOpen;
