@@ -33,9 +33,7 @@ class ControlResource extends Resource
 
     public static function getNavigationGroup(): ?string
     {
-        return Filament::getCurrentPanel()?->getId() === 'education'
-            ? 'Контроль качества'
-            : 'Формы контроля и коучинга';
+        return 'Контроль качества';
     }
 
     public static function form(Schema $schema): Schema
