@@ -23,7 +23,6 @@
             <p><label>Имя <input name="first_name" required maxlength="100" value="{{ old('first_name', $user->telegram_first_name) }}" autocomplete="given-name"></label></p>
             <p><label>Фамилия <input name="last_name" required maxlength="100" value="{{ old('last_name', $user->telegram_last_name) }}" autocomplete="family-name"></label></p>
             <p><label>Дата рождения <input name="birthday" type="date" required value="{{ old('birthday') }}"></label></p>
-            <p><label>Телефон <input name="phone" type="tel" required placeholder="+39..." value="{{ old('phone') }}" autocomplete="tel"></label></p>
             <p><label>Должность
                 <select name="requested_role" required>
                     <option value="">Выберите должность</option>

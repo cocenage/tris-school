@@ -68,7 +68,8 @@ class UserForm
                             ->label('Анкета сотрудника')
                             ->visible(fn (?User $record): bool => ! empty($record?->registration_data))
                             ->content(fn (?User $record): string => collect($record?->registration_data ?? [])
-                                ->map(fn ($value, $key) => (['first_name' => 'Имя', 'last_name' => 'Фамилия', 'birthday' => 'Дата рождения', 'phone' => 'Телефон', 'requested_role' => 'Запрошенная должность', 'city' => 'Город / зона', 'work_started_at' => 'Начало работы', 'supervisor' => 'Супервайзер'][$key] ?? $key).': '.(string) $value)
+                                ->except('phone')
+                                ->map(fn ($value, $key) => (['first_name' => 'Имя', 'last_name' => 'Фамилия', 'birthday' => 'Дата рождения', 'requested_role' => 'Запрошенная должность', 'city' => 'Город / зона', 'work_started_at' => 'Начало работы', 'supervisor' => 'Супервайзер'][$key] ?? $key).': '.(string) $value)
                                 ->implode(' · ')),
 
                         TextInput::make('name')

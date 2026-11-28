@@ -40,7 +40,7 @@ class TelegramUserNotificationService
         ];
 
         $registration = $user->registration_data ?? [];
-        foreach (['phone' => 'Телефон', 'requested_role' => 'Запрошенная должность', 'city' => 'Город / зона', 'supervisor' => 'Супервайзер', 'work_started_at' => 'Начало работы'] as $key => $label) {
+        foreach (['requested_role' => 'Запрошенная должность', 'city' => 'Город / зона', 'supervisor' => 'Супервайзер', 'work_started_at' => 'Начало работы'] as $key => $label) {
             if (isset($registration[$key])) {
                 $value = (string) $registration[$key];
                 $fields[$label] = $key === 'requested_role'

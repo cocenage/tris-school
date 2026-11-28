@@ -32,7 +32,6 @@ class AccessRegistrationController extends Controller
             'first_name' => ['required', 'string', 'max:100'],
             'last_name' => ['required', 'string', 'max:100'],
             'birthday' => ['required', 'date_format:Y-m-d', 'before:today'],
-            'phone' => ['required', 'regex:/^\+[1-9][0-9]{6,14}$/'],
             'requested_role' => ['required', 'in:cleaner,supervisor'],
             'city' => ['required', 'string', 'max:120'],
             'work_started_at' => ['required', 'date_format:Y-m-d'],
