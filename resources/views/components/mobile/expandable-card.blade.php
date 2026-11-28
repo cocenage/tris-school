@@ -1,9 +1,9 @@
 @props(['title', 'subtitle' => null, 'status', 'tone' => 'neutral', 'date' => null])
 <article x-data="{ expanded: false }" x-id="['request-panel']"
-    {{ $attributes->class(['rounded-[24px] bg-white px-4 pt-4 pb-[14px] text-[#171717]']) }}>
+    {{ $attributes->class(['tris-mobile-card-press rounded-[24px] bg-white px-4 pt-4 pb-[14px] text-[#171717]']) }}>
     <button type="button" x-on:click="expanded = !expanded" x-bind:aria-expanded="expanded.toString()"
         x-bind:aria-controls="$id('request-panel')"
-        class="tris-mobile-press flex w-full items-start gap-4 text-left">
+        class="tris-mobile-card-trigger flex w-full items-start gap-4 text-left">
         @isset($icon)<span class="shrink-0">{{ $icon }}</span>@endisset
         <span class="block min-w-0 flex-1">
             <span class="flex items-start justify-between gap-2">

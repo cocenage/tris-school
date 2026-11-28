@@ -273,6 +273,9 @@ Route::middleware(['auth', 'approved'])->group(function () {
     Route::livewire('/profile/employees/history', 'profile.page-staff-history')->middleware(SafeguardRolePreviewData::class)->name('page-profile.staff-history');
     Route::livewire('/profile/employees/{employee}/history', 'profile.page-employee-history')->middleware(SafeguardRolePreviewData::class)->whereNumber('employee')->name('page-profile.employee-history');
     Route::get('/profile/applications', fn () => redirect()->route('page-applications'))->middleware(SafeguardRolePreviewData::class)->name('page-profile.applications');
+    Route::get('/profile/applications/{kind}/{requestId}/attachments/{index}', \App\Http\Controllers\StaffRequestAttachmentController::class)
+        ->whereIn('kind', ['salary', 'schedule', 'feedback'])->whereNumber(['requestId', 'index'])
+        ->name('staff-request.attachment');
 
     Route::livewire('/apartments', 'apartments.page-apartments')->name('page-apartments');
     Route::livewire('/antigoccia', 'antigoccia.page-antigoccia')->middleware(SafeguardRolePreviewData::class)->name('antigoccia.index');
