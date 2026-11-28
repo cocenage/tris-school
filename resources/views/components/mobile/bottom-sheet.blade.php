@@ -1,5 +1,5 @@
 @props(['title', 'ref' => 'sheet'])
-<dialog x-ref="{{ $ref }}" x-data="mobileBottomSheet" aria-label="{{ $title }}"
+<dialog x-ref="{{ $ref }}" data-sheet-ref="{{ $ref }}" x-data="mobileBottomSheet" aria-label="{{ $title }}"
     data-state="closed" x-bind:data-state="state" x-bind:style="{ '--sheet-offset': offset + 'px' }"
     {{ $attributes->class(['tris-mobile-bottom-sheet fixed inset-x-0 top-auto bottom-0 mx-auto mb-0 max-h-[85dvh] w-full max-w-[768px] overflow-hidden rounded-t-[28px] bg-white p-0 text-[#171717]']) }}
     x-on:tris-sheet-open.stop="open()" x-on:click.self="close()" x-on:cancel.prevent="close()" x-on:close="reset()">
