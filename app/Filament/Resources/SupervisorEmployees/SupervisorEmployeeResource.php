@@ -23,6 +23,12 @@ use Illuminate\Database\Eloquent\Model;
 
 class SupervisorEmployeeResource extends Resource
 {
+
+    public static function getGloballySearchableAttributes(): array
+    {
+        return ['name'];
+    }
+
     protected static ?string $model = User::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::Users;
