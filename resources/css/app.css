@@ -203,9 +203,14 @@ p {
     padding: 0 16px;
     background: #fff;
     overflow: hidden;
-    transition: box-shadow 160ms ease;
+    border: 0;
+    outline: none;
+    box-shadow: none;
+    transition: background-color 180ms ease;
 }
-.tris-mobile-search:focus-within { box-shadow: 0 0 0 2px #d9d4d1; }
+.tris-mobile-search:focus-within { background-color: #FFFEFC; }
+.tris-mobile-search:focus-within > svg { color: #2A1F1A; }
+.tris-mobile-search > svg { transition: color 180ms ease; }
 .tris-mobile-search input {
     -webkit-appearance: none;
     appearance: none;
@@ -223,6 +228,12 @@ p {
     color: #171717;
     font-size: 14px;
     font-weight: 500;
+}
+.tris-mobile-search input:focus,
+.tris-mobile-search input:focus-visible {
+    border: 0;
+    outline: none;
+    box-shadow: none;
 }
 .tris-mobile-search input::placeholder { color: #777; opacity: 1; }
 .tris-mobile-search input::-webkit-search-decoration,
