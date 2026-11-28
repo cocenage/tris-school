@@ -25,6 +25,12 @@ use Illuminate\Database\Eloquent\Model;
 
 class UserResource extends Resource
 {
+
+    public static function getGloballySearchableAttributes(): array
+    {
+        return ['name', 'telegram_username', 'tris_id'];
+    }
+
     protected static ?string $model = User::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::Users;
