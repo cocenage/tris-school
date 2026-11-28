@@ -10,6 +10,7 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Database\Eloquent\Builder;
 
 class ControlResponsesTable
 {
@@ -83,6 +84,13 @@ class ControlResponsesTable
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
+                SelectFilter::make('sent_period')
+                    ->label('Период отправки')
+                    ->options(['today' => 'Сегодня'])
+                    ->query(fn (Builder $query, array $data): Builder => ($data['value'] ?? null) === 'today'
+                        ? $query->where('status', ControlResponse::STATUS_SENT)->whereDate('sent_at', now('Europe/Rome')->toDateString())
+                        : $query),
+
                 SelectFilter::make('result_zone')
                     ->label('Цвет')
                     ->options([
