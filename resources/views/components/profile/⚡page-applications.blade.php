@@ -438,7 +438,8 @@ new class extends Component
 @endphp
 
 <div class="tris-mobile-requests min-h-full bg-[#F5F5F5] px-5 pt-[42px] pb-8 text-[#171717]"
-    x-data="{ openFilters() { this.$refs.requestFilters.showModal(); } }">
+    x-data="{ filtersOpen: false, openFilters() { this.$refs.requestFilters.dispatchEvent(new Event('tris-sheet-open')); } }"
+    x-on:tris-sheet-state="filtersOpen = $event.detail.open">
     @php
         $total = $requests->count();
         $totalLabel = $total.' '.match(true) {
@@ -450,7 +451,7 @@ new class extends Component
     <x-mobile.page-header title="Заявки" :subtitle="$totalLabel" class="mb-5" />
     <div class="flex items-center gap-2.5">
         <x-mobile.search-bar wire:model.live.debounce.250ms="search" placeholder="Поиск заявок" />
-        <x-mobile.filter-button x-on:click="openFilters()" :count="$filterCount" label="Категории заявок" />
+        <x-mobile.filter-button x-on:click="openFilters()" x-bind:aria-expanded="filtersOpen.toString()" aria-haspopup="dialog" :count="$filterCount" label="Категории заявок" />
     </div>
     <x-mobile.segmented-tabs :options="['all' => 'Все', 'active' => 'Активные '.$activeCount, 'completed' => 'Завершённые']"
         :selected="$tab" model="tab" label="Раздел заявок" class="mt-[15px] mb-[26px]" />
