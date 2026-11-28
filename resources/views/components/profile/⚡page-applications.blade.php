@@ -374,7 +374,7 @@ new class extends Component
 
     public function applyFilters(array $categories, string $status, string $sort): void
     {
-        $this->categories = array_values(array_intersect(array_keys($this->categoryLabels()), $categories));
+        $this->categories = array_values(array_intersect(array_keys($this->categoryLabels()), array_filter($categories, 'is_string')));
         $this->statusFilter = array_key_exists($status, $this->filterStatusLabels()) ? $status : 'all';
         $this->sort = in_array($sort, ['new', 'old', 'updated'], true) ? $sort : 'new';
     }
@@ -458,33 +458,21 @@ new class extends Component
         },
         resetDraft() { this.draftCategories = []; this.draftStatus = 'all'; this.draftSort = 'new'; }
     }">
-    <div class="mb-5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h1 class="text-[32px] font-semibold leading-tight tracking-[-0.045em] text-[#2A1F1A]">Заявки</h1>
-        <span class="text-sm text-[#737373]">{{ $requests->count() }} {{ match(true) {
-            $requests->count() % 10 === 1 && $requests->count() % 100 !== 11 => 'заявка',
-            in_array($requests->count() % 10, [2,3,4]) && !in_array($requests->count() % 100, [12,13,14]) => 'заявки',
+    @php
+        $total = $requests->count();
+        $totalLabel = $total.' '.match(true) {
+            $total % 10 === 1 && $total % 100 !== 11 => 'заявка',
+            in_array($total % 10, [2,3,4]) && !in_array($total % 100, [12,13,14]) => 'заявки',
             default => 'заявок',
-        } }}</span>
-    </div>
+        };
+    @endphp
+    <x-mobile.page-header title="Заявки" :subtitle="$totalLabel" class="mb-5" />
     <div class="flex items-center gap-2.5">
-        <label class="flex min-w-0 flex-1 items-center gap-3 rounded-full bg-white px-4 py-3">
-            <x-heroicon-o-magnifying-glass class="size-5 shrink-0 text-[#777777]" />
-            <span class="sr-only">Поиск заявок</span>
-            <input type="search" wire:model.live.debounce.250ms="search" placeholder="Поиск заявок"
-                class="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[#777777]" />
-        </label>
-        <button type="button" @click="openFilters()" aria-label="Фильтры заявок"
-            class="relative grid size-12 shrink-0 place-items-center rounded-full bg-white text-[#777777]">
-            <x-heroicon-o-adjustments-horizontal class="size-5" />
-            @if($filterCount)<span class="absolute right-0 top-0 grid size-5 place-items-center rounded-full bg-[#2A1F1A] text-[10px] text-white">{{ $filterCount }}</span>@endif
-        </button>
+        <x-mobile.search-bar wire:model.live.debounce.250ms="search" placeholder="Поиск заявок" />
+        <x-mobile.filter-button x-on:click="openFilters()" :count="$filterCount" label="Фильтры заявок" />
     </div>
-    <div class="mt-3.5 mb-6 flex flex-wrap gap-1.5" role="group" aria-label="Раздел заявок">
-        @foreach(['all' => 'Все', 'active' => 'Активные '.$activeCount, 'completed' => 'Завершённые'] as $value => $label)
-            <button type="button" wire:click="$set('tab', '{{ $value }}')" aria-pressed="{{ $tab === $value ? 'true' : 'false' }}"
-                @class(['rounded-full px-3.5 py-2 text-sm leading-5', 'bg-[#2A1F1A] text-white' => $tab === $value, 'bg-[#E7E7E7] text-[#606060]' => $tab !== $value])>{{ $label }}</button>
-        @endforeach
-    </div>
+    <x-mobile.segmented-tabs :options="['all' => 'Все', 'active' => 'Активные '.$activeCount, 'completed' => 'Завершённые']"
+        :selected="$tab" model="tab" label="Раздел заявок" class="mt-3.5 mb-6" />
 
     <div class="space-y-3" aria-live="polite">
         @forelse($visible as $request)
@@ -534,14 +522,12 @@ new class extends Component
                 @endif
             </x-mobile.expandable-card>
         @empty
-            <div class="flex min-h-[280px] flex-col items-center justify-center gap-2 text-center">
-                <x-heroicon-o-inbox class="mb-2 size-9 text-[#A0A0A0]" />
-                <h2 class="font-medium">{{ $requests->isEmpty() ? 'Пока нет заявок' : 'Заявки не найдены' }}</h2>
-                <div class="max-w-[260px] text-sm text-[#737373]">{{ $requests->isEmpty() ? 'Отправленные заявки появятся здесь.' : 'Попробуйте изменить поиск или фильтры.' }}</div>
+            <x-mobile.empty-state :title="$requests->isEmpty() ? 'Пока нет заявок' : 'Заявки не найдены'"
+                :description="$requests->isEmpty() ? 'Отправленные заявки появятся здесь.' : 'Попробуйте изменить поиск или фильтры.'">
                 @if($requests->isNotEmpty())
                     <button type="button" wire:click="resetListFilters" class="mt-2 rounded-full bg-white px-4 py-2 text-sm">Сбросить фильтры</button>
                 @endif
-            </div>
+            </x-mobile.empty-state>
         @endforelse
     </div>
 
