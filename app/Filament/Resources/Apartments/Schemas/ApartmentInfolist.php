@@ -14,6 +14,15 @@ class ApartmentInfolist
     public static function configure(Schema $schema): Schema
     {
         return $schema->components([
+                Section::make('Связанные разделы')
+                    ->schema([
+                        TextEntry::make('tris_related')->hiddenLabel()->state(fn ($record) => \App\Filament\Support\RecordConnections::render($record))->html(),
+                    ])->columnSpanFull(),
+                Section::make('История изменений')
+                    ->visible(fn (): bool => auth()->user()?->isAdmin() === true && \Filament\Facades\Filament::getCurrentPanel()?->getId() === 'admin')
+                    ->schema([
+                        TextEntry::make('tris_history')->hiddenLabel()->state(fn ($record) => \App\Filament\Support\RecordConnections::history($record))->html(),
+                    ])->collapsed()->columnSpanFull(),
             Grid::make(['default' => 1, 'lg' => 3])->schema([
                 Section::make('Основная информация')
                     ->columnSpan(['default' => 1, 'lg' => 2])
