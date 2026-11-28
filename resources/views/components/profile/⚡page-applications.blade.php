@@ -441,7 +441,7 @@ new class extends Component
     $filterCount = count($categories) + (int) ($statusFilter !== 'all') + (int) ($sort !== 'new');
 @endphp
 
-<div class="tris-mobile-requests min-h-full bg-[#F2F2F2] px-5 pt-[42px] pb-8 text-[#171717]"
+<div class="tris-mobile-requests min-h-full bg-[#F5F5F5] px-5 pt-[42px] pb-8 text-[#171717]"
     x-data="{
         draftCategories: [],
         draftStatus: 'all',
@@ -474,9 +474,9 @@ new class extends Component
     <x-mobile.segmented-tabs :options="['all' => 'Все', 'active' => 'Активные '.$activeCount, 'completed' => 'Завершённые']"
         :selected="$tab" model="tab" label="Раздел заявок" class="mt-[15px] mb-[26px]" />
 
-    <div class="space-y-[12px]" aria-live="polite">
+    <div wire:key="request-tab-{{ $tab }}" class="tris-mobile-tab-panel space-y-[12px]" aria-live="polite">
         @forelse($visible as $request)
-            <x-mobile.expandable-card wire:key="request-{{ $request->request_type }}-{{ $request->id }}" wire:ignore.self
+            <x-mobile.expandable-card wire:key="request-{{ $request->request_type }}-{{ $request->id }}"
                 :title="$this->titleFor($request->request_type)" :subtitle="$this->subtitleFor($request)"
                 :status="$this->label($this->statusLabel($request->status, $request->request_type))"
                 :tone="$this->tone($request->status)" :date="$request->created_at?->translatedFormat('j M, H:i')">
@@ -485,7 +485,7 @@ new class extends Component
                     @if(filled($request->comment))
                         <div class="text-sm"><div class="mb-1 text-xs text-[#737373]">Комментарий</div><div class="whitespace-pre-wrap break-words">{{ $request->comment }}</div></div>
                     @endif
-                    <div class="divide-y divide-[#E5E5E5]">
+                    <div class="divide-y divide-[#EAEAEA]">
                         @foreach($request->lines as $item)
                             <x-mobile.decision-row
                                 :title="$item->item_name.($item->variant_label ? ' · '.$item->variant_label : '')"
@@ -499,7 +499,7 @@ new class extends Component
                     @if(filled($request->reason))
                         <div class="text-sm"><div class="mb-1 text-xs text-[#737373]">Причина</div><div class="whitespace-pre-wrap break-words">{{ $request->reason }}</div></div>
                     @endif
-                    <div class="divide-y divide-[#E5E5E5]">
+                    <div class="divide-y divide-[#EAEAEA]">
                         @foreach($request->days->sortBy('date') as $day)
                             <x-mobile.decision-row
                                 :title="Carbon::parse($day->date)->translatedFormat('j F Y')"
