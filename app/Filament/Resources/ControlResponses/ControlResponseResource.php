@@ -22,19 +22,17 @@ class ControlResponseResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedClipboardDocumentCheck;
 
-    protected static ?string $navigationLabel = 'Ответы контроля';
+    protected static ?string $navigationLabel = 'Результаты контролей';
 
     protected static ?string $modelLabel = 'Ответ контроля';
 
-    protected static ?string $pluralModelLabel = 'Ответы контроля';
+    protected static ?string $pluralModelLabel = 'Результаты контролей';
 
     protected static ?string $recordTitleAttribute = 'apartment';
 
     public static function getNavigationGroup(): ?string
     {
-        return Filament::getCurrentPanel()?->getId() === 'education'
-            ? 'Контроль качества'
-            : 'Формы контроля и коучинга';
+        return 'Контроль качества';
     }
 
     public static function form(Schema $schema): Schema
