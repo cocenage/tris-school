@@ -16,6 +16,8 @@ use Filament\Tables\Table;
 
 class MobilityAlertResource extends Resource
 {
+    protected static string|\UnitEnum|null $navigationGroup = 'Операционная работа';
+
     protected static ?string $model = MobilityAlert::class;
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
