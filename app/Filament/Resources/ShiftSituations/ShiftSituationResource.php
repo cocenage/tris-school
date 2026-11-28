@@ -21,6 +21,8 @@ use Illuminate\Validation\Rule;
 
 class ShiftSituationResource extends Resource
 {
+    protected static string|\UnitEnum|null $navigationGroup = 'Операционная работа';
+
     protected static ?string $model = ShiftSituation::class;
 
     protected static ?string $navigationLabel = 'Ситуации ОКС';
